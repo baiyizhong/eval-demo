@@ -7,6 +7,13 @@ import { TraceLogs } from "./pages/TraceLogs";
 
 type PageKey = "projects" | "traces" | "tasks" | "evaluators";
 
+const navItems: Array<{ key: PageKey; label: string }> = [
+  { key: "projects", label: "项目" },
+  { key: "traces", label: "Trace" },
+  { key: "tasks", label: "评测任务" },
+  { key: "evaluators", label: "评估器" }
+];
+
 const pages: Record<PageKey, JSX.Element> = {
   projects: <ProjectList />,
   traces: <TraceLogs />,
@@ -22,10 +29,15 @@ export function App() {
       <aside className="sidebar">
         <div className="brand">Eval Platform</div>
         <nav>
-          <button onClick={() => setPage("projects")}>项目</button>
-          <button onClick={() => setPage("traces")}>Trace</button>
-          <button onClick={() => setPage("tasks")}>评测任务</button>
-          <button onClick={() => setPage("evaluators")}>评估器</button>
+          {navItems.map((item) => (
+            <button
+              key={item.key}
+              aria-current={page === item.key ? "page" : undefined}
+              onClick={() => setPage(item.key)}
+            >
+              {item.label}
+            </button>
+          ))}
         </nav>
       </aside>
       <section className="content">{pages[page]}</section>

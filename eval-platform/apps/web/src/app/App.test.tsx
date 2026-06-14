@@ -9,6 +9,7 @@ describe("App", () => {
 
     expect(html).toContain("Eval Platform");
     expect(html).toContain("<button");
+    expect(html).toContain('<button aria-current="page"');
     expect(html).toContain("项目");
     expect(html).toContain("连接 Docker 启动的 Langfuse 项目。");
     expect(html).toContain("Trace");

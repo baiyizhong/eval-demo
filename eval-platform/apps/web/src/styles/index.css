@@ -27,12 +27,6 @@ body {
   gap: 10px;
 }
 
-.sidebar a {
-  color: #334155;
-  text-decoration: none;
-  font-size: 14px;
-}
-
 .sidebar button {
   border: 0;
   background: transparent;
@@ -40,7 +34,14 @@ body {
   cursor: pointer;
   font: inherit;
   text-align: left;
-  padding: 8px 0;
+  padding: 8px 10px;
+  border-radius: 6px;
+}
+
+.sidebar button[aria-current="page"] {
+  background: #eff6ff;
+  color: #1d4ed8;
+  font-weight: 600;
 }
 
 .sidebar button:hover {
