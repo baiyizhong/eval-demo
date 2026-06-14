@@ -5,6 +5,7 @@ import queue
 import pytest
 
 from eval_platform_worker.evaluators.base import EvaluationInput
+from eval_platform_worker.evaluators import rule as rule_module
 from eval_platform_worker.evaluators.rule import MAX_REGEX_OUTPUT_LENGTH, MAX_REGEX_PATTERN_LENGTH, RuleEvaluator
 
 
@@ -62,6 +63,16 @@ async def test_rule_evaluator_reports_missing_keyword():
 
 
 @pytest.mark.asyncio
+async def test_rule_evaluator_reports_non_empty_keyword_not_found():
+    evaluator = RuleEvaluator({"rule": "contains_keyword", "keyword": "安全"})
+    result = await evaluator.evaluate(EvaluationInput(output="这是普通回答"))
+
+    assert result.score == 0.0
+    assert result.passed is False
+    assert result.reason == "Keyword not found"
+
+
+@pytest.mark.asyncio
 async def test_rule_evaluator_matches_regex():
     evaluator = RuleEvaluator({"rule": "regex_match", "pattern": r"answer-\d+"})
     result = await evaluator.evaluate(EvaluationInput(output="final answer-42"))
@@ -79,6 +90,23 @@ async def test_rule_evaluator_reports_regex_no_match():
     assert result.score == 0.0
     assert result.passed is False
     assert result.reason == "Pattern not matched"
+
+
+def test_bounded_regex_search_uses_spawn_context(monkeypatch):
+    original_get_context = multiprocessing.get_context
+    requested_contexts: list[str | None] = []
+
+    def tracking_get_context(method: str | None = None):
+        requested_contexts.append(method)
+        return original_get_context(method)
+
+    monkeypatch.setattr(rule_module.multiprocessing, "get_context", tracking_get_context)
+
+    result = rule_module._bounded_regex_search("answer", "final answer")
+
+    assert requested_contexts == ["spawn"]
+    assert result.status == "matched"
+    assert result.error is None
 
 
 @pytest.mark.asyncio

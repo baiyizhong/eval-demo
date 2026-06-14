@@ -32,25 +32,44 @@ def _regex_search_worker(pattern: str, output: str, result_queue: multiprocessin
 
 
 def _bounded_regex_search(pattern: str, output: str) -> RegexSearchResult:
-    result_queue = multiprocessing.Queue(maxsize=1)
-    process = multiprocessing.Process(target=_regex_search_worker, args=(pattern, output, result_queue))
-    process.start()
-    process.join(REGEX_TIMEOUT_SECONDS)
-
-    if process.is_alive():
-        process.terminate()
-        process.join(0.05)
-        if process.is_alive():
-            process.kill()
-            process.join()
-        return RegexSearchResult(status="timeout")
-
+    ctx = multiprocessing.get_context("spawn")
+    result_queue = ctx.Queue(maxsize=1)
+    process = ctx.Process(target=_regex_search_worker, args=(pattern, output, result_queue))
     try:
-        status, error = result_queue.get(timeout=0.05)
-    except queue.Empty:
-        return RegexSearchResult(status="invalid", error=f"worker exited with code {process.exitcode}")
+        process.start()
+        process.join(REGEX_TIMEOUT_SECONDS)
 
-    return RegexSearchResult(status=status, error=error)
+        if process.is_alive():
+            process.terminate()
+            process.join(0.05)
+            if process.is_alive():
+                process.kill()
+                process.join()
+            return RegexSearchResult(status="timeout")
+
+        try:
+            status, error = result_queue.get(timeout=0.05)
+        except queue.Empty:
+            return RegexSearchResult(status="invalid", error=f"worker exited with code {process.exitcode}")
+
+        return RegexSearchResult(status=status, error=error)
+    finally:
+        if process.is_alive():
+            process.terminate()
+            process.join(0.05)
+            if process.is_alive():
+                process.kill()
+                process.join()
+
+        close_queue = getattr(result_queue, "close", None)
+        if close_queue is not None:
+            close_queue()
+        join_queue_thread = getattr(result_queue, "join_thread", None)
+        if join_queue_thread is not None:
+            join_queue_thread()
+        close_process = getattr(process, "close", None)
+        if close_process is not None:
+            close_process()
 
 
 class RuleEvaluator(Evaluator):
