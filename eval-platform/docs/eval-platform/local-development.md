@@ -61,10 +61,13 @@ npm run build
 
 Confirm no Langfuse Prisma schema or migration files changed. This guard catches
 parent-level `langfuse` gitlink changes and direct Prisma or migration file edits in
-non-gitlink layouts or future direct checkouts:
+non-gitlink layouts or future direct checkouts. `BASE_REF` should point to the
+target integration branch or commit for the work being verified; it defaults to
+`main` for local development and can be overridden, for example
+`BASE_REF=origin/main`, when a PR targets `origin/main`:
 
 ```bash
-BASE_REF=${BASE_REF:-origin/main}
+BASE_REF=${BASE_REF:-main}
 if ! changed_files=$(git diff --name-only "$BASE_REF"...HEAD -- \
   'langfuse' \
   'langfuse/packages/shared/prisma/**' \
@@ -78,6 +81,3 @@ if [ -n "$changed_files" ]; then
   exit 1
 fi
 ```
-
-Use `BASE_REF=<sha-or-branch>` if your worktree does not have `origin/main` or if your
-target integration branch is different.
