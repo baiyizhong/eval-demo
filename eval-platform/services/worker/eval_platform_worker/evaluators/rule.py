@@ -5,6 +5,10 @@ from typing import Any
 from eval_platform_worker.evaluators.base import EvaluationInput, EvaluationResult, Evaluator
 
 
+MAX_REGEX_PATTERN_LENGTH = 256
+MAX_REGEX_OUTPUT_LENGTH = 10000
+
+
 class RuleEvaluator(Evaluator):
     def __init__(self, config: dict[str, Any]):
         self.config = config
@@ -25,7 +29,22 @@ class RuleEvaluator(Evaluator):
             )
         if rule == "regex_match":
             pattern = str(self.config.get("pattern", ""))
-            passed = bool(pattern and re.search(pattern, output))
+            if len(pattern) > MAX_REGEX_PATTERN_LENGTH:
+                return EvaluationResult(
+                    score=0.0,
+                    passed=False,
+                    reason="Regex pattern is too long",
+                )
+            if len(output) > MAX_REGEX_OUTPUT_LENGTH:
+                return EvaluationResult(
+                    score=0.0,
+                    passed=False,
+                    reason="Regex input is too long",
+                )
+            try:
+                passed = bool(pattern and re.search(pattern, output))
+            except re.error as exc:
+                return EvaluationResult(score=0.0, passed=False, reason=f"Invalid regex: {exc}")
             return EvaluationResult(
                 score=1.0 if passed else 0.0,
                 passed=passed,
