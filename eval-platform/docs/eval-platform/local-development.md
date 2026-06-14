@@ -1,6 +1,6 @@
 # Eval Platform Local Development
 
-Run these commands from the repository root.
+Run these commands from the repository root unless noted.
 
 1. Start Langfuse with Docker:
 
@@ -34,4 +34,33 @@ consumer will be added in the worker queue task.
 cd eval-platform/apps/web
 npm install
 npm run dev
+```
+
+## Verification
+
+Run the API tests:
+
+```bash
+cd eval-platform/services/api
+pytest -v
+```
+
+Run the worker tests:
+
+```bash
+cd eval-platform/services/worker
+pytest -v
+```
+
+Build the web app:
+
+```bash
+cd eval-platform/apps/web
+npm run build
+```
+
+Confirm no Langfuse Prisma schema or migration files changed:
+
+```bash
+git diff --name-only HEAD | rg "langfuse/packages/shared/prisma|langfuse/.*/migration" && exit 1 || exit 0
 ```
