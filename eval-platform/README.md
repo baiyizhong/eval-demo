@@ -4,6 +4,8 @@ Independent evaluation platform connected to Docker-started Langfuse.
 
 ## Source Startup
 
+Run each command block below from the `eval-platform/` directory in a separate terminal.
+
 Start Langfuse first:
 
 ```bash

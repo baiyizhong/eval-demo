@@ -59,13 +59,20 @@ cd eval-platform/apps/web
 npm run build
 ```
 
-Confirm no Langfuse Prisma schema or migration files changed:
+Confirm no Langfuse Prisma schema or migration files changed. This guard catches
+parent-level `langfuse` gitlink changes and direct Prisma or migration file edits in
+non-gitlink layouts or future direct checkouts:
 
 ```bash
 BASE_REF=${BASE_REF:-origin/main}
-changed_files=$(git diff --name-only "$BASE_REF"...HEAD -- \
+if ! changed_files=$(git diff --name-only "$BASE_REF"...HEAD -- \
+  'langfuse' \
   'langfuse/packages/shared/prisma/**' \
-  'langfuse/**/migration/**')
+  'langfuse/**/migration/**'); then
+  printf 'Unable to diff against BASE_REF=%s\n' "$BASE_REF" >&2
+  exit 2
+fi
+
 if [ -n "$changed_files" ]; then
   printf '%s\n' "$changed_files"
   exit 1
