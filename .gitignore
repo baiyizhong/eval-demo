@@ -1,3 +1,9 @@
 .gitnexus
 .superpowers/
 .worktrees/
+__pycache__/
+.pytest_cache/
+node_modules/
+dist/
+*.egg-info/
+*.tsbuildinfo
