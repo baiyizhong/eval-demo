@@ -20,6 +20,7 @@
 
 - 架构：独立评测平台，前后端分离。
 - Langfuse：使用 Docker 启动，不使用源码启动。
+- `eval-platform`：优先使用源码启动，Docker 仅作为后续可选部署形态。
 - 后端：Python FastAPI。
 - Worker：模块化单体后端加异步 worker 队列。
 - 数据库：复用 Langfuse Docker 栈中的 Postgres，但只新增 `eval_platform_*` 表。
@@ -72,7 +73,8 @@ Worker：
 基础设施：
 
 - Langfuse 使用 Docker Compose 启动，保留其 web、worker、Postgres、ClickHouse、Redis、MinIO 等服务。
-- 平台新增独立 compose 或 compose override，包含 `frontend`、`api`、`worker`。
+- `eval-platform` 优先源码启动，包含 `apps/web`、`services/api`、`services/worker`。
+- 平台 Docker Compose 作为后续部署选项预留，不作为第一优先启动方式。
 - 平台 API 和 worker 连接 Langfuse Docker 栈中的 Postgres 和 Redis。
 - 平台只拥有 `eval_platform_*` 表和平台自己的队列命名空间。
 - Alembic 只管理平台自有表。
@@ -386,7 +388,7 @@ OpenJudge adapter 第一批候选：
 
 ## 部署设计
 
-Langfuse 使用 Docker 启动。平台提供独立 Docker Compose，或在部署文档中说明如何与 Langfuse Docker Compose 联合启动。
+Langfuse 使用 Docker 启动。`eval-platform` 优先使用源码启动，便于本地开发、调试评测执行链路和快速迭代前后端。
 
 Langfuse Docker 栈：
 
@@ -397,11 +399,19 @@ Langfuse Docker 栈：
 - `redis`
 - `minio`
 
-平台 Docker 栈：
+`eval-platform` 源码启动结构：
 
-- `frontend`
-- `api`
-- `worker`
+- `apps/web`：前端管理台。
+- `services/api`：FastAPI 后端接口。
+- `services/worker`：异步评测执行器。
+- `packages/shared`：共享类型、配置和工具，按需要创建。
+
+源码启动建议：
+
+- 先启动 Langfuse Docker Compose。
+- 启动 `services/api`，例如使用 `uvicorn` 运行 FastAPI。
+- 启动 `services/worker`，例如使用 Celery、RQ 或 Dramatiq worker 命令。
+- 启动 `apps/web` 的前端开发服务器。
 
 平台服务通过环境变量连接 Langfuse Docker 栈中的服务：
 
@@ -421,8 +431,14 @@ Langfuse Docker 栈：
 开发环境：
 
 - 先通过 Langfuse 提供的 Docker Compose 启动 Langfuse。
-- 再启动平台 compose，使 `api` 和 `worker` 连接同一 Postgres/Redis。
+- 再从源码分别启动平台 `api`、`worker` 和 `web`。
+- 平台 `api` 和 `worker` 连接 Langfuse Docker 栈中的同一 Postgres/Redis。
 - 平台前端通过环境变量指向平台 API，不直接指向 Langfuse。
+
+可选生产部署：
+
+- 后续可以为 `eval-platform-web`、`eval-platform-api`、`eval-platform-worker` 构建 Docker 镜像。
+- 可选 Docker Compose 只作为部署打包方案，不改变第一优先的源码启动设计。
 
 ## 测试策略
 
@@ -469,7 +485,7 @@ Worker 测试：
 
 阶段 1：基础工程
 
-- 搭建 frontend、FastAPI backend、worker、Alembic migrations、Docker Compose。
+- 搭建 `apps/web`、`services/api`、`services/worker`、Alembic migrations 和源码启动脚本。
 - 实现平台 auth 和 project connection model。
 - 实现 Langfuse client wrapper 和连接测试。
 
@@ -492,7 +508,7 @@ Worker 测试：
 - Retry 和 cancel 细节完善。
 - 加密凭据安全审查。
 - 集成测试和端到端测试。
-- Docker 部署文档。
+- 源码启动文档和可选 Docker 部署文档。
 
 ## 验收标准
 
