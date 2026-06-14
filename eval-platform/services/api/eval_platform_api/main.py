@@ -3,7 +3,12 @@ from fastapi.encoders import jsonable_encoder
 from fastapi.exceptions import RequestValidationError
 from fastapi.responses import JSONResponse
 
+from eval_platform_api.api.routes.datasets import router as datasets_router
+from eval_platform_api.api.routes.evaluators import router as evaluators_router
 from eval_platform_api.api.routes.projects import router as projects_router
+from eval_platform_api.api.routes.reports import router as reports_router
+from eval_platform_api.api.routes.tasks import router as tasks_router
+from eval_platform_api.api.routes.traces import router as traces_router
 from eval_platform_api.core.config import get_settings
 from eval_platform_api.schemas.common import ResponseEnvelope
 
@@ -12,6 +17,11 @@ def create_app() -> FastAPI:
     settings = get_settings()
     app = FastAPI(title=settings.app_name)
     app.include_router(projects_router)
+    app.include_router(traces_router)
+    app.include_router(datasets_router)
+    app.include_router(evaluators_router)
+    app.include_router(tasks_router)
+    app.include_router(reports_router)
 
     @app.exception_handler(RequestValidationError)
     async def validation_exception_handler(
