@@ -8,8 +8,12 @@ class LangfuseClient:
 
     async def test_connection(self) -> bool:
         async with httpx.AsyncClient(timeout=10) as client:
-            response = await client.get(
-                f"{self.base_url}/api/public/projects",
-                auth=self.auth,
-            )
-            return response.status_code < 500
+            try:
+                response = await client.get(
+                    f"{self.base_url}/api/public/projects",
+                    auth=self.auth,
+                )
+            except httpx.RequestError:
+                return False
+
+            return response.is_success
