@@ -62,5 +62,15 @@ npm run build
 Confirm no Langfuse Prisma schema or migration files changed:
 
 ```bash
-git diff --name-only HEAD | rg "langfuse/packages/shared/prisma|langfuse/.*/migration" && exit 1 || exit 0
+BASE_REF=${BASE_REF:-origin/main}
+changed_files=$(git diff --name-only "$BASE_REF"...HEAD -- \
+  'langfuse/packages/shared/prisma/**' \
+  'langfuse/**/migration/**')
+if [ -n "$changed_files" ]; then
+  printf '%s\n' "$changed_files"
+  exit 1
+fi
 ```
+
+Use `BASE_REF=<sha-or-branch>` if your worktree does not have `origin/main` or if your
+target integration branch is different.
