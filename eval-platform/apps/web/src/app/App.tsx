@@ -1,19 +1,34 @@
+import { useState } from "react";
+
+import { EvaluationTasks } from "./pages/EvaluationTasks";
+import { Evaluators } from "./pages/Evaluators";
+import { ProjectList } from "./pages/ProjectList";
+import { TraceLogs } from "./pages/TraceLogs";
+
+type PageKey = "projects" | "traces" | "tasks" | "evaluators";
+
+const pages: Record<PageKey, JSX.Element> = {
+  projects: <ProjectList />,
+  traces: <TraceLogs />,
+  tasks: <EvaluationTasks />,
+  evaluators: <Evaluators />
+};
+
 export function App() {
+  const [page, setPage] = useState<PageKey>("projects");
+
   return (
     <main className="app-shell">
       <aside className="sidebar">
         <div className="brand">Eval Platform</div>
         <nav>
-          <a href="#projects">项目</a>
-          <a href="#traces">Trace</a>
-          <a href="#tasks">评测任务</a>
-          <a href="#evaluators">评估器</a>
+          <button onClick={() => setPage("projects")}>项目</button>
+          <button onClick={() => setPage("traces")}>Trace</button>
+          <button onClick={() => setPage("tasks")}>评测任务</button>
+          <button onClick={() => setPage("evaluators")}>评估器</button>
         </nav>
       </aside>
-      <section className="content">
-        <h1>评测平台</h1>
-        <p>连接 Docker 启动的 Langfuse，通过 Python worker 执行评测并写回 Scores。</p>
-      </section>
+      <section className="content">{pages[page]}</section>
     </main>
   );
 }

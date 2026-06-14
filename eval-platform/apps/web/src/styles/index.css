@@ -33,6 +33,20 @@ body {
   font-size: 14px;
 }
 
+.sidebar button {
+  border: 0;
+  background: transparent;
+  color: #334155;
+  cursor: pointer;
+  font: inherit;
+  text-align: left;
+  padding: 8px 0;
+}
+
+.sidebar button:hover {
+  color: #2563eb;
+}
+
 .content {
   padding: 32px;
 }
