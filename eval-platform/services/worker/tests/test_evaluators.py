@@ -1,7 +1,24 @@
+import asyncio
+import multiprocessing
+import queue
+
 import pytest
 
 from eval_platform_worker.evaluators.base import EvaluationInput
 from eval_platform_worker.evaluators.rule import MAX_REGEX_OUTPUT_LENGTH, MAX_REGEX_PATTERN_LENGTH, RuleEvaluator
+
+
+def _evaluate_rule_in_process(
+    config: dict[str, str],
+    output: str,
+    result_queue: multiprocessing.Queue,
+) -> None:
+    try:
+        result = asyncio.run(RuleEvaluator(config).evaluate(EvaluationInput(output=output)))
+    except BaseException as exc:
+        result_queue.put({"error": repr(exc)})
+        return
+    result_queue.put({"score": result.score, "passed": result.passed, "reason": result.reason})
 
 
 @pytest.mark.asyncio
@@ -72,6 +89,34 @@ async def test_rule_evaluator_reports_invalid_regex():
     assert result.score == 0.0
     assert result.passed is False
     assert result.reason.startswith("Invalid regex:")
+
+
+@pytest.mark.asyncio
+async def test_rule_evaluator_times_out_pathological_regex():
+    ctx = multiprocessing.get_context("spawn")
+    result_queue = ctx.Queue()
+    process = ctx.Process(
+        target=_evaluate_rule_in_process,
+        args=({"rule": "regex_match", "pattern": r"(a+)+$"}, "a" * 30 + "!", result_queue),
+    )
+    process.start()
+
+    try:
+        await asyncio.wait_for(asyncio.to_thread(process.join), timeout=1.0)
+    except TimeoutError:
+        process.terminate()
+        process.join()
+        pytest.fail("Evaluator did not return before test timeout")
+
+    assert process.exitcode == 0
+    try:
+        result = result_queue.get_nowait()
+    except queue.Empty:
+        pytest.fail("Evaluator process exited without returning a result")
+    assert "error" not in result
+    assert result["score"] == 0.0
+    assert result["passed"] is False
+    assert result["reason"] == "Regex evaluation timed out"
 
 
 @pytest.mark.asyncio
