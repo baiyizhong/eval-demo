@@ -2,6 +2,7 @@ from fastapi import FastAPI, Request
 from fastapi.encoders import jsonable_encoder
 from fastapi.exceptions import RequestValidationError
 from fastapi.responses import JSONResponse
+from fastapi.middleware.cors import CORSMiddleware
 
 from eval_platform_api.api.routes.datasets import router as datasets_router
 from eval_platform_api.api.routes.evaluators import router as evaluators_router
@@ -16,6 +17,13 @@ from eval_platform_api.schemas.common import ResponseEnvelope
 def create_app() -> FastAPI:
     settings = get_settings()
     app = FastAPI(title=settings.app_name)
+    app.add_middleware(
+        CORSMiddleware,
+        allow_origins=list(settings.web_cors_origins),
+        allow_credentials=True,
+        allow_methods=["*"],
+        allow_headers=["*"],
+    )
     app.include_router(projects_router)
     app.include_router(traces_router)
     app.include_router(datasets_router)
