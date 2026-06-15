@@ -10,9 +10,10 @@ from eval_platform_api.api.routes._langfuse import (
 from eval_platform_api.core.config import get_settings
 from eval_platform_api.schemas.common import ErrorEnvelope, ResponseEnvelope
 from eval_platform_api.schemas.projects import (
-    ProjectListItem,
+    ProjectCreateRequest,
     ProjectConnectionTestRequest,
     ProjectConnectionTestResponse,
+    ProjectListItem,
 )
 from eval_platform_api.services.langfuse_client import LangfuseAPIError, LangfuseClient
 
@@ -46,6 +47,20 @@ def _organization_name(project: dict) -> str | None:
     return name if isinstance(name, str) else None
 
 
+def _project_item(project: dict, *, base_url: str, trace_count: int = 0) -> ProjectListItem:
+    return ProjectListItem(
+        id=str(project.get("id", "")),
+        name=str(project.get("name") or project.get("id") or "未命名项目"),
+        description=_project_description(project),
+        status="active",
+        trace_count=trace_count,
+        created_at=None,
+        last_active_at=None,
+        langfuse_base_url=base_url,
+        organization_name=_organization_name(project),
+    )
+
+
 @router.get("", response_model=ResponseEnvelope[list[ProjectListItem]])
 async def list_projects(response: Response) -> ResponseEnvelope[list[ProjectListItem]]:
     settings = get_settings()
@@ -62,22 +77,56 @@ async def list_projects(response: Response) -> ResponseEnvelope[list[ProjectList
         return langfuse_request_failed_response()
 
     items = [
-        ProjectListItem(
-            id=str(project.get("id", "")),
-            name=str(project.get("name") or project.get("id") or "未命名项目"),
-            description=_project_description(project),
-            status="active",
+        _project_item(
+            project,
+            base_url=str(settings.langfuse_default_base_url),
             trace_count=trace_summary["trace_count"],
-            created_at=None,
-            last_active_at=trace_summary["last_active_at"],
-            langfuse_base_url=settings.langfuse_default_base_url,
-            organization_name=_organization_name(project),
         )
         for project in projects
         if project.get("id")
     ]
+    for item in items:
+        item.last_active_at = trace_summary["last_active_at"]
     return ResponseEnvelope(
         data=items,
+        meta={"source": "langfuse", "base_url": str(settings.langfuse_default_base_url)},
+    )
+
+
+@router.post("", response_model=ResponseEnvelope[ProjectListItem], status_code=status.HTTP_201_CREATED)
+async def create_project(
+    payload: ProjectCreateRequest,
+    response: Response,
+) -> ResponseEnvelope[ProjectListItem]:
+    settings = get_settings()
+    client = build_configured_langfuse_client(settings)
+    if client is None:
+        response.status_code = status.HTTP_503_SERVICE_UNAVAILABLE
+        return langfuse_not_configured_response()
+
+    description = payload.description.strip() if payload.description else None
+    metadata = {"description": description} if description else None
+
+    try:
+        project = await client.create_project(name=payload.name.strip(), metadata=metadata)
+    except LangfuseAPIError as exc:
+        if exc.status_code == status.HTTP_403_FORBIDDEN:
+            response.status_code = status.HTTP_403_FORBIDDEN
+            return ResponseEnvelope(
+                error=ErrorEnvelope(
+                    code="langfuse_project_create_forbidden",
+                    message=(
+                        "Langfuse 创建项目需要 organization-scoped API key。"
+                        f"Langfuse 返回：{exc}"
+                    ),
+                )
+            )
+
+        response.status_code = status.HTTP_502_BAD_GATEWAY
+        return langfuse_request_failed_response()
+
+    return ResponseEnvelope(
+        data=_project_item(project, base_url=str(settings.langfuse_default_base_url)),
         meta={"source": "langfuse", "base_url": str(settings.langfuse_default_base_url)},
     )
 

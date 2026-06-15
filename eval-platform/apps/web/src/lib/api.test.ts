@@ -39,4 +39,29 @@ describe("apiPost", () => {
       body: JSON.stringify({ name: "安全性评测" })
     });
   });
+
+  it("returns the API error envelope for non-2xx responses", async () => {
+    const fetchMock = vi.fn().mockResolvedValue({
+      ok: false,
+      status: 403,
+      statusText: "Forbidden",
+      json: () =>
+        Promise.resolve({
+          data: null,
+          error: {
+            code: "langfuse_project_create_forbidden",
+            message: "Langfuse 创建项目需要 organization-scoped API key。"
+          }
+        })
+    });
+    vi.stubGlobal("fetch", fetchMock);
+
+    const envelope = await apiPost<{ id: string }>("/api/projects", {
+      name: "客服机器人 v2"
+    });
+
+    expect(envelope.data).toBeNull();
+    expect(envelope.error?.code).toBe("langfuse_project_create_forbidden");
+    expect(envelope.error?.message).toContain("organization-scoped");
+  });
 });

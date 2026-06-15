@@ -101,6 +101,69 @@ def test_list_projects_reports_missing_langfuse_credentials(monkeypatch):
     assert "sk-" not in response.text
 
 
+@respx.mock
+def test_create_project_writes_to_langfuse(monkeypatch):
+    configure_langfuse_env(monkeypatch)
+    route = respx.post("http://localhost:3000/api/public/projects").mock(
+        return_value=Response(
+            201,
+            json={
+                "id": "langfuse-project-2",
+                "name": "客服机器人 v2",
+                "metadata": {"description": "用于回归评测"},
+                "organization": {"id": "org-1", "name": "安辉医疗科技"},
+            },
+        )
+    )
+    client = TestClient(create_app())
+
+    response = client.post(
+        "/api/projects",
+        json={"name": "客服机器人 v2", "description": "用于回归评测"},
+    )
+
+    assert response.status_code == 201
+    assert route.called
+    request = route.calls.last.request
+    assert request.read().decode() == '{"name":"客服机器人 v2","metadata":{"description":"用于回归评测"}}'
+    body = response.json()
+    assert body["error"] is None
+    assert body["data"] == {
+        "id": "langfuse-project-2",
+        "name": "客服机器人 v2",
+        "description": "用于回归评测",
+        "status": "active",
+        "trace_count": 0,
+        "created_at": None,
+        "last_active_at": None,
+        "langfuse_base_url": "http://localhost:3000/",
+        "organization_name": "安辉医疗科技",
+    }
+
+
+@respx.mock
+def test_create_project_reports_org_scoped_key_requirement(monkeypatch):
+    configure_langfuse_env(monkeypatch)
+    respx.post("http://localhost:3000/api/public/projects").mock(
+        return_value=Response(
+            403,
+            json={
+                "message": "Invalid API key. Organization-scoped API key required for this operation."
+            },
+        )
+    )
+    client = TestClient(create_app())
+
+    response = client.post("/api/projects", json={"name": "客服机器人 v2"})
+
+    assert response.status_code == 403
+    body = response.json()
+    assert body["data"] is None
+    assert body["error"]["code"] == "langfuse_project_create_forbidden"
+    assert "organization-scoped" in body["error"]["message"]
+    assert "sk-" not in response.text
+
+
 def test_validation_error_does_not_echo_langfuse_secret_key():
     client = TestClient(create_app())
 

@@ -1,6 +1,6 @@
 from typing import Literal
 
-from pydantic import AnyHttpUrl, BaseModel, SecretStr
+from pydantic import AnyHttpUrl, BaseModel, Field, SecretStr
 
 
 class ProjectListItem(BaseModel):
@@ -13,6 +13,11 @@ class ProjectListItem(BaseModel):
     last_active_at: str | None = None
     langfuse_base_url: AnyHttpUrl
     organization_name: str | None = None
+
+
+class ProjectCreateRequest(BaseModel):
+    name: str = Field(min_length=1, max_length=60)
+    description: str | None = Field(default=None, max_length=500)
 
 
 class ProjectConnectionTestRequest(BaseModel):

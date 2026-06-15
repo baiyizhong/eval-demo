@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useState } from "react";
 import {
   Activity,
   Archive,
@@ -11,7 +11,7 @@ import {
   X
 } from "lucide-react";
 
-import { apiGet } from "../../lib/api";
+import { apiGet, apiPost } from "../../lib/api";
 
 type ProjectStatus = "active" | "archived";
 
@@ -35,6 +35,11 @@ export interface ProjectSummary {
   createdAt: string | null;
   lastActiveAt: string | null;
   organizationName: string | null;
+}
+
+interface ProjectCreatePayload {
+  name: string;
+  description: string | null;
 }
 
 const statusLabels: Record<ProjectStatus, string> = {
@@ -142,8 +147,33 @@ function ProjectCard({ project, onSelect }: { project: ProjectSummary; onSelect:
   );
 }
 
-function CreateProjectModal({ onClose }: { onClose: () => void }) {
+function CreateProjectModal({
+  onClose,
+  onCreate
+}: {
+  onClose: () => void;
+  onCreate: (payload: ProjectCreatePayload) => Promise<void>;
+}) {
   const [name, setName] = useState("");
+  const [description, setDescription] = useState("");
+  const [submitting, setSubmitting] = useState(false);
+  const [createError, setCreateError] = useState<string | null>(null);
+
+  async function handleCreate() {
+    setSubmitting(true);
+    setCreateError(null);
+    try {
+      await onCreate({
+        name: name.trim(),
+        description: description.trim() || null
+      });
+      onClose();
+    } catch (error) {
+      setCreateError(error instanceof Error ? error.message : "创建 Langfuse 项目失败。");
+    } finally {
+      setSubmitting(false);
+    }
+  }
 
   return (
     <div className="modal-backdrop" role="presentation">
@@ -160,14 +190,25 @@ function CreateProjectModal({ onClose }: { onClose: () => void }) {
         </label>
         <label>
           项目描述
-          <textarea rows={3} placeholder="该项目的用途是什么？" />
+          <textarea
+            rows={3}
+            value={description}
+            onChange={(event) => setDescription(event.target.value)}
+            placeholder="该项目的用途是什么？"
+          />
         </label>
+        {createError && <p className="modal-error">{createError}</p>}
         <div className="modal-actions">
-          <button className="secondary-button" type="button" onClick={onClose}>
+          <button className="secondary-button" type="button" onClick={onClose} disabled={submitting}>
             取消
           </button>
-          <button className="primary-button" type="button" disabled={!name.trim()} onClick={onClose}>
-            创建项目
+          <button
+            className="primary-button"
+            type="button"
+            disabled={!name.trim() || submitting}
+            onClick={() => void handleCreate()}
+          >
+            {submitting ? "创建中..." : "创建项目"}
           </button>
         </div>
       </section>
@@ -184,25 +225,25 @@ export function ProjectList({ onSelectProject }: { onSelectProject?: (project: P
   const [sortBy, setSortBy] = useState<"active" | "created" | "name">("active");
   const [createOpen, setCreateOpen] = useState(false);
 
+  const loadProjects = useCallback(async (shouldApply: () => boolean = () => true) => {
+    setLoading(true);
+    setLoadError(null);
+    const envelope = await apiGet<ApiProject[]>("/api/projects");
+    if (!shouldApply()) return;
+
+    if (envelope.error) {
+      setProjects([]);
+      setLoadError(envelope.error.message);
+    } else {
+      setProjects((envelope.data ?? []).map(mapProject));
+    }
+    setLoading(false);
+  }, []);
+
   useEffect(() => {
     let ignore = false;
 
-    async function loadProjects() {
-      setLoading(true);
-      setLoadError(null);
-      const envelope = await apiGet<ApiProject[]>("/api/projects");
-      if (ignore) return;
-
-      if (envelope.error) {
-        setProjects([]);
-        setLoadError(envelope.error.message);
-      } else {
-        setProjects((envelope.data ?? []).map(mapProject));
-      }
-      setLoading(false);
-    }
-
-    void loadProjects().catch((error: unknown) => {
+    void loadProjects(() => !ignore).catch((error: unknown) => {
       if (ignore) return;
       setProjects([]);
       setLoadError(error instanceof Error ? error.message : "加载 Langfuse 项目失败。");
@@ -212,7 +253,19 @@ export function ProjectList({ onSelectProject }: { onSelectProject?: (project: P
     return () => {
       ignore = true;
     };
-  }, []);
+  }, [loadProjects]);
+
+  async function handleCreateProject(payload: ProjectCreatePayload) {
+    const envelope = await apiPost<ApiProject>("/api/projects", payload);
+    if (envelope.error) {
+      throw new Error(envelope.error.message);
+    }
+    if (!envelope.data) {
+      throw new Error("Langfuse 未返回新建项目。");
+    }
+    const createdProject = mapProject(envelope.data);
+    setProjects((current) => [createdProject, ...current.filter((project) => project.id !== createdProject.id)]);
+  }
 
   const visibleProjects = useMemo(() => {
     return projects
@@ -290,7 +343,9 @@ export function ProjectList({ onSelectProject }: { onSelectProject?: (project: P
         )}
       </div>
 
-      {createOpen && <CreateProjectModal onClose={() => setCreateOpen(false)} />}
+      {createOpen && (
+        <CreateProjectModal onClose={() => setCreateOpen(false)} onCreate={handleCreateProject} />
+      )}
     </div>
   );
 }

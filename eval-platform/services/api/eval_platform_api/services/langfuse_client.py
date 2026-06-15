@@ -31,6 +31,16 @@ class LangfuseClient:
             raise LangfuseAPIError("Langfuse projects response was not a list.")
         return data
 
+    async def create_project(self, *, name: str, metadata: dict | None = None) -> dict:
+        body: dict = {"name": name}
+        if metadata:
+            body["metadata"] = metadata
+
+        payload = await self._post_public_api("projects", json=body)
+        if not isinstance(payload, dict) or not payload.get("id"):
+            raise LangfuseAPIError("Langfuse project create response was invalid.")
+        return payload
+
     async def list_traces(
         self,
         *,
@@ -71,18 +81,42 @@ class LangfuseClient:
         }
 
     async def _get_public_api(self, path: str, params: dict | None = None) -> dict:
+        return await self._request_public_api("GET", path, params=params)
+
+    async def _post_public_api(self, path: str, json: dict | None = None) -> dict:
+        return await self._request_public_api("POST", path, json=json)
+
+    async def _request_public_api(
+        self,
+        method: str,
+        path: str,
+        *,
+        params: dict | None = None,
+        json: dict | None = None,
+    ) -> dict:
         async with httpx.AsyncClient(timeout=10) as client:
             try:
-                response = await client.get(
+                response = await client.request(
+                    method,
                     f"{self.base_url}/api/public/{path}",
                     auth=self.auth,
                     params={key: value for key, value in (params or {}).items() if value is not None},
+                    json=json,
                 )
             except httpx.RequestError as exc:
                 raise LangfuseAPIError("Unable to reach Langfuse API.") from exc
 
+        error_message = "Langfuse API request failed."
         if not response.is_success:
-            raise LangfuseAPIError("Langfuse API request failed.", response.status_code)
+            try:
+                error_payload = response.json()
+            except ValueError:
+                error_payload = {}
+            if isinstance(error_payload, dict):
+                message = error_payload.get("message") or error_payload.get("error")
+                if isinstance(message, str) and message.strip():
+                    error_message = message
+            raise LangfuseAPIError(error_message, response.status_code)
 
         try:
             payload = response.json()
