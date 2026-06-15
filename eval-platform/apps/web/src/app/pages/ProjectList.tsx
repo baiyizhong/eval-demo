@@ -26,7 +26,7 @@ interface ApiProject {
   organization_name: string | null;
 }
 
-interface Project {
+export interface ProjectSummary {
   id: string;
   name: string;
   description: string | null;
@@ -42,7 +42,7 @@ const statusLabels: Record<ProjectStatus, string> = {
   archived: "已归档"
 };
 
-function mapProject(project: ApiProject): Project {
+function mapProject(project: ApiProject): ProjectSummary {
   return {
     id: project.id,
     name: project.name,
@@ -83,11 +83,11 @@ function StatusBadge({ status }: { status: ProjectStatus }) {
   return <span className={`status-badge status-badge-${status}`}>{statusLabels[status]}</span>;
 }
 
-function ProjectCard({ project }: { project: Project }) {
+function ProjectCard({ project, onSelect }: { project: ProjectSummary; onSelect: (project: ProjectSummary) => void }) {
   const [menuOpen, setMenuOpen] = useState(false);
 
   return (
-    <article className="project-card">
+    <article className="project-card" onClick={() => onSelect(project)}>
       <div className="project-card-top">
         <div className="project-icon">
           <Activity size={20} aria-hidden="true" />
@@ -98,7 +98,10 @@ function ProjectCard({ project }: { project: Project }) {
             className="icon-button project-menu-button"
             type="button"
             aria-label={`打开 ${project.name} 操作菜单`}
-            onClick={() => setMenuOpen((open) => !open)}
+            onClick={(event) => {
+              event.stopPropagation();
+              setMenuOpen((open) => !open);
+            }}
           >
             <MoreHorizontal size={16} aria-hidden="true" />
           </button>
@@ -172,8 +175,8 @@ function CreateProjectModal({ onClose }: { onClose: () => void }) {
   );
 }
 
-export function ProjectList() {
-  const [projects, setProjects] = useState<Project[]>([]);
+export function ProjectList({ onSelectProject }: { onSelectProject?: (project: ProjectSummary) => void }) {
+  const [projects, setProjects] = useState<ProjectSummary[]>([]);
   const [loading, setLoading] = useState(true);
   const [loadError, setLoadError] = useState<string | null>(null);
   const [search, setSearch] = useState("");
@@ -270,7 +273,7 @@ export function ProjectList() {
         ) : visibleProjects.length > 0 ? (
           <div className="project-grid">
             {visibleProjects.map((project) => (
-              <ProjectCard key={project.id} project={project} />
+              <ProjectCard key={project.id} project={project} onSelect={(value) => onSelectProject?.(value)} />
             ))}
           </div>
         ) : (

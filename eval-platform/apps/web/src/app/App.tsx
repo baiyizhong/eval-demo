@@ -12,7 +12,7 @@ import {
 
 import { EvaluationTasks } from "./pages/EvaluationTasks";
 import { Evaluators } from "./pages/Evaluators";
-import { ProjectList } from "./pages/ProjectList";
+import { ProjectList, type ProjectSummary } from "./pages/ProjectList";
 import { TraceLogs } from "./pages/TraceLogs";
 
 type PageKey = "projects" | "traces" | "tasks" | "evaluators" | "tenants" | "users" | "settings";
@@ -46,33 +46,41 @@ const navSections: Array<{
   }
 ];
 
-const pages: Record<PageKey, JSX.Element> = {
-  projects: <ProjectList />,
-  traces: <TraceLogs />,
-  tasks: <EvaluationTasks />,
-  evaluators: <Evaluators />,
-  tenants: (
-    <section className="placeholder-page">
-      <h1>租户管理</h1>
-      <p>管理接入评测平台的企业租户、套餐与使用额度。</p>
-    </section>
-  ),
-  users: (
-    <section className="placeholder-page">
-      <h1>用户管理</h1>
-      <p>维护成员、角色与访问权限。</p>
-    </section>
-  ),
-  settings: (
-    <section className="placeholder-page">
-      <h1>系统设置</h1>
-      <p>配置平台级评测策略、Langfuse 连接与安全选项。</p>
-    </section>
-  )
-};
-
 export function App() {
   const [page, setPage] = useState<PageKey>("projects");
+  const [selectedProject, setSelectedProject] = useState<ProjectSummary | null>(null);
+
+  const pages: Record<PageKey, JSX.Element> = {
+    projects: (
+      <ProjectList
+        onSelectProject={(project) => {
+          setSelectedProject(project);
+          setPage("traces");
+        }}
+      />
+    ),
+    traces: <TraceLogs selectedProject={selectedProject} />,
+    tasks: <EvaluationTasks />,
+    evaluators: <Evaluators />,
+    tenants: (
+      <section className="placeholder-page">
+        <h1>租户管理</h1>
+        <p>管理接入评测平台的企业租户、套餐与使用额度。</p>
+      </section>
+    ),
+    users: (
+      <section className="placeholder-page">
+        <h1>用户管理</h1>
+        <p>维护成员、角色与访问权限。</p>
+      </section>
+    ),
+    settings: (
+      <section className="placeholder-page">
+        <h1>系统设置</h1>
+        <p>配置平台级评测策略、Langfuse 连接与安全选项。</p>
+      </section>
+    )
+  };
 
   return (
     <main className="app-shell">

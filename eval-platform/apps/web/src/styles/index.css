@@ -630,6 +630,87 @@ textarea {
   line-height: 1.7;
 }
 
+.trace-page {
+  min-height: 100%;
+}
+
+.trace-toolbar {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 12px;
+  padding: 16px 24px;
+  border-bottom: 1px solid #e2e8f0;
+  background: #ffffff;
+}
+
+.trace-summary {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  min-height: 34px;
+  padding: 7px 10px;
+  border: 1px solid #e2e8f0;
+  border-radius: 8px;
+  background: #ffffff;
+  color: #0f172a;
+  font-size: 14px;
+  font-weight: 600;
+}
+
+.trace-summary.muted {
+  color: #64748b;
+  font-weight: 500;
+}
+
+.trace-table-wrap {
+  position: relative;
+  margin: 24px;
+  overflow: hidden;
+  border: 1px solid #e2e8f0;
+  border-radius: 10px;
+  background: #ffffff;
+}
+
+.trace-table {
+  width: 100%;
+  border-collapse: collapse;
+  table-layout: fixed;
+}
+
+.trace-table th,
+.trace-table td {
+  overflow: hidden;
+  padding: 12px 16px;
+  border-bottom: 1px solid #f1f5f9;
+  color: #334155;
+  font-size: 13px;
+  text-align: left;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.trace-table th {
+  background: #f8fafc;
+  color: #64748b;
+  font-size: 12px;
+  font-weight: 700;
+}
+
+.trace-table tbody tr:hover {
+  background: #f8fafc;
+}
+
+.table-state {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  min-height: 180px;
+  color: #64748b;
+  font-size: 14px;
+}
+
 @media (max-width: 1024px) {
   .project-grid {
     grid-template-columns: repeat(2, minmax(0, 1fr));
@@ -674,5 +755,14 @@ textarea {
   .project-card-footer {
     align-items: flex-start;
     flex-direction: column;
+  }
+
+  .trace-table-wrap {
+    margin: 16px;
+    overflow-x: auto;
+  }
+
+  .trace-table {
+    min-width: 760px;
   }
 }
