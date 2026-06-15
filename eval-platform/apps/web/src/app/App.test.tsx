@@ -7,13 +7,18 @@ describe("App", () => {
   it("renders the admin shell with the projects page selected", () => {
     const html = renderToString(<App />);
 
-    expect(html).toContain("Eval Platform");
+    expect(html).toContain("ObserveIQ");
+    expect(html).toContain("LLM 可观测性平台");
     expect(html).toContain("<button");
-    expect(html).toContain('<button aria-current="page"');
-    expect(html).toContain("项目");
-    expect(html).toContain("连接 Docker 启动的 Langfuse 项目。");
-    expect(html).toContain("Trace");
-    expect(html).toContain("评测任务");
-    expect(html).toContain("评估器");
+    expect(html).toContain('aria-current="page"');
+    expect(html).toContain("项目列表");
+    expect(html).toContain("选择一个项目以查看 Trace 日志并执行评测");
+    expect(html).toContain("搜索项目...");
+    expect(html).toContain("新建项目");
+    expect(html).toContain("医疗问答助手");
+    expect(html).toContain("系统管理");
+    expect(html).toContain("租户管理");
+    expect(html).toContain("用户管理");
+    expect(html).toContain("系统设置");
   });
 });
