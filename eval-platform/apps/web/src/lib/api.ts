@@ -17,3 +17,15 @@ export async function apiGet<T>(path: string): Promise<Envelope<T>> {
   }
   return response.json() as Promise<Envelope<T>>;
 }
+
+export async function apiPost<T>(path: string, body: unknown): Promise<Envelope<T>> {
+  const response = await fetch(joinApiUrl(API_BASE_URL, path), {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(body)
+  });
+  if (!response.ok) {
+    return { data: null, error: { code: String(response.status), message: response.statusText } };
+  }
+  return response.json() as Promise<Envelope<T>>;
+}

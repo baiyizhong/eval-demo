@@ -26,5 +26,6 @@ describe("TraceLogs", () => {
     expect(html).toContain("Trace ID");
     expect(html).toContain("用户");
     expect(html).toContain("会话");
+    expect(html).toContain("创建评测任务");
   });
 });

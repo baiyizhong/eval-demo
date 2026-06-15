@@ -644,6 +644,19 @@ textarea {
   background: #ffffff;
 }
 
+.trace-actions {
+  display: inline-flex;
+  align-items: center;
+  gap: 10px;
+  margin-left: auto;
+}
+
+.trace-task-message {
+  color: #64748b;
+  font-size: 13px;
+  white-space: nowrap;
+}
+
 .trace-summary {
   display: inline-flex;
   align-items: center;
@@ -764,5 +777,14 @@ textarea {
 
   .trace-table {
     min-width: 760px;
+  }
+
+  .trace-actions {
+    width: 100%;
+    margin-left: 0;
+  }
+
+  .trace-task-message {
+    white-space: normal;
   }
 }
