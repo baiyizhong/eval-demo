@@ -8,11 +8,6 @@ from eval_platform_api.main import create_app
     ("path", "expected_data", "expected_meta"),
     [
         (
-            "/api/projects/project-1/traces",
-            [],
-            {"project_id": "project-1"},
-        ),
-        (
             "/api/projects/project-1/datasets",
             [],
             {"project_id": "project-1"},

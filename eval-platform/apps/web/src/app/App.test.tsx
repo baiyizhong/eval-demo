@@ -15,7 +15,7 @@ describe("App", () => {
     expect(html).toContain("选择一个项目以查看 Trace 日志并执行评测");
     expect(html).toContain("搜索项目...");
     expect(html).toContain("新建项目");
-    expect(html).toContain("医疗问答助手");
+    expect(html).toContain("正在从 Langfuse API 加载项目...");
     expect(html).toContain("系统管理");
     expect(html).toContain("租户管理");
     expect(html).toContain("用户管理");

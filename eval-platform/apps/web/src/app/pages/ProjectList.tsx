@@ -1,4 +1,4 @@
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import {
   Activity,
   Archive,
@@ -11,79 +11,58 @@ import {
   X
 } from "lucide-react";
 
+import { apiGet } from "../../lib/api";
+
 type ProjectStatus = "active" | "archived";
+
+interface ApiProject {
+  id: string;
+  name: string;
+  description: string | null;
+  status: ProjectStatus;
+  trace_count: number;
+  created_at: string | null;
+  last_active_at: string | null;
+  organization_name: string | null;
+}
 
 interface Project {
   id: string;
   name: string;
-  description: string;
+  description: string | null;
   status: ProjectStatus;
   traceCount: number;
-  createdAt: string;
-  lastActiveAt: string;
+  createdAt: string | null;
+  lastActiveAt: string | null;
+  organizationName: string | null;
 }
-
-const mockProjects: Project[] = [
-  {
-    id: "p1",
-    name: "医疗问答助手",
-    description: "面向临床决策支持的 LLM 问答系统，与医院 EMR 系统深度集成。",
-    status: "active",
-    traceCount: 12847,
-    createdAt: "2026-01-15",
-    lastActiveAt: "2026-06-10"
-  },
-  {
-    id: "p2",
-    name: "客服智能机器人",
-    description: "处理退款申请、技术问题和产品咨询的自动化一线客服代理。",
-    status: "active",
-    traceCount: 45231,
-    createdAt: "2026-02-03",
-    lastActiveAt: "2026-06-10"
-  },
-  {
-    id: "p3",
-    name: "代码审查助手",
-    description: "基于 Claude 的自动化代码审查流水线，提供安全性、正确性和风格反馈。",
-    status: "active",
-    traceCount: 8932,
-    createdAt: "2026-03-10",
-    lastActiveAt: "2026-06-09"
-  },
-  {
-    id: "p4",
-    name: "法律文档摘要",
-    description: "面向法务团队的合同分析与摘要工具，支持 12 种文档类型。",
-    status: "active",
-    traceCount: 3201,
-    createdAt: "2026-03-22",
-    lastActiveAt: "2026-06-08"
-  },
-  {
-    id: "p5",
-    name: "销售智能副驾",
-    description: "会议后实时生成跟进邮件并自动更新 CRM 的销售助手。",
-    status: "active",
-    traceCount: 7654,
-    createdAt: "2026-04-01",
-    lastActiveAt: "2026-06-07"
-  },
-  {
-    id: "p6",
-    name: "HR 政策机器人（旧版）",
-    description: "已废弃的 HR 政策问答机器人，功能已迁移至客服智能机器人。",
-    status: "archived",
-    traceCount: 1230,
-    createdAt: "2025-10-10",
-    lastActiveAt: "2026-02-01"
-  }
-];
 
 const statusLabels: Record<ProjectStatus, string> = {
   active: "启用",
   archived: "已归档"
 };
+
+function mapProject(project: ApiProject): Project {
+  return {
+    id: project.id,
+    name: project.name,
+    description: project.description,
+    status: project.status,
+    traceCount: project.trace_count,
+    createdAt: project.created_at,
+    lastActiveAt: project.last_active_at,
+    organizationName: project.organization_name
+  };
+}
+
+function timestampValue(value: string | null): number {
+  return value ? new Date(value).getTime() : 0;
+}
+
+function formatLastActive(value: string | null): string {
+  if (!value) return "暂无 Trace";
+  return `活跃于 ${new Date(value).toLocaleDateString("zh-CN")}`;
+}
 
 function PageHeader({ onCreate }: { onCreate: () => void }) {
   return (
@@ -144,7 +123,7 @@ function ProjectCard({ project }: { project: Project }) {
       )}
 
       <h2>{project.name}</h2>
-      <p>{project.description}</p>
+      <p>{project.description ?? project.organizationName ?? "Langfuse 项目"}</p>
 
       <footer className="project-card-footer">
         <span>
@@ -153,7 +132,7 @@ function ProjectCard({ project }: { project: Project }) {
         </span>
         <span>
           <Clock size={12} aria-hidden="true" />
-          活跃于 {new Date(project.lastActiveAt).toLocaleDateString("zh-CN")}
+          {formatLastActive(project.lastActiveAt)}
         </span>
       </footer>
     </article>
@@ -194,13 +173,46 @@ function CreateProjectModal({ onClose }: { onClose: () => void }) {
 }
 
 export function ProjectList() {
+  const [projects, setProjects] = useState<Project[]>([]);
+  const [loading, setLoading] = useState(true);
+  const [loadError, setLoadError] = useState<string | null>(null);
   const [search, setSearch] = useState("");
   const [showArchived, setShowArchived] = useState(false);
   const [sortBy, setSortBy] = useState<"active" | "created" | "name">("active");
   const [createOpen, setCreateOpen] = useState(false);
 
-  const projects = useMemo(() => {
-    return mockProjects
+  useEffect(() => {
+    let ignore = false;
+
+    async function loadProjects() {
+      setLoading(true);
+      setLoadError(null);
+      const envelope = await apiGet<ApiProject[]>("/api/projects");
+      if (ignore) return;
+
+      if (envelope.error) {
+        setProjects([]);
+        setLoadError(envelope.error.message);
+      } else {
+        setProjects((envelope.data ?? []).map(mapProject));
+      }
+      setLoading(false);
+    }
+
+    void loadProjects().catch((error: unknown) => {
+      if (ignore) return;
+      setProjects([]);
+      setLoadError(error instanceof Error ? error.message : "加载 Langfuse 项目失败。");
+      setLoading(false);
+    });
+
+    return () => {
+      ignore = true;
+    };
+  }, []);
+
+  const visibleProjects = useMemo(() => {
+    return projects
       .filter((project) => {
         if (!showArchived && project.status === "archived") return false;
         if (!search.trim()) return true;
@@ -208,10 +220,10 @@ export function ProjectList() {
       })
       .sort((first, second) => {
         if (sortBy === "name") return first.name.localeCompare(second.name, "zh-CN");
-        if (sortBy === "created") return new Date(second.createdAt).getTime() - new Date(first.createdAt).getTime();
-        return new Date(second.lastActiveAt).getTime() - new Date(first.lastActiveAt).getTime();
+        if (sortBy === "created") return timestampValue(second.createdAt) - timestampValue(first.createdAt);
+        return timestampValue(second.lastActiveAt) - timestampValue(first.lastActiveAt);
       });
-  }, [search, showArchived, sortBy]);
+  }, [projects, search, showArchived, sortBy]);
 
   return (
     <div className="project-list-page">
@@ -240,9 +252,24 @@ export function ProjectList() {
       </div>
 
       <div className="project-grid-wrap">
-        {projects.length > 0 ? (
+        {loading ? (
+          <div className="empty-state">
+            <div className="empty-icon">
+              <Activity size={24} aria-hidden="true" />
+            </div>
+            <p>正在从 Langfuse API 加载项目...</p>
+          </div>
+        ) : loadError ? (
+          <div className="empty-state">
+            <div className="empty-icon">
+              <Activity size={24} aria-hidden="true" />
+            </div>
+            <p>Langfuse 项目加载失败</p>
+            <span className="empty-detail">{loadError}</span>
+          </div>
+        ) : visibleProjects.length > 0 ? (
           <div className="project-grid">
-            {projects.map((project) => (
+            {visibleProjects.map((project) => (
               <ProjectCard key={project.id} project={project} />
             ))}
           </div>
