@@ -361,13 +361,15 @@ src/stores/
 
 ### 模块私有数据
 
-静态展示数据、演示数据或模块内 mock 数据可放在：
+静态展示数据、演示数据或模块内静态 mock 数据（动态 mock 数据需要统一放到项目根目录下的`mock/`目录）可放在：
 
 ```txt
 src/modules/<module-name>/data/
 ```
 
 如果数据会被多个模块复用，先判断它是业务类型、配置、资产还是 API 结果，再分别上提到 `src/types`、`src/config`、`src/assets` 或接口层。
+
+注意：`src/modules/<module-name>/data/` 目录下不要存放任何代码和测试文件。
 
 ## 类型与 hooks
 
