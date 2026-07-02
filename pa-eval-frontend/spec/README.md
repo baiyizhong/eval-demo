@@ -23,6 +23,7 @@
 | 接入权限 | `spec/10-foundation/permission.md`、`spec/20-architecture/routes.md` |
 | 新增全局或模块状态 | `spec/10-foundation/state.md`、`spec/20-architecture/modules.md` |
 | 修改主题、样式或 shadcn/ui 组件 | `spec/30-ui/styles-theme.md`、`spec/30-ui/component-guide.md` |
+| 新增或接入报表图表 | `spec/40-components/charts/recharts.spec.md`、`spec/40-components/charts/chart-metric-card.spec.md`、`spec/40-components/charts/chart-avatar-list-card.spec.md`、`spec/40-components/charts/chart-bar-list-card.spec.md` |
 | 使用顶部导航或页面壳 | `spec/40-components/layout/top-nav.md`、`spec/40-components/layout/page-shell.md`、`spec/20-architecture/layouts.md` |
 | 使用业务组件 AppList 或 LLM Trace | `spec/40-components/business/app-list.md`、`spec/40-components/business/llm-trace-chain.md` |
 
@@ -35,6 +36,7 @@
 | `spec/20-architecture/` | 模块、路由、布局和页面接入边界 |
 | `spec/30-ui/` | 样式主题、组件分层、页面容器、全局反馈 |
 | `spec/40-components/common/` | 跨页面通用组件 |
+| `spec/40-components/charts/` | 报表图表组件和 Recharts 使用规范 |
 | `spec/40-components/layout/` | 应用壳、导航和页面壳组件 |
 | `spec/40-components/business/` | 跨模块业务组件 |
 | `spec/50-patterns/` | 高频页面和交互组合模式 |
