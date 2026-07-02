@@ -12,8 +12,11 @@
 
 - RESTful 风格，资源命名使用复数名词，例如 `/projects`、`/datasets`。
 - HTTP 方法语义明确：`GET` 查询、`POST` 创建、`PATCH` 部分更新、`DELETE` 删除。
-- 分页参数使用 `page` 和 `limit`，响应返回 `total`、`page`、`limit`。
-- API 响应格式统一为 `{ success: boolean, data: any, error?: string }`。
+- 分页参数统一使用 `page` 和 `pageSize`。
+- API 响应格式统一为 `{ code: number, message: string, data: any, txId: string }`。
+- 成功响应 `code` 必须为 `0`，`message` 默认为 `success`，例如 `{ code: 0, message: "success", data: {}, txId: "e123233adfasfdas" }`。
+- 错误响应 `code` 必须为非 `0`，`message` 返回可展示的错误信息，例如 `{ code: 1, message: "xxx 错误", data: {}, txId: "e123233adfasfdas" }`。
+- 分页列表响应的 `data` 统一为 `{ total: number, datas: any[] }`，例如 `{ code: 0, message: "success", data: { total: 0, datas: [] }, txId: "e123233adfasfdas" }`。
 
 ## 错误处理
 
