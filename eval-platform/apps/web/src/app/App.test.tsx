@@ -21,4 +21,28 @@ describe("App", () => {
     expect(html).toContain("用户管理");
     expect(html).toContain("系统设置");
   });
+
+  it("renders projects in the sidebar switcher when it is open", () => {
+    const html = renderToString(
+      <App
+        initialSwitcherOpen
+        initialProjects={[
+          {
+            id: "langfuse-project-1",
+            name: "医疗问答助手",
+            description: "真实 Langfuse 项目",
+            status: "active",
+            traceCount: 12847,
+            createdAt: null,
+            lastActiveAt: "2026-06-10T14:32:11.453Z",
+            organizationName: "安辉医疗科技"
+          }
+        ]}
+      />
+    );
+
+    expect(html).toContain("医疗问答助手");
+    expect(html).toContain("12,847");
+    expect(html).toContain("条 Trace");
+  });
 });

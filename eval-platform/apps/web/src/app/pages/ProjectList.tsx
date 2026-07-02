@@ -216,7 +216,13 @@ function CreateProjectModal({
   );
 }
 
-export function ProjectList({ onSelectProject }: { onSelectProject?: (project: ProjectSummary) => void }) {
+export function ProjectList({
+  onProjectsChange,
+  onSelectProject
+}: {
+  onProjectsChange?: (projects: ProjectSummary[]) => void;
+  onSelectProject?: (project: ProjectSummary) => void;
+}) {
   const [projects, setProjects] = useState<ProjectSummary[]>([]);
   const [loading, setLoading] = useState(true);
   const [loadError, setLoadError] = useState<string | null>(null);
@@ -233,12 +239,15 @@ export function ProjectList({ onSelectProject }: { onSelectProject?: (project: P
 
     if (envelope.error) {
       setProjects([]);
+      onProjectsChange?.([]);
       setLoadError(envelope.error.message);
     } else {
-      setProjects((envelope.data ?? []).map(mapProject));
+      const nextProjects = (envelope.data ?? []).map(mapProject);
+      setProjects(nextProjects);
+      onProjectsChange?.(nextProjects);
     }
     setLoading(false);
-  }, []);
+  }, [onProjectsChange]);
 
   useEffect(() => {
     let ignore = false;
@@ -264,7 +273,11 @@ export function ProjectList({ onSelectProject }: { onSelectProject?: (project: P
       throw new Error("Langfuse 未返回新建项目。");
     }
     const createdProject = mapProject(envelope.data);
-    setProjects((current) => [createdProject, ...current.filter((project) => project.id !== createdProject.id)]);
+    setProjects((current) => {
+      const nextProjects = [createdProject, ...current.filter((project) => project.id !== createdProject.id)];
+      onProjectsChange?.(nextProjects);
+      return nextProjects;
+    });
   }
 
   const visibleProjects = useMemo(() => {
