@@ -23,6 +23,7 @@ export default [
     method: 'get',
     response: () => ({
       code: 0,
+      message: "success",
       data: mockPermissions,
     }),
   },
