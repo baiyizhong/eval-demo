@@ -74,6 +74,7 @@
 
 ## 项目约定
 
+- 前端项目名称为 `pa-eval-frontend`，后端项目名称为 `pa-eval-backend`。
 - 后端要求 Python `>=3.11`，依赖使用 `uv` 管理。
 - 后端配置集中在 `pa-eval-backend/app/config.py`，本地覆盖写入 `pa-eval-backend/.env`。
 - v2 API 统一挂载在 `/api/v2`，路由模块内部再声明资源前缀。
