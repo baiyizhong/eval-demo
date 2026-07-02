@@ -7,6 +7,7 @@
 - **数据库调整需支持回退**：所有数据库表结构变更必须使用 Alembic 迁移脚本，确保可回滚；禁止直接修改数据库。
 - **禁止修改参考代码**：`langfuse/` 目录中的内容仅作为参考代码，不允许修改。
 - **禁止修改 Langfuse 既有表结构**：不得修改、删除或重命名 Langfuse 原生表结构；确需扩展时优先复用已有表，无法满足时新增 PA 自定义表。
+- **PA 扩展表命名**：所有 PA 自定义扩展表必须以 `pa_` 开头。
 
 ## API 设计
 
@@ -84,14 +85,14 @@
 - 后端要求 Python `>=3.11`，依赖使用 `uv` 管理。
 - 后端配置集中在 `pa-eval-backend/app/config.py`，本地覆盖写入 `pa-eval-backend/.env`。
 - v2 API 统一挂载在 `/api/v2`，路由模块内部再声明资源前缀。
-- 自定义持久化表使用 `_P` 前缀，模型主要在 `models_pa.py`。
+- 自定义持久化表使用 `pa_` 前缀，模型主要在 `models_pa.py`。
 - 连接 Langfuse PostgreSQL 时优先使用 SQLAlchemy session 和 `text()` 原生 SQL。
 - 扩展 Langfuse 数据时，优先复用 Langfuse 已有表结构和字段语义；确需新增持久化能力时新增 PA 自定义表，不改 Langfuse 原生表结构。
 - 对 Langfuse 原生表中的数据执行新增、修改、删除时，优先通过 Langfuse 官方接口、项目内封装接口或兼容 API 完成；仅查询类操作可以使用 SQL 联表查询。
 - 前端 API 调用统一走 `fetchApi` 或 `fetchV2`，按现有规则携带 `X-Org-Id`。
 - 前端图标使用 `lucide-react`，图表使用 `recharts`，样式使用 TailwindCSS。
 - 新增跨端功能时，同步检查后端 schema、前端类型、API 客户端和相关测试。
-- **平安智能体评估器**：生产环境 `PA_AGENT_GATEWAY` 通过环境变量配置，配置存储在 `_pa_external_evaluator_configs`。
+- **平安智能体评估器**：生产环境 `PA_AGENT_GATEWAY` 通过环境变量配置，配置存储在 `pa_external_evaluator_configs`。
 
 ## 反模式
 
