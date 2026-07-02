@@ -1,0 +1,48 @@
+{
+  "$schema": "https://repomix.com/schemas/latest/schema.json",
+  "output": {
+    "filePath": "repomix-output.md",
+    "style": "markdown",
+    "parsableStyle": false,
+    "compress": true,
+    "fileSummary": false,
+    "directoryStructure": true,
+    "removeComments": false,
+    "removeEmptyLines": false,
+    "showLineNumbers": false,
+    "copyToClipboard": false,
+    "topFilesLength": 10
+  },
+  "include": [
+    "src/**/*",
+    "index.html",
+    "package.json",
+    "vite.config.ts"
+  ],
+  "ignore": {
+    "useGitignore": true,
+    "useDefaultPatterns": true,
+    "customPatterns": [
+      "src/assets/*",
+      "public/**/*",
+      "node_modules/**",
+      "docs/**/*.md",
+      "dist/**",
+      "build/**",
+      "coverage/**",
+      ".git/**",
+      ".DS_Store",
+      "*.tsbuildinfo",
+      "package-lock.json",
+      "pnpm-lock.yaml",
+      "yarn.lock",
+      ".env",
+      ".env.*",
+      "!.env.example",
+      "repomix-output.*"
+    ]
+  },
+  "security": {
+    "enableSecurityCheck": true
+  }
+}
