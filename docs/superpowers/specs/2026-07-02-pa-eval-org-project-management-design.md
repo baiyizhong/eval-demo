@@ -324,7 +324,7 @@ DELETE /api/v2/projects/{projectId}/api-keys/{keyId}
 
 ## 审计设计
 
-首版优先复用现有日志和 Langfuse 审计能力。如果 PA 侧需要独立审计，再新增 `_P_audit_logs`。
+首版优先复用现有日志和 Langfuse 审计能力。如果 PA 侧需要独立审计，再新增 `pa_audit_logs`。
 
 必须审计的动作：
 
