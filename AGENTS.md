@@ -1,5 +1,13 @@
 # 项目规约
 
+## 架构
+
+三层架构方案：
+
+1. Web 层（pa-eval-frontend）：实现评测管理的UI交互
+2. Plus 层（pa-eval-backend）：中间代理层，调用 langfuse API 服务或实现接口直接访问数据库（ck/pg）
+3. Base 层（langfuse 服务）：基础评测服务（可通过langfuse API 访问）、数据库（ck、pg）、langfuse web
+
 ## 基本规则
 
 - **禁止自动提交代码**：除非用户明确要求，否则不要执行 `git commit`、`git push` 或创建 PR。
@@ -8,6 +16,8 @@
 - **禁止修改参考代码**：`langfuse/` 目录中的内容仅作为参考代码，不允许修改。
 - **禁止修改 Langfuse 既有表结构**：不得修改、删除或重命名 Langfuse 原生表结构；确需扩展时优先复用已有表，无法满足时新增 PA 自定义表。
 - **PA 扩展表命名**：所有 PA 自定义扩展表必须以 `pa_` 开头。
+- **开发原则**：优先查询和使用规范文档（比如langfuse），如果文档中没有定义，再去搜索源码。
+- **增删查改**：`query` 优先通过自建接口（已有接口直接复用）查询数据库，`update/insert/delete` 则优先通过 langfuse API 访问数据，如果没有相应 API 定义，则需要与用户确认是否需要自建接口。
 
 ## API 设计
 
@@ -36,13 +46,14 @@
 
 ## 哪里找
 
-| 任务          | 位置                                          | 说明                                |
-| ------------- | --------------------------------------------- | ----------------------------------- |
-| 后端入口      | `pa-eval-backend/`                            | 后端代码/数据库定义                 |
-| 前端入口      | `pa-eval-frontend/`                           | 前端页面                            |
-| 后端规范      | `pa-eval-backend/AGENTS.md`                   | 后端开发规范                        |
-| 前端规范      | `pa-eval-frontend/AGENTS.md`                  | 前端开发规范                        |
-| 产品/技术文档 | `docs/prd/`、`docs/api/`、`docs/superpowers/` | 分别是需求、API说明、详细设计和计划 |
+| 任务          | 位置                                          | 说明                                           |
+| ------------- | --------------------------------------------- | ---------------------------------------------- |
+| 后端入口      | `pa-eval-backend/`                            | 后端代码（plus 层）                            |
+| 前端入口      | `pa-eval-frontend/`                           | 前端页面（ web 层）                            |
+| 后端规范      | `pa-eval-backend/AGENTS.md`                   | 后端开发规范                                   |
+| 前端规范      | `pa-eval-frontend/AGENTS.md`                  | 前端开发规范                                   |
+| langfuse 源码 | `langfuse/`                                   | langfuse源码参考，在文档不清晰情况下可搜索源码 |
+| 产品/技术文档 | `docs/prd/`、`docs/api/`、`docs/superpowers/` | 分别是需求、API说明、详细设计和计划            |
 
 ## 反模式
 
