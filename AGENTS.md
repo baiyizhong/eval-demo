@@ -6,6 +6,7 @@
 - **禁止硬编码**：所有配置（API 地址、密钥、数据库连接等）必须放在 `.env` 文件或环境变量中，禁止直接写入代码。
 - **数据库调整需支持回退**：所有数据库表结构变更必须使用 Alembic 迁移脚本，确保可回滚；禁止直接修改数据库。
 - **禁止修改参考代码**：`langfuse/` 目录中的内容仅作为参考代码，不允许修改。
+- **禁止修改 Langfuse 既有表结构**：不得修改、删除或重命名 Langfuse 原生表结构；确需扩展时优先复用已有表，无法满足时新增 PA 自定义表。
 
 ## API 设计
 
@@ -70,16 +71,20 @@
 | 前端页面 | `pa-eval-frontend/app/` | 布局、侧边栏、弹窗、状态、任务向导、系统管理页面 |
 | 前端通用组件 | `pa-eval-frontend/components/` | 通用 UI 组件 |
 | 前端 API 客户端 | `pa-eval-frontend/lib/api-client.ts`、`pa-eval-frontend/lib/api-v2.ts` | v1/v2 fetch 封装 |
+| 企业管理原型 | `Enterprise Admin Dashboard DesignV3/` | 企业后台信息架构和交互参考，不作为生产代码直接复制 |
 | 产品/技术文档 | `docs/prd/`、`docs/api/`、`docs/superpowers/` | 需求、API 说明、实现设计与计划 |
 
 ## 项目约定
 
 - 前端项目名称为 `pa-eval-frontend`，后端项目名称为 `pa-eval-backend`。
+- 前端企业后台信息架构参考 `Enterprise Admin Dashboard DesignV3`：保留“系统管理（租户、用户、系统设置）”和“项目内管理（traces、evaluations、datasets、evaluators、settings）”两级导航模型。
 - 后端要求 Python `>=3.11`，依赖使用 `uv` 管理。
 - 后端配置集中在 `pa-eval-backend/app/config.py`，本地覆盖写入 `pa-eval-backend/.env`。
 - v2 API 统一挂载在 `/api/v2`，路由模块内部再声明资源前缀。
 - 自定义持久化表使用 `_P` 前缀，模型主要在 `models_pa.py`。
 - 连接 Langfuse PostgreSQL 时优先使用 SQLAlchemy session 和 `text()` 原生 SQL。
+- 扩展 Langfuse 数据时，优先复用 Langfuse 已有表结构和字段语义；确需新增持久化能力时新增 PA 自定义表，不改 Langfuse 原生表结构。
+- 对 Langfuse 原生表中的数据执行新增、修改、删除时，优先通过 Langfuse 官方接口、项目内封装接口或兼容 API 完成；仅查询类操作可以使用 SQL 联表查询。
 - 前端 API 调用统一走 `fetchApi` 或 `fetchV2`，按现有规则携带 `X-Org-Id`。
 - 前端图标使用 `lucide-react`，图表使用 `recharts`，样式使用 TailwindCSS。
 - 新增跨端功能时，同步检查后端 schema、前端类型、API 客户端和相关测试。
@@ -88,6 +93,8 @@
 ## 反模式
 
 - 不要绕过 `get_db()` / SQLAlchemy session 直接 shell 到数据库。
+- 不要直接修改 Langfuse 原生表结构；不要为了业务扩展给 Langfuse 原生表加字段、改字段类型或改约束。
+- 不要直接用 SQL 对 Langfuse 原生表做新增、修改、删除，除非用户明确授权且没有可用接口路径；读取和分析可以使用联表查询。
 - 不要在页面文件继续堆叠复杂交互；`pa-eval-frontend/app/project/[id]/traces/page.tsx` 已接近 1500 行，新增逻辑应优先拆到组件、hooks 或 lib。
 - 不要复制 v1/v2 API 客户端逻辑；先扩展 `lib/api-client.ts` 或 `lib/api-v2.ts`。
 - 不要把真实密钥、数据库口令或内网 token 写进文档、测试或前端代码。

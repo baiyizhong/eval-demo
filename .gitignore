@@ -10,3 +10,6 @@ dist/
 .idea/
 *.iml
 .agents
+langfuse/
+.claude
+langfuse/docker-compose.yml
