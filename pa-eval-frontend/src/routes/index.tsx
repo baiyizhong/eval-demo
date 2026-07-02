@@ -6,6 +6,10 @@ import { ForbiddenError } from '@/modules/errors/forbidden'
 import { GeneralError } from '@/modules/errors/general-error'
 import { MaintenanceError } from '@/modules/errors/maintenance-error'
 import { NotFoundError } from '@/modules/errors/not-found-error'
+import { SettingsOrganizationApiKeys } from '@/modules/organization-management/views/api-keys'
+import { SettingsOrganizationInfo } from '@/modules/organization-management/views/info'
+import { SettingsOrganizationMembers } from '@/modules/organization-management/views/members'
+import { OrganizationSwitcher } from '@/modules/organization-management/components/organization-switcher'
 import { UnauthorisedError } from '@/modules/errors/unauthorized-error'
 import { Tasks } from '@/modules/tasks'
 import { TasksAutoEvaluation } from '@/modules/tasks/views/auto-evaluation'
@@ -18,7 +22,6 @@ import {
   type TopNavUser,
 } from '@/components/layout/top-nav'
 import { Settings } from '@/modules/settings'
-import { SettingsAccount } from '@/modules/settings/views/account'
 import { RootLayout } from '@/components/layout/root-layout'
 import { Navigate } from 'react-router'
 
@@ -85,6 +88,7 @@ const appsTopbarNavigation: TopNavProps = {
       ariaLabel: '申请权限',
     },
   ],
+  rightSlot: <OrganizationSwitcher />,
   user: currentUser,
   menuActions,
 }
@@ -118,10 +122,12 @@ export const routes = [
             path: 'settings',
             element: <Settings />,
             children: [
-              { index: true, element: <Navigate to='account' replace /> },
-              { path: 'account', element: <SettingsAccount /> },
+              { index: true, element: <Navigate to='info' replace /> },
+              { path: 'info', element: <SettingsOrganizationInfo /> },
+              { path: 'members', element: <SettingsOrganizationMembers /> },
+              { path: 'api-keys', element: <SettingsOrganizationApiKeys /> },
             ],
-          }
+          },
         ],
       },
       // Public error pages

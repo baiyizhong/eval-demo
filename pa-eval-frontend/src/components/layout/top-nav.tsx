@@ -1,4 +1,4 @@
-import type { MouseEvent } from 'react';
+import type { MouseEvent, ReactNode } from 'react';
 import type { LucideIcon } from 'lucide-react';
 import { ProfileDropdown } from '@/components/common/profile-dropdown'
 import type { ActiveMatch } from '@/lib/nav'
@@ -40,6 +40,7 @@ export type TopNavProps = {
   brand: TopNavBrand;
   items: TopNavItem[];
   inlineActions: TopNavAction[];
+  rightSlot?: ReactNode;
   user?: TopNavUser | null;
   menuActions?: TopNavAction[];
   onNavigate?: (
@@ -119,6 +120,7 @@ export function TopNav({
   brand,
   items,
   inlineActions,
+  rightSlot,
   user,
   menuActions = [],
   onNavigate,
@@ -185,6 +187,8 @@ export function TopNav({
               onAction={onAction}
             />
           ))}
+
+          {rightSlot}
 
           {/* 用户头像 */}
           {user ? (
