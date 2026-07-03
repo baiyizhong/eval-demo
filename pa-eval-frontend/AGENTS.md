@@ -35,6 +35,8 @@
 - 图标优先使用 `lucide-react` 或项目已有图标体系。
 - 不要新增无必要的全量 barrel 文件，例如 `src/components/index.ts`。
 - 单文件代码原则上不超过 1000 行；接近或超过时拆分组件、hooks、工具方法或数据文件。
+- 涉及 json 字段查看/编辑优先使用 `json-editor` 组件。
+- 涉及 文本 字段查看/编辑优先使用 `markdown-editor`组件（备选textarea）。
 
 ## 工具、Hook 与公共逻辑
 

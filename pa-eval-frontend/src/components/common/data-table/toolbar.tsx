@@ -1,9 +1,11 @@
+import { useState } from 'react'
 import { Cross2Icon } from '@radix-ui/react-icons'
 import { type Table } from '@tanstack/react-table'
 import { SlidersHorizontal } from 'lucide-react'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
 import { DataTableFacetedFilter } from './faceted-filter'
+import { getSearchInputCommitValue } from './ime'
 import { DataTableViewOptions } from './view-options'
 
 type DataTableToolbarProps<TData> = {
@@ -35,8 +37,60 @@ export function DataTableToolbar<TData>({
   columnLabels,
   filters = [],
 }: DataTableToolbarProps<TData>) {
+  const committedSearchValue = searchKey
+    ? ((table.getColumn(searchKey)?.getFilterValue() as string) ?? '')
+    : ((table.getState().globalFilter as string | undefined) ?? '')
+  const [compositionValue, setCompositionValue] = useState<string | null>(null)
+  const searchInputValue = compositionValue ?? committedSearchValue
   const isFiltered =
     table.getState().columnFilters.length > 0 || table.getState().globalFilter
+  const commitSearchValue = (value: string) => {
+    if (searchKey) {
+      table.getColumn(searchKey)?.setFilterValue(value)
+      return
+    }
+
+    table.setGlobalFilter(value)
+  }
+  const handleSearchChange = (event: React.ChangeEvent<HTMLInputElement>) => {
+    const nextValue = event.target.value
+    const nativeEvent = event.nativeEvent as Event & {
+      isComposing?: boolean
+    }
+
+    const commitValue = getSearchInputCommitValue({
+      eventType: 'change',
+      value: nextValue,
+      isComposing: Boolean(nativeEvent.isComposing),
+    })
+
+    if (commitValue !== null) {
+      commitSearchValue(commitValue)
+      return
+    }
+
+    setCompositionValue(nextValue)
+  }
+  const handleSearchCompositionStart = (
+    event: React.CompositionEvent<HTMLInputElement>
+  ) => {
+    setCompositionValue(event.currentTarget.value)
+  }
+  const handleSearchCompositionEnd = (
+    event: React.CompositionEvent<HTMLInputElement>
+  ) => {
+    const nextValue = event.currentTarget.value
+    const commitValue = getSearchInputCommitValue({
+      eventType: 'compositionend',
+      value: nextValue,
+      isComposing: false,
+    })
+
+    setCompositionValue(null)
+    if (commitValue !== null) {
+      commitSearchValue(commitValue)
+    }
+  }
 
   return (
     <div className='flex items-center justify-between'>
@@ -56,19 +110,19 @@ export function DataTableToolbar<TData>({
         {searchKey ? (
           <Input
             placeholder={searchPlaceholder}
-            value={
-              (table.getColumn(searchKey)?.getFilterValue() as string) ?? ''
-            }
-            onChange={(event) =>
-              table.getColumn(searchKey)?.setFilterValue(event.target.value)
-            }
+            value={searchInputValue}
+            onChange={handleSearchChange}
+            onCompositionStart={handleSearchCompositionStart}
+            onCompositionEnd={handleSearchCompositionEnd}
             className='h-8 w-[150px] lg:w-[250px]'
           />
         ) : (
           <Input
             placeholder={searchPlaceholder}
-            value={table.getState().globalFilter ?? ''}
-            onChange={(event) => table.setGlobalFilter(event.target.value)}
+            value={searchInputValue}
+            onChange={handleSearchChange}
+            onCompositionStart={handleSearchCompositionStart}
+            onCompositionEnd={handleSearchCompositionEnd}
             className='h-8 w-[150px] lg:w-[250px]'
           />
         )}
@@ -97,6 +151,7 @@ export function DataTableToolbar<TData>({
 
               table.resetColumnFilters()
               table.setGlobalFilter('')
+              setCompositionValue(null)
             }}
             className='h-8 px-2 lg:px-3'
           >

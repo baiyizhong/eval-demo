@@ -39,10 +39,10 @@ export default [
                   icon: 'LayoutDashboard',
                 },
                 {
-                  title: '评测管理',
-                  url: '/tasks',
+                  title: '应用评测',
+                  url: '/projects/project_customer_agent/evaluation/datasets',
                   activeMatch: 'prefix',
-                  icon: 'ListTodo',
+                  icon: 'Database',
                 },
                 {
                   title: '应用观测',

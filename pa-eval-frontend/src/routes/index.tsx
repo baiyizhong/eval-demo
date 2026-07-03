@@ -5,8 +5,14 @@ import {
   AppObservability,
   AppObservabilityIndexRedirect,
 } from '@/modules/app-observability'
+import {
+  AppEvaluation,
+  AppEvaluationIndexRedirect,
+} from '@/modules/app-evaluation'
 import { TraceDashboard } from '@/modules/app-observability/views/trace-dashboard'
 import { TraceLogs } from '@/modules/app-observability/views/trace-logs'
+import { ProjectDatasetDetail } from '@/modules/app-evaluation/views/dataset-detail'
+import { ProjectDatasets } from '@/modules/app-evaluation/views/datasets'
 import { Dashboard } from '@/modules/dashboard'
 import { ForbiddenError } from '@/modules/errors/forbidden'
 import { GeneralError } from '@/modules/errors/general-error'
@@ -123,6 +129,15 @@ export const routes = [
               { index: true, element: <AppObservabilityIndexRedirect /> },
               { path: 'traces/dashboard', element: <TraceDashboard /> },
               { path: 'traces/logs', element: <TraceLogs /> },
+            ],
+          },
+          {
+            path: 'projects/:projectId/evaluation',
+            element: <AppEvaluation />,
+            children: [
+              { index: true, element: <AppEvaluationIndexRedirect /> },
+              { path: 'datasets', element: <ProjectDatasets /> },
+              { path: 'datasets/:datasetId', element: <ProjectDatasetDetail /> },
             ],
           },
         ],
