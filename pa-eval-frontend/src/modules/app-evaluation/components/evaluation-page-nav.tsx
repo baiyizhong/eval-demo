@@ -1,4 +1,4 @@
-import { Database } from 'lucide-react'
+import { ClipboardCheck, Database } from 'lucide-react'
 import { useLocation, useParams } from 'react-router'
 import { PageNav } from '@/components/common/page-nav'
 
@@ -21,6 +21,14 @@ export function EvaluationPageNav({ buttonGroups }: EvaluationPageNavProps) {
             href: `${basePath}/datasets`,
             icon: Database,
             isActive: location.pathname.startsWith(`${basePath}/datasets`),
+          },
+          {
+            title: '人工评测',
+            href: `${basePath}/annotation-queues`,
+            icon: ClipboardCheck,
+            isActive: location.pathname.startsWith(
+              `${basePath}/annotation-queues`
+            ),
           },
         ],
       }}

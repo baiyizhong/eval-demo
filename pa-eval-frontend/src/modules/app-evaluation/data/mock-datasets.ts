@@ -2,6 +2,24 @@ import type { DatasetItemRecord, DatasetRecord } from '../types'
 
 export const mockDatasets: DatasetRecord[] = [
   {
+    id: 'dataset_customer_eval',
+    projectId: 'project_customer_agent',
+    name: '客服人工评测沉淀集',
+    description: '人工评测流程沉淀的客服对话评测样本。',
+    type: 'evaluation',
+    metadata: {
+      type: 'evaluation',
+      owner: 'quality-team',
+      tags: ['客服', '人工评测'],
+    },
+    inputSchema: { type: 'object' },
+    expectedOutputSchema: { type: 'object' },
+    itemCount: 0,
+    runCount: 0,
+    createdAt: '2026-07-03T09:00:00.000Z',
+    updatedAt: '2026-07-03T09:00:00.000Z',
+  },
+  {
     id: 'dataset_eval_customer_faq',
     projectId: 'project_customer_agent',
     name: '客服 FAQ 评测集',

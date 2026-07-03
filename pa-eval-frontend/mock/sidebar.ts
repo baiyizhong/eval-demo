@@ -50,6 +50,12 @@ export default [
                   icon: 'Monitor',
                   activeMatch: 'prefix',
                 },
+                {
+                  title: '项目设置',
+                  url: '/projects/project_customer_agent/settings/general',
+                  icon: 'Settings',
+                  activeMatch: 'prefix',
+                },
               ],
             },
           ],

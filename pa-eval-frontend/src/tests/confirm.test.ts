@@ -4,7 +4,7 @@ import {
   confirm,
   confirmDialogController,
   type ConfirmDialogRequest,
-} from './confirm.ts'
+} from '../lib/confirm.ts'
 
 test('confirm notifies the provider and resolves true on accept', async () => {
   const requests: ConfirmDialogRequest[] = []

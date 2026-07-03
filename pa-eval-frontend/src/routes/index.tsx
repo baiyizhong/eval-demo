@@ -11,6 +11,9 @@ import {
 } from '@/modules/app-evaluation'
 import { TraceDashboard } from '@/modules/app-observability/views/trace-dashboard'
 import { TraceLogs } from '@/modules/app-observability/views/trace-logs'
+import { ProjectAnnotationItemAnnotate } from '@/modules/app-evaluation/views/annotation-item-annotate'
+import { ProjectAnnotationQueueDetail } from '@/modules/app-evaluation/views/annotation-queue-detail'
+import { ProjectAnnotationQueues } from '@/modules/app-evaluation/views/annotation-queues'
 import { ProjectDatasetDetail } from '@/modules/app-evaluation/views/dataset-detail'
 import { ProjectDatasets } from '@/modules/app-evaluation/views/datasets'
 import { Dashboard } from '@/modules/dashboard'
@@ -18,6 +21,15 @@ import { ForbiddenError } from '@/modules/errors/forbidden'
 import { GeneralError } from '@/modules/errors/general-error'
 import { MaintenanceError } from '@/modules/errors/maintenance-error'
 import { NotFoundError } from '@/modules/errors/not-found-error'
+import {
+  ProjectSettings,
+  ProjectSettingsIndexRedirect,
+} from '@/modules/project-settings'
+import { ProjectApiKeysSettings } from '@/modules/project-settings/views/api-keys'
+import { ProjectGeneralSettings } from '@/modules/project-settings/views/general'
+import { ProjectMembersSettings } from '@/modules/project-settings/views/members'
+import { ProjectModelsSettings } from '@/modules/project-settings/views/models'
+import { ProjectScoreConfigsSettings } from '@/modules/project-settings/views/score-configs'
 import { SettingsOrganizationInfo } from '@/modules/organization-management/views/info'
 import { SettingsOrganizationMembers } from '@/modules/organization-management/views/members'
 import { OrganizationSwitcher } from '@/modules/organization-management/components/organization-switcher'
@@ -138,6 +150,30 @@ export const routes = [
               { index: true, element: <AppEvaluationIndexRedirect /> },
               { path: 'datasets', element: <ProjectDatasets /> },
               { path: 'datasets/:datasetId', element: <ProjectDatasetDetail /> },
+              { path: 'annotation-queues', element: <ProjectAnnotationQueues /> },
+              {
+                path: 'annotation-queues/:queueId',
+                element: <ProjectAnnotationQueueDetail />,
+              },
+              {
+                path: 'annotation-queues/:queueId/items/:itemId/annotate',
+                element: <ProjectAnnotationItemAnnotate />,
+              },
+            ],
+          },
+          {
+            path: 'projects/:projectId/settings',
+            element: <ProjectSettings />,
+            children: [
+              { index: true, element: <ProjectSettingsIndexRedirect /> },
+              { path: 'general', element: <ProjectGeneralSettings /> },
+              {
+                path: 'score-configs',
+                element: <ProjectScoreConfigsSettings />,
+              },
+              { path: 'members', element: <ProjectMembersSettings /> },
+              { path: 'models', element: <ProjectModelsSettings /> },
+              { path: 'api-keys', element: <ProjectApiKeysSettings /> },
             ],
           },
         ],

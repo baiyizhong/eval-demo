@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict'
 import { test } from 'node:test'
-import { getRouteActiveState, isRouteActive } from './nav.ts'
+import { getRouteActiveState, isRouteActive } from '../lib/nav.ts'
 
 test('exact match only activates the same pathname', () => {
   assert.equal(isRouteActive('/settings/account', '/settings/account'), true)
