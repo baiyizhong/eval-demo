@@ -1,26 +1,8 @@
-import { Building2, KeyRound, Users } from 'lucide-react'
 import { Outlet } from 'react-router'
 import { Separator } from '@/components/ui/separator'
 import { SidebarNav } from '@/components/common/sidebar-nav'
 import { Main } from '@/components/layout/main'
-
-const sidebarNavItems = [
-  {
-    title: '组织信息',
-    href: '/settings/info',
-    icon: <Building2 size={18} />,
-  },
-  {
-    title: '组织人员',
-    href: '/settings/members',
-    icon: <Users size={18} />,
-  },
-  {
-    title: 'API Key 管理',
-    href: '/settings/api-keys',
-    icon: <KeyRound size={18} />,
-  },
-]
+import { settingsNavigationItems } from './nav'
 
 export function Settings() {
   return (
@@ -30,14 +12,14 @@ export function Settings() {
           组织管理
         </h1>
         <p className='text-muted-foreground'>
-          管理当前组织的信息、成员和 API Key。
+          管理当前组织的信息和成员。
         </p>
       </div>
       <Separator className='my-4 lg:my-6' />
       <div className='flex flex-1 flex-col space-y-2 overflow-hidden md:space-y-2 lg:flex-row lg:space-y-0 lg:space-x-12'>
         <aside className='top-0 lg:sticky lg:w-1/5'>
           <SidebarNav
-            items={sidebarNavItems}
+            items={settingsNavigationItems}
             defaultValue='/settings/info'
             selectPlaceholder='组织分组'
           />

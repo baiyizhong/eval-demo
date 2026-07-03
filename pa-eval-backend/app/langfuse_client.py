@@ -31,29 +31,6 @@ class LangfuseAdminClient:
             json=payload,
         )
 
-    async def list_organization_api_keys(self, organization_id: str) -> dict[str, Any]:
-        return await self._request(
-            "GET",
-            f"/api/admin/organizations/{organization_id}/apiKeys",
-        )
-
-    async def create_organization_api_key(
-        self, organization_id: str, payload: dict[str, Any]
-    ) -> dict[str, Any]:
-        return await self._request(
-            "POST",
-            f"/api/admin/organizations/{organization_id}/apiKeys",
-            json=payload,
-        )
-
-    async def delete_organization_api_key(
-        self, organization_id: str, api_key_id: str
-    ) -> dict[str, Any]:
-        return await self._request(
-            "DELETE",
-            f"/api/admin/organizations/{organization_id}/apiKeys/{api_key_id}",
-        )
-
     async def _request(
         self,
         method: str,
@@ -100,4 +77,3 @@ async def get_langfuse_client(
     settings: Settings = Depends(get_settings),
 ) -> LangfuseAdminClient:
     return LangfuseAdminClient(settings)
-

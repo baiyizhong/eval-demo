@@ -35,16 +35,4 @@ export const organizationApi = {
     method: 'POST',
     url: '/organizations/:organizationId/members/import',
   },
-  getOrganizationApiKeys: {
-    method: 'GET',
-    url: '/organizations/:organizationId/api-keys',
-  },
-  createOrganizationApiKey: {
-    method: 'POST',
-    url: '/organizations/:organizationId/api-keys',
-  },
-  deleteOrganizationApiKey: {
-    method: 'DELETE',
-    url: '/organizations/:organizationId/api-keys/:apiKeyId',
-  },
 } as const

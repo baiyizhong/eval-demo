@@ -14,8 +14,6 @@ export const organizationSchema = z.object({
   name: z.string(),
   description: z.string().nullable().optional(),
   subsystem: z.string().nullable().optional(),
-  publicKey: z.string().optional(),
-  secretKeyMasked: z.string().optional(),
   createdBy: z.string().optional(),
   createdAt: z.string(),
   updatedAt: z.string(),
@@ -37,22 +35,6 @@ export const organizationMemberSchema = z.object({
 })
 
 export type OrganizationMember = z.infer<typeof organizationMemberSchema>
-
-export const organizationApiKeySchema = z.object({
-  id: z.string(),
-  organizationId: z.string(),
-  name: z.string(),
-  maskedKey: z.string(),
-  publicKey: z.string().optional(),
-  secretKeyMasked: z.string().optional(),
-  secretKey: z.string().optional(),
-  createdBy: z.string().optional(),
-  updatedAt: z.string().optional(),
-  lastUsedAt: z.string().nullable().optional(),
-  createdAt: z.string(),
-})
-
-export type OrganizationApiKey = z.infer<typeof organizationApiKeySchema>
 
 export type PaginatedResult<T> = {
   total: number
@@ -100,14 +82,6 @@ export const importOrganizationMembersPayloadSchema = z.object({
 
 export type ImportOrganizationMembersPayload = z.infer<
   typeof importOrganizationMembersPayloadSchema
->
-
-export const createOrganizationApiKeyPayloadSchema = z.object({
-  name: z.string(),
-})
-
-export type CreateOrganizationApiKeyPayload = z.infer<
-  typeof createOrganizationApiKeyPayloadSchema
 >
 
 export const importOrganizationMemberFailureSchema = z.object({

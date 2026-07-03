@@ -188,6 +188,62 @@ class LangfuseDatabaseReader:
             }
         )
 
+    async def update_organization(
+        self,
+        organization_id: str,
+        payload: dict[str, Any],
+    ) -> dict[str, Any]:
+        if not self._database_url:
+            raise LangfuseDatabaseConfigError()
+
+        async with await psycopg.AsyncConnection.connect(
+            self._database_url,
+            row_factory=dict_row,
+        ) as connection:
+            async with connection.cursor() as cursor:
+                await cursor.execute(
+                    """
+                    UPDATE organizations
+                    SET
+                        name = %(name)s,
+                        metadata = %(metadata)s,
+                        updated_at = NOW()
+                    WHERE id = %(organization_id)s
+                    RETURNING id, name, created_at, updated_at, metadata
+                    """,
+                    {
+                        "organization_id": organization_id,
+                        "name": payload["name"],
+                        "metadata": Jsonb(payload["metadata"]),
+                    },
+                )
+                organization = await cursor.fetchone()
+
+                if organization is None:
+                    raise BusinessError(
+                        code=1004,
+                        message="组织不存在",
+                        status_code=404,
+                    )
+
+                await cursor.execute(
+                    """
+                    SELECT COUNT(id)::int AS project_count
+                    FROM projects
+                    WHERE org_id = %(organization_id)s
+                      AND deleted_at IS NULL
+                    """,
+                    {"organization_id": organization_id},
+                )
+                project_count = await cursor.fetchone()
+
+        return self._to_organization_payload(
+            {
+                **organization,
+                "project_count": (project_count or {}).get("project_count", 0),
+            }
+        )
+
     async def _fetch_all(
         self,
         sql: str,

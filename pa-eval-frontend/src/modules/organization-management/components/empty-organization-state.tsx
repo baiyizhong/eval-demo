@@ -15,7 +15,7 @@ export function EmptyOrganizationState() {
         <div className='space-y-2'>
           <h4 className='text-base font-medium'>暂无组织</h4>
           <p className='text-muted-foreground max-w-sm text-sm'>
-            创建一个组织后，即可管理组织信息、成员权限和 API Key。
+            创建一个组织后，即可管理组织信息和成员权限。
           </p>
         </div>
         <Button className='mt-6 gap-2' onClick={() => setOpen(true)}>

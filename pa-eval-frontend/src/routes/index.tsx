@@ -12,7 +12,6 @@ import { ForbiddenError } from '@/modules/errors/forbidden'
 import { GeneralError } from '@/modules/errors/general-error'
 import { MaintenanceError } from '@/modules/errors/maintenance-error'
 import { NotFoundError } from '@/modules/errors/not-found-error'
-import { SettingsOrganizationApiKeys } from '@/modules/organization-management/views/api-keys'
 import { SettingsOrganizationInfo } from '@/modules/organization-management/views/info'
 import { SettingsOrganizationMembers } from '@/modules/organization-management/views/members'
 import { OrganizationSwitcher } from '@/modules/organization-management/components/organization-switcher'
@@ -140,7 +139,6 @@ export const routes = [
               { index: true, element: <Navigate to='info' replace /> },
               { path: 'info', element: <SettingsOrganizationInfo /> },
               { path: 'members', element: <SettingsOrganizationMembers /> },
-              { path: 'api-keys', element: <SettingsOrganizationApiKeys /> },
             ],
           },
         ],

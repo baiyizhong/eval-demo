@@ -1,7 +1,6 @@
 import { ContentSection } from '@/components/common/content-section'
 import { Skeleton } from '@/components/ui/skeleton'
 import { EmptyOrganizationState } from '@/modules/organization-management/components/empty-organization-state'
-import { useCurrentOrganizationRole } from '@/modules/organization-management/hooks/use-current-organization-role'
 import { useOrganizations } from '@/modules/organization-management/hooks/use-organizations'
 import { useOrganizationStore } from '@/stores/organization.store'
 import { OrganizationInfoForm } from './organization-info-form'
@@ -21,10 +20,6 @@ function OrganizationInfoLoading() {
         <Skeleton className='h-4 w-24' />
         <Skeleton className='h-28 w-full' />
       </div>
-      <div className='space-y-2'>
-        <Skeleton className='h-4 w-24' />
-        <Skeleton className='h-10 w-full' />
-      </div>
     </div>
   )
 }
@@ -43,25 +38,20 @@ export function SettingsOrganizationInfo() {
     effectiveOrganizations.find(
       (organization) => organization.id === currentOrganizationId
     ) ?? effectiveOrganizations[0] ?? null
-  const organizationId = effectiveCurrentOrganization?.id ?? null
-  const { actorRole } = useCurrentOrganizationRole(organizationId)
   const isLoading = isPending || (!isLoaded && !queryOrganizations)
   const isEmpty = !isLoading && effectiveOrganizations.length === 0
 
   return (
     <ContentSection
       title='组织信息'
-      desc='查看当前组织标识，并维护所属子系统、组织描述和访问凭证。'
+      desc='维护当前组织名称、所属子系统和组织描述。'
     >
       {isLoading ? (
         <OrganizationInfoLoading />
       ) : isEmpty ? (
         <EmptyOrganizationState />
       ) : effectiveCurrentOrganization ? (
-        <OrganizationInfoForm
-          organization={effectiveCurrentOrganization}
-          actorRole={actorRole}
-        />
+        <OrganizationInfoForm organization={effectiveCurrentOrganization} />
       ) : (
         <EmptyOrganizationState />
       )}

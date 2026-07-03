@@ -1,12 +1,9 @@
-import { useId, useState } from 'react'
+import { useId } from 'react'
 import { useMutation, useQueryClient } from '@tanstack/react-query'
-import { TriangleAlert } from 'lucide-react'
 import { z } from 'zod'
 import { toast } from 'sonner'
 import { BaseForm } from '@/components/common/base-form'
 import { Drawer } from '@/components/common/drawer'
-import { Alert, AlertDescription, AlertTitle } from '@/components/ui/alert'
-import { Button } from '@/components/ui/button'
 import {
   FormControl,
   FormField,
@@ -36,15 +33,6 @@ type CreateOrganizationDrawerProps = {
   onOpenChange: (open: boolean) => void
 }
 
-type CreateOrganizationResponse = Organization & {
-  secretKey?: string
-}
-
-function sanitizeOrganization(organization: CreateOrganizationResponse): Organization {
-  const { secretKey: _secretKey, ...safeOrganization } = organization
-  return safeOrganization
-}
-
 export function CreateOrganizationDrawer({
   open,
   onOpenChange,
@@ -52,8 +40,6 @@ export function CreateOrganizationDrawer({
   const formId = useId()
   const $api = useAPI()
   const queryClient = useQueryClient()
-  const [createdOrganization, setCreatedOrganization] =
-    useState<CreateOrganizationResponse | null>(null)
   const upsertOrganization = useOrganizationStore(
     (state) => state.upsertOrganization
   )
@@ -63,19 +49,15 @@ export function CreateOrganizationDrawer({
 
   const createOrganizationMutation = useMutation({
     mutationFn: (payload: CreateOrganizationPayload) =>
-      $api.createOrganization<
-        CreateOrganizationResponse,
-        CreateOrganizationPayload
-      >({
+      $api.createOrganization<Organization, CreateOrganizationPayload>({
         body: payload,
       }),
     onSuccess: async (organization) => {
-      const safeOrganization = sanitizeOrganization(organization)
-      upsertOrganization(safeOrganization)
+      upsertOrganization(organization)
       setCurrentOrganizationId(organization.id)
-      setCreatedOrganization(organization)
       await queryClient.invalidateQueries({ queryKey: organizationsQueryKey })
       toast.success('组织创建成功')
+      onOpenChange(false)
     },
   })
 
@@ -88,112 +70,78 @@ export function CreateOrganizationDrawer({
       open={open}
       onOpenChange={(nextOpen) => {
         if (!nextOpen) {
-          setCreatedOrganization(null)
           createOrganizationMutation.reset()
         }
         onOpenChange(nextOpen)
       }}
-      title={createdOrganization ? '保存组织密钥' : '创建组织'}
+      title='创建组织'
       confirmText='创建'
       confirmProps={{
         form: formId,
         type: 'submit',
-        disabled: createOrganizationMutation.isPending || Boolean(createdOrganization),
+        disabled: createOrganizationMutation.isPending,
       }}
       cancelProps={{ disabled: createOrganizationMutation.isPending }}
-      actions={
-        createdOrganization ? (
-          <Button type='button' size='sm' onClick={() => onOpenChange(false)}>
-            我已保存
-          </Button>
-        ) : undefined
-      }
     >
-      {createdOrganization ? (
-        <div className='flex flex-col gap-4 p-4'>
-          <Alert>
-            <TriangleAlert className='size-4' />
-            <AlertTitle>Secret Key 仅展示一次</AlertTitle>
-            <AlertDescription>
-              关闭抽屉后将无法再次查看原始 Secret Key，请立即保存。
-            </AlertDescription>
-          </Alert>
-          <div className='space-y-3 rounded-lg border bg-muted/20 p-4'>
-            <div>
-              <div className='text-sm font-medium'>Public Key</div>
-              <div className='mt-1 break-all font-mono text-sm text-muted-foreground'>
-                {createdOrganization.publicKey ?? '-'}
-              </div>
-            </div>
-            <div>
-              <div className='text-sm font-medium'>Secret Key</div>
-              <div className='mt-1 break-all font-mono text-sm text-muted-foreground'>
-                {createdOrganization.secretKey ?? '-'}
-              </div>
-            </div>
-          </div>
-        </div>
-      ) : (
-        <BaseForm
-          id={formId}
-          schema={createOrganizationFormSchema}
-          defaultValues={{
-            name: '',
-            subsystem: '',
-            description: '',
-          }}
-          onSubmit={handleSubmit}
-          className='gap-4 overflow-visible'
-        >
-          {(form) => (
-            <>
-              <FormField
-                control={form.control}
-                name='name'
-                render={({ field }) => (
-                  <FormItem>
-                    <FormLabel>组织名称</FormLabel>
-                    <FormControl>
-                      <Input placeholder='输入组织名称' {...field} />
-                    </FormControl>
-                    <FormMessage />
-                  </FormItem>
-                )}
-              />
-              <FormField
-                control={form.control}
-                name='subsystem'
-                render={({ field }) => (
-                  <FormItem>
-                    <FormLabel>所属子系统</FormLabel>
-                    <FormControl>
-                      <Input placeholder='输入所属子系统' {...field} />
-                    </FormControl>
-                    <FormMessage />
-                  </FormItem>
-                )}
-              />
-              <FormField
-                control={form.control}
-                name='description'
-                render={({ field }) => (
-                  <FormItem>
-                    <FormLabel>组织描述</FormLabel>
-                    <FormControl>
-                      <Textarea
-                        placeholder='输入组织描述'
-                        className='min-h-28 resize-none'
-                        {...field}
-                      />
-                    </FormControl>
-                    <FormMessage />
-                  </FormItem>
-                )}
-              />
-            </>
-          )}
-        </BaseForm>
-      )}
+      <BaseForm
+        id={formId}
+        schema={createOrganizationFormSchema}
+        defaultValues={{
+          name: '',
+          subsystem: '',
+          description: '',
+        }}
+        onSubmit={handleSubmit}
+        className='gap-4 overflow-visible'
+      >
+        {(form) => (
+          <>
+            <FormField
+              control={form.control}
+              name='name'
+              render={({ field }) => (
+                <FormItem>
+                  <FormLabel>组织名称</FormLabel>
+                  <FormControl>
+                    <Input placeholder='输入组织名称' {...field} />
+                  </FormControl>
+                  <FormMessage />
+                </FormItem>
+              )}
+            />
+            <FormField
+              control={form.control}
+              name='subsystem'
+              render={({ field }) => (
+                <FormItem>
+                  <FormLabel>所属子系统</FormLabel>
+                  <FormControl>
+                    <Input placeholder='输入所属子系统' {...field} />
+                  </FormControl>
+                  <FormMessage />
+                </FormItem>
+              )}
+            />
+            <FormField
+              control={form.control}
+              name='description'
+              render={({ field }) => (
+                <FormItem>
+                  <FormLabel>组织描述</FormLabel>
+                  <FormControl>
+                    <Textarea
+                      placeholder='输入组织描述'
+                      className='min-h-28 resize-none'
+                      {...field}
+                    />
+                  </FormControl>
+                  <FormMessage />
+                </FormItem>
+              )}
+            />
+          </>
+        )}
+      </BaseForm>
     </Drawer>
   )
 }

@@ -4,12 +4,9 @@ from fastapi import APIRouter, Depends, Query
 
 from app.errors import BusinessError, UnsupportedOperationError
 from app.langfuse_db import LangfuseDatabaseReader, get_langfuse_db_reader
-from app.langfuse_client import LangfuseAdminClient, get_langfuse_client
 from app.response import success
 from app.schemas import (
-    CreateOrganizationApiKeyPayload,
     CreateOrganizationPayload,
-    LangfuseApiKey,
     LangfuseOrganization,
     UpdateOrganizationPayload,
 )
@@ -38,31 +35,10 @@ def _to_pa_organization(raw: dict[str, Any]) -> dict[str, Any]:
         "name": organization.name,
         "description": pa_eval.get("description"),
         "subsystem": pa_eval.get("subsystem"),
-        "publicKey": pa_eval.get("publicKey"),
-        "secretKeyMasked": pa_eval.get("secretKeyMasked"),
         "createdBy": pa_eval.get("createdBy"),
         "createdAt": created_at,
         "updatedAt": organization.updated_at or created_at,
         "projectCount": project_count if project_count is not None else len(organization.projects),
-    }
-
-
-def _to_pa_api_key(raw: dict[str, Any], organization_id: str) -> dict[str, Any]:
-    api_key = LangfuseApiKey.model_validate(raw)
-    masked_key = api_key.display_secret_key
-
-    return {
-        "id": api_key.id,
-        "organizationId": organization_id,
-        "name": api_key.note or "组织 API Key",
-        "maskedKey": masked_key,
-        "publicKey": api_key.public_key,
-        "secretKeyMasked": masked_key,
-        "secretKey": api_key.secret_key,
-        "createdBy": None,
-        "updatedAt": api_key.created_at,
-        "lastUsedAt": api_key.last_used_at,
-        "createdAt": api_key.created_at,
     }
 
 
@@ -162,9 +138,12 @@ async def get_organization(
 async def update_organization(
     organization_id: str,
     payload: UpdateOrganizationPayload,
-    client: LangfuseAdminClient = Depends(get_langfuse_client),
+    reader: LangfuseDatabaseReader = Depends(get_langfuse_db_reader),
 ) -> dict[str, Any]:
-    current = await client.get_organization(organization_id)
+    current = await reader.get_organization(organization_id)
+    if current is None:
+        raise BusinessError(code=1004, message="组织不存在", status_code=404)
+
     current_org = LangfuseOrganization.model_validate(current)
     next_metadata = _merge_pa_eval_metadata(
         current_org.metadata,
@@ -173,7 +152,7 @@ async def update_organization(
             "subsystem": payload.subsystem,
         },
     )
-    updated = await client.update_organization(
+    updated = await reader.update_organization(
         organization_id,
         {
             "name": payload.name or current_org.name,
@@ -181,41 +160,6 @@ async def update_organization(
         },
     )
     return success(_to_pa_organization(updated))
-
-
-@router.get("/{organization_id}/api-keys")
-async def list_organization_api_keys(
-    organization_id: str,
-    client: LangfuseAdminClient = Depends(get_langfuse_client),
-) -> dict[str, Any]:
-    payload = await client.list_organization_api_keys(organization_id)
-    api_keys = [
-        _to_pa_api_key(raw, organization_id) for raw in payload.get("apiKeys", [])
-    ]
-    return success({"total": len(api_keys), "datas": api_keys})
-
-
-@router.post("/{organization_id}/api-keys")
-async def create_organization_api_key(
-    organization_id: str,
-    payload: CreateOrganizationApiKeyPayload,
-    client: LangfuseAdminClient = Depends(get_langfuse_client),
-) -> dict[str, Any]:
-    created = await client.create_organization_api_key(
-        organization_id,
-        {"note": payload.name},
-    )
-    return success(_to_pa_api_key(created, organization_id))
-
-
-@router.delete("/{organization_id}/api-keys/{api_key_id}")
-async def delete_organization_api_key(
-    organization_id: str,
-    api_key_id: str,
-    client: LangfuseAdminClient = Depends(get_langfuse_client),
-) -> dict[str, Any]:
-    await client.delete_organization_api_key(organization_id, api_key_id)
-    return success({})
 
 
 @router.get("/{organization_id}/members")
