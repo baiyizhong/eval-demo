@@ -38,7 +38,7 @@ export function PageAction({
   return (
     <div
       className={cn(
-        'bg-card border-border flex flex-wrap items-center gap-2 border px-4 py-3',
+        'bg-card border-border flex flex-wrap items-center gap-2 rounded-lg border px-4 py-3',
         className
       )}
       {...props}

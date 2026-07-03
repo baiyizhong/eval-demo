@@ -7,7 +7,6 @@
 ## 相关源码
 
 - `src/components/common/loading.tsx`
-- `src/components/common/loading-class.ts`
 
 ## 必读前置
 
@@ -83,7 +82,7 @@ type LoadingProps = React.ComponentProps<'div'> & {
 - 使用 `gap-*` 管理间距，不使用 `space-*`。
 - 使用 `size-*` 管理等宽高图标。
 - 调用方覆盖尺寸时应通过 `className` 传入 Tailwind class，不写内联 style。
-- `loading-class.ts` 用于集中维护可测试的 class 组合规则；新增尺寸模式时应同步补充测试。
+- `loading.tsx` 内部集中维护 class 组合规则；新增尺寸模式时应同步补充类型覆盖用例。
 
 ## 与其他加载态的边界
 
@@ -108,5 +107,4 @@ type LoadingProps = React.ComponentProps<'div'> & {
 - `className` 只处理布局、尺寸或边框透明等局部覆盖。
 - 页面局部加载和全局导航进度没有混用。
 - `npm run typecheck` 通过。
-- 修改 `loading-class.ts` 时，补充或更新 `src/tests/common/loading.test.ts`。
-
+- 修改 `Loading` 的 props 或 class 组合逻辑时，补充或更新 `src/tests/common/loading.types.test.tsx`。

@@ -6,9 +6,9 @@ import { z } from 'zod'
 import { LLMTraceChain } from '@/components/business/llm-trace-chain'
 import { Drawer } from '@/components/common/drawer'
 import { JsonEditorPanel } from '@/components/common/json-editor'
+import { Loading } from '@/components/common/loading'
 import { MarkdownEditorPanel } from '@/components/common/markdown-editor'
 import { Button } from '@/components/ui/button'
-import { Skeleton } from '@/components/ui/skeleton'
 import { confirm } from '@/lib/confirm'
 import {
   getProjectTraceMock,
@@ -22,6 +22,7 @@ import { TRACE_METADATA_JSON_EDITOR_CONFIG } from './trace-detail-drawer-config'
 
 const metadataSchema = z.record(z.string(), z.unknown())
 const TRACE_CHAIN_DRAWER_WIDTH = 400
+const TRACE_CHAIN_COLLAPSED_WIDTH = 40
 
 type TraceDetailDrawerProps = {
   projectId: string
@@ -42,6 +43,7 @@ export function TraceDetailDrawer({
   const [input, setInput] = useState('')
   const [output, setOutput] = useState('')
   const [metadataData, setMetadataData] = useState<JsonData>({})
+  const [traceChainCollapsed, setTraceChainCollapsed] = useState(false)
   const queryKey = ['trace-detail', projectId, traceId]
   const detailQuery = useQuery({
     queryKey,
@@ -49,6 +51,7 @@ export function TraceDetailDrawer({
     enabled: open && Boolean(traceId),
   })
   const detail = detailQuery.data
+  const showDetailLoading = open && (detailQuery.isLoading || !detail)
   const dirty = useMemo(() => {
     if (!detail) return false
 
@@ -203,11 +206,11 @@ export function TraceDetailDrawer({
         className: 'overflow-y-auto',
       }}
     >
-      {detailQuery.isLoading || !detail ? (
+      {!open ? null : showDetailLoading ? (
         <div className='p-4'>
-          <Skeleton className='h-[520px]' />
+          <Loading text='加载 Trace 详情中...' className='min-h-[520px]' />
         </div>
-      ) : (
+      ) : detail ? (
         <div className='flex flex-col gap-4 p-4'>
           <TraceOverview detail={detail} />
 
@@ -239,17 +242,22 @@ export function TraceDetailDrawer({
             </div>
           ) : (
             <div
-              className='grid items-stretch gap-4 xl:grid-cols-[var(--trace-chain-column-width)_minmax(0,1fr)]'
+              className='grid items-stretch gap-4 xl:grid-cols-[var(--trace-chain-current-column-width)_minmax(0,1fr)]'
               style={
                 {
-                  '--trace-chain-column-width': `${TRACE_CHAIN_DRAWER_WIDTH}px`,
+                  '--trace-chain-current-column-width': traceChainCollapsed
+                    ? `${TRACE_CHAIN_COLLAPSED_WIDTH}px`
+                    : `${TRACE_CHAIN_DRAWER_WIDTH}px`,
                 } as CSSProperties
               }
             >
               <LLMTraceChain
                 data={detail.callChain}
                 width={TRACE_CHAIN_DRAWER_WIDTH}
+                collapsedWidth={TRACE_CHAIN_COLLAPSED_WIDTH}
                 height='100%'
+                isCollapsed={traceChainCollapsed}
+                onCollapsedChange={setTraceChainCollapsed}
                 summary={{ duration: formatLatency(detail.latency) }}
               />
               <div className='flex h-full flex-col gap-3'>
@@ -277,7 +285,7 @@ export function TraceDetailDrawer({
             </div>
           )}
         </div>
-      )}
+      ) : null}
     </Drawer>
   )
 }
