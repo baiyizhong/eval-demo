@@ -1,15 +1,15 @@
 import { useMemo, useState, type CSSProperties } from 'react'
+import { z } from 'zod'
 import { useQuery, useQueryClient } from '@tanstack/react-query'
 import type { JsonData } from 'json-edit-react'
 import { toast } from 'sonner'
-import { z } from 'zod'
+import { confirm } from '@/lib/confirm'
+import { Button } from '@/components/ui/button'
 import { LLMTraceChain } from '@/components/business/llm-trace-chain'
 import { Drawer } from '@/components/common/drawer'
 import { JsonEditorPanel } from '@/components/common/json-editor'
 import { Loading } from '@/components/common/loading'
 import { MarkdownEditorPanel } from '@/components/common/markdown-editor'
-import { Button } from '@/components/ui/button'
-import { confirm } from '@/lib/confirm'
 import {
   getProjectTraceMock,
   patchProjectTraceMock,
@@ -112,11 +112,15 @@ export function TraceDetailDrawer({
 
     setSaving(true)
     try {
-      const nextDetail = await patchProjectTraceMock(projectId, detail.traceId, {
-        input,
-        output,
-        metadata: result.data,
-      })
+      const nextDetail = await patchProjectTraceMock(
+        projectId,
+        detail.traceId,
+        {
+          input,
+          output,
+          metadata: result.data,
+        }
+      )
       queryClient.setQueryData(queryKey, nextDetail)
       setMetadataData(nextDetail.metadata)
       setEditing(false)
@@ -220,7 +224,7 @@ export function TraceDetailDrawer({
                 title='Input'
                 value={input}
                 onValueChange={setInput}
-                mode='edit'
+                defaultMode='edit'
                 readOnly={false}
                 height={260}
               />
@@ -228,7 +232,7 @@ export function TraceDetailDrawer({
                 title='Output'
                 value={output}
                 onValueChange={setOutput}
-                mode='edit'
+                defaultMode='edit'
                 readOnly={false}
                 height={260}
               />
@@ -294,31 +298,31 @@ function TraceOverview({ detail }: { detail: TraceDetail }) {
   return (
     <div className='grid gap-3 rounded-lg border p-3 text-sm md:grid-cols-2 xl:grid-cols-4'>
       <div>
-        <p className='text-sm text-muted-foreground'>Trace ID</p>
+        <p className='text-muted-foreground text-sm'>Trace ID</p>
         <CopyableText value={detail.traceId} className='text-sm' />
       </div>
       <div>
-        <p className='text-sm text-muted-foreground'>状态</p>
+        <p className='text-muted-foreground text-sm'>状态</p>
         <StatusBadge status={detail.status} className='text-sm' />
       </div>
       <div>
-        <p className='text-sm text-muted-foreground'>环境</p>
+        <p className='text-muted-foreground text-sm'>环境</p>
         <p className='text-sm'>{detail.environment}</p>
       </div>
       <div>
-        <p className='text-sm text-muted-foreground'>延迟</p>
+        <p className='text-muted-foreground text-sm'>延迟</p>
         <p className='text-sm tabular-nums'>{formatLatency(detail.latency)}</p>
       </div>
       <div>
-        <p className='text-sm text-muted-foreground'>Session ID</p>
+        <p className='text-muted-foreground text-sm'>Session ID</p>
         <CopyableText value={detail.sessionId} className='text-sm' />
       </div>
       <div>
-        <p className='text-sm text-muted-foreground'>创建时间</p>
+        <p className='text-muted-foreground text-sm'>创建时间</p>
         <p className='text-sm'>{formatDateTime(detail.createdAt)}</p>
       </div>
       <div>
-        <p className='text-sm text-muted-foreground'>更新时间</p>
+        <p className='text-muted-foreground text-sm'>更新时间</p>
         <p className='text-sm'>{formatDateTime(detail.updatedAt)}</p>
       </div>
     </div>

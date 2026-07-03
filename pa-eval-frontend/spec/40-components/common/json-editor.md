@@ -189,7 +189,7 @@ function Page() {
 - `searchable` 默认为 `true`。
 - `collapse` 默认为 `false`，即默认展开。
 - `minWidth` 和 `maxWidth` 默认都是 `100%`。
-- 编辑器默认使用 GitHub Light 主题，并将容器背景设置为浅灰色 `#f6f8fa`。
+- 编辑器默认使用 GitHub Light 主题；编辑态容器背景为白色，只读态容器背景为 `bg-gray-100`。
 - 编辑器容器默认最小高度为 `200px`。
 - 编辑器默认 `rootFontSize` 为 `13`，除非调用方通过 `editorProps.rootFontSize` 覆盖。
 - 编辑器默认开启内部复制图标 tooltip，除非调用方通过 `editorProps.showIconTooltips` 覆盖。

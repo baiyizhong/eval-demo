@@ -1,4 +1,4 @@
-import { useState } from 'react'
+import { type CSSProperties, useState } from 'react'
 import MDEditor, { type MDEditorProps } from '@uiw/react-md-editor'
 import { Check, Copy } from 'lucide-react'
 import { cn } from '@/lib/utils'
@@ -131,11 +131,19 @@ export function MarkdownEditorPanel({
         ? '复制失败'
         : '复制全部 Markdown'
   const CopyIcon = copyStatus === 'copied' ? Check : Copy
+  const readOnlyBackgroundStyle = readOnly
+    ? ({
+        '--md-editor-background-color': 'var(--color-gray-100)',
+        '--color-canvas-default': 'var(--color-gray-100)',
+        backgroundColor: 'var(--color-gray-100)',
+      } as CSSProperties)
+    : undefined
   const previewOptions = {
     ...editorProps?.previewOptions,
     style: {
       fontSize: 14,
       ...editorProps?.previewOptions?.style,
+      ...(readOnly ? { backgroundColor: 'var(--color-gray-100)' } : {}),
     },
   }
 
@@ -192,7 +200,10 @@ export function MarkdownEditorPanel({
       </div>
 
       <div
-        className='bg-muted/30 min-h-[200px] overflow-auto rounded-md border'
+        className={cn(
+          'min-h-[200px] overflow-auto rounded-md border',
+          readOnly ? 'bg-gray-100' : 'bg-white'
+        )}
         style={{ height }}
       >
         <MDEditor
@@ -203,7 +214,16 @@ export function MarkdownEditorPanel({
           previewOptions={previewOptions}
           hideToolbar
           height='100%'
-          className={cn('w-full text-sm', editorClassName)}
+          style={{
+            ...editorProps?.style,
+            ...readOnlyBackgroundStyle,
+          }}
+          className={cn(
+            'w-full text-sm',
+            readOnly &&
+              'bg-gray-100 [&_.w-md-editor-input]:bg-gray-100 [&_.wmde-markdown]:bg-gray-100',
+            editorClassName
+          )}
           textareaProps={{
             ...editorProps?.textareaProps,
             readOnly,

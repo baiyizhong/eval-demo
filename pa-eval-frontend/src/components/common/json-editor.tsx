@@ -84,7 +84,7 @@ async function copyTextToClipboard(text: string) {
 const containerTheme = {
   styles: {
     container: {
-      backgroundColor: '#f6f8fa',
+      backgroundColor: 'transparent',
       borderRadius: 6,
       padding: 12,
     },
@@ -202,7 +202,10 @@ export function JsonEditorPanel({
         ) : null}
       </div>
       <div
-        className='bg-muted/30 min-h-[200px] overflow-auto rounded-md border p-3'
+        className={cn(
+          'min-h-[200px] overflow-auto rounded-md border p-3',
+          readOnly ? 'bg-gray-100' : 'bg-white'
+        )}
         style={{ height }}
       >
         <JsonEditor
