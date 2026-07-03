@@ -5,6 +5,7 @@ import {
   DataTable,
   type DataTableQueryState,
 } from '@/components/common/data-table'
+import { Loading } from '@/components/common/loading'
 import { listProjectTracesMock } from '../api/mock-trace-api'
 import { ObservabilityPageNav } from '../components/observability-page-nav'
 import { TraceDetailDrawer } from '../components/trace-detail-drawer'
@@ -108,6 +109,12 @@ export function TraceLogs() {
             bulkActions={(table) => (
               <TraceLogBulkActions table={table} projectId={projectId} />
             )}
+            loadingText={
+              <Loading
+                text='加载 Trace 日志中...'
+                className='min-h-24 border-0 bg-transparent'
+              />
+            }
             emptyText='当前筛选条件下暂无 Trace 数据'
             minTableWidth={980}
           />

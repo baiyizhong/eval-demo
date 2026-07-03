@@ -1,8 +1,8 @@
 import { useState } from 'react'
 import { useQuery } from '@tanstack/react-query'
 import { useNavigate, useParams } from 'react-router'
+import { Loading } from '@/components/common/loading'
 import { Page } from '@/components/common/page'
-import { Skeleton } from '@/components/ui/skeleton'
 import { getTraceMetricsMock } from '../api/mock-trace-api'
 import { ObservabilityPageNav } from '../components/observability-page-nav'
 import { SlowTraceRanking } from '../components/slow-trace-ranking'
@@ -23,6 +23,7 @@ export function TraceDashboard() {
     queryKey: ['trace-metrics', projectId, timeRange, environment],
     queryFn: () => getTraceMetricsMock(projectId),
   })
+  const metrics = metricsQuery.data
 
   const openTrace = (traceId: string) => {
     navigate(
@@ -34,9 +35,10 @@ export function TraceDashboard() {
     <Page fluid className='flex min-h-[calc(100svh-3.5rem)] flex-col'>
       <div className='flex min-h-0 flex-1 flex-col gap-4'>
         <ObservabilityPageNav />
-        {metricsQuery.isLoading || !metricsQuery.data ? (
-          <Skeleton className='h-[520px] rounded-lg' />
-        ) : (
+        {metricsQuery.isLoading ? (
+          <Loading text='加载 Trace 指标中...' className='flex-1' />
+        ) : null}
+        {metrics ? (
           <>
             <div className='flex flex-wrap items-center justify-end gap-3'>
               <TraceDashboardFilters
@@ -46,22 +48,22 @@ export function TraceDashboard() {
                 onEnvironmentChange={setEnvironment}
               />
             </div>
-            <TraceDashboardCards summary={metricsQuery.data.summary} />
+            <TraceDashboardCards summary={metrics.summary} />
             <div className='grid gap-4 xl:grid-cols-[2fr_1fr]'>
-              <TraceTrendChart data={metricsQuery.data.traceTrend} />
+              <TraceTrendChart data={metrics.traceTrend} />
               <TraceEnvironmentChart
-                data={metricsQuery.data.environmentDistribution}
+                data={metrics.environmentDistribution}
               />
             </div>
             <div className='grid gap-4 xl:grid-cols-[2fr_1fr]'>
-              <TraceLatencyChart data={metricsQuery.data.latencyTrend} />
+              <TraceLatencyChart data={metrics.latencyTrend} />
               <SlowTraceRanking
-                rows={metricsQuery.data.slowTraces}
+                rows={metrics.slowTraces}
                 onOpenTrace={openTrace}
               />
             </div>
           </>
-        )}
+        ) : null}
       </div>
     </Page>
   )

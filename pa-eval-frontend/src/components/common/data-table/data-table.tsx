@@ -31,6 +31,7 @@ import {
   type FilterRendererMap,
   type FilterValues,
 } from '@/components/common/filter-panel'
+import { getDataTableRootClassName } from './layout'
 import { DataTablePagination } from './pagination'
 import { DataTableProvider, useOptionalDataTableContext } from './provider'
 import { DataTableToolbar } from './toolbar'
@@ -127,7 +128,7 @@ export type DataTableProps<
   enableRowSelection?: boolean
   emptyText?: string
   errorText?: string
-  loadingText?: string
+  loadingText?: ReactNode
   minTableWidth?: number | string
   className?: string
   tableClassName?: string
@@ -377,7 +378,15 @@ function DataTableContent<
   const isFilterPanelCollapsed = filterPanel?.collapsed ?? filterPanelCollapsed
 
   return (
-    <div className={cn('flex min-w-0 flex-col gap-4 lg:flex-row', className)}>
+    <div
+      className={cn(
+        getDataTableRootClassName({
+          hasFilterPanel: Boolean(filterPanel),
+          isFilterPanelCollapsed,
+        }),
+        className
+      )}
+    >
       {filterPanel ? (
         <FilterPanel
           groups={filterPanel.groups}

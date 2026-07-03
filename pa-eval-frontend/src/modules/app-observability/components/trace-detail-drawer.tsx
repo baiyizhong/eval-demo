@@ -18,6 +18,7 @@ import { formatDateTime, formatLatency } from '../lib/format'
 import type { TraceDetail } from '../types'
 import { CopyableText } from './copyable-text'
 import { StatusBadge } from './status-badge'
+import { TRACE_METADATA_JSON_EDITOR_CONFIG } from './trace-detail-drawer-config'
 
 const metadataSchema = z.record(z.string(), z.unknown())
 const TRACE_CHAIN_DRAWER_WIDTH = 400
@@ -229,11 +230,9 @@ export function TraceDetailDrawer({
                 height={260}
               />
               <JsonEditorPanel
-                title='Metadata'
-                rootName='metadata'
+                {...TRACE_METADATA_JSON_EDITOR_CONFIG}
                 data={metadataData}
                 onDataChange={setMetadataData}
-                searchable={false}
                 height={360}
                 className='xl:col-span-2'
               />
@@ -269,8 +268,7 @@ export function TraceDetailDrawer({
                   height={180}
                 />
                 <JsonEditorPanel
-                  title='Metadata'
-                  rootName='metadata'
+                  {...TRACE_METADATA_JSON_EDITOR_CONFIG}
                   data={detail.metadata}
                   readOnly
                   height={220}

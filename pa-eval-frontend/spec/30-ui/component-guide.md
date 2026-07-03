@@ -119,7 +119,7 @@
 - 导航与用户入口：`ProfileDropdown`、`NavUser`、`Search`、`CommandMenu`、`SidebarNav`
 - 数据表组合：`common/data-table/*`
 - 权限展示：`Can`、`PermissionScopeProvider`
-- 状态与展示：`PageGuide`、`LongText`、`NavigationProgress`
+- 状态与展示：`PageGuide`、`LongText`、`Loading`、`NavigationProgress`
 
 规则：
 
