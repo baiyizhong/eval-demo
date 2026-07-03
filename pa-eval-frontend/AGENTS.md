@@ -68,7 +68,10 @@
 - 不要在业务代码中硬编码后端 host、部署 base path、颜色值或全局 CSS。
 
 # 代码测试
-- 生成过程中的所有测试文件，如`*.test.tsx`，统一放到`src/tests`目录下。
+- 生成过程中的所有测试文件，如`*.test.tsx`，`*.test.ts`，统一放到`src/tests`目录下。
+
+# 注意
+`src/modules/<module-name>/data/` 目录下不要存放任何代码和测试文件，只用于存放静态展示/静态mock数据。
 
 ## 质量门禁
 
