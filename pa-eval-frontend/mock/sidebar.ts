@@ -43,7 +43,13 @@ export default [
                   url: '/tasks',
                   activeMatch: 'prefix',
                   icon: 'ListTodo',
-                }
+                },
+                {
+                  title: '应用观测',
+                  url: '/projects/project_customer_agent/observability',
+                  icon: 'Monitor',
+                  activeMatch: 'prefix',
+                },
               ],
             },
           ],

@@ -91,7 +91,10 @@ function Drawer({
   return (
     <Sheet onOpenChange={onOpenChange} {...props}>
       <SheetContent
-        className={cn('gap-0 [&>button:last-child]:hidden', contentClassName)}
+        className={cn(
+          'gap-0 bg-white [&>button:last-child]:hidden',
+          contentClassName
+        )}
         style={{
           width: getDrawerWidth(mode, width),
           maxWidth: '100vw',

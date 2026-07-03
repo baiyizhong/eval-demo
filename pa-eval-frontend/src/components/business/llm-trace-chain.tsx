@@ -94,6 +94,7 @@ export interface LLMTraceChainProps {
   data?: TreeNode[]
   nodeStyles?: Partial<Record<string, NodeStyle>>
   width?: number | string
+  height?: number | string
   collapsedWidth?: number | string
   summary?: TraceSummary
   isCollapsed?: boolean
@@ -484,6 +485,7 @@ export function LLMTraceChain({
   data,
   nodeStyles,
   width = '100%',
+  height = 'calc(100vh - 48px)',
   collapsedWidth = 40,
   summary,
   isCollapsed: controlledIsCollapsed,
@@ -523,8 +525,9 @@ export function LLMTraceChain({
   const containerStyle = useMemo<CSSProperties>(
     () => ({
       width: toCssSize(isCollapsed ? collapsedWidth : width),
+      height: toCssSize(height),
     }),
-    [collapsedWidth, isCollapsed, width]
+    [collapsedWidth, height, isCollapsed, width]
   )
 
   const handleExport = useCallback(() => {
@@ -562,7 +565,7 @@ export function LLMTraceChain({
 
   return (
     <div
-      className={`bg-card flex h-[calc(100vh-48px)] flex-col overflow-hidden transition-[width] duration-200`}
+      className='flex min-h-0 flex-col overflow-hidden rounded-lg border border-border bg-card transition-[width] duration-200'
       style={containerStyle}
     >
       {/* ---- Header ---- */}

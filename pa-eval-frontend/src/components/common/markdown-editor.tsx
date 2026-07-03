@@ -131,6 +131,13 @@ export function MarkdownEditorPanel({
         ? '复制失败'
         : '复制全部 Markdown'
   const CopyIcon = copyStatus === 'copied' ? Check : Copy
+  const previewOptions = {
+    ...editorProps?.previewOptions,
+    style: {
+      fontSize: 14,
+      ...editorProps?.previewOptions?.style,
+    },
+  }
 
   return (
     <section
@@ -163,27 +170,29 @@ export function MarkdownEditorPanel({
           </span>
         </div>
 
-        <ToggleGroup
-          type='single'
-          value={resolvedMode}
-          onValueChange={handleModeChange}
-          variant='outline'
-          size='sm'
-          spacing={0}
-          className='shrink-0'
-          aria-label='切换 Markdown 模式'
-        >
-          <ToggleGroupItem value='edit' aria-label='编辑 Markdown'>
-            编辑
-          </ToggleGroupItem>
-          <ToggleGroupItem value='preview' aria-label='预览 Markdown'>
-            预览
-          </ToggleGroupItem>
-        </ToggleGroup>
+        {!readOnly ? (
+          <ToggleGroup
+            type='single'
+            value={resolvedMode}
+            onValueChange={handleModeChange}
+            variant='outline'
+            size='sm'
+            spacing={0}
+            className='shrink-0'
+            aria-label='切换 Markdown 模式'
+          >
+            <ToggleGroupItem value='edit' aria-label='编辑 Markdown'>
+              编辑
+            </ToggleGroupItem>
+            <ToggleGroupItem value='preview' aria-label='预览 Markdown'>
+              预览
+            </ToggleGroupItem>
+          </ToggleGroup>
+        ) : null}
       </div>
 
       <div
-        className='bg-muted/30 min-h-[200px] overflow-auto rounded-md border p-3'
+        className='bg-muted/30 min-h-[200px] overflow-auto rounded-md border'
         style={{ height }}
       >
         <MDEditor
@@ -191,12 +200,17 @@ export function MarkdownEditorPanel({
           value={editorValue}
           onChange={handleValueChange}
           preview={resolvedMode}
+          previewOptions={previewOptions}
           hideToolbar
           height='100%'
-          className={cn('w-full', editorClassName)}
+          className={cn('w-full text-sm', editorClassName)}
           textareaProps={{
             ...editorProps?.textareaProps,
             readOnly,
+            style: {
+              fontSize: 14,
+              ...editorProps?.textareaProps?.style,
+            },
           }}
         />
       </div>

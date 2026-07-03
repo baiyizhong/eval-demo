@@ -1,6 +1,12 @@
 import { BookOpen, LogOut, ShieldCheck } from 'lucide-react'
 
 import { Apps } from '@/modules/apps'
+import {
+  AppObservability,
+  AppObservabilityIndexRedirect,
+} from '@/modules/app-observability'
+import { TraceDashboard } from '@/modules/app-observability/views/trace-dashboard'
+import { TraceLogs } from '@/modules/app-observability/views/trace-logs'
 import { Dashboard } from '@/modules/dashboard'
 import { ForbiddenError } from '@/modules/errors/forbidden'
 import { GeneralError } from '@/modules/errors/general-error'
@@ -110,6 +116,15 @@ export const routes = [
           {
             path: 'tasks/auto-evaluation',
             element: <TasksAutoEvaluation />,
+          },
+          {
+            path: 'projects/:projectId/observability',
+            element: <AppObservability />,
+            children: [
+              { index: true, element: <AppObservabilityIndexRedirect /> },
+              { path: 'traces/dashboard', element: <TraceDashboard /> },
+              { path: 'traces/logs', element: <TraceLogs /> },
+            ],
           },
         ],
       },

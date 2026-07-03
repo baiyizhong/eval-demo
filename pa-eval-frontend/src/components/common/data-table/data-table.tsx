@@ -397,7 +397,7 @@ function DataTableContent<
       <div
         className={cn(
           'max-sm:has-[div[role="toolbar"]]:mb-16',
-          'flex min-w-0 flex-1 flex-col gap-4'
+          'flex min-h-0 min-w-0 flex-1 flex-col gap-4'
         )}
       >
         <DataTableToolbar
@@ -414,7 +414,7 @@ function DataTableContent<
           columnLabels={toolbar?.columnLabels}
         />
 
-        <div className='overflow-x-auto rounded-md border'>
+        <div className='min-h-0 flex-1 overflow-x-auto rounded-md border'>
           <Table
             className={cn(tableClassName)}
             style={{ minWidth: normalizeWidth(minTableWidth) }}
