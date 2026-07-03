@@ -1,0 +1,156 @@
+import type {
+  EvaluationReportBadcaseRecord,
+  EvaluationReportDetailRecord,
+  EvaluationReportFlowbackRecord,
+  EvaluationReportItemRecord,
+} from '../types'
+
+export const mockEvaluationReports: EvaluationReportDetailRecord[] = [
+  {
+    id: 'report_auto_customer_quality',
+    projectId: 'project_customer_agent',
+    title: '客服回答质量自动评测报告',
+    sourceType: 'AUTO_EVAL',
+    sourceTaskId: 'auto_eval_customer_quality',
+    sourceTaskName: '客服回答质量自动评测',
+    status: 'READY',
+    sampleCount: 120,
+    badcaseCount: 14,
+    flowbackCount: 8,
+    generatedAt: '2026-07-03T09:25:00.000Z',
+    summary: '整体通过率稳定，退款场景仍有低分样本。',
+    metrics: {
+      averageScore: 0.82,
+      passRate: 0.88,
+      failureRate: 0.03,
+      badcaseRate: 0.12,
+    },
+    distribution: [
+      { label: '0-0.4', count: 6 },
+      { label: '0.4-0.6', count: 8 },
+      { label: '0.6-0.8', count: 28 },
+      { label: '0.8-1.0', count: 78 },
+    ],
+    groupAnalysis: [
+      { group: '售前咨询', sampleCount: 40, averageScore: 0.89 },
+      { group: '退款场景', sampleCount: 32, averageScore: 0.71 },
+      { group: '物流查询', sampleCount: 48, averageScore: 0.84 },
+    ],
+    recommendations: [
+      '补充退款政策边界样本，降低低分集中度。',
+      '将 badcase 回流到数据集后重新验证 prompt。',
+    ],
+    risks: ['退款场景样本覆盖不足，当前结论不代表全部售后场景。'],
+    reproduction: {
+      reportId: 'report_auto_customer_quality',
+      sourceTaskId: 'auto_eval_customer_quality',
+      scoreName: 'answer_quality',
+      generatedConfig: 'dataset=客服问答评测集; sampleRate=100%; threshold<=0.6',
+    },
+  },
+  {
+    id: 'report_manual_refund_quality',
+    projectId: 'project_customer_agent',
+    title: '退款场景人工评测报告',
+    sourceType: 'MANUAL_ANNOTATION',
+    sourceTaskId: 'queue_customer_quality',
+    sourceTaskName: '客服质量人工评测',
+    status: 'READY',
+    sampleCount: 56,
+    badcaseCount: 9,
+    flowbackCount: 5,
+    generatedAt: '2026-07-03T10:10:00.000Z',
+    summary: '人工标注显示退款场景答案一致性偏低。',
+    metrics: {
+      averageScore: 0.76,
+      passRate: 0.81,
+      failureRate: 0,
+      badcaseRate: 0.16,
+    },
+    distribution: [
+      { label: '低分', count: 9 },
+      { label: '中等', count: 20 },
+      { label: '高分', count: 27 },
+    ],
+    groupAnalysis: [
+      { group: '张三', sampleCount: 30, averageScore: 0.78 },
+      { group: '李四', sampleCount: 26, averageScore: 0.74 },
+    ],
+    recommendations: ['统一退款政策评分口径，补充标注说明。'],
+    risks: ['标注人数量较少，一致性指标只作为参考。'],
+    reproduction: {
+      reportId: 'report_manual_refund_quality',
+      sourceTaskId: 'queue_customer_quality',
+      scoreName: 'manual_quality',
+      generatedConfig: 'annotationQueue=客服质量人工评测',
+    },
+  },
+]
+
+export const mockEvaluationReportBadcases: EvaluationReportBadcaseRecord[] = [
+  {
+    id: 'badcase_auto_001',
+    reportId: 'report_auto_customer_quality',
+    traceId: 'trace_refund_001',
+    observationId: 'obs_refund_001',
+    datasetItemId: 'dataset_item_001',
+    scoreName: 'answer_quality',
+    scoreValue: 0.42,
+    reason: 'answer_quality <= 0.6',
+    comment: '未解释退款时效',
+    sourceType: 'AUTO_EVAL',
+    flowbackStatus: 'FLOWED_BACK',
+  },
+  {
+    id: 'badcase_auto_002',
+    reportId: 'report_auto_customer_quality',
+    traceId: 'trace_refund_002',
+    observationId: 'obs_refund_002',
+    datasetItemId: 'dataset_item_002',
+    scoreName: 'answer_quality',
+    scoreValue: 0.51,
+    reason: 'answer_quality <= 0.6',
+    comment: '回答遗漏政策限制',
+    sourceType: 'AUTO_EVAL',
+    flowbackStatus: 'NONE',
+  },
+]
+
+export const mockEvaluationReportItems: EvaluationReportItemRecord[] = [
+  {
+    id: 'report_item_auto_001',
+    reportId: 'report_auto_customer_quality',
+    sourceId: 'trace_refund_001',
+    scoreSummary: 'answer_quality=0.42',
+    resultType: 'badcase',
+    executionStatus: 'COMPLETED',
+    datasetFlowbackStatus: 'FLOWED_BACK',
+  },
+  {
+    id: 'report_item_auto_002',
+    reportId: 'report_auto_customer_quality',
+    sourceId: 'trace_shipping_001',
+    scoreSummary: 'answer_quality=0.91',
+    resultType: 'normal',
+    executionStatus: 'COMPLETED',
+    datasetFlowbackStatus: 'NONE',
+  },
+]
+
+export const mockEvaluationReportFlowbacks: EvaluationReportFlowbackRecord[] = [
+  {
+    id: 'flowback_auto_001',
+    reportId: 'report_auto_customer_quality',
+    flowbackType: 'BADCASE',
+    targetDatasetId: 'dataset_badcase_customer_quality',
+    targetDatasetName: 'badcase-自动评测-客服回答质量自动评测-20260703',
+    targetDatasetCreated: true,
+    requestedCount: 8,
+    successCount: 8,
+    failedCount: 0,
+    status: 'COMPLETED',
+    createdBy: '张三',
+    createdAt: '2026-07-03T09:40:00.000Z',
+    errorDetail: [],
+  },
+]

@@ -1,4 +1,4 @@
-import { ClipboardCheck, Database } from 'lucide-react'
+import { BarChart3, Bot, ClipboardCheck, Database } from 'lucide-react'
 import { useLocation, useParams } from 'react-router'
 import { PageNav } from '@/components/common/page-nav'
 
@@ -29,6 +29,20 @@ export function EvaluationPageNav({ buttonGroups }: EvaluationPageNavProps) {
             isActive: location.pathname.startsWith(
               `${basePath}/annotation-queues`
             ),
+          },
+          {
+            title: '自动评测',
+            href: `${basePath}/auto-evaluations`,
+            icon: Bot,
+            isActive: location.pathname.startsWith(
+              `${basePath}/auto-evaluations`
+            ),
+          },
+          {
+            title: '评测报告',
+            href: `${basePath}/reports`,
+            icon: BarChart3,
+            isActive: location.pathname.startsWith(`${basePath}/reports`),
           },
         ],
       }}

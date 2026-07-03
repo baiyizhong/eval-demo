@@ -236,3 +236,265 @@ export const scoreDataTypeLabels: Record<ScoreDataType, string> = {
   BOOLEAN: '布尔',
   TEXT: '文本',
 }
+
+export type AutoEvaluationTaskStatus =
+  | 'DRAFT'
+  | 'READY'
+  | 'RUNNING'
+  | 'COMPLETED'
+  | 'FAILED'
+  | 'CANCELLED'
+
+export type AutoEvaluationEvaluatorType = 'LLM_AS_JUDGE' | 'CODE'
+
+export type AutoEvaluationDataSourceType = 'DATASET' | 'TRACE_FILTER'
+
+export type EvaluationReportSourceType = 'AUTO_EVAL' | 'MANUAL_ANNOTATION'
+
+export type EvaluationReportStatus = 'GENERATING' | 'READY' | 'FAILED'
+
+export type EvaluationReportFlowbackType = 'BADCASE' | 'EVALUATION_DATA'
+
+export type EvaluationReportFlowbackStatus =
+  | 'PENDING'
+  | 'RUNNING'
+  | 'COMPLETED'
+  | 'PARTIAL_FAILED'
+  | 'FAILED'
+
+export type AutoEvaluationEvaluatorSummary = {
+  id: string
+  name: string
+  type: AutoEvaluationEvaluatorType
+  version: string
+}
+
+export type AutoEvaluationDataSourceSummary = {
+  type: AutoEvaluationDataSourceType
+  name: string
+  sampleCount: number
+}
+
+export type AutoEvaluationExecutionStats = {
+  pending: number
+  running: number
+  completed: number
+  failed: number
+  cancelled: number
+}
+
+export type AutoEvaluationLatestReportSummary = {
+  id: string
+  title: string
+  status: EvaluationReportStatus
+  generatedAt: string
+  sampleCount: number
+  badcaseCount: number
+  summary: string
+  errorMessage?: string
+}
+
+export type AutoEvaluationTaskRecord = {
+  id: string
+  projectId: string
+  name: string
+  description: string
+  scoreName: string
+  status: AutoEvaluationTaskStatus
+  evaluator: AutoEvaluationEvaluatorSummary
+  dataSource: AutoEvaluationDataSourceSummary
+  sampleRate: number
+  executionStats: AutoEvaluationExecutionStats
+  badcaseCount: number
+  createdBy: string
+  createdAt: string
+  lastRunAt: string
+  updatedAt: string
+  latestReport?: AutoEvaluationLatestReportSummary
+}
+
+export type MockAutoEvaluationEvaluator = AutoEvaluationEvaluatorSummary & {
+  variables: string[]
+  description: string
+  updatedAt: string
+}
+
+export type MockAutoEvaluationDataset = {
+  id: string
+  name: string
+  description: string
+  itemCount: number
+  updatedAt: string
+}
+
+export type AutoEvaluationRunRecord = {
+  id: string
+  projectId: string
+  taskId: string
+  status: Exclude<AutoEvaluationTaskStatus, 'DRAFT' | 'READY'>
+  sampleCount: number
+  completedCount: number
+  failedCount: number
+  badcaseCount: number
+  startedAt: string
+  endedAt: string
+  durationText: string
+  errorMessage?: string
+}
+
+export type AutoEvaluationTaskFormInput = {
+  name: string
+  description: string
+  scoreName: string
+  evaluatorId: string
+  variableMapping: Record<string, string>
+  dataSource:
+    | { type: 'DATASET'; datasetId: string }
+    | {
+        type: 'TRACE_FILTER'
+        timeRange: string
+        environments: string[]
+        traceName: string
+        userId: string
+        sessionId: string
+        tags: string[]
+        estimatedCount: number
+      }
+  sampleRate: number
+  badcase: {
+    enabled: boolean
+    scoreName: string
+    operator: 'LT' | 'LTE' | 'GT' | 'GTE' | 'EQ'
+    threshold: number | null
+  }
+}
+
+export type EvaluationReportRecord = {
+  id: string
+  projectId: string
+  title: string
+  sourceType: EvaluationReportSourceType
+  sourceTaskId: string
+  sourceTaskName: string
+  status: EvaluationReportStatus
+  sampleCount: number
+  badcaseCount: number
+  flowbackCount: number
+  generatedAt: string
+  summary: string
+  errorMessage?: string
+}
+
+export type EvaluationReportBadcaseRecord = {
+  id: string
+  reportId: string
+  traceId: string
+  observationId: string
+  datasetItemId: string
+  scoreName: string
+  scoreValue: number
+  reason: string
+  comment: string
+  sourceType: EvaluationReportSourceType
+  flowbackStatus: 'NONE' | 'FLOWED_BACK'
+}
+
+export type EvaluationReportItemRecord = {
+  id: string
+  reportId: string
+  sourceId: string
+  scoreSummary: string
+  resultType: 'normal' | 'badcase'
+  executionStatus: string
+  datasetFlowbackStatus: 'NONE' | 'FLOWED_BACK'
+}
+
+export type EvaluationReportFlowbackRecord = {
+  id: string
+  reportId: string
+  flowbackType: EvaluationReportFlowbackType
+  targetDatasetId: string
+  targetDatasetName: string
+  targetDatasetCreated: boolean
+  requestedCount: number
+  successCount: number
+  failedCount: number
+  status: EvaluationReportFlowbackStatus
+  createdBy: string
+  createdAt: string
+  errorDetail: { itemId: string; reason: string }[]
+}
+
+export type EvaluationReportDetailRecord = EvaluationReportRecord & {
+  metrics: {
+    averageScore: number
+    passRate: number
+    failureRate: number
+    badcaseRate: number
+  }
+  distribution: { label: string; count: number }[]
+  groupAnalysis: { group: string; sampleCount: number; averageScore: number }[]
+  recommendations: string[]
+  risks: string[]
+  reproduction: {
+    reportId: string
+    sourceTaskId: string
+    scoreName: string
+    generatedConfig: string
+  }
+}
+
+export type EvaluationReportFlowbackInput = {
+  flowbackType: EvaluationReportFlowbackType
+  range: 'ALL' | 'CURRENT_FILTER' | 'BADCASE_ONLY' | 'SELECTED'
+  selectedItemIds: string[]
+  targetDataset:
+    | { mode: 'EXISTING'; datasetId: string }
+    | { mode: 'CREATE'; name: string; description: string }
+  dedupeStrategy: 'SKIP_DUPLICATE' | 'CREATE_VERSION'
+}
+
+export const autoEvaluationStatusLabels: Record<
+  AutoEvaluationTaskStatus,
+  string
+> = {
+  DRAFT: '未运行',
+  READY: '待运行',
+  RUNNING: '运行中',
+  COMPLETED: '已完成',
+  FAILED: '失败',
+  CANCELLED: '已取消',
+}
+
+export const autoEvaluationEvaluatorTypeLabels: Record<
+  AutoEvaluationEvaluatorType,
+  string
+> = {
+  LLM_AS_JUDGE: 'LLM-as-Judge',
+  CODE: 'Code',
+}
+
+export const autoEvaluationDataSourceLabels: Record<
+  AutoEvaluationDataSourceType,
+  string
+> = {
+  DATASET: '数据集',
+  TRACE_FILTER: 'Trace 过滤',
+}
+
+export const evaluationReportSourceTypeLabels: Record<
+  EvaluationReportSourceType,
+  string
+> = {
+  AUTO_EVAL: '自动评测',
+  MANUAL_ANNOTATION: '人工评测',
+}
+
+export const evaluationReportStatusLabels: Record<
+  EvaluationReportStatus,
+  string
+> = {
+  GENERATING: '生成中',
+  READY: '已生成',
+  FAILED: '生成失败',
+}

@@ -14,8 +14,13 @@ import { TraceLogs } from '@/modules/app-observability/views/trace-logs'
 import { ProjectAnnotationItemAnnotate } from '@/modules/app-evaluation/views/annotation-item-annotate'
 import { ProjectAnnotationQueueDetail } from '@/modules/app-evaluation/views/annotation-queue-detail'
 import { ProjectAnnotationQueues } from '@/modules/app-evaluation/views/annotation-queues'
+import { ProjectAutoEvaluationDetail } from '@/modules/app-evaluation/views/auto-evaluation-detail'
+import { ProjectAutoEvaluationNew } from '@/modules/app-evaluation/views/auto-evaluation-new'
+import { ProjectAutoEvaluations } from '@/modules/app-evaluation/views/auto-evaluations'
 import { ProjectDatasetDetail } from '@/modules/app-evaluation/views/dataset-detail'
 import { ProjectDatasets } from '@/modules/app-evaluation/views/datasets'
+import { ProjectEvaluationReportDetail } from '@/modules/app-evaluation/views/evaluation-report-detail'
+import { ProjectEvaluationReports } from '@/modules/app-evaluation/views/evaluation-reports'
 import { Dashboard } from '@/modules/dashboard'
 import { ForbiddenError } from '@/modules/errors/forbidden'
 import { GeneralError } from '@/modules/errors/general-error'
@@ -158,6 +163,20 @@ export const routes = [
               {
                 path: 'annotation-queues/:queueId/items/:itemId/annotate',
                 element: <ProjectAnnotationItemAnnotate />,
+              },
+              { path: 'auto-evaluations', element: <ProjectAutoEvaluations /> },
+              {
+                path: 'auto-evaluations/new',
+                element: <ProjectAutoEvaluationNew />,
+              },
+              {
+                path: 'auto-evaluations/:taskId',
+                element: <ProjectAutoEvaluationDetail />,
+              },
+              { path: 'reports', element: <ProjectEvaluationReports /> },
+              {
+                path: 'reports/:reportId',
+                element: <ProjectEvaluationReportDetail />,
               },
             ],
           },

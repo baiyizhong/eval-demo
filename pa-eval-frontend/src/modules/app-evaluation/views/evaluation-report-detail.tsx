@@ -1,0 +1,236 @@
+import { useState } from 'react'
+import { Download, RefreshCw, Send } from 'lucide-react'
+import { useQuery, useQueryClient } from '@tanstack/react-query'
+import { useNavigate, useParams, useSearchParams } from 'react-router'
+import { toast } from 'sonner'
+import { confirm } from '@/lib/confirm'
+import { Page } from '@/components/common/page'
+import { PageAction } from '@/components/common/page-action'
+import { Loading } from '@/components/common/loading'
+import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs'
+import {
+  exportProjectEvaluationReportMock,
+  getProjectEvaluationReportMock,
+  listProjectEvaluationReportFlowbacksMock,
+  regenerateProjectEvaluationReportMock,
+} from '../api/mock-evaluation-report-api'
+import { EvaluationReportAnalysis } from '../components/evaluation-report-analysis'
+import { EvaluationReportBadcaseTable } from '../components/evaluation-report-badcase-table'
+import { EvaluationReportFlowbackDialog } from '../components/evaluation-report-flowback-dialog'
+import { EvaluationReportFlowbackHistory } from '../components/evaluation-report-flowback-history'
+import { EvaluationReportItemTable } from '../components/evaluation-report-item-table'
+import { EvaluationReportSourceBadge } from '../components/evaluation-report-source-badge'
+import { EvaluationReportStatusBadge } from '../components/evaluation-report-status-badge'
+import { EvaluationReportSummary } from '../components/evaluation-report-summary'
+import type {
+  EvaluationReportFlowbackInput,
+  EvaluationReportFlowbackType,
+} from '../types'
+
+export function ProjectEvaluationReportDetail() {
+  const { projectId = 'project_customer_agent', reportId = '' } = useParams()
+  const [searchParams, setSearchParams] = useSearchParams()
+  const navigate = useNavigate()
+  const queryClient = useQueryClient()
+  const [flowbackOpen, setFlowbackOpen] = useState(false)
+  const [flowbackType, setFlowbackType] =
+    useState<EvaluationReportFlowbackType>('BADCASE')
+  const [selectedFlowbackIds, setSelectedFlowbackIds] = useState<string[]>([])
+  const [defaultRange, setDefaultRange] =
+    useState<EvaluationReportFlowbackInput['range']>('BADCASE_ONLY')
+
+  const reportQuery = useQuery({
+    queryKey: ['project-evaluation-report', projectId, reportId],
+    queryFn: () => getProjectEvaluationReportMock(projectId, reportId),
+    enabled: Boolean(reportId),
+  })
+  const flowbacksQuery = useQuery({
+    queryKey: ['project-evaluation-report-flowbacks', projectId, reportId],
+    queryFn: () => listProjectEvaluationReportFlowbacksMock(projectId, reportId),
+    enabled: Boolean(reportId),
+  })
+
+  const invalidateReport = async () => {
+    await queryClient.invalidateQueries({
+      queryKey: ['project-evaluation-report', projectId, reportId],
+    })
+    await queryClient.invalidateQueries({
+      queryKey: ['project-evaluation-report-flowbacks', projectId, reportId],
+    })
+    await queryClient.invalidateQueries({
+      queryKey: ['project-evaluation-reports', projectId],
+    })
+    await queryClient.invalidateQueries({
+      queryKey: ['project-evaluation-report-badcases', projectId, reportId],
+    })
+    await queryClient.invalidateQueries({
+      queryKey: ['project-evaluation-report-items', projectId, reportId],
+    })
+  }
+
+  const report = reportQuery.data
+  const activeTab = searchParams.get('tab') ?? 'overview'
+
+  const openFlowback = (
+    type: EvaluationReportFlowbackType,
+    range: EvaluationReportFlowbackInput['range'],
+    ids: string[] = []
+  ) => {
+    setFlowbackType(type)
+    setDefaultRange(range)
+    setSelectedFlowbackIds(ids)
+    setFlowbackOpen(true)
+  }
+
+  const handleExport = async () => {
+    if (!report) return
+    const exported = await exportProjectEvaluationReportMock(
+      projectId,
+      report.id,
+      'markdown'
+    )
+    const blob = new Blob([exported.content], { type: 'text/markdown' })
+    const url = URL.createObjectURL(blob)
+    const link = document.createElement('a')
+    link.href = url
+    link.download = exported.filename
+    link.click()
+    URL.revokeObjectURL(url)
+    toast.success(`已导出报告：${report.title}`)
+  }
+
+  const handleRegenerate = async () => {
+    if (!report) return
+    const confirmed = await confirm({
+      title: '重新生成评测报告',
+      desc: `将基于 mock 报告数据重新生成「${report.title}」。确定继续吗？`,
+      confirmText: '重新生成',
+    })
+    if (!confirmed) return
+    await regenerateProjectEvaluationReportMock(projectId, report.id)
+    await invalidateReport()
+    toast.success('评测报告已进入重新生成状态')
+  }
+
+  return (
+    <Page fixed fluid className='flex min-h-[calc(100svh-3.5rem)] flex-col'>
+      <div className='flex min-h-0 flex-1 flex-col gap-4 overflow-auto'>
+        <PageAction
+          showBackButton
+          onBack={() => navigate(`/projects/${projectId}/evaluation/reports`)}
+          buttonGroups={{
+            buttons: [
+              {
+                id: 'export',
+                label: '导出',
+                icon: Download,
+                iconPosition: 'start',
+                variant: 'outline',
+                size: 'sm',
+                disabled: !report || report.status !== 'READY',
+                onClick: () => void handleExport(),
+              },
+              {
+                id: 'regenerate',
+                label: '重新生成',
+                icon: RefreshCw,
+                iconPosition: 'start',
+                variant: 'outline',
+                size: 'sm',
+                disabled: !report,
+                onClick: () => void handleRegenerate(),
+              },
+              {
+                id: 'badcase-flowback',
+                label: '回流 Badcase',
+                icon: Send,
+                iconPosition: 'start',
+                size: 'sm',
+                disabled: !report || report.status !== 'READY',
+                onClick: () => openFlowback('BADCASE', 'BADCASE_ONLY'),
+              },
+              {
+                id: 'data-flowback',
+                label: '回流评测数据',
+                icon: Send,
+                iconPosition: 'start',
+                variant: 'outline',
+                size: 'sm',
+                disabled: !report || report.status !== 'READY',
+                onClick: () => openFlowback('EVALUATION_DATA', 'ALL'),
+              },
+            ],
+          }}
+        />
+        {reportQuery.isLoading ? (
+          <Loading text='加载评测报告中...' full />
+        ) : report ? (
+          <>
+            <section className='rounded-lg border bg-card p-4 text-card-foreground'>
+              <div className='flex flex-wrap items-center gap-3'>
+                <h1 className='text-xl font-semibold'>{report.title}</h1>
+                <EvaluationReportSourceBadge sourceType={report.sourceType} />
+                <EvaluationReportStatusBadge status={report.status} />
+              </div>
+              <p className='mt-2 text-sm text-muted-foreground'>
+                来源任务：{report.sourceTaskName} · 样本 {report.sampleCount} · Badcase{' '}
+                {report.badcaseCount}
+              </p>
+            </section>
+            <Tabs
+              value={activeTab}
+              onValueChange={(value) => setSearchParams({ tab: value })}
+              className='min-h-0 flex-1'
+            >
+              <TabsList>
+                <TabsTrigger value='overview'>概览</TabsTrigger>
+                <TabsTrigger value='analysis'>分析</TabsTrigger>
+                <TabsTrigger value='badcases'>Badcase</TabsTrigger>
+                <TabsTrigger value='items'>评测数据</TabsTrigger>
+                <TabsTrigger value='flowbacks'>回流历史</TabsTrigger>
+              </TabsList>
+              <TabsContent value='overview'>
+                <EvaluationReportSummary report={report} />
+              </TabsContent>
+              <TabsContent value='analysis'>
+                <EvaluationReportAnalysis report={report} />
+              </TabsContent>
+              <TabsContent value='badcases' className='min-h-0'>
+                <EvaluationReportBadcaseTable
+                  projectId={projectId}
+                  reportId={reportId}
+                  onFlowback={(ids) => openFlowback('BADCASE', ids.length ? 'SELECTED' : 'BADCASE_ONLY', ids)}
+                />
+              </TabsContent>
+              <TabsContent value='items' className='min-h-0'>
+                <EvaluationReportItemTable
+                  projectId={projectId}
+                  reportId={reportId}
+                  onFlowback={(ids) => openFlowback('EVALUATION_DATA', ids.length ? 'SELECTED' : 'ALL', ids)}
+                />
+              </TabsContent>
+              <TabsContent value='flowbacks'>
+                <EvaluationReportFlowbackHistory records={flowbacksQuery.data ?? []} />
+              </TabsContent>
+            </Tabs>
+            <EvaluationReportFlowbackDialog
+              key={`${flowbackType}-${defaultRange}-${selectedFlowbackIds.join(',')}`}
+              open={flowbackOpen}
+              onOpenChange={setFlowbackOpen}
+              projectId={projectId}
+              reportId={reportId}
+              flowbackType={flowbackType}
+              selectedItemIds={selectedFlowbackIds}
+              defaultRange={defaultRange}
+              onCompleted={invalidateReport}
+            />
+          </>
+        ) : (
+          <section className='rounded-lg border bg-card p-4 text-card-foreground'>
+            评测报告不存在
+          </section>
+        )}
+      </div>
+    </Page>
+  )
+}
