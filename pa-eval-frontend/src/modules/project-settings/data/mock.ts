@@ -12,7 +12,7 @@ export const mockProjectInfo: ProjectInfo = {
   id: 'project_customer_agent',
   organizationName: '智能评测实验室',
   name: '客户服务 Agent 评测',
-  description: '用于客服 Agent 回答质量、工具调用和人工评测流程的核心项目。',
+  description: '用于客服 Agent 回答质量、工具调用和人工标注流程的核心项目。',
   retentionDays: 90,
   createdAt: '2026-06-12T09:30:00+08:00',
   updatedAt: '2026-07-03T10:16:00+08:00',

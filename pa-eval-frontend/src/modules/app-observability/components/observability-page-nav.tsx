@@ -1,6 +1,7 @@
 import { Activity, ListTree, RefreshCw } from 'lucide-react'
 import { useLocation, useParams } from 'react-router'
 import { PageNav } from '@/components/common/page-nav'
+import { ProjectContextSwitcher } from '@/modules/project-context/project-context-switcher'
 
 export function ObservabilityPageNav() {
   const location = useLocation()
@@ -26,6 +27,15 @@ export function ObservabilityPageNav() {
           },
         ],
       }}
+      trailing={
+        <ProjectContextSwitcher
+          currentProjectId={projectId}
+          moduleSegment='observability'
+          defaultSubPath='/traces/dashboard'
+          queryKeyScope='observability'
+          ariaLabel='切换观测项目'
+        />
+      }
       buttonGroups={{
         buttons: [
           {

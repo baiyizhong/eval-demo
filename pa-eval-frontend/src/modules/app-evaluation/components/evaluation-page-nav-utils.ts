@@ -6,6 +6,11 @@ import {
   SlidersHorizontal,
   type LucideIcon,
 } from 'lucide-react'
+import {
+  buildProjectModuleSwitchPath,
+  findProjectContext,
+  type ProjectContextSummary,
+} from '@/modules/project-context/project-context-utils'
 
 type EvaluationTopNavLink = {
   title: string
@@ -19,11 +24,7 @@ type BuildEvaluationTopNavLinksInput = {
   projectId: string
 }
 
-export type EvaluationProjectSummary = {
-  id: string
-  name: string
-  organizationName: string
-}
+export type EvaluationProjectSummary = ProjectContextSummary
 
 export function buildEvaluationTopNavLinks({
   pathname,
@@ -45,7 +46,7 @@ export function buildEvaluationTopNavLinks({
       isActive: pathname.startsWith(`${basePath}/evaluators`),
     },
     {
-      title: '人工评测',
+      title: '人工标注',
       href: `${basePath}/annotation-queues`,
       icon: ClipboardCheck,
       isActive: pathname.startsWith(`${basePath}/annotation-queues`),
@@ -69,7 +70,7 @@ export function findEvaluationProject(
   projects: EvaluationProjectSummary[],
   projectId: string
 ) {
-  return projects.find((project) => project.id === projectId) ?? null
+  return findProjectContext(projects, projectId)
 }
 
 export function buildEvaluationProjectSwitchPath(
@@ -77,13 +78,11 @@ export function buildEvaluationProjectSwitchPath(
   currentProjectId: string,
   nextProjectId: string
 ) {
-  const currentPrefix = `/projects/${currentProjectId}/evaluation`
-  const nextPrefix = `/projects/${nextProjectId}/evaluation`
-
-  if (!pathname.startsWith(currentPrefix)) {
-    return `${nextPrefix}/datasets`
-  }
-
-  const suffix = pathname.slice(currentPrefix.length)
-  return `${nextPrefix}${suffix || '/datasets'}`
+  return buildProjectModuleSwitchPath({
+    pathname,
+    currentProjectId,
+    nextProjectId,
+    moduleSegment: 'evaluation',
+    defaultSubPath: '/datasets',
+  })
 }

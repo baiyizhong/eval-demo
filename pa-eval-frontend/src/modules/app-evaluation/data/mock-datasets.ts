@@ -4,13 +4,13 @@ export const mockDatasets: DatasetRecord[] = [
   {
     id: 'dataset_customer_eval',
     projectId: 'project_customer_agent',
-    name: '客服人工评测沉淀集',
-    description: '人工评测流程沉淀的客服对话评测样本。',
+    name: '客服人工标注沉淀集',
+    description: '人工标注流程沉淀的客服对话评测样本。',
     type: 'evaluation',
     metadata: {
       type: 'evaluation',
       owner: 'quality-team',
-      tags: ['客服', '人工评测'],
+      tags: ['客服', '人工标注'],
     },
     inputSchema: { type: 'object' },
     expectedOutputSchema: { type: 'object' },

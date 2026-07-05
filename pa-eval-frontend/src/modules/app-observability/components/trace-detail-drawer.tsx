@@ -10,10 +10,7 @@ import { Drawer } from '@/components/common/drawer'
 import { JsonEditorPanel } from '@/components/common/json-editor'
 import { Loading } from '@/components/common/loading'
 import { MarkdownEditorPanel } from '@/components/common/markdown-editor'
-import {
-  getProjectTraceMock,
-  patchProjectTraceMock,
-} from '../api/mock-trace-api'
+import { useAPI } from '@/hooks/use-api'
 import { formatDateTime, formatLatency } from '../lib/format'
 import type { TraceDetail } from '../types'
 import { CopyableText } from './copyable-text'
@@ -37,6 +34,7 @@ export function TraceDetailDrawer({
   open,
   onOpenChange,
 }: TraceDetailDrawerProps) {
+  const $api = useAPI()
   const queryClient = useQueryClient()
   const [editing, setEditing] = useState(false)
   const [saving, setSaving] = useState(false)
@@ -44,10 +42,13 @@ export function TraceDetailDrawer({
   const [output, setOutput] = useState('')
   const [metadataData, setMetadataData] = useState<JsonData>({})
   const [traceChainCollapsed, setTraceChainCollapsed] = useState(false)
-  const queryKey = ['trace-detail', projectId, traceId]
+  const queryKey = ['trace-detail', $api, projectId, traceId]
   const detailQuery = useQuery({
     queryKey,
-    queryFn: () => getProjectTraceMock(projectId, traceId ?? ''),
+    queryFn: () =>
+      $api.getProjectTrace<TraceDetail>({
+        path: { projectId, traceId: traceId ?? '' },
+      }),
     enabled: open && Boolean(traceId),
   })
   const detail = detailQuery.data
@@ -112,15 +113,14 @@ export function TraceDetailDrawer({
 
     setSaving(true)
     try {
-      const nextDetail = await patchProjectTraceMock(
-        projectId,
-        detail.traceId,
-        {
+      const nextDetail = await $api.patchProjectTrace<TraceDetail>({
+        path: { projectId, traceId: detail.traceId },
+        body: {
           input,
           output,
           metadata: result.data,
-        }
-      )
+        },
+      })
       queryClient.setQueryData(queryKey, nextDetail)
       setMetadataData(nextDetail.metadata)
       setEditing(false)

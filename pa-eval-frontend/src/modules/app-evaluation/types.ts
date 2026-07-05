@@ -219,16 +219,18 @@ export type AnnotationNavigationResult = {
   total: number
 }
 
-export const annotationObjectTypeLabels: Record<AnnotationObjectType, string> = {
-  TRACE: '追踪',
-  OBSERVATION: '观测',
-  SESSION: '会话',
-}
+export const annotationObjectTypeLabels: Record<AnnotationObjectType, string> =
+  {
+    TRACE: '追踪',
+    OBSERVATION: '观测',
+    SESSION: '会话',
+  }
 
-export const annotationItemStatusLabels: Record<AnnotationItemStatus, string> = {
-  PENDING: '待处理',
-  COMPLETED: '已完成',
-}
+export const annotationItemStatusLabels: Record<AnnotationItemStatus, string> =
+  {
+    PENDING: '待处理',
+    COMPLETED: '已完成',
+  }
 
 export const scoreDataTypeLabels: Record<ScoreDataType, string> = {
   NUMERIC: '数值',
@@ -238,12 +240,7 @@ export const scoreDataTypeLabels: Record<ScoreDataType, string> = {
 }
 
 export type AutoEvaluationTaskStatus =
-  | 'DRAFT'
-  | 'READY'
-  | 'RUNNING'
-  | 'COMPLETED'
-  | 'FAILED'
-  | 'CANCELLED'
+  'DRAFT' | 'READY' | 'RUNNING' | 'COMPLETED' | 'FAILED' | 'CANCELLED'
 
 export type AutoEvaluationEvaluatorType = 'LLM_AS_JUDGE' | 'CODE' | 'WORKFLOW'
 
@@ -256,11 +253,7 @@ export type EvaluationReportStatus = 'GENERATING' | 'READY' | 'FAILED'
 export type EvaluationReportFlowbackType = 'BADCASE' | 'EVALUATION_DATA'
 
 export type EvaluationReportFlowbackStatus =
-  | 'PENDING'
-  | 'RUNNING'
-  | 'COMPLETED'
-  | 'PARTIAL_FAILED'
-  | 'FAILED'
+  'PENDING' | 'RUNNING' | 'COMPLETED' | 'PARTIAL_FAILED' | 'FAILED'
 
 export type AutoEvaluationEvaluatorSummary = {
   id: string
@@ -490,7 +483,7 @@ export const evaluationReportSourceTypeLabels: Record<
   string
 > = {
   AUTO_EVAL: '自动评测',
-  MANUAL_ANNOTATION: '人工评测',
+  MANUAL_ANNOTATION: '人工标注',
 }
 
 export const evaluationReportStatusLabels: Record<

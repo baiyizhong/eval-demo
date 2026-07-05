@@ -3,7 +3,7 @@ import { useQuery } from '@tanstack/react-query'
 import { useNavigate, useParams } from 'react-router'
 import { Loading } from '@/components/common/loading'
 import { Page } from '@/components/common/page'
-import { getTraceMetricsMock } from '../api/mock-trace-api'
+import { useAPI } from '@/hooks/use-api'
 import { ObservabilityPageNav } from '../components/observability-page-nav'
 import { SlowTraceRanking } from '../components/slow-trace-ranking'
 import { TraceDashboardCards } from '../components/trace-dashboard-cards'
@@ -13,15 +13,21 @@ import {
   TraceTrendChart,
 } from '../components/trace-dashboard-charts'
 import { TraceDashboardFilters } from '../components/trace-dashboard-filters'
+import type { TraceMetrics } from '../types'
 
 export function TraceDashboard() {
+  const $api = useAPI()
   const navigate = useNavigate()
   const { projectId = 'project_customer_agent' } = useParams()
   const [timeRange, setTimeRange] = useState('24h')
   const [environment, setEnvironment] = useState('all')
   const metricsQuery = useQuery({
-    queryKey: ['trace-metrics', projectId, timeRange, environment],
-    queryFn: () => getTraceMetricsMock(projectId),
+    queryKey: ['trace-metrics', $api, projectId, timeRange, environment],
+    queryFn: () =>
+      $api.getTraceMetrics<TraceMetrics>({
+        path: { projectId },
+        query: { timeRange, environment },
+      }),
   })
   const metrics = metricsQuery.data
 

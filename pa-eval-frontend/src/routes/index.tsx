@@ -21,6 +21,8 @@ import { TraceDashboard } from '@/modules/app-observability/views/trace-dashboar
 import { TraceLogs } from '@/modules/app-observability/views/trace-logs'
 import { Apps } from '@/modules/apps'
 import { Dashboard } from '@/modules/dashboard'
+import { EnvironmentSelect } from '@/modules/environment'
+import { EnvironmentGate } from '@/modules/environment/environment-gate'
 import { ForbiddenError } from '@/modules/errors/forbidden'
 import { GeneralError } from '@/modules/errors/general-error'
 import { MaintenanceError } from '@/modules/errors/maintenance-error'
@@ -122,110 +124,120 @@ export const routes = [
     element: <RootLayout />,
     errorElement: <RootErrorBoundary />,
     children: [
-      // App routes with SidebarLayout
-      {
-        path: '',
-        element: <SidebarLayout />,
-        children: [
-          { index: true, element: <Dashboard /> },
-          { path: 'dashboard', element: <Dashboard /> },
-          { path: 'tasks', element: <Tasks /> },
-          { path: 'tasks/evaluators', element: <TaskEvaluators /> },
-          {
-            path: 'tasks/auto-evaluation',
-            element: <TasksAutoEvaluation />,
-          },
-          {
-            path: 'projects/:projectId/observability',
-            element: <AppObservability />,
-            children: [
-              { index: true, element: <AppObservabilityIndexRedirect /> },
-              { path: 'traces/dashboard', element: <TraceDashboard /> },
-              { path: 'traces/logs', element: <TraceLogs /> },
-            ],
-          },
-          {
-            path: 'projects/:projectId/evaluation',
-            element: <AppEvaluation />,
-            children: [
-              { index: true, element: <AppEvaluationIndexRedirect /> },
-              { path: 'datasets', element: <ProjectDatasets /> },
-              {
-                path: 'datasets/:datasetId',
-                element: <ProjectDatasetDetail />,
-              },
-              {
-                path: 'evaluators',
-                element: <TaskEvaluators navigation='project-evaluation' />,
-              },
-              {
-                path: 'annotation-queues',
-                element: <ProjectAnnotationQueues />,
-              },
-              {
-                path: 'annotation-queues/:queueId',
-                element: <ProjectAnnotationQueueDetail />,
-              },
-              {
-                path: 'annotation-queues/:queueId/items/:itemId/annotate',
-                element: <ProjectAnnotationItemAnnotate />,
-              },
-              { path: 'auto-evaluations', element: <ProjectAutoEvaluations /> },
-              {
-                path: 'auto-evaluations/new',
-                element: <ProjectAutoEvaluationNew />,
-              },
-              {
-                path: 'auto-evaluations/:taskId',
-                element: <ProjectAutoEvaluationDetail />,
-              },
-              { path: 'reports', element: <ProjectEvaluationReports /> },
-              {
-                path: 'reports/:reportId',
-                element: <ProjectEvaluationReportDetail />,
-              },
-            ],
-          },
-          {
-            path: 'projects/:projectId/settings',
-            element: <ProjectSettings />,
-            children: [
-              { index: true, element: <ProjectSettingsIndexRedirect /> },
-              { path: 'general', element: <ProjectGeneralSettings /> },
-              {
-                path: 'score-configs',
-                element: <ProjectScoreConfigsSettings />,
-              },
-              { path: 'members', element: <ProjectMembersSettings /> },
-              { path: 'models', element: <ProjectModelsSettings /> },
-              { path: 'api-keys', element: <ProjectApiKeysSettings /> },
-            ],
-          },
-        ],
-      },
-      {
-        path: '',
-        element: <AppsTopbarLayout />,
-        children: [
-          { path: 'apps', element: <Apps /> },
-          {
-            path: 'settings',
-            element: <Settings />,
-            children: [
-              { index: true, element: <Navigate to='info' replace /> },
-              { path: 'info', element: <SettingsOrganizationInfo /> },
-              { path: 'members', element: <SettingsOrganizationMembers /> },
-            ],
-          },
-        ],
-      },
-      // Public error pages
+      // Public pages
       { path: 'login', element: <Login /> },
+      { path: 'environment', element: <EnvironmentSelect /> },
       { path: '401', element: <UnauthorisedError /> },
       { path: '403', element: <ForbiddenError /> },
       { path: '404', element: <NotFoundError /> },
       { path: '500', element: <GeneralError /> },
       { path: '503', element: <MaintenanceError /> },
+      {
+        path: '',
+        element: <EnvironmentGate />,
+        children: [
+          // App routes with SidebarLayout
+          {
+            path: '',
+            element: <SidebarLayout />,
+            children: [
+              { index: true, element: <Dashboard /> },
+              { path: 'dashboard', element: <Dashboard /> },
+              { path: 'tasks', element: <Tasks /> },
+              { path: 'tasks/evaluators', element: <TaskEvaluators /> },
+              {
+                path: 'tasks/auto-evaluation',
+                element: <TasksAutoEvaluation />,
+              },
+              {
+                path: 'projects/:projectId/observability',
+                element: <AppObservability />,
+                children: [
+                  { index: true, element: <AppObservabilityIndexRedirect /> },
+                  { path: 'traces/dashboard', element: <TraceDashboard /> },
+                  { path: 'traces/logs', element: <TraceLogs /> },
+                ],
+              },
+              {
+                path: 'projects/:projectId/evaluation',
+                element: <AppEvaluation />,
+                children: [
+                  { index: true, element: <AppEvaluationIndexRedirect /> },
+                  { path: 'datasets', element: <ProjectDatasets /> },
+                  {
+                    path: 'datasets/:datasetId',
+                    element: <ProjectDatasetDetail />,
+                  },
+                  {
+                    path: 'evaluators',
+                    element: <TaskEvaluators navigation='project-evaluation' />,
+                  },
+                  {
+                    path: 'annotation-queues',
+                    element: <ProjectAnnotationQueues />,
+                  },
+                  {
+                    path: 'annotation-queues/:queueId',
+                    element: <ProjectAnnotationQueueDetail />,
+                  },
+                  {
+                    path: 'annotation-queues/:queueId/items/:itemId/annotate',
+                    element: <ProjectAnnotationItemAnnotate />,
+                  },
+                  {
+                    path: 'auto-evaluations',
+                    element: <ProjectAutoEvaluations />,
+                  },
+                  {
+                    path: 'auto-evaluations/new',
+                    element: <ProjectAutoEvaluationNew />,
+                  },
+                  {
+                    path: 'auto-evaluations/:taskId',
+                    element: <ProjectAutoEvaluationDetail />,
+                  },
+                  { path: 'reports', element: <ProjectEvaluationReports /> },
+                  {
+                    path: 'reports/:reportId',
+                    element: <ProjectEvaluationReportDetail />,
+                  },
+                ],
+              },
+              {
+                path: 'projects/:projectId/settings',
+                element: <ProjectSettings />,
+                children: [
+                  { index: true, element: <ProjectSettingsIndexRedirect /> },
+                  { path: 'general', element: <ProjectGeneralSettings /> },
+                  {
+                    path: 'score-configs',
+                    element: <ProjectScoreConfigsSettings />,
+                  },
+                  { path: 'members', element: <ProjectMembersSettings /> },
+                  { path: 'models', element: <ProjectModelsSettings /> },
+                  { path: 'api-keys', element: <ProjectApiKeysSettings /> },
+                ],
+              },
+            ],
+          },
+          {
+            path: '',
+            element: <AppsTopbarLayout />,
+            children: [
+              { path: 'apps', element: <Apps /> },
+              {
+                path: 'settings',
+                element: <Settings />,
+                children: [
+                  { index: true, element: <Navigate to='info' replace /> },
+                  { path: 'info', element: <SettingsOrganizationInfo /> },
+                  { path: 'members', element: <SettingsOrganizationMembers /> },
+                ],
+              },
+            ],
+          },
+        ],
+      },
     ],
   },
 ]

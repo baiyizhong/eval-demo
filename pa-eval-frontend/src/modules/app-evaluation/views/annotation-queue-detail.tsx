@@ -1,17 +1,10 @@
 import { useCallback, useMemo } from 'react'
-import { Download } from 'lucide-react'
 import { useQuery, useQueryClient } from '@tanstack/react-query'
+import { Download } from 'lucide-react'
 import { useNavigate, useParams, useSearchParams } from 'react-router'
 import { toast } from 'sonner'
 import { confirm } from '@/lib/confirm'
-import {
-  Card,
-  CardContent,
-  CardHeader,
-  CardTitle,
-} from '@/components/ui/card'
-import { Page } from '@/components/common/page'
-import { PageAction } from '@/components/common/page-action'
+import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card'
 import {
   DataTable,
   type DataTableFilterBinding,
@@ -19,6 +12,8 @@ import {
   type DataTableToolbarFilter,
 } from '@/components/common/data-table'
 import { Loading } from '@/components/common/loading'
+import { Page } from '@/components/common/page'
+import { PageAction } from '@/components/common/page-action'
 import {
   deleteProjectAnnotationQueueItemsMock,
   exportProjectAnnotationQueueMock,
@@ -69,10 +64,7 @@ export function ProjectAnnotationQueueDetail() {
   const navigate = useNavigate()
   const queryClient = useQueryClient()
   const [searchParams] = useSearchParams()
-  const {
-    projectId = 'project_customer_agent',
-    queueId = '',
-  } = useParams()
+  const { projectId = 'project_customer_agent', queueId = '' } = useParams()
 
   const queryState = useMemo<DataTableQueryState>(
     () => ({
@@ -96,7 +88,8 @@ export function ProjectAnnotationQueueDetail() {
   })
   const metricQuery = useQuery({
     queryKey: ['project-annotation-queue-metrics', projectId, queueId],
-    queryFn: () => getProjectAnnotationQueueMetricSummaryMock(projectId, queueId),
+    queryFn: () =>
+      getProjectAnnotationQueueMetricSummaryMock(projectId, queueId),
     enabled: Boolean(queueId),
   })
 
@@ -162,14 +155,15 @@ export function ProjectAnnotationQueueDetail() {
             <div className='flex min-w-0 flex-wrap items-center gap-2'>
               <span className='truncate text-sm font-medium'>{queue.name}</span>
               <span className='text-muted-foreground text-sm'>
-                {queue.assignees.map((user) => user.name).join('、') || '未分配'}
+                {queue.assignees.map((user) => user.name).join('、') ||
+                  '未分配'}
               </span>
             </div>
           ) : null}
         </PageAction>
 
         {queueQuery.isLoading || metricQuery.isLoading ? (
-          <Loading text='加载人工评测任务详情中...' className='flex-1' />
+          <Loading text='加载人工标注任务详情中...' className='flex-1' />
         ) : null}
 
         {queue && metrics ? (
@@ -187,7 +181,7 @@ export function ProjectAnnotationQueueDetail() {
           </>
         ) : null}
 
-        <section className='flex min-h-0 min-w-0 flex-1 flex-col rounded-lg border bg-card p-4 text-card-foreground'>
+        <section className='bg-card text-card-foreground flex min-h-0 min-w-0 flex-1 flex-col rounded-lg border p-4'>
           <DataTable<AnnotationQueueItemRecord>
             className='min-h-0 flex-1'
             columns={columns}
@@ -262,7 +256,9 @@ function MetricCard({
       <CardContent>
         <div className='text-2xl font-semibold'>{value}</div>
         {description ? (
-          <div className='text-muted-foreground mt-1 text-xs'>{description}</div>
+          <div className='text-muted-foreground mt-1 text-xs'>
+            {description}
+          </div>
         ) : null}
       </CardContent>
     </Card>

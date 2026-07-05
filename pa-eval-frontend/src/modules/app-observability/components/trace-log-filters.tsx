@@ -24,6 +24,7 @@ export const traceLogToolbarFilters: DataTableToolbarFilter[] = [
     columnId: 'environment',
     title: '环境',
     options: [
+      { label: 'default', value: 'default' },
       { label: 'production', value: 'production' },
       { label: 'staging', value: 'staging' },
       { label: 'testing', value: 'testing' },

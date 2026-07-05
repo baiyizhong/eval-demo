@@ -41,6 +41,7 @@ export function TraceDashboardFilters({
         <SelectContent>
           <SelectGroup>
             <SelectItem value='all'>全部环境</SelectItem>
+            <SelectItem value='default'>default</SelectItem>
             <SelectItem value='production'>production</SelectItem>
             <SelectItem value='staging'>staging</SelectItem>
             <SelectItem value='testing'>testing</SelectItem>

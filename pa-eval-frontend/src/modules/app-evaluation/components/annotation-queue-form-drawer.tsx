@@ -1,5 +1,5 @@
-import { toast } from 'sonner'
 import { z } from 'zod'
+import { toast } from 'sonner'
 import { Checkbox } from '@/components/ui/checkbox'
 import {
   FormControl,
@@ -51,7 +51,9 @@ export function AnnotationQueueFormDrawer({
       await onSubmit(values)
       onOpenChange(false)
     } catch (error) {
-      toast.error(error instanceof Error ? error.message : '保存人工评测任务失败')
+      toast.error(
+        error instanceof Error ? error.message : '保存人工标注任务失败'
+      )
     }
   }
 
@@ -59,7 +61,7 @@ export function AnnotationQueueFormDrawer({
     <Drawer
       open={open}
       onOpenChange={onOpenChange}
-      title={queue ? '编辑人工评测任务' : '新建人工评测任务'}
+      title={queue ? '编辑人工标注任务' : '新建人工标注任务'}
       confirmText={queue ? '保存' : '创建'}
       confirmProps={{ form: formId, type: 'submit' }}
     >
@@ -80,7 +82,10 @@ export function AnnotationQueueFormDrawer({
                 <FormItem>
                   <FormLabel>任务名称</FormLabel>
                   <FormControl>
-                    <Input placeholder='例如：客服会话质量人工评测' {...field} />
+                    <Input
+                      placeholder='例如：客服会话质量人工标注'
+                      {...field}
+                    />
                   </FormControl>
                   <FormMessage />
                 </FormItem>
@@ -122,7 +127,9 @@ export function AnnotationQueueFormDrawer({
                                 onCheckedChange={(checked) => {
                                   const next = checked
                                     ? [...field.value, config.id]
-                                    : field.value.filter((id) => id !== config.id)
+                                    : field.value.filter(
+                                        (id) => id !== config.id
+                                      )
                                   field.onChange(next)
                                 }}
                               />

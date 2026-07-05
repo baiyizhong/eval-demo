@@ -1,12 +1,9 @@
 import { useCallback, useMemo, useState } from 'react'
 import { useParams, useSearchParams } from 'react-router'
 import { Page } from '@/components/common/page'
-import {
-  DataTable,
-  type DataTableQueryState,
-} from '@/components/common/data-table'
+import { DataTable } from '@/components/common/data-table'
 import { Loading } from '@/components/common/loading'
-import { listProjectTracesMock } from '../api/mock-trace-api'
+import { useAPI } from '@/hooks/use-api'
 import { ObservabilityPageNav } from '../components/observability-page-nav'
 import { TraceDetailDrawer } from '../components/trace-detail-drawer'
 import { TraceLogBulkActions } from '../components/trace-log-bulk-actions'
@@ -16,32 +13,11 @@ import {
   traceLogToolbarFilters,
   traceLogUrlFilters,
 } from '../components/trace-log-filters'
-import type { TraceListQuery, TraceLogRow } from '../types'
-
-function buildTraceListQuery(
-  state: DataTableQueryState,
-  projectId: string
-): TraceListQuery {
-  return {
-    projectId,
-    page: state.page,
-    pageSize: state.pageSize,
-    keyword: state.keyword,
-    createdAtRange: state.filters.createdAtRange as string[] | undefined,
-    environments: state.filters.environment as string[] | undefined,
-    statuses: state.filters.status as string[] | undefined,
-    tags: state.filters.tags as string[] | undefined,
-    latencyMin: String(state.filters.latencyMin ?? ''),
-    latencyMax: String(state.filters.latencyMax ?? ''),
-    sessionId: String(state.filters.sessionId ?? ''),
-    userId: String(state.filters.userId ?? ''),
-    businessId: String(state.filters.businessId ?? ''),
-    metadataKey: String(state.filters.metadataKey ?? ''),
-    metadataValue: String(state.filters.metadataValue ?? ''),
-  }
-}
+import type { TraceListResponse, TraceLogRow } from '../types'
+import { buildTraceListQuery } from './trace-logs-query'
 
 export function TraceLogs() {
+  const $api = useAPI()
   const { projectId = 'project_customer_agent' } = useParams()
   const [searchParams, setSearchParams] = useSearchParams()
   const [selectedTraceId, setSelectedTraceId] = useState<string | null>(
@@ -79,9 +55,12 @@ export function TraceLogs() {
             className='min-h-0 flex-1'
             columns={columns}
             request={{
-              queryKey: (state) => ['trace-logs', projectId, state],
+              queryKey: (state) => ['trace-logs', $api, projectId, state],
               queryFn: (state) =>
-                listProjectTracesMock(buildTraceListQuery(state, projectId)),
+                $api.listProjectTraces<TraceListResponse>({
+                  path: { projectId },
+                  query: buildTraceListQuery(state, projectId),
+                }),
             }}
             urlState={{
               defaultPageSize: 10,

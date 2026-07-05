@@ -1,0 +1,37 @@
+import assert from 'node:assert/strict'
+import { test } from 'node:test'
+import type { DataTableQueryState } from '../../components/common/data-table/data-table.tsx'
+import { buildTraceListQuery } from '../../modules/app-observability/views/trace-logs-query.ts'
+
+const baseState: DataTableQueryState = {
+  page: 1,
+  pageSize: 10,
+  keyword: '',
+  filters: {},
+  sorting: [],
+}
+
+test('trace logs query defaults to the last 24 hours when no time filter is selected', () => {
+  const query = buildTraceListQuery(baseState, 'project-1')
+
+  assert.equal(query.timeRange, '24h')
+  assert.equal(query.createdAtRange, undefined)
+})
+
+test('trace logs query keeps an explicit createdAtRange instead of defaulting to 24 hours', () => {
+  const query = buildTraceListQuery(
+    {
+      ...baseState,
+      filters: {
+        createdAtRange: ['2026-07-05 00:00:00', '2026-07-05 23:59:59'],
+      },
+    },
+    'project-1'
+  )
+
+  assert.deepEqual(query.createdAtRange, [
+    '2026-07-05 00:00:00',
+    '2026-07-05 23:59:59',
+  ])
+  assert.equal(query.timeRange, undefined)
+})

@@ -1,5 +1,5 @@
-import { describe, it } from 'node:test'
 import assert from 'node:assert/strict'
+import { describe, it } from 'node:test'
 import type { DataTableQueryState } from '@/components/common/data-table'
 import {
   addProjectAnnotationItemToDatasetMock,
@@ -54,14 +54,14 @@ describe('mock annotation api', () => {
     const created = await createProjectAnnotationQueueMock(
       'project_customer_agent',
       {
-        name: '人工评测回归任务',
+        name: '人工标注回归任务',
         description: '验证创建任务 mock 闭环',
         scoreConfigIds: ['score_accuracy', 'score_usability'],
         assigneeIds: ['user_annotator_a'],
       }
     )
 
-    assert.equal(created.name, '人工评测回归任务')
+    assert.equal(created.name, '人工标注回归任务')
     assert.deepEqual(created.scoreConfigIds, [
       'score_accuracy',
       'score_usability',

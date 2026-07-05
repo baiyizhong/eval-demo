@@ -1,24 +1,24 @@
 import { useCallback, useMemo, useState } from 'react'
-import { Plus } from 'lucide-react'
 import { useQueryClient } from '@tanstack/react-query'
+import { Plus } from 'lucide-react'
 import { useParams } from 'react-router'
 import { toast } from 'sonner'
 import { confirm } from '@/lib/confirm'
-import { Page } from '@/components/common/page'
 import {
   DataTable,
   type DataTableFilterBinding,
   type DataTableToolbarFilter,
 } from '@/components/common/data-table'
 import { Loading } from '@/components/common/loading'
+import { Page } from '@/components/common/page'
 import {
   createProjectAnnotationQueueMock,
   deleteProjectAnnotationQueueMock,
   listProjectAnnotationQueuesMock,
   updateProjectAnnotationQueueMock,
 } from '../api/mock-annotation-api'
-import { AnnotationQueueFormDrawer } from '../components/annotation-queue-form-drawer'
 import { createAnnotationQueueColumns } from '../components/annotation-queue-columns'
+import { AnnotationQueueFormDrawer } from '../components/annotation-queue-form-drawer'
 import { EvaluationPageNav } from '../components/evaluation-page-nav'
 import type { AnnotationQueueFormInput, AnnotationQueueRecord } from '../types'
 
@@ -79,10 +79,10 @@ export function ProjectAnnotationQueues() {
   const handleSubmitQueue = async (input: AnnotationQueueFormInput) => {
     if (editingQueue) {
       await updateProjectAnnotationQueueMock(projectId, editingQueue.id, input)
-      toast.success('人工评测任务已更新')
+      toast.success('人工标注任务已更新')
     } else {
       await createProjectAnnotationQueueMock(projectId, input)
-      toast.success('人工评测任务已创建')
+      toast.success('人工标注任务已创建')
     }
     await invalidateQueues()
   }
@@ -95,7 +95,7 @@ export function ProjectAnnotationQueues() {
             buttons: [
               {
                 id: 'create',
-                label: '新建人工评测任务',
+                label: '新建人工标注任务',
                 icon: Plus,
                 iconPosition: 'start',
                 size: 'sm',
@@ -107,7 +107,7 @@ export function ProjectAnnotationQueues() {
             ],
           }}
         />
-        <section className='flex min-h-0 min-w-0 flex-1 flex-col rounded-lg border bg-card p-4 text-card-foreground'>
+        <section className='bg-card text-card-foreground flex min-h-0 min-w-0 flex-1 flex-col rounded-lg border p-4'>
           <DataTable<AnnotationQueueRecord>
             className='min-h-0 flex-1'
             columns={columns}
@@ -117,7 +117,8 @@ export function ProjectAnnotationQueues() {
                 projectId,
                 state,
               ],
-              queryFn: (state) => listProjectAnnotationQueuesMock(projectId, state),
+              queryFn: (state) =>
+                listProjectAnnotationQueuesMock(projectId, state),
             }}
             urlState={{
               defaultPageSize: 10,
@@ -139,11 +140,11 @@ export function ProjectAnnotationQueues() {
             }}
             loadingText={
               <Loading
-                text='加载人工评测任务中...'
+                text='加载人工标注任务中...'
                 className='min-h-24 border-0 bg-transparent'
               />
             }
-            emptyText='当前项目下暂无匹配的人工评测任务'
+            emptyText='当前项目下暂无匹配的人工标注任务'
             minTableWidth={1280}
           />
         </section>
@@ -164,7 +165,7 @@ async function handleDeleteQueue(
   onDeleted: () => Promise<unknown>
 ) {
   const confirmed = await confirm({
-    title: '删除人工评测任务',
+    title: '删除人工标注任务',
     desc: `删除后将移除「${queue.name}」及其 mock 队列数据，不会删除源对象、历史评分或数据集项。确定继续吗？`,
     confirmText: '删除',
     destructive: true,
@@ -174,5 +175,5 @@ async function handleDeleteQueue(
 
   await deleteProjectAnnotationQueueMock(projectId, queue.id)
   await onDeleted()
-  toast.success(`已删除人工评测任务：${queue.name}`)
+  toast.success(`已删除人工标注任务：${queue.name}`)
 }

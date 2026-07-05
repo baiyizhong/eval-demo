@@ -1,8 +1,10 @@
 import { layoutApi } from '@/modules/layout/api'
+import { observabilityApi } from '@/modules/app-observability/api'
 import { organizationApi } from '@/modules/organization-management/api'
 
 export const apiRegistry = {
   ...layoutApi,
+  ...observabilityApi,
   ...organizationApi,
   getPermissions: {
     method: 'GET',

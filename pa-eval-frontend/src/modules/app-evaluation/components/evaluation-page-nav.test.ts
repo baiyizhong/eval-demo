@@ -24,7 +24,7 @@ test('buildEvaluationTopNavLinks renders project evaluation top nav', () => {
         href: '/projects/project-real-1/evaluation/evaluators',
       },
       {
-        title: '人工评测',
+        title: '人工标注',
         href: '/projects/project-real-1/evaluation/annotation-queues',
       },
       {

@@ -1,9 +1,9 @@
 import { type MouseEvent, useMemo } from 'react'
 import { useNavigate } from 'react-router'
-
+import { useAuthStore } from '@/stores/auth-store'
+import { useEnvironmentStore } from '@/stores/environment-store'
 import { authMenuActions } from '@/lib/auth-menu'
 import { getDisplayUserFromAccessToken } from '@/lib/auth-token'
-import { useAuthStore } from '@/stores/auth-store'
 
 type AuthMenuEvent = MouseEvent<HTMLAnchorElement | HTMLButtonElement>
 type AuthMenuCompatibleAction = {
@@ -13,6 +13,9 @@ type AuthMenuCompatibleAction = {
 export function useAuthProfileMenu() {
   const navigate = useNavigate()
   const { auth } = useAuthStore()
+  const resetEnvironment = useEnvironmentStore(
+    (state) => state.resetEnvironment
+  )
   const user = useMemo(
     () => getDisplayUserFromAccessToken(auth.accessToken),
     [auth.accessToken]
@@ -28,6 +31,7 @@ export function useAuthProfileMenu() {
 
     event.preventDefault()
     auth.reset()
+    resetEnvironment()
     navigate('/login', { replace: true })
   }
 

@@ -2,7 +2,6 @@ import type {
   DataTableListResponse,
   DataTableQueryState,
 } from '@/components/common/data-table'
-import { createProjectDatasetItemMock } from './mock-dataset-api'
 import {
   mockAnnotationQueueItems,
   mockAnnotationQueues,
@@ -20,6 +19,7 @@ import type {
   AnnotationScoreFormInput,
   AnnotationScoreRecord,
 } from '../types'
+import { createProjectDatasetItemMock } from './mock-dataset-api'
 
 let queues = clone(mockAnnotationQueues)
 let items = clone(mockAnnotationQueueItems)
@@ -46,7 +46,10 @@ export async function listProjectAnnotationQueuesMock(
     .map(hydrateQueue)
     .filter((queue) => {
       if (!keyword) return true
-      return [queue.name, queue.description].join(' ').toLowerCase().includes(keyword)
+      return [queue.name, queue.description]
+        .join(' ')
+        .toLowerCase()
+        .includes(keyword)
     })
     .filter((queue) => {
       if (!assignees?.length) return true
@@ -77,7 +80,9 @@ export async function getProjectAnnotationQueueMetricSummaryMock(
   await delay()
 
   const queueItems = listQueueItems(projectId, queueId)
-  const completed = queueItems.filter((item) => item.status === 'COMPLETED').length
+  const completed = queueItems.filter(
+    (item) => item.status === 'COMPLETED'
+  ).length
   const pending = queueItems.filter((item) => item.status === 'PENDING').length
 
   return {
@@ -127,7 +132,7 @@ export async function updateProjectAnnotationQueueMock(
   const index = queues.findIndex(
     (queue) => queue.projectId === projectId && queue.id === queueId
   )
-  if (index < 0) throw new Error('人工评测任务不存在或已不可用')
+  if (index < 0) throw new Error('人工标注任务不存在或已不可用')
 
   queues[index] = {
     ...queues[index],
@@ -334,8 +339,12 @@ function filterQueueItems(
 
   return listQueueItems(projectId, queueId).filter((item) => {
     if (statuses?.length && !statuses.includes(item.status)) return false
-    if (objectTypes?.length && !objectTypes.includes(item.objectType)) return false
-    if (annotators?.length && !annotators.includes(item.completedBy?.id ?? '')) {
+    if (objectTypes?.length && !objectTypes.includes(item.objectType))
+      return false
+    if (
+      annotators?.length &&
+      !annotators.includes(item.completedBy?.id ?? '')
+    ) {
       return false
     }
     if (!keyword) return true
@@ -361,7 +370,8 @@ function hydrateQueue(queue: AnnotationQueueRecord): AnnotationQueueRecord {
 
   return {
     ...queue,
-    completedCount: queueItems.filter((item) => item.status === 'COMPLETED').length,
+    completedCount: queueItems.filter((item) => item.status === 'COMPLETED')
+      .length,
     pendingCount: queueItems.filter((item) => item.status === 'PENDING').length,
     scoreConfigs: mockScoreConfigs.filter((config) =>
       queue.scoreConfigIds.includes(config.id)
@@ -376,7 +386,7 @@ function findQueue(projectId: string, queueId: string) {
   const queue = queues.find(
     (item) => item.projectId === projectId && item.id === queueId
   )
-  if (!queue) throw new Error('人工评测任务不存在或已不可用')
+  if (!queue) throw new Error('人工标注任务不存在或已不可用')
   return queue
 }
 

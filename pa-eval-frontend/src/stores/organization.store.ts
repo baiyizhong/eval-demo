@@ -1,5 +1,5 @@
-import { create } from 'zustand'
 import type { Organization } from '@/modules/organization-management/data/schema'
+import { create } from 'zustand'
 
 type OrganizationStoreState = {
   organizations: Organization[]
@@ -8,6 +8,7 @@ type OrganizationStoreState = {
   setOrganizations: (organizations: Organization[]) => void
   setCurrentOrganizationId: (organizationId: string | null) => void
   upsertOrganization: (organization: Organization) => void
+  resetOrganizations: () => void
   getCurrentOrganization: () => Organization | null
 }
 
@@ -32,6 +33,12 @@ export const useOrganizationStore = create<OrganizationStoreState>(
       }),
     setCurrentOrganizationId: (currentOrganizationId) =>
       set({ currentOrganizationId }),
+    resetOrganizations: () =>
+      set({
+        organizations: [],
+        currentOrganizationId: null,
+        isLoaded: false,
+      }),
     upsertOrganization: (organization) =>
       set((state) => {
         const existingIndex = state.organizations.findIndex(

@@ -2,7 +2,7 @@ import type { TreeNode } from '@/components/business/llm-trace-chain'
 
 export type TraceStatus = 'success' | 'failed' | 'running' | 'unknown'
 
-export type TraceEnvironment = 'production' | 'staging' | 'testing'
+export type TraceEnvironment = 'default' | 'production' | 'staging' | 'testing'
 
 export type TraceLogRow = {
   traceId: string
@@ -67,6 +67,7 @@ export type TraceListQuery = {
   pageSize: number
   keyword?: string
   createdAtRange?: string[]
+  timeRange?: '24h' | '7d' | '30d'
   environments?: string[]
   statuses?: string[]
   tags?: string[]

@@ -26,7 +26,11 @@ export function AnnotationQueueRowActions({
   return (
     <DropdownMenu>
       <DropdownMenuTrigger asChild>
-        <Button variant='ghost' size='icon' aria-label='打开人工评测任务操作菜单'>
+        <Button
+          variant='ghost'
+          size='icon'
+          aria-label='打开人工标注任务操作菜单'
+        >
           <MoreHorizontal />
         </Button>
       </DropdownMenuTrigger>

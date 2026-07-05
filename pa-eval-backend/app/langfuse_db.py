@@ -137,6 +137,9 @@ class LangfuseDatabaseReader:
         )
         return [self._to_project_payload(row) for row in rows]
 
+    async def ensure_project_visible(self, project_id: str, user_id: str) -> None:
+        await self._ensure_project_visible(project_id, user_id)
+
     async def list_evaluators_for_user(self, user_id: str) -> list[dict[str, Any]]:
         langfuse_evaluators = await self._list_langfuse_evaluators_for_user(user_id)
         pa_evaluators = await self._list_pa_evaluators_for_user(user_id)

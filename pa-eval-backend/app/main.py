@@ -11,6 +11,7 @@ from app.config import get_settings
 from app.datasets import router as datasets_router
 from app.errors import BusinessError
 from app.evaluators import router as evaluators_router
+from app.observability import router as observability_router
 from app.organizations import router as organizations_router
 from app.projects import router as projects_router
 from app.response import failure, success
@@ -35,6 +36,7 @@ def create_app() -> FastAPI:
     app.include_router(evaluators_router)
     app.include_router(auto_evaluations_router)
     app.include_router(datasets_router)
+    app.include_router(observability_router)
     app.include_router(system_router)
 
     @app.get("/health")

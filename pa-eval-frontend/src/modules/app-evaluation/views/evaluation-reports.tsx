@@ -2,22 +2,22 @@ import { useCallback, useMemo } from 'react'
 import { useQueryClient } from '@tanstack/react-query'
 import { useNavigate, useParams } from 'react-router'
 import { toast } from 'sonner'
-import { useAPI } from '@/hooks/use-api'
 import { confirm } from '@/lib/confirm'
-import { Page } from '@/components/common/page'
+import { useAPI } from '@/hooks/use-api'
 import {
   DataTable,
   type DataTableFilterBinding,
   type DataTableToolbarFilter,
 } from '@/components/common/data-table'
 import { Loading } from '@/components/common/loading'
+import { Page } from '@/components/common/page'
 import {
   deleteProjectEvaluationReport,
   exportProjectEvaluationReport,
   listProjectEvaluationReports,
 } from '../api/evaluation-report-api'
-import { createEvaluationReportColumns } from '../components/evaluation-report-columns'
 import { EvaluationPageNav } from '../components/evaluation-page-nav'
+import { createEvaluationReportColumns } from '../components/evaluation-report-columns'
 import type { EvaluationReportRecord } from '../types'
 
 const reportUrlFilters: DataTableFilterBinding[] = [
@@ -32,7 +32,7 @@ const reportToolbarFilters: DataTableToolbarFilter[] = [
     title: '来源类型',
     options: [
       { label: '自动评测', value: 'AUTO_EVAL' },
-      { label: '人工评测', value: 'MANUAL_ANNOTATION' },
+      { label: '人工标注', value: 'MANUAL_ANNOTATION' },
     ],
   },
   {
@@ -60,26 +60,23 @@ export function ProjectEvaluationReports() {
   const navigate = useNavigate()
   const queryClient = useQueryClient()
 
-  const invalidateReports = useCallback(
-    async () => {
-      await queryClient.invalidateQueries({
-        predicate: (query) =>
-          query.queryKey[0] === 'project-evaluation-reports' &&
-          query.queryKey.includes(projectId),
-      })
-      await queryClient.invalidateQueries({
-        predicate: (query) =>
-          query.queryKey[0] === 'project-auto-evaluation' &&
-          query.queryKey.includes(projectId),
-      })
-      await queryClient.invalidateQueries({
-        predicate: (query) =>
-          query.queryKey[0] === 'project-auto-evaluation-latest-report' &&
-          query.queryKey.includes(projectId),
-      })
-    },
-    [projectId, queryClient]
-  )
+  const invalidateReports = useCallback(async () => {
+    await queryClient.invalidateQueries({
+      predicate: (query) =>
+        query.queryKey[0] === 'project-evaluation-reports' &&
+        query.queryKey.includes(projectId),
+    })
+    await queryClient.invalidateQueries({
+      predicate: (query) =>
+        query.queryKey[0] === 'project-auto-evaluation' &&
+        query.queryKey.includes(projectId),
+    })
+    await queryClient.invalidateQueries({
+      predicate: (query) =>
+        query.queryKey[0] === 'project-auto-evaluation-latest-report' &&
+        query.queryKey.includes(projectId),
+    })
+  }, [projectId, queryClient])
 
   const columns = useMemo(
     () =>
@@ -108,13 +105,19 @@ export function ProjectEvaluationReports() {
     <Page fixed fluid className='flex min-h-[calc(100svh-3.5rem)] flex-col'>
       <div className='flex min-h-0 flex-1 flex-col gap-4'>
         <EvaluationPageNav />
-        <section className='flex min-h-0 min-w-0 flex-1 flex-col rounded-lg border bg-card p-4 text-card-foreground'>
+        <section className='bg-card text-card-foreground flex min-h-0 min-w-0 flex-1 flex-col rounded-lg border p-4'>
           <DataTable<EvaluationReportRecord>
             className='min-h-0 flex-1'
             columns={columns}
             request={{
-              queryKey: (state) => ['project-evaluation-reports', $api, projectId, state],
-              queryFn: (state) => listProjectEvaluationReports($api, projectId, state),
+              queryKey: (state) => [
+                'project-evaluation-reports',
+                $api,
+                projectId,
+                state,
+              ],
+              queryFn: (state) =>
+                listProjectEvaluationReports($api, projectId, state),
             }}
             urlState={{
               defaultPageSize: 10,
@@ -135,7 +138,12 @@ export function ProjectEvaluationReports() {
                 generatedAt: '生成时间',
               },
             }}
-            loadingText={<Loading text='加载评测报告中...' className='min-h-24 border-0 bg-transparent' />}
+            loadingText={
+              <Loading
+                text='加载评测报告中...'
+                className='min-h-24 border-0 bg-transparent'
+              />
+            }
             emptyText='当前项目下暂无匹配的评测报告'
             minTableWidth={1200}
           />

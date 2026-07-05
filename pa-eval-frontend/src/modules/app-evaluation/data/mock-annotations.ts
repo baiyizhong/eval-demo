@@ -56,7 +56,7 @@ export const mockAnnotationQueues: AnnotationQueueRecord[] = [
   {
     id: 'queue_customer_quality',
     projectId: 'project_customer_agent',
-    name: '客服会话质量人工评测',
+    name: '客服会话质量人工标注',
     description: '客服 Agent 回复准确性与可用性人工标注',
     scoreConfigIds: ['score_accuracy', 'score_usability', 'score_error_type'],
     assigneeIds: ['user_annotator_a', 'user_annotator_b'],
@@ -83,79 +83,79 @@ export const mockAnnotationQueues: AnnotationQueueRecord[] = [
   },
 ]
 
-export const mockAnnotationQueueItems: AnnotationQueueItemRecord[] =
-  Array.from<unknown, AnnotationQueueItemRecord>({ length: 16 }, (_, index) => {
-    const number = String(index + 1).padStart(3, '0')
-    const completed = index > 11
-    const objectType =
-      index % 3 === 0 ? 'TRACE' : index % 3 === 1 ? 'OBSERVATION' : 'SESSION'
-    const createdAt = `2026-07-03T08:${String(index).padStart(2, '0')}:00.000Z`
+export const mockAnnotationQueueItems: AnnotationQueueItemRecord[] = Array.from<
+  unknown,
+  AnnotationQueueItemRecord
+>({ length: 16 }, (_, index) => {
+  const number = String(index + 1).padStart(3, '0')
+  const completed = index > 11
+  const objectType =
+    index % 3 === 0 ? 'TRACE' : index % 3 === 1 ? 'OBSERVATION' : 'SESSION'
+  const createdAt = `2026-07-03T08:${String(index).padStart(2, '0')}:00.000Z`
 
-    return {
-      id: `aqi_customer_${number}`,
-      projectId: 'project_customer_agent',
-      queueId: 'queue_customer_quality',
+  return {
+    id: `aqi_customer_${number}`,
+    projectId: 'project_customer_agent',
+    queueId: 'queue_customer_quality',
+    objectId: `trace_customer_${number}`,
+    objectType,
+    status: completed ? 'COMPLETED' : 'PENDING',
+    source: {
       objectId: `trace_customer_${number}`,
       objectType,
-      status: completed ? 'COMPLETED' : 'PENDING',
-      source: {
-        objectId: `trace_customer_${number}`,
-        objectType,
-        title: `用户退款咨询 ${number}`,
-        input: {
-          userMessage: `用户要求退款并咨询订单 ${number} 的处理进度`,
-        },
-        output: {
-          assistantMessage: '已解释退款流程，并提示预计到账时间。',
-        },
-        metadata: {
-          channel: 'web',
-          intent: 'refund',
-          priority: index < 3 ? 'high' : 'normal',
-        },
-        traceId: `trace_customer_${number}`,
-        observationId: `obs_customer_${number}`,
-        sessionId: `session_customer_${Math.ceil((index + 1) / 3)}`,
-        userId: `customer_${number}`,
-        latencyMs: 1200 + index * 80,
-        costUsd: Number((0.002 + index * 0.0001).toFixed(4)),
-        createdAt,
+      title: `用户退款咨询 ${number}`,
+      input: {
+        userMessage: `用户要求退款并咨询订单 ${number} 的处理进度`,
       },
-      scores: [],
-      completedAt: completed
-        ? `2026-07-03T10:${number.slice(1)}:00.000Z`
-        : '',
-      completedBy: completed ? mockAnnotationUsers[0] : null,
+      output: {
+        assistantMessage: '已解释退款流程，并提示预计到账时间。',
+      },
+      metadata: {
+        channel: 'web',
+        intent: 'refund',
+        priority: index < 3 ? 'high' : 'normal',
+      },
+      traceId: `trace_customer_${number}`,
+      observationId: `obs_customer_${number}`,
+      sessionId: `session_customer_${Math.ceil((index + 1) / 3)}`,
+      userId: `customer_${number}`,
+      latencyMs: 1200 + index * 80,
+      costUsd: Number((0.002 + index * 0.0001).toFixed(4)),
       createdAt,
-      updatedAt: createdAt,
-    }
-  }).concat([
-    {
-      id: 'aqi_badcase_001',
-      projectId: 'project_customer_agent',
-      queueId: 'queue_badcase_review',
+    },
+    scores: [],
+    completedAt: completed ? `2026-07-03T10:${number.slice(1)}:00.000Z` : '',
+    completedBy: completed ? mockAnnotationUsers[0] : null,
+    createdAt,
+    updatedAt: createdAt,
+  }
+}).concat([
+  {
+    id: 'aqi_badcase_001',
+    projectId: 'project_customer_agent',
+    queueId: 'queue_badcase_review',
+    objectId: 'trace_badcase_001',
+    objectType: 'TRACE',
+    status: 'PENDING',
+    source: {
       objectId: 'trace_badcase_001',
       objectType: 'TRACE',
-      status: 'PENDING',
-      source: {
-        objectId: 'trace_badcase_001',
-        objectType: 'TRACE',
-        title: 'Badcase 退款拒答',
-        input: { userMessage: '为什么我的退款被拒绝' },
-        output: { assistantMessage: '请联系人工客服。' },
-        metadata: { channel: 'app', intent: 'refund' },
-        traceId: 'trace_badcase_001',
-        observationId: 'obs_badcase_001',
-        sessionId: 'session_badcase_001',
-        userId: 'customer_badcase_001',
-        latencyMs: 1800,
-        costUsd: 0.0031,
-        createdAt: '2026-07-03T09:10:00.000Z',
-      },
-      scores: [],
-      completedAt: '',
-      completedBy: null,
+      title: 'Badcase 退款拒答',
+      input: { userMessage: '为什么我的退款被拒绝' },
+      output: { assistantMessage: '请联系人工客服。' },
+      metadata: { channel: 'app', intent: 'refund' },
+      traceId: 'trace_badcase_001',
+      observationId: 'obs_badcase_001',
+      sessionId: 'session_badcase_001',
+      userId: 'customer_badcase_001',
+      latencyMs: 1800,
+      costUsd: 0.0031,
       createdAt: '2026-07-03T09:10:00.000Z',
-      updatedAt: '2026-07-03T09:10:00.000Z',
     },
-  ])
+    scores: [],
+    completedAt: '',
+    completedBy: null,
+    createdAt: '2026-07-03T09:10:00.000Z',
+    updatedAt: '2026-07-03T09:10:00.000Z',
+  },
+])
