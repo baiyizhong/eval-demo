@@ -1,6 +1,7 @@
 import { useEffect, useState } from 'react'
 import { useNavigate } from 'react-router'
 import { toast } from 'sonner'
+import { useAPI } from '@/hooks/use-api'
 import { confirm } from '@/lib/confirm'
 import { Button } from '@/components/ui/button'
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card'
@@ -18,11 +19,11 @@ import { Switch } from '@/components/ui/switch'
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs'
 import { Textarea } from '@/components/ui/textarea'
 import {
-  createProjectAutoEvaluationTaskMock,
-  estimateProjectAutoEvaluationTraceCountMock,
-  listProjectAutoEvaluationDatasetsMock,
-  listProjectAutoEvaluationEvaluatorsMock,
-} from '../api/mock-auto-evaluation-api'
+  countProjectAutoEvaluationTraces,
+  createProjectAutoEvaluationTask,
+} from '../api/auto-evaluation-api'
+import { listProjectAutoEvaluationDatasets } from '../api/dataset-api'
+import { listTaskEvaluators } from '@/modules/tasks/api/evaluator-api'
 import type {
   AutoEvaluationTaskFormInput,
   MockAutoEvaluationDataset,
@@ -45,6 +46,17 @@ const initialForm: AutoEvaluationTaskFormInput = {
   },
 }
 
+const sampleFieldOptions = [
+  'sample.input',
+  'sample.output',
+  'sample.expectedOutput',
+  'sample.context',
+  'sample.metadata',
+  'sample.trace.id',
+  'sample.observation.id',
+  'sample.datasetItem.id',
+]
+
 export function AutoEvaluationTaskForm({
   projectId,
   onDirtyChange,
@@ -54,6 +66,7 @@ export function AutoEvaluationTaskForm({
   onDirtyChange?: (dirty: boolean) => void
   onCancel?: () => void
 }) {
+  const $api = useAPI()
   const navigate = useNavigate()
   const [step, setStep] = useState(0)
   const [form, setForm] = useState<AutoEvaluationTaskFormInput>(initialForm)
@@ -65,16 +78,34 @@ export function AutoEvaluationTaskForm({
   const [datasets, setDatasets] = useState<MockAutoEvaluationDataset[]>([])
 
   useEffect(() => {
-    void listProjectAutoEvaluationEvaluatorsMock(projectId, evaluatorKeyword).then(
-      setEvaluators
-    )
-  }, [evaluatorKeyword, projectId])
+    void listTaskEvaluators($api, {
+      page: 1,
+      pageSize: 50,
+      keyword: evaluatorKeyword,
+      filters: {},
+      sorting: [],
+    }).then((result) => {
+      setEvaluators(
+        result.datas
+          .filter((evaluator) => evaluator.type === 'WORKFLOW')
+          .map((evaluator) => ({
+            id: evaluator.id,
+            name: evaluator.name,
+            type: 'WORKFLOW',
+            version: evaluator.version,
+            variables: evaluator.variables,
+            description: evaluator.description,
+            updatedAt: evaluator.updatedAt,
+          }))
+      )
+    })
+  }, [$api, evaluatorKeyword, projectId])
 
   useEffect(() => {
-    void listProjectAutoEvaluationDatasetsMock(projectId, datasetKeyword).then(
+    void listProjectAutoEvaluationDatasets($api, projectId, datasetKeyword).then(
       setDatasets
     )
-  }, [datasetKeyword, projectId])
+  }, [$api, datasetKeyword, projectId])
 
   const selectedEvaluator = evaluators.find((item) => item.id === form.evaluatorId)
   let selectedDataset: MockAutoEvaluationDataset | null = null
@@ -130,11 +161,17 @@ export function AutoEvaluationTaskForm({
       }
     }
     setStep(currentStep)
-    const task = await createProjectAutoEvaluationTaskMock(projectId, form, mode)
+    const task = await createProjectAutoEvaluationTask($api, projectId, {
+      name: form.name,
+      description: form.description,
+      scoreName: form.scoreName,
+      evaluatorId: form.evaluatorId,
+      sampleRate: form.sampleRate,
+      dataSource: form.dataSource,
+      variableMapping: form.variableMapping,
+    })
     onDirtyChange?.(false)
-    toast.success(
-      mode === 'run' ? '自动评测任务已创建并开始运行' : '自动评测任务已创建'
-    )
+    toast.success('自动评测任务已创建并开始运行')
     navigate(
       mode === 'run'
         ? `/projects/${projectId}/evaluation/auto-evaluations/${task.id}`
@@ -143,22 +180,31 @@ export function AutoEvaluationTaskForm({
   }
 
   const estimateTrace = async () => {
-    const count = await estimateProjectAutoEvaluationTraceCountMock()
+    const traceFilter =
+      form.dataSource.type === 'TRACE_FILTER'
+        ? form.dataSource
+        : {
+            type: 'TRACE_FILTER' as const,
+            timeRange: '24h',
+            environments: ['production'],
+            traceName: '',
+            userId: '',
+            sessionId: '',
+            tags: [],
+            estimatedCount: 0,
+          }
+    const result = await countProjectAutoEvaluationTraces(
+      $api,
+      projectId,
+      traceFilter
+    )
+    const count = result.count
     updateForm({
       ...form,
       dataSource:
         form.dataSource.type === 'TRACE_FILTER'
-          ? { ...form.dataSource, estimatedCount: count }
-          : {
-              type: 'TRACE_FILTER',
-              timeRange: '24h',
-              environments: ['production'],
-              traceName: '',
-              userId: '',
-              sessionId: '',
-              tags: [],
-              estimatedCount: count,
-            },
+          ? { ...traceFilter, estimatedCount: count }
+          : { ...traceFilter, estimatedCount: count },
     })
     toast.success(`Trace 过滤预估命中 ${count} 条`)
   }
@@ -251,13 +297,15 @@ export function AutoEvaluationTaskForm({
                   {selectedEvaluator.variables.map((variable) => (
                     <Field key={variable} label={variable}>
                       <Select
-                        value={form.variableMapping[variable] ?? ''}
+                        value={getMappingSelectValue(
+                          form.variableMapping[variable]
+                        )}
                         onValueChange={(value) =>
                           updateForm({
                             ...form,
                             variableMapping: {
                               ...form.variableMapping,
-                              [variable]: value,
+                              [variable]: toMappingTemplate(value),
                             },
                           })
                         }
@@ -267,13 +315,11 @@ export function AutoEvaluationTaskForm({
                         </SelectTrigger>
                         <SelectContent>
                           <SelectGroup>
-                            {['trace.input', 'trace.output', 'dataset.expectedOutput'].map(
-                              (field) => (
+                            {sampleFieldOptions.map((field) => (
                                 <SelectItem key={field} value={field}>
                                   {field}
                                 </SelectItem>
-                              )
-                            )}
+                              ))}
                           </SelectGroup>
                         </SelectContent>
                       </Select>
@@ -325,9 +371,17 @@ export function AutoEvaluationTaskForm({
                         ? form.dataSource.datasetId
                         : ''
                     }
-                    onValueChange={(value) =>
-                      updateForm({ ...form, dataSource: { type: 'DATASET', datasetId: value } })
-                    }
+                    onValueChange={(value) => {
+                      const dataset = datasets.find((item) => item.id === value)
+                      updateForm({
+                        ...form,
+                        dataSource: {
+                          type: 'DATASET',
+                          datasetId: value,
+                          projectId: dataset?.projectId,
+                        },
+                      })
+                    }}
                   >
                     <SelectTrigger className='w-full'>
                       <SelectValue placeholder='选择数据集' />
@@ -337,6 +391,7 @@ export function AutoEvaluationTaskForm({
                         {datasets.map((dataset) => (
                           <SelectItem key={dataset.id} value={dataset.id}>
                             {dataset.name} · {dataset.itemCount} 条
+                            {dataset.projectName ? ` · ${dataset.projectName}` : ''}
                           </SelectItem>
                         ))}
                       </SelectGroup>
@@ -555,4 +610,12 @@ function isScoreNameValid(value: string) {
 
 function getEstimatedRunCount(sampleCount: number, sampleRate: number) {
   return Math.ceil((sampleCount * sampleRate) / 100)
+}
+
+function toMappingTemplate(value: string) {
+  return `{{ ${value} }}`
+}
+
+function getMappingSelectValue(value?: string) {
+  return value?.replace(/^{{\s*/, '').replace(/\s*}}$/, '') ?? ''
 }

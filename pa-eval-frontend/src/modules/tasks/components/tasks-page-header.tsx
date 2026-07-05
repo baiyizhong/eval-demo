@@ -6,13 +6,39 @@ type TasksPageHeaderProps = {
   onImportClick?: () => void
   onCreateClick?: () => void
   showActions?: boolean
+  showImport?: boolean
+  importLabel?: string
+  createLabel?: string
 }
 
 export function TasksPageHeader({
   onImportClick,
   onCreateClick,
   showActions = true,
+  showImport = true,
+  importLabel = '导入',
+  createLabel = '创建',
 }: TasksPageHeaderProps) {
+  const buttons = [
+    showImport
+      ? {
+          id: 'import',
+          label: importLabel,
+          icon: Download,
+          variant: 'outline' as const,
+          size: 'sm' as const,
+          onClick: onImportClick,
+        }
+      : null,
+    {
+      id: 'create',
+      label: createLabel,
+      icon: Plus,
+      size: 'sm' as const,
+      onClick: onCreateClick,
+    },
+  ].filter((button) => button !== null)
+
   return (
     <PageNav
       topNav={{
@@ -22,23 +48,7 @@ export function TasksPageHeader({
       buttonGroups={
         showActions
           ? {
-              buttons: [
-                {
-                  id: 'import',
-                  label: '导入',
-                  icon: Download,
-                  variant: 'outline',
-                  size: 'sm',
-                  onClick: onImportClick,
-                },
-                {
-                  id: 'create',
-                  label: '创建',
-                  icon: Plus,
-                  size: 'sm',
-                  onClick: onCreateClick,
-                },
-              ],
+              buttons,
             }
           : null
       }

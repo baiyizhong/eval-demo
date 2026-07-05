@@ -2,6 +2,7 @@ from typing import Any
 
 from fastapi import APIRouter, Depends, Query
 
+from app.auth_context import CurrentUserContext, get_current_user_context
 from app.errors import BusinessError, UnsupportedOperationError
 from app.langfuse_db import LangfuseDatabaseReader, get_langfuse_db_reader
 from app.response import success
@@ -90,9 +91,10 @@ async def list_organizations(
     page: int = Query(default=1, ge=1),
     page_size: int = Query(default=10, ge=1, le=200, alias="pageSize"),
     keyword: str | None = Query(default=None),
+    current_user: CurrentUserContext = Depends(get_current_user_context),
     reader: LangfuseDatabaseReader = Depends(get_langfuse_db_reader),
 ) -> dict[str, Any]:
-    rows = await reader.list_organizations()
+    rows = await reader.list_organizations_for_user(current_user.user_id)
     organizations = [_to_pa_organization(raw) for raw in rows]
     filtered = [item for item in organizations if _matches_keyword(item, keyword)]
     return success(_paginate(filtered, page, page_size))
@@ -101,6 +103,7 @@ async def list_organizations(
 @router.post("")
 async def create_organization(
     payload: CreateOrganizationPayload,
+    current_user: CurrentUserContext = Depends(get_current_user_context),
     reader: LangfuseDatabaseReader = Depends(get_langfuse_db_reader),
 ) -> dict[str, Any]:
     create_payload = {
@@ -111,14 +114,14 @@ async def create_organization(
             {
                 "description": payload.description,
                 "subsystem": payload.subsystem,
+                "createdBy": current_user.email,
             },
         ),
     }
-    from app.config import get_settings
-
     created = await reader.create_organization_with_default_project(
         create_payload,
-        get_settings().pa_eval_default_owner_email,
+        current_user.user_id,
+        current_user.email,
     )
     return success(_to_pa_organization(created))
 

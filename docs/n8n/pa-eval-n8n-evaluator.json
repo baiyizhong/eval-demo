@@ -1,0 +1,76 @@
+{
+  "name": "PA Eval n8n 工作流评估器",
+  "id": "paEvalN8nEval1",
+  "active": true,
+  "nodes": [
+    {
+      "parameters": {
+        "httpMethod": "POST",
+        "path": "pa-eval-n8n-evaluator",
+        "responseMode": "responseNode",
+        "options": {}
+      },
+      "type": "n8n-nodes-base.webhook",
+      "typeVersion": 2,
+      "position": [0, 0],
+      "id": "1711000000001",
+      "name": "PA Eval Webhook",
+      "webhookId": "pa-eval-n8n-evaluator"
+    },
+    {
+      "parameters": {
+        "jsCode": "const payload = $json.body ?? $json;\nconst inputs = payload.inputs ?? payload;\nconst question = String(inputs.input ?? '');\nconst output = String(inputs.output ?? '');\nconst expected = String(inputs.expected_output ?? inputs.expectedOutput ?? '');\nconst context = String(inputs.context ?? '');\n\nlet score = 0;\nlet reason = '';\n\nif (!output.trim()) {\n  score = 0;\n  reason = '候选回答为空，无法通过评估。';\n} else if (expected.trim() && output.includes(expected)) {\n  score = 1;\n  reason = '候选回答包含期望答案，满足当前 n8n 规则评估要求。';\n} else if (expected.trim()) {\n  score = 0.6;\n  reason = '候选回答非空，但未直接命中期望答案；建议继续使用大模型评估器细化语义判断。';\n} else {\n  score = 0.7;\n  reason = '未提供期望答案，候选回答非空，按基础规则给出通过结果。';\n}\n\nreturn [{\n  json: {\n    score,\n    passed: score >= 0.6,\n    reason,\n    metadata: {\n      evaluator: 'PA Eval n8n 工作流评估器',\n      questionLength: question.length,\n      outputLength: output.length,\n      contextLength: context.length\n    }\n  }\n}];"
+      },
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [260, 0],
+      "id": "1711000000002",
+      "name": "Evaluate"
+    },
+    {
+      "parameters": {
+        "respondWith": "json",
+        "responseBody": "={{ $json }}",
+        "options": {}
+      },
+      "type": "n8n-nodes-base.respondToWebhook",
+      "typeVersion": 1.4,
+      "position": [520, 0],
+      "id": "1711000000003",
+      "name": "Return Result"
+    }
+  ],
+  "connections": {
+    "PA Eval Webhook": {
+      "main": [
+        [
+          {
+            "node": "Evaluate",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Evaluate": {
+      "main": [
+        [
+          {
+            "node": "Return Result",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "settings": {
+    "executionOrder": "v1"
+  },
+  "pinData": {},
+  "meta": {
+    "templateCredsSetupCompleted": true
+  },
+  "versionId": "1711000000000",
+  "tags": []
+}

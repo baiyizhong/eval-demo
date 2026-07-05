@@ -1,6 +1,10 @@
 import { useQuery } from '@tanstack/react-query'
 import { usePermissionStore } from '@/stores/permission.store'
 import { matchPermission } from '@/lib/permission'
+import {
+  buildSidebarDataFromProjects,
+  type PaginatedSidebarProjects,
+} from '@/lib/sidebar-data'
 import { useAPI } from '@/hooks/use-api'
 import type { SidebarData, NavItem, NavGroup } from '@/components/layout/types'
 
@@ -51,22 +55,29 @@ export function useSidebarData(): {
   const store = usePermissionStore()
 
   const { data, isLoading } = useQuery({
-    queryKey: ['sidebar', $api] as const,
-    queryFn: () => $api.getSidebar<SidebarData>(),
+    queryKey: ['sidebar-projects', $api] as const,
+    queryFn: () =>
+      $api.getProjects<PaginatedSidebarProjects>({
+        query: {
+          page: 1,
+          pageSize: 200,
+        },
+      }),
   })
 
   if (!data) {
     return { data: undefined, isLoading }
   }
 
+  const sidebarData = buildSidebarDataFromProjects(data.datas)
   const getPermissions = () => store.getPermissionsForProject('')
   const filteredNavGroups = filterNavGroupsByPermission(
-    data.menuGroups,
+    sidebarData.menuGroups,
     getPermissions
   )
 
   return {
-    data: { ...data, menuGroups: filteredNavGroups },
+    data: { ...sidebarData, menuGroups: filteredNavGroups },
     isLoading,
   }
 }

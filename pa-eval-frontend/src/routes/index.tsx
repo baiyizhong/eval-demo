@@ -1,16 +1,8 @@
-import { BookOpen, LogOut, ShieldCheck } from 'lucide-react'
-
-import { Apps } from '@/modules/apps'
-import {
-  AppObservability,
-  AppObservabilityIndexRedirect,
-} from '@/modules/app-observability'
+import { useMemo } from 'react'
 import {
   AppEvaluation,
   AppEvaluationIndexRedirect,
 } from '@/modules/app-evaluation'
-import { TraceDashboard } from '@/modules/app-observability/views/trace-dashboard'
-import { TraceLogs } from '@/modules/app-observability/views/trace-logs'
 import { ProjectAnnotationItemAnnotate } from '@/modules/app-evaluation/views/annotation-item-annotate'
 import { ProjectAnnotationQueueDetail } from '@/modules/app-evaluation/views/annotation-queue-detail'
 import { ProjectAnnotationQueues } from '@/modules/app-evaluation/views/annotation-queues'
@@ -21,11 +13,23 @@ import { ProjectDatasetDetail } from '@/modules/app-evaluation/views/dataset-det
 import { ProjectDatasets } from '@/modules/app-evaluation/views/datasets'
 import { ProjectEvaluationReportDetail } from '@/modules/app-evaluation/views/evaluation-report-detail'
 import { ProjectEvaluationReports } from '@/modules/app-evaluation/views/evaluation-reports'
+import {
+  AppObservability,
+  AppObservabilityIndexRedirect,
+} from '@/modules/app-observability'
+import { TraceDashboard } from '@/modules/app-observability/views/trace-dashboard'
+import { TraceLogs } from '@/modules/app-observability/views/trace-logs'
+import { Apps } from '@/modules/apps'
 import { Dashboard } from '@/modules/dashboard'
 import { ForbiddenError } from '@/modules/errors/forbidden'
 import { GeneralError } from '@/modules/errors/general-error'
 import { MaintenanceError } from '@/modules/errors/maintenance-error'
 import { NotFoundError } from '@/modules/errors/not-found-error'
+import { UnauthorisedError } from '@/modules/errors/unauthorized-error'
+import { Login } from '@/modules/login'
+import { OrganizationSwitcher } from '@/modules/organization-management/components/organization-switcher'
+import { SettingsOrganizationInfo } from '@/modules/organization-management/views/info'
+import { SettingsOrganizationMembers } from '@/modules/organization-management/views/members'
 import {
   ProjectSettings,
   ProjectSettingsIndexRedirect,
@@ -35,40 +39,18 @@ import { ProjectGeneralSettings } from '@/modules/project-settings/views/general
 import { ProjectMembersSettings } from '@/modules/project-settings/views/members'
 import { ProjectModelsSettings } from '@/modules/project-settings/views/models'
 import { ProjectScoreConfigsSettings } from '@/modules/project-settings/views/score-configs'
-import { SettingsOrganizationInfo } from '@/modules/organization-management/views/info'
-import { SettingsOrganizationMembers } from '@/modules/organization-management/views/members'
-import { OrganizationSwitcher } from '@/modules/organization-management/components/organization-switcher'
-import { UnauthorisedError } from '@/modules/errors/unauthorized-error'
+import { Settings } from '@/modules/settings'
 import { Tasks } from '@/modules/tasks'
 import { TasksAutoEvaluation } from '@/modules/tasks/views/auto-evaluation'
-import { RootErrorBoundary } from '@/components/common/error-boundary/root-error-boundary'
-import { SidebarLayout } from '@/components/layout/sidebar-layout'
-import { TopbarLayout } from '@/components/layout/topbar-layout'
-import {
-  type TopNavAction,
-  type TopNavProps,
-  type TopNavUser,
-} from '@/components/layout/top-nav'
-import { Settings } from '@/modules/settings'
-import { RootLayout } from '@/components/layout/root-layout'
+import { TaskEvaluators } from '@/modules/tasks/views/evaluators'
+import { BookOpen, ShieldCheck } from 'lucide-react'
 import { Navigate } from 'react-router'
-
-const currentUser: TopNavUser = {
-  name: 'PANJIANJIAN065',
-  email: 'panjianjian065@example.com',
-  initials: 'P',
-}
-
-const menuActions: TopNavAction[] = [
-  {
-    id: 'logout',
-    label: '退出登录',
-    href: '#',
-    icon: LogOut,
-    title: '退出登录',
-    ariaLabel: '退出登录',
-  },
-]
+import { useAuthProfileMenu } from '@/hooks/use-auth-profile-menu'
+import { RootErrorBoundary } from '@/components/common/error-boundary/root-error-boundary'
+import { RootLayout } from '@/components/layout/root-layout'
+import { SidebarLayout } from '@/components/layout/sidebar-layout'
+import { type TopNavProps } from '@/components/layout/top-nav'
+import { TopbarLayout } from '@/components/layout/topbar-layout'
 
 const appsTopbarNavigation: TopNavProps = {
   brand: {
@@ -117,8 +99,21 @@ const appsTopbarNavigation: TopNavProps = {
     },
   ],
   rightSlot: <OrganizationSwitcher />,
-  user: currentUser,
-  menuActions,
+}
+
+function AppsTopbarLayout() {
+  const { user, menuActions, handleAuthMenuAction } = useAuthProfileMenu()
+  const navigation = useMemo<TopNavProps>(
+    () => ({
+      ...appsTopbarNavigation,
+      user,
+      menuActions,
+      onAction: handleAuthMenuAction,
+    }),
+    [handleAuthMenuAction, menuActions, user]
+  )
+
+  return <TopbarLayout navigation={navigation} />
 }
 
 export const routes = [
@@ -135,6 +130,7 @@ export const routes = [
           { index: true, element: <Dashboard /> },
           { path: 'dashboard', element: <Dashboard /> },
           { path: 'tasks', element: <Tasks /> },
+          { path: 'tasks/evaluators', element: <TaskEvaluators /> },
           {
             path: 'tasks/auto-evaluation',
             element: <TasksAutoEvaluation />,
@@ -154,8 +150,18 @@ export const routes = [
             children: [
               { index: true, element: <AppEvaluationIndexRedirect /> },
               { path: 'datasets', element: <ProjectDatasets /> },
-              { path: 'datasets/:datasetId', element: <ProjectDatasetDetail /> },
-              { path: 'annotation-queues', element: <ProjectAnnotationQueues /> },
+              {
+                path: 'datasets/:datasetId',
+                element: <ProjectDatasetDetail />,
+              },
+              {
+                path: 'evaluators',
+                element: <TaskEvaluators navigation='project-evaluation' />,
+              },
+              {
+                path: 'annotation-queues',
+                element: <ProjectAnnotationQueues />,
+              },
               {
                 path: 'annotation-queues/:queueId',
                 element: <ProjectAnnotationQueueDetail />,
@@ -199,7 +205,7 @@ export const routes = [
       },
       {
         path: '',
-        element: <TopbarLayout navigation={appsTopbarNavigation} />,
+        element: <AppsTopbarLayout />,
         children: [
           { path: 'apps', element: <Apps /> },
           {
@@ -214,6 +220,7 @@ export const routes = [
         ],
       },
       // Public error pages
+      { path: 'login', element: <Login /> },
       { path: '401', element: <UnauthorisedError /> },
       { path: '403', element: <ForbiddenError /> },
       { path: '404', element: <NotFoundError /> },

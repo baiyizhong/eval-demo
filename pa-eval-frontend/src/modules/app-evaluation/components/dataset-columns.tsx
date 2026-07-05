@@ -9,20 +9,22 @@ import { formatDateTime } from './format'
 
 type CreateDatasetColumnsOptions = {
   projectId: string
-  onEdit: (dataset: DatasetRecord) => void
-  onImport: (dataset: DatasetRecord) => void
-  onExport: (dataset: DatasetRecord) => void
-  onDelete: (dataset: DatasetRecord) => void
+  readOnly?: boolean
+  onEdit?: (dataset: DatasetRecord) => void
+  onImport?: (dataset: DatasetRecord) => void
+  onExport?: (dataset: DatasetRecord) => void
+  onDelete?: (dataset: DatasetRecord) => void
 }
 
 export function createDatasetColumns({
   projectId,
+  readOnly,
   onEdit,
   onImport,
   onExport,
   onDelete,
 }: CreateDatasetColumnsOptions): ColumnDef<DatasetRecord>[] {
-  return [
+  const columns: ColumnDef<DatasetRecord>[] = [
     {
       accessorKey: 'name',
       header: ({ column }) => (
@@ -82,7 +84,10 @@ export function createDatasetColumns({
       ),
       cell: ({ row }) => formatDateTime(row.original.updatedAt),
     },
-    {
+  ]
+
+  if (!readOnly && onEdit && onImport && onExport && onDelete) {
+    columns.push({
       id: 'actions',
       enableHiding: false,
       cell: ({ row }) => (
@@ -94,6 +99,8 @@ export function createDatasetColumns({
           onDelete={onDelete}
         />
       ),
-    },
-  ]
+    })
+  }
+
+  return columns
 }

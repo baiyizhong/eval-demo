@@ -245,7 +245,7 @@ export type AutoEvaluationTaskStatus =
   | 'FAILED'
   | 'CANCELLED'
 
-export type AutoEvaluationEvaluatorType = 'LLM_AS_JUDGE' | 'CODE'
+export type AutoEvaluationEvaluatorType = 'LLM_AS_JUDGE' | 'CODE' | 'WORKFLOW'
 
 export type AutoEvaluationDataSourceType = 'DATASET' | 'TRACE_FILTER'
 
@@ -321,6 +321,8 @@ export type MockAutoEvaluationEvaluator = AutoEvaluationEvaluatorSummary & {
 
 export type MockAutoEvaluationDataset = {
   id: string
+  projectId?: string
+  projectName?: string
   name: string
   description: string
   itemCount: number
@@ -349,7 +351,7 @@ export type AutoEvaluationTaskFormInput = {
   evaluatorId: string
   variableMapping: Record<string, string>
   dataSource:
-    | { type: 'DATASET'; datasetId: string }
+    | { type: 'DATASET'; datasetId: string; projectId?: string }
     | {
         type: 'TRACE_FILTER'
         timeRange: string
@@ -472,6 +474,7 @@ export const autoEvaluationEvaluatorTypeLabels: Record<
 > = {
   LLM_AS_JUDGE: 'LLM-as-Judge',
   CODE: 'Code',
+  WORKFLOW: '工作流',
 }
 
 export const autoEvaluationDataSourceLabels: Record<

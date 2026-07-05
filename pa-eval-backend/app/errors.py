@@ -26,3 +26,26 @@ class UnsupportedOperationError(BusinessError):
     def __init__(self, message: str) -> None:
         super().__init__(code=2003, message=message, status_code=501)
 
+
+class AuthConfigError(BusinessError):
+    def __init__(self) -> None:
+        super().__init__(
+            code=3001,
+            message="GitHub OAuth 未配置",
+            status_code=500,
+        )
+
+
+class AuthUpstreamError(BusinessError):
+    def __init__(self, message: str = "GitHub 登录失败") -> None:
+        super().__init__(code=3002, message=message, status_code=502)
+
+
+class AuthRequiredError(BusinessError):
+    def __init__(self) -> None:
+        super().__init__(code=3003, message="请先登录", status_code=401)
+
+
+class AuthSessionConfigError(BusinessError):
+    def __init__(self) -> None:
+        super().__init__(code=3004, message="认证会话密钥未配置", status_code=500)

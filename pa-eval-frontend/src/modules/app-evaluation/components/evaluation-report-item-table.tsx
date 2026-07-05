@@ -1,9 +1,10 @@
 import type { ColumnDef } from '@tanstack/react-table'
 import { Button } from '@/components/ui/button'
 import { Badge } from '@/components/ui/badge'
+import { useAPI } from '@/hooks/use-api'
 import { DataTable } from '@/components/common/data-table'
 import { Loading } from '@/components/common/loading'
-import { listProjectEvaluationReportItemsMock } from '../api/mock-evaluation-report-api'
+import { listProjectEvaluationReportItems } from '../api/evaluation-report-api'
 import type { EvaluationReportItemRecord } from '../types'
 
 const columns: ColumnDef<EvaluationReportItemRecord>[] = [
@@ -39,6 +40,8 @@ export function EvaluationReportItemTable({
   reportId: string
   onFlowback: (ids: string[]) => void
 }) {
+  const $api = useAPI()
+
   return (
     <section className='flex min-h-0 min-w-0 flex-1 flex-col gap-3 rounded-lg border bg-card p-4 text-card-foreground'>
       <div className='flex justify-end'>
@@ -66,9 +69,15 @@ export function EvaluationReportItemTable({
           )
         }}
         request={{
-          queryKey: (state) => ['project-evaluation-report-items', projectId, reportId, state],
+          queryKey: (state) => [
+            'project-evaluation-report-items',
+            $api,
+            projectId,
+            reportId,
+            state,
+          ],
           queryFn: (state) =>
-            listProjectEvaluationReportItemsMock(projectId, reportId, state),
+            listProjectEvaluationReportItems($api, projectId, reportId, state),
         }}
         urlState={{
           defaultPageSize: 10,

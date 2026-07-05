@@ -1,7 +1,9 @@
 import { create } from 'zustand'
 import { getCookie, setCookie, removeCookie } from '@/lib/cookies'
+import { readAccessToken } from '@/lib/auth-token'
+import { env } from '@/config/env'
 
-const ACCESS_TOKEN = 'thisisjustarandomstring'
+const ACCESS_TOKEN = env.authCookieName
 
 interface AuthUser {
   accountNo: string
@@ -23,7 +25,7 @@ interface AuthState {
 
 export const useAuthStore = create<AuthState>()((set) => {
   const cookieState = getCookie(ACCESS_TOKEN)
-  const initToken = cookieState ? JSON.parse(cookieState) : ''
+  const initToken = readAccessToken(cookieState)
   return {
     auth: {
       user: null,

@@ -23,7 +23,8 @@ import {
   createProjectEvaluationReportFlowbackMock,
   previewProjectEvaluationReportFlowbackMock,
 } from '../api/mock-evaluation-report-api'
-import { listProjectAutoEvaluationDatasetsMock } from '../api/mock-auto-evaluation-api'
+import { useAPI } from '@/hooks/use-api'
+import { listProjectAutoEvaluationDatasets } from '../api/dataset-api'
 import type {
   EvaluationReportFlowbackInput,
   EvaluationReportFlowbackType,
@@ -51,6 +52,7 @@ export function EvaluationReportFlowbackDialog({
   defaultRange,
   onCompleted,
 }: EvaluationReportFlowbackDialogProps) {
+  const $api = useAPI()
   const [datasets, setDatasets] = useState<MockAutoEvaluationDataset[]>([])
   const [range, setRange] =
     useState<EvaluationReportFlowbackInput['range']>(defaultRange)
@@ -68,9 +70,9 @@ export function EvaluationReportFlowbackDialog({
 
   useEffect(() => {
     if (open) {
-      void listProjectAutoEvaluationDatasetsMock(projectId).then(setDatasets)
+      void listProjectAutoEvaluationDatasets($api, projectId).then(setDatasets)
     }
-  }, [open, projectId])
+  }, [$api, open, projectId])
 
   const input = useMemo<EvaluationReportFlowbackInput>(
     () => ({

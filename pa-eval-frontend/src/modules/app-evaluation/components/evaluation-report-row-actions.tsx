@@ -1,5 +1,5 @@
 import type { Row } from '@tanstack/react-table'
-import { Download, MoreHorizontal, RefreshCw, RotateCcw, Send, Eye } from 'lucide-react'
+import { Download, Eye, MoreHorizontal, RefreshCw, RotateCcw, Send, Trash2 } from 'lucide-react'
 import { Link } from 'react-router'
 import { Button } from '@/components/ui/button'
 import {
@@ -7,6 +7,7 @@ import {
   DropdownMenuContent,
   DropdownMenuGroup,
   DropdownMenuItem,
+  DropdownMenuSeparator,
   DropdownMenuTrigger,
 } from '@/components/ui/dropdown-menu'
 import type { EvaluationReportRecord } from '../types'
@@ -18,6 +19,7 @@ type Props = {
   onRegenerate: (report: EvaluationReportRecord) => void
   onFlowback: (report: EvaluationReportRecord) => void
   onViewUnavailable: (report: EvaluationReportRecord) => void
+  onDelete: (report: EvaluationReportRecord) => void
 }
 
 export function EvaluationReportRowActions({
@@ -27,6 +29,7 @@ export function EvaluationReportRowActions({
   onRegenerate,
   onFlowback,
   onViewUnavailable,
+  onDelete,
 }: Props) {
   const report = row.original
   const ready = report.status === 'READY'
@@ -64,6 +67,11 @@ export function EvaluationReportRowActions({
           <DropdownMenuItem disabled={!ready} onSelect={() => onFlowback(report)}>
             <Send data-icon='inline-start' />
             回流数据
+          </DropdownMenuItem>
+          <DropdownMenuSeparator />
+          <DropdownMenuItem variant='destructive' onSelect={() => onDelete(report)}>
+            <Trash2 data-icon='inline-start' />
+            删除
           </DropdownMenuItem>
         </DropdownMenuGroup>
       </DropdownMenuContent>

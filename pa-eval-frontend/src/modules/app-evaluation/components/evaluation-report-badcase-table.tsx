@@ -1,9 +1,10 @@
 import type { ColumnDef } from '@tanstack/react-table'
 import { Button } from '@/components/ui/button'
 import { Badge } from '@/components/ui/badge'
+import { useAPI } from '@/hooks/use-api'
 import { DataTable, DataTableColumnHeader } from '@/components/common/data-table'
 import { Loading } from '@/components/common/loading'
-import { listProjectEvaluationReportBadcasesMock } from '../api/mock-evaluation-report-api'
+import { listProjectEvaluationReportBadcases } from '../api/evaluation-report-api'
 import type { EvaluationReportBadcaseRecord } from '../types'
 
 const columns: ColumnDef<EvaluationReportBadcaseRecord>[] = [
@@ -36,6 +37,8 @@ export function EvaluationReportBadcaseTable({
   reportId: string
   onFlowback: (ids: string[]) => void
 }) {
+  const $api = useAPI()
+
   return (
     <section className='flex min-h-0 min-w-0 flex-1 flex-col gap-3 rounded-lg border bg-card p-4 text-card-foreground'>
       <div className='flex justify-end'>
@@ -63,9 +66,15 @@ export function EvaluationReportBadcaseTable({
           )
         }}
         request={{
-          queryKey: (state) => ['project-evaluation-report-badcases', projectId, reportId, state],
+          queryKey: (state) => [
+            'project-evaluation-report-badcases',
+            $api,
+            projectId,
+            reportId,
+            state,
+          ],
           queryFn: (state) =>
-            listProjectEvaluationReportBadcasesMock(projectId, reportId, state),
+            listProjectEvaluationReportBadcases($api, projectId, reportId, state),
         }}
         urlState={{
           defaultPageSize: 10,

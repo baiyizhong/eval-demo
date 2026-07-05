@@ -7,6 +7,7 @@ test('tasks top nav links automatic evaluation to its child page', () => {
     tasksTopNav.map(({ title, href }) => ({ title, href })),
     [
       { title: '评测报告', href: '/tasks' },
+      { title: '评估器', href: '/tasks/evaluators' },
       { title: '自动评测', href: '/tasks/auto-evaluation' },
     ]
   )

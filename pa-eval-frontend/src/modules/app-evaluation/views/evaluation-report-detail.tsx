@@ -3,16 +3,18 @@ import { Download, RefreshCw, Send } from 'lucide-react'
 import { useQuery, useQueryClient } from '@tanstack/react-query'
 import { useNavigate, useParams, useSearchParams } from 'react-router'
 import { toast } from 'sonner'
+import { useAPI } from '@/hooks/use-api'
 import { confirm } from '@/lib/confirm'
 import { Page } from '@/components/common/page'
 import { PageAction } from '@/components/common/page-action'
 import { Loading } from '@/components/common/loading'
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs'
 import {
-  exportProjectEvaluationReportMock,
-  getProjectEvaluationReportMock,
+  exportProjectEvaluationReport,
+  getProjectEvaluationReport,
+} from '../api/evaluation-report-api'
+import {
   listProjectEvaluationReportFlowbacksMock,
-  regenerateProjectEvaluationReportMock,
 } from '../api/mock-evaluation-report-api'
 import { EvaluationReportAnalysis } from '../components/evaluation-report-analysis'
 import { EvaluationReportBadcaseTable } from '../components/evaluation-report-badcase-table'
@@ -29,6 +31,7 @@ import type {
 
 export function ProjectEvaluationReportDetail() {
   const { projectId = 'project_customer_agent', reportId = '' } = useParams()
+  const $api = useAPI()
   const [searchParams, setSearchParams] = useSearchParams()
   const navigate = useNavigate()
   const queryClient = useQueryClient()
@@ -40,8 +43,8 @@ export function ProjectEvaluationReportDetail() {
     useState<EvaluationReportFlowbackInput['range']>('BADCASE_ONLY')
 
   const reportQuery = useQuery({
-    queryKey: ['project-evaluation-report', projectId, reportId],
-    queryFn: () => getProjectEvaluationReportMock(projectId, reportId),
+    queryKey: ['project-evaluation-report', $api, projectId, reportId],
+    queryFn: () => getProjectEvaluationReport($api, projectId, reportId),
     enabled: Boolean(reportId),
   })
   const flowbacksQuery = useQuery({
@@ -84,7 +87,8 @@ export function ProjectEvaluationReportDetail() {
 
   const handleExport = async () => {
     if (!report) return
-    const exported = await exportProjectEvaluationReportMock(
+    const exported = await exportProjectEvaluationReport(
+      $api,
       projectId,
       report.id,
       'markdown'
@@ -107,9 +111,8 @@ export function ProjectEvaluationReportDetail() {
       confirmText: '重新生成',
     })
     if (!confirmed) return
-    await regenerateProjectEvaluationReportMock(projectId, report.id)
     await invalidateReport()
-    toast.success('评测报告已进入重新生成状态')
+    toast.success('评测报告已刷新')
   }
 
   return (

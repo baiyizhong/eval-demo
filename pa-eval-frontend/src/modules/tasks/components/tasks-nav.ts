@@ -10,6 +10,10 @@ export const tasksTopNav: TasksTopNavLinks = [
     href: '/tasks',
   },
   {
+    title: '评估器',
+    href: '/tasks/evaluators',
+  },
+  {
     title: '自动评测',
     href: '/tasks/auto-evaluation',
   },

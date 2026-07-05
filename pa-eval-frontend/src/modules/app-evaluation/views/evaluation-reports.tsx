@@ -2,6 +2,7 @@ import { useCallback, useMemo } from 'react'
 import { useQueryClient } from '@tanstack/react-query'
 import { useNavigate, useParams } from 'react-router'
 import { toast } from 'sonner'
+import { useAPI } from '@/hooks/use-api'
 import { confirm } from '@/lib/confirm'
 import { Page } from '@/components/common/page'
 import {
@@ -11,10 +12,10 @@ import {
 } from '@/components/common/data-table'
 import { Loading } from '@/components/common/loading'
 import {
-  exportProjectEvaluationReportMock,
-  listProjectEvaluationReportsMock,
-  regenerateProjectEvaluationReportMock,
-} from '../api/mock-evaluation-report-api'
+  deleteProjectEvaluationReport,
+  exportProjectEvaluationReport,
+  listProjectEvaluationReports,
+} from '../api/evaluation-report-api'
 import { createEvaluationReportColumns } from '../components/evaluation-report-columns'
 import { EvaluationPageNav } from '../components/evaluation-page-nav'
 import type { EvaluationReportRecord } from '../types'
@@ -55,14 +56,28 @@ const reportToolbarFilters: DataTableToolbarFilter[] = [
 
 export function ProjectEvaluationReports() {
   const { projectId = 'project_customer_agent' } = useParams()
+  const $api = useAPI()
   const navigate = useNavigate()
   const queryClient = useQueryClient()
 
   const invalidateReports = useCallback(
-    () =>
-      queryClient.invalidateQueries({
-        queryKey: ['project-evaluation-reports', projectId],
-      }),
+    async () => {
+      await queryClient.invalidateQueries({
+        predicate: (query) =>
+          query.queryKey[0] === 'project-evaluation-reports' &&
+          query.queryKey.includes(projectId),
+      })
+      await queryClient.invalidateQueries({
+        predicate: (query) =>
+          query.queryKey[0] === 'project-auto-evaluation' &&
+          query.queryKey.includes(projectId),
+      })
+      await queryClient.invalidateQueries({
+        predicate: (query) =>
+          query.queryKey[0] === 'project-auto-evaluation-latest-report' &&
+          query.queryKey.includes(projectId),
+      })
+    },
     [projectId, queryClient]
   )
 
@@ -70,9 +85,9 @@ export function ProjectEvaluationReports() {
     () =>
       createEvaluationReportColumns({
         projectId,
-        onExport: (report) => void handleExport(projectId, report),
+        onExport: (report) => void handleExport($api, projectId, report),
         onRegenerate: (report) =>
-          void handleRegenerate(projectId, report, invalidateReports),
+          void handleRegenerate(report, invalidateReports),
         onFlowback: (report) =>
           navigate(
             `/projects/${projectId}/evaluation/reports/${report.id}?tab=badcases`
@@ -83,8 +98,10 @@ export function ProjectEvaluationReports() {
               ? '报告仍在生成中，请稍后刷新'
               : '报告生成失败，重新生成后再查看'
           ),
+        onDelete: (report) =>
+          void handleDelete($api, projectId, report, invalidateReports),
       }),
-    [invalidateReports, navigate, projectId]
+    [$api, invalidateReports, navigate, projectId]
   )
 
   return (
@@ -96,8 +113,8 @@ export function ProjectEvaluationReports() {
             className='min-h-0 flex-1'
             columns={columns}
             request={{
-              queryKey: (state) => ['project-evaluation-reports', projectId, state],
-              queryFn: (state) => listProjectEvaluationReportsMock(projectId, state),
+              queryKey: (state) => ['project-evaluation-reports', $api, projectId, state],
+              queryFn: (state) => listProjectEvaluationReports($api, projectId, state),
             }}
             urlState={{
               defaultPageSize: 10,
@@ -128,8 +145,13 @@ export function ProjectEvaluationReports() {
   )
 }
 
-async function handleExport(projectId: string, report: EvaluationReportRecord) {
-  const exported = await exportProjectEvaluationReportMock(
+async function handleExport(
+  api: Parameters<typeof exportProjectEvaluationReport>[0],
+  projectId: string,
+  report: EvaluationReportRecord
+) {
+  const exported = await exportProjectEvaluationReport(
+    api,
     projectId,
     report.id,
     'markdown'
@@ -145,7 +167,6 @@ async function handleExport(projectId: string, report: EvaluationReportRecord) {
 }
 
 async function handleRegenerate(
-  projectId: string,
   report: EvaluationReportRecord,
   onCompleted: () => Promise<unknown>
 ) {
@@ -155,7 +176,24 @@ async function handleRegenerate(
     confirmText: '重新生成',
   })
   if (!confirmed) return
-  await regenerateProjectEvaluationReportMock(projectId, report.id)
   await onCompleted()
-  toast.success('评测报告已进入重新生成状态')
+  toast.success('评测报告已刷新')
+}
+
+async function handleDelete(
+  api: Parameters<typeof deleteProjectEvaluationReport>[0],
+  projectId: string,
+  report: EvaluationReportRecord,
+  onCompleted: () => Promise<unknown>
+) {
+  const confirmed = await confirm({
+    title: '删除评测报告',
+    desc: `删除后将隐藏「${report.title}」及其关联明细和 Badcase，不会删除原始数据集和评测任务。确定继续吗？`,
+    confirmText: '删除',
+    destructive: true,
+  })
+  if (!confirmed) return
+  await deleteProjectEvaluationReport(api, projectId, report.id)
+  await onCompleted()
+  toast.success('评测报告已删除')
 }

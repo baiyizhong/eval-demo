@@ -1,11 +1,19 @@
 from fastapi.testclient import TestClient
 
+from app.auth_context import CurrentUserContext, get_current_user_context
 from app.langfuse_db import LangfuseDatabaseReader, get_langfuse_db_reader
 from app.main import app
 
 
 class FakeDatabaseReader:
+    def __init__(self) -> None:
+        self.user_id = None
+
     async def list_projects(self) -> list[dict]:
+        return await self.list_projects_for_user("user-1")
+
+    async def list_projects_for_user(self, user_id: str) -> list[dict]:
+        self.user_id = user_id
         return [
             {
                 "id": "project-1",
@@ -35,6 +43,10 @@ def override_reader(fake_reader: FakeDatabaseReader):
         return fake_reader  # type: ignore[return-value]
 
     app.dependency_overrides[get_langfuse_db_reader] = _override
+    app.dependency_overrides[get_current_user_context] = lambda: CurrentUserContext(
+        user_id="user-1",
+        email="admin@163.com",
+    )
 
 
 def clear_overrides() -> None:
@@ -102,3 +114,21 @@ def test_lists_projects_with_organization_filter() -> None:
     assert response.status_code == 200
     assert response.json()["data"]["total"] == 1
     assert response.json()["data"]["datas"][0]["organizationId"] == "org-1"
+
+
+def test_lists_projects_for_current_user_id() -> None:
+    fake_reader = FakeDatabaseReader()
+    override_reader(fake_reader)
+    app.dependency_overrides[get_current_user_context] = lambda: CurrentUserContext(
+        user_id="user-octocat",
+        email="octocat@example.com",
+        login="octocat",
+    )
+
+    try:
+        response = TestClient(app).get("/api/projects")
+    finally:
+        clear_overrides()
+
+    assert response.status_code == 200
+    assert fake_reader.user_id == "user-octocat"

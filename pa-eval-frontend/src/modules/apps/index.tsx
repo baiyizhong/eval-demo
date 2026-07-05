@@ -1,11 +1,13 @@
 import { useQuery } from '@tanstack/react-query'
 import { Boxes, FolderKanban } from 'lucide-react'
+import { useNavigate } from 'react-router'
 import { AppList } from '@/components/business/app-list'
 import type { AppCardListItem } from '@/components/business/app-card-list'
 import { Main } from '@/components/layout/main'
 import { Alert, AlertDescription, AlertTitle } from '@/components/ui/alert'
 import { useAPI } from '@/hooks/use-api'
 import { useOrganizations } from '@/modules/organization-management/hooks/use-organizations'
+import { getProjectEntryPath } from '@/modules/apps/project-routes'
 
 type ProjectListItem = {
   id: string
@@ -59,6 +61,7 @@ const toProjectCard = (project: ProjectListItem): ProjectCardItem => ({
 
 export function Apps() {
   const $api = useAPI()
+  const navigate = useNavigate()
   const { currentOrganization, isPending: organizationsPending } =
     useOrganizations()
   const currentOrganizationId = currentOrganization?.id ?? null
@@ -76,6 +79,10 @@ export function Apps() {
   })
 
   const projectCards = (projectsQuery.data?.datas ?? []).map(toProjectCard)
+  const openProject = (project: AppCardListItem) => {
+    const projectCard = project as ProjectCardItem
+    navigate(getProjectEntryPath(projectCard.id))
+  }
 
   return (
     <>
@@ -102,7 +109,13 @@ export function Apps() {
             暂无项目
           </div>
         ) : null}
-        {projectCards.length > 0 ? <AppList apps={projectCards} /> : null}
+        {projectCards.length > 0 ? (
+          <AppList
+            apps={projectCards}
+            onActionClick={openProject}
+            onCardClick={openProject}
+          />
+        ) : null}
       </Main>
     </>
   )

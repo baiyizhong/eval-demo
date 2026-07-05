@@ -8,16 +8,20 @@ import { DatasetItemRowActions } from './dataset-item-row-actions'
 import { formatDateTime } from './format'
 
 type CreateDatasetItemColumnsOptions = {
-  onEdit: (item: DatasetItemRecord) => void
-  onArchive: (item: DatasetItemRecord) => void
+  readOnly?: boolean
+  onEdit?: (item: DatasetItemRecord) => void
+  onArchive?: (item: DatasetItemRecord) => void
 }
 
 export function createDatasetItemColumns({
+  readOnly,
   onEdit,
   onArchive,
 }: CreateDatasetItemColumnsOptions): ColumnDef<DatasetItemRecord>[] {
-  return [
-    {
+  const columns: ColumnDef<DatasetItemRecord>[] = []
+
+  if (!readOnly) {
+    columns.push({
       id: 'select',
       header: ({ table }) => (
         <Checkbox
@@ -38,7 +42,10 @@ export function createDatasetItemColumns({
       ),
       enableSorting: false,
       enableHiding: false,
-    },
+    })
+  }
+
+  columns.push(
     {
       accessorKey: 'id',
       header: ({ column }) => (
@@ -112,8 +119,11 @@ export function createDatasetItemColumns({
         <DataTableColumnHeader column={column} title='创建时间' />
       ),
       cell: ({ row }) => formatDateTime(row.original.createdAt),
-    },
-    {
+    }
+  )
+
+  if (!readOnly && onEdit && onArchive) {
+    columns.push({
       id: 'actions',
       enableHiding: false,
       cell: ({ row }) => (
@@ -123,6 +133,8 @@ export function createDatasetItemColumns({
           onArchive={onArchive}
         />
       ),
-    },
-  ]
+    })
+  }
+
+  return columns
 }

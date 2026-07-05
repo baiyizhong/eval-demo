@@ -20,7 +20,8 @@ import { BaseForm } from '@/components/common/base-form'
 import { FormDialog } from '@/components/common/form-dialog'
 import { JsonEditorPanel } from '@/components/common/json-editor'
 import type { DataTableQueryState } from '@/components/common/data-table'
-import { listProjectDatasetsMock } from '../api/mock-dataset-api'
+import { useAPI } from '@/hooks/use-api'
+import { listProjectDatasets } from '../api/dataset-api'
 import type {
   AddAnnotationItemToDatasetInput,
   AnnotationQueueItemRecord,
@@ -60,10 +61,11 @@ export function AnnotationDatasetDialog({
   onOpenChange,
   onSubmit,
 }: AnnotationDatasetDialogProps) {
+  const $api = useAPI()
   const formId = `annotation-dataset-form-${item.id}`
   const datasetsQuery = useQuery({
-    queryKey: ['project-datasets', projectId, 'annotation-dialog'],
-    queryFn: () => listProjectDatasetsMock(projectId, datasetQuery, 'all'),
+    queryKey: ['project-datasets', $api, projectId, 'annotation-dialog'],
+    queryFn: () => listProjectDatasets($api, projectId, datasetQuery, 'all'),
     enabled: open,
   })
 

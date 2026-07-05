@@ -3,19 +3,18 @@ import { RefreshCw, RotateCcw, Trash2 } from 'lucide-react'
 import { useQuery, useQueryClient } from '@tanstack/react-query'
 import { useNavigate, useParams } from 'react-router'
 import { toast } from 'sonner'
+import { useAPI } from '@/hooks/use-api'
 import { confirm } from '@/lib/confirm'
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card'
 import { Page } from '@/components/common/page'
 import { PageAction } from '@/components/common/page-action'
 import { Loading } from '@/components/common/loading'
 import {
-  deleteProjectAutoEvaluationTaskMock,
-  getProjectAutoEvaluationLatestReportMock,
-  getProjectAutoEvaluationTaskMock,
-  listProjectAutoEvaluationRunsMock,
-  refreshProjectAutoEvaluationTaskMock,
-  rerunProjectAutoEvaluationTaskMock,
-} from '../api/mock-auto-evaluation-api'
+  deleteProjectAutoEvaluationTask,
+  getProjectAutoEvaluationLatestReport,
+  getProjectAutoEvaluationTask,
+  listProjectAutoEvaluationRuns,
+} from '../api/auto-evaluation-api'
 import { AutoEvaluationReportCard } from '../components/auto-evaluation-report-card'
 import { AutoEvaluationRunRecords } from '../components/auto-evaluation-run-records'
 import { AutoEvaluationStatusBadge } from '../components/auto-evaluation-status-badge'
@@ -23,38 +22,60 @@ import { formatDateTime } from '../components/format'
 
 export function ProjectAutoEvaluationDetail() {
   const { projectId = 'project_customer_agent', taskId = '' } = useParams()
+  const $api = useAPI()
   const navigate = useNavigate()
   const queryClient = useQueryClient()
 
   const taskQuery = useQuery({
-    queryKey: ['project-auto-evaluation', projectId, taskId],
-    queryFn: () => getProjectAutoEvaluationTaskMock(projectId, taskId),
+    queryKey: ['project-auto-evaluation', $api, projectId, taskId],
+    queryFn: () => getProjectAutoEvaluationTask($api, projectId, taskId),
     enabled: Boolean(taskId),
+    refetchInterval: (query) =>
+      query.state.data?.status === 'RUNNING' ? 3000 : false,
   })
   const reportQuery = useQuery({
-    queryKey: ['project-auto-evaluation-latest-report', projectId, taskId],
-    queryFn: () => getProjectAutoEvaluationLatestReportMock(projectId, taskId),
+    queryKey: ['project-auto-evaluation-latest-report', $api, projectId, taskId],
+    queryFn: () =>
+      getProjectAutoEvaluationLatestReport($api, projectId, taskId),
     enabled: Boolean(taskId),
+    refetchInterval: taskQuery.data?.status === 'RUNNING' ? 3000 : false,
   })
   const runsQuery = useQuery({
-    queryKey: ['project-auto-evaluation-runs', projectId, taskId],
-    queryFn: () => listProjectAutoEvaluationRunsMock(projectId, taskId),
+    queryKey: ['project-auto-evaluation-runs', $api, projectId, taskId],
+    queryFn: () => listProjectAutoEvaluationRuns($api, projectId, taskId),
     enabled: Boolean(taskId),
+    refetchInterval: taskQuery.data?.status === 'RUNNING' ? 3000 : false,
   })
 
   const invalidateDetail = useMemo(
     () => async () => {
       await queryClient.invalidateQueries({
-        queryKey: ['project-auto-evaluation', projectId, taskId],
+        predicate: (query) =>
+          query.queryKey[0] === 'project-auto-evaluation' &&
+          query.queryKey.includes(projectId) &&
+          query.queryKey.includes(taskId),
       })
       await queryClient.invalidateQueries({
-        queryKey: ['project-auto-evaluation-latest-report', projectId, taskId],
+        predicate: (query) =>
+          query.queryKey[0] === 'project-auto-evaluation-latest-report' &&
+          query.queryKey.includes(projectId) &&
+          query.queryKey.includes(taskId),
       })
       await queryClient.invalidateQueries({
-        queryKey: ['project-auto-evaluation-runs', projectId, taskId],
+        predicate: (query) =>
+          query.queryKey[0] === 'project-auto-evaluation-runs' &&
+          query.queryKey.includes(projectId) &&
+          query.queryKey.includes(taskId),
       })
       await queryClient.invalidateQueries({
-        queryKey: ['project-auto-evaluations', projectId],
+        predicate: (query) =>
+          query.queryKey[0] === 'project-auto-evaluations' &&
+          query.queryKey.includes(projectId),
+      })
+      await queryClient.invalidateQueries({
+        predicate: (query) =>
+          query.queryKey[0] === 'project-evaluation-reports' &&
+          query.queryKey.includes(projectId),
       })
     },
     [projectId, queryClient, taskId]
@@ -63,22 +84,17 @@ export function ProjectAutoEvaluationDetail() {
   const task = taskQuery.data
 
   const handleRefresh = async () => {
-    await refreshProjectAutoEvaluationTaskMock(projectId, taskId)
     await invalidateDetail()
     toast.success('自动评测任务状态已刷新')
   }
 
   const handleRerun = async () => {
     if (!task) return
-    const confirmed = await confirm({
+    await confirm({
       title: '确认重新运行该自动评测任务？',
-      desc: '重新运行会基于当前 mock 配置生成新的运行记录，运行期间暂不可查看最新报告。',
-      confirmText: '重新运行',
+      desc: '当前真实自动评测任务暂未接入重新运行接口。',
+      confirmText: '知道了',
     })
-    if (!confirmed) return
-    await rerunProjectAutoEvaluationTaskMock(projectId, task.id)
-    await invalidateDetail()
-    toast.success(`已重新运行自动评测任务：${task.name}`)
   }
 
   const handleDelete = async () => {
@@ -89,16 +105,14 @@ export function ProjectAutoEvaluationDetail() {
     }
     const confirmed = await confirm({
       title: '删除自动评测任务',
-      desc: `删除后仅移除「${task.name}」这条前端 mock 任务，不会删除真实 trace、score 或 dataset 数据。确定继续吗？`,
+      desc: `删除后将隐藏「${task.name}」及其关联评测报告，不会删除原始数据集。确定继续吗？`,
       confirmText: '删除',
       destructive: true,
     })
     if (!confirmed) return
-    await deleteProjectAutoEvaluationTaskMock(projectId, task.id)
-    await queryClient.invalidateQueries({
-      queryKey: ['project-auto-evaluations', projectId],
-    })
-    toast.success(`已删除自动评测任务：${task.name}`)
+    await deleteProjectAutoEvaluationTask($api, projectId, task.id)
+    await invalidateDetail()
+    toast.success('自动评测任务已删除')
     navigate(`/projects/${projectId}/evaluation/auto-evaluations`)
   }
 

@@ -29,6 +29,8 @@ export const env = {
   appBasePath: readBasePath(import.meta.env.VITE_APP_BASE_PATH),
   apiBaseURL: import.meta.env.VITE_API_BASE_URL || '/api',
   apiTimeout: readNumber(import.meta.env.VITE_API_TIMEOUT, 20000),
+  authCookieName:
+    import.meta.env.VITE_AUTH_COOKIE_NAME || 'thisisjustarandomstring',
   apiWithCredentials: readBoolean(
     import.meta.env.VITE_API_WITH_CREDENTIALS,
     false

@@ -14,6 +14,7 @@ type Options = {
   onRegenerate: (report: EvaluationReportRecord) => void
   onFlowback: (report: EvaluationReportRecord) => void
   onViewUnavailable: (report: EvaluationReportRecord) => void
+  onDelete: (report: EvaluationReportRecord) => void
 }
 
 export function createEvaluationReportColumns({
@@ -22,6 +23,7 @@ export function createEvaluationReportColumns({
   onRegenerate,
   onFlowback,
   onViewUnavailable,
+  onDelete,
 }: Options): ColumnDef<EvaluationReportRecord>[] {
   return [
     {
@@ -76,6 +78,7 @@ export function createEvaluationReportColumns({
           onRegenerate={onRegenerate}
           onFlowback={onFlowback}
           onViewUnavailable={onViewUnavailable}
+          onDelete={onDelete}
         />
       ),
     },

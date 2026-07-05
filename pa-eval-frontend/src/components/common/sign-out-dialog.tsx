@@ -13,7 +13,7 @@ export function SignOutDialog({ open, onOpenChange }: SignOutDialogProps) {
 
   const handleSignOut = () => {
     auth.reset()
-    navigate('/', { replace: true })
+    navigate('/login', { replace: true })
   }
 
   return (

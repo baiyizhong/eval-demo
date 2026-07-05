@@ -12,6 +12,8 @@ type PageNavTopNav = {
 }
 
 type PageNavProps = React.HTMLAttributes<HTMLDivElement> & {
+  leading?: React.ReactNode
+  trailing?: React.ReactNode
   topNav?: PageNavTopNav | null
   buttonGroups?: ButtonGroupsProps | null
   showBackButton?: boolean
@@ -19,6 +21,8 @@ type PageNavProps = React.HTMLAttributes<HTMLDivElement> & {
 }
 
 export function PageNav({
+  leading,
+  trailing,
   topNav,
   buttonGroups,
   showBackButton,
@@ -29,6 +33,8 @@ export function PageNav({
   const navigate = useNavigate()
 
   if (
+    !leading &&
+    !trailing &&
     !showBackButton &&
     !topNav?.links?.length &&
     !buttonGroups?.buttons?.length
@@ -66,6 +72,9 @@ export function PageNav({
             <ChevronLeft className='size-5' data-icon='inline-start' />
           </Button>
         ) : null}
+        {leading ? (
+          <div className='min-w-0 shrink-0 pr-2'>{leading}</div>
+        ) : null}
         {topNav?.links?.length ? (
           <TopNav
             variant={topNav?.variant}
@@ -74,10 +83,11 @@ export function PageNav({
           />
         ) : null}
       </div>
+      {trailing ? <div className='ml-auto shrink-0'>{trailing}</div> : null}
       {buttonGroups?.buttons?.length ? (
         <ButtonGroups
           {...buttonGroups}
-          className={cn('ml-auto shrink-0', buttonGroups.className)}
+          className={cn(!trailing && 'ml-auto', 'shrink-0', buttonGroups.className)}
         />
       ) : null}
     </div>

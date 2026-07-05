@@ -1,5 +1,6 @@
 from fastapi.testclient import TestClient
 
+from app.auth_context import CurrentUserContext, get_current_user_context
 from app.langfuse_db import LangfuseDatabaseReader, get_langfuse_db_reader
 from app.main import app
 
@@ -33,6 +34,9 @@ class FakeDatabaseReader:
         ]
 
     async def list_organizations(self) -> list[dict]:
+        return self.organizations
+
+    async def list_organizations_for_user(self, user_id: str) -> list[dict]:
         return self.organizations
 
     async def get_organization(self, organization_id: str) -> dict | None:
@@ -72,9 +76,14 @@ class FakeDatabaseReader:
     async def create_organization_with_default_project(
         self,
         payload: dict,
+        owner_user_id: str,
         owner_email: str,
     ) -> dict:
-        self.created_payload = {"payload": payload, "owner_email": owner_email}
+        self.created_payload = {
+            "payload": payload,
+            "owner_user_id": owner_user_id,
+            "owner_email": owner_email,
+        }
         return {
             "id": "org-created",
             "name": payload["name"],
@@ -104,6 +113,10 @@ def override_reader(fake_reader: FakeDatabaseReader):
         return fake_reader  # type: ignore[return-value]
 
     app.dependency_overrides[get_langfuse_db_reader] = _override
+    app.dependency_overrides[get_current_user_context] = lambda: CurrentUserContext(
+        user_id="user-1",
+        email="admin@163.com",
+    )
 
 
 def clear_overrides() -> None:
@@ -239,6 +252,7 @@ def test_creates_langfuse_organization_with_pa_eval_metadata() -> None:
 
     assert response.status_code == 200
     assert fake_reader.created_payload == {
+        "owner_user_id": "user-1",
         "owner_email": "admin@163.com",
         "payload": {
             "name": "新组织",
@@ -247,6 +261,7 @@ def test_creates_langfuse_organization_with_pa_eval_metadata() -> None:
                 "paEval": {
                     "description": "模型评测组织",
                     "subsystem": "model-eval",
+                    "createdBy": "admin@163.com",
                 }
             }
         },
@@ -254,6 +269,35 @@ def test_creates_langfuse_organization_with_pa_eval_metadata() -> None:
     assert response.json()["data"]["id"] == "org-created"
     assert response.json()["data"]["description"] == "模型评测组织"
     assert response.json()["data"]["projectCount"] == 1
+
+
+def test_creates_organization_with_logged_in_email_as_owner() -> None:
+    fake_reader = FakeDatabaseReader()
+    override_reader(fake_reader)
+    app.dependency_overrides[get_current_user_context] = lambda: CurrentUserContext(
+        user_id="user-octocat",
+        email="octocat@example.com",
+        login="octocat",
+    )
+
+    try:
+        response = TestClient(app).post(
+            "/api/organizations",
+            json={
+                "name": "登录用户组织",
+                "subsystem": "model-eval",
+                "description": "登录用户创建",
+            },
+        )
+    finally:
+        clear_overrides()
+
+    assert response.status_code == 200
+    assert fake_reader.created_payload["owner_user_id"] == "user-octocat"
+    assert fake_reader.created_payload["owner_email"] == "octocat@example.com"
+    assert fake_reader.created_payload["payload"]["metadata"]["paEval"][
+        "createdBy"
+    ] == "octocat@example.com"
 
 
 def test_updates_organization_through_database_and_preserves_metadata() -> None:

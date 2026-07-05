@@ -5,8 +5,12 @@ from fastapi.exceptions import RequestValidationError
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 
+from app.auto_evaluations import router as auto_evaluations_router
+from app.auth import router as auth_router
 from app.config import get_settings
+from app.datasets import router as datasets_router
 from app.errors import BusinessError
+from app.evaluators import router as evaluators_router
 from app.organizations import router as organizations_router
 from app.projects import router as projects_router
 from app.response import failure, success
@@ -25,8 +29,12 @@ def create_app() -> FastAPI:
         allow_headers=["*"],
     )
 
+    app.include_router(auth_router)
     app.include_router(organizations_router)
     app.include_router(projects_router)
+    app.include_router(evaluators_router)
+    app.include_router(auto_evaluations_router)
+    app.include_router(datasets_router)
     app.include_router(system_router)
 
     @app.get("/health")
