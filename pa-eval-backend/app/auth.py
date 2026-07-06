@@ -193,7 +193,7 @@ async def github_callback(
         response.delete_cookie(OAUTH_STATE_COOKIE, path="/")
         return response
 
-    response = RedirectResponse(_frontend_url(settings, "/apps"), status_code=302)
+    response = RedirectResponse(_frontend_url(settings, "/environment"), status_code=302)
     response.delete_cookie(OAUTH_STATE_COOKIE, path="/")
     response.set_cookie(
         settings.pa_eval_auth_cookie_name,
