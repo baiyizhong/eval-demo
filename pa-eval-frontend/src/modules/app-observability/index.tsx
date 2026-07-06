@@ -8,9 +8,6 @@ export function AppObservabilityIndexRedirect() {
   const { projectId = 'project_customer_agent' } = useParams()
 
   return (
-    <Navigate
-      to={`/projects/${projectId}/observability/traces/dashboard`}
-      replace
-    />
+    <Navigate to={`/projects/${projectId}/observability/traces/logs`} replace />
   )
 }

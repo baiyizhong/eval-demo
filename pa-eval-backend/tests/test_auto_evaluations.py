@@ -178,6 +178,37 @@ def test_build_dify_inputs_from_dataset_item_maps_langfuse_fields() -> None:
     }
 
 
+def test_trace_generation_sample_prefers_trace_payload_fields() -> None:
+    sample = _to_trace_generation_sample(
+        {
+            "trace_id": "trace-1",
+            "project_id": "project-1",
+            "trace_name": "workflow",
+            "trace_input": (
+                '{"input":"用户问题","output":"候选回答",'
+                '"expected_output":"期望答案","context":"业务上下文"}'
+            ),
+            "trace_output": '{"score":0.2}',
+            "trace_metadata": {},
+            "user_id": "pa-eval",
+            "session_id": "",
+            "tags": ["workflow"],
+            "observation_id": "obs-1",
+            "observation_name": "LLM Judge",
+            "observation_input": "原始 observation 输入",
+            "observation_output": "原始 observation 输出",
+            "observation_metadata": {},
+        }
+    )
+
+    assert sample["input"] == {
+        "input": "用户问题",
+        "output": "候选回答",
+        "context": "业务上下文",
+    }
+    assert sample["expected_output"] == "期望答案"
+
+
 def test_normalize_dataset_item_sample_exposes_sample_fields() -> None:
     sample = _normalize_dataset_item_sample(
         {

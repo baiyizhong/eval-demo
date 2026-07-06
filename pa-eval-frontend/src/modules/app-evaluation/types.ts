@@ -83,7 +83,7 @@ export type DatasetMetricSummary = {
 export const datasetTypeLabels: Record<DatasetType, string> = {
   evaluation: '评测集',
   badcase: 'badcase集',
-  golden: '黄金级',
+  golden: '黄金集',
   anomaly: '异常集',
 }
 

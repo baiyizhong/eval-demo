@@ -78,6 +78,24 @@ class FakeAnnotationDatabaseReader:
         self.calls.append(("create_trace_task", (project_id, user_id, payload)))
         return {"queueId": "queue-1", "createdCount": 2, "skippedCount": 1}
 
+    async def ensure_default_score_config_for_user(
+        self,
+        project_id: str,
+        user_id: str,
+    ) -> dict:
+        self.calls.append(("ensure_default_score_config", (project_id, user_id)))
+        return {
+            "id": "score-default",
+            "projectId": project_id,
+            "name": "人工质量评分",
+            "dataType": "NUMERIC",
+            "description": "Trace 人工标注默认评分指标",
+            "minValue": 1,
+            "maxValue": 5,
+            "categories": [],
+            "archived": False,
+        }
+
     async def add_traces_to_dataset_for_user(
         self,
         project_id: str,
@@ -307,6 +325,27 @@ def test_creates_trace_annotation_task_in_existing_queue() -> None:
     assert fake_reader.calls[0] == (
         "create_trace_task",
         ("project-1", "user-1", payload),
+    )
+
+
+def test_ensures_default_score_config_for_manual_annotation_queue() -> None:
+    fake_reader = FakeAnnotationDatabaseReader()
+    override_reader(fake_reader)
+
+    try:
+        response = TestClient(app).post(
+            "/api/projects/project-1/score-configs/default",
+        )
+    finally:
+        clear_overrides()
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["data"]["id"] == "score-default"
+    assert body["data"]["name"] == "人工质量评分"
+    assert fake_reader.calls[0] == (
+        "ensure_default_score_config",
+        ("project-1", "user-1"),
     )
 
 

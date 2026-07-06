@@ -11,9 +11,9 @@ import { Page } from '@/components/common/page'
 import {
   createProjectAnnotationQueue,
   deleteProjectAnnotationQueue,
+  listProjectScoreConfigsForAnnotation,
   listProjectAnnotationQueues,
   listProjectAnnotationUsers,
-  listProjectScoreConfigs,
   updateProjectAnnotationQueue,
 } from '../api/annotation-api'
 import { createAnnotationQueueColumns } from '../components/annotation-queue-columns'
@@ -55,7 +55,7 @@ export function ProjectAnnotationQueues() {
 
   const scoreConfigsQuery = useQuery({
     queryKey: ['project-score-configs', projectId],
-    queryFn: () => listProjectScoreConfigs($api, projectId),
+    queryFn: () => listProjectScoreConfigsForAnnotation($api, projectId),
     enabled: formOpen,
   })
   const usersQuery = useQuery({

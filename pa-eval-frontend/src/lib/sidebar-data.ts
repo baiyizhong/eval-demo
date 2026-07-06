@@ -119,15 +119,15 @@ function buildProjectNavItems(projectId: string): NavItem[] {
   const encodedProjectId = encodeURIComponent(projectId)
   return [
     {
-      title: '应用评测',
-      url: `/projects/${encodedProjectId}/evaluation`,
-      icon: 'Database',
-      activeMatch: 'prefix',
-    },
-    {
       title: '应用观测',
       url: `/projects/${encodedProjectId}/observability`,
       icon: 'Monitor',
+      activeMatch: 'prefix',
+    },
+    {
+      title: '应用评测',
+      url: `/projects/${encodedProjectId}/evaluation`,
+      icon: 'Database',
       activeMatch: 'prefix',
     },
     {

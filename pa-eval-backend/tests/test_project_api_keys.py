@@ -16,8 +16,7 @@ class FakeProjectApiKeyReader:
                 "note": "Dify 评估工作流",
                 "publicKey": "pk-lf-existing",
                 "secretKey": "sk-lf-existing",
-                "status": "ACTIVE",
-                "lastUsedAt": None,
+                "updatedBy": "admin@163.com",
                 "createdAt": "2026-07-06T08:00:00.000Z",
                 "updatedAt": "2026-07-06T08:00:00.000Z",
             }
@@ -49,8 +48,7 @@ class FakeProjectApiKeyReader:
             "note": note,
             "publicKey": "pk-lf-created",
             "secretKey": "sk-lf-created",
-            "status": "ACTIVE",
-            "lastUsedAt": None,
+            "updatedBy": user_email,
             "createdAt": "2026-07-06T09:00:00.000Z",
             "updatedAt": "2026-07-06T09:00:00.000Z",
         }
@@ -69,6 +67,7 @@ class FakeProjectApiKeyReader:
         for item in self.keys:
             if item["projectId"] == project_id and item["id"] == key_id:
                 item["note"] = note
+                item["updatedBy"] = user_email
                 item["updatedAt"] = "2026-07-06T10:00:00.000Z"
                 return item
         raise AssertionError("test key not found")
@@ -103,6 +102,32 @@ def clear_overrides() -> None:
     app.dependency_overrides.clear()
 
 
+def test_project_api_key_payload_uses_update_audit_fields() -> None:
+    row = {
+        "id": "key-1",
+        "project_id": "project-1",
+        "note": "本地 Dify",
+        "public_key": "pk-lf-existing",
+        "secret_key": "sk-lf-existing",
+        "create_date": "2026-07-06T08:00:00.000Z",
+        "update_by": "admin@163.com",
+        "update_date": "2026-07-06T09:00:00.000Z",
+    }
+
+    payload = LangfuseDatabaseReader._to_project_api_key_payload(row)
+
+    assert payload == {
+        "id": "key-1",
+        "projectId": "project-1",
+        "note": "本地 Dify",
+        "publicKey": "pk-lf-existing",
+        "secretKey": "sk-lf-existing",
+        "updatedBy": "admin@163.com",
+        "createdAt": "2026-07-06T08:00:00.000Z",
+        "updatedAt": "2026-07-06T09:00:00.000Z",
+    }
+
+
 def test_lists_project_api_keys_with_repeatable_secret() -> None:
     fake_reader = FakeProjectApiKeyReader()
     override_reader(fake_reader)
@@ -126,6 +151,9 @@ def test_lists_project_api_keys_with_repeatable_secret() -> None:
     assert body["data"]["total"] == 1
     assert body["data"]["datas"][0]["publicKey"] == "pk-lf-existing"
     assert body["data"]["datas"][0]["secretKey"] == "sk-lf-existing"
+    assert "status" not in body["data"]["datas"][0]
+    assert "lastUsedAt" not in body["data"]["datas"][0]
+    assert body["data"]["datas"][0]["updatedBy"] == "admin@163.com"
     assert repeat_response.json()["data"]["datas"][0]["secretKey"] == (
         "sk-lf-existing"
     )

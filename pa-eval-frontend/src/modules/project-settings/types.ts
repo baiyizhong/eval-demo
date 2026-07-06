@@ -68,8 +68,7 @@ export type ProjectApiKey = {
   note: string
   publicKey: string
   secretKey: string
-  status: string
-  lastUsedAt?: string
+  updatedBy: string
   createdAt: string
   updatedAt: string
 }

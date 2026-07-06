@@ -28,7 +28,7 @@ import { useAPI } from '@/hooks/use-api'
 import {
   listProjectAnnotationQueues,
   listProjectAnnotationUsers,
-  listProjectScoreConfigs,
+  listProjectScoreConfigsForAnnotation,
 } from '@/modules/app-evaluation/api/annotation-api'
 import {
   scoreDataTypeLabels,
@@ -86,7 +86,7 @@ export function TraceAnnotationDialog({
   })
   const scoreConfigsQuery = useQuery({
     queryKey: ['project-score-configs', projectId],
-    queryFn: () => listProjectScoreConfigs($api, projectId),
+    queryFn: () => listProjectScoreConfigsForAnnotation($api, projectId),
     enabled: open,
   })
   const usersQuery = useQuery({

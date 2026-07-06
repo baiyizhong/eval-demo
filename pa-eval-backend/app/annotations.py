@@ -131,6 +131,19 @@ async def list_score_configs(
     return success(configs)
 
 
+@router.post("/score-configs/default")
+async def ensure_default_score_config(
+    project_id: str,
+    current_user: CurrentUserContext = Depends(get_current_user_context),
+    reader: LangfuseDatabaseReader = Depends(get_langfuse_db_reader),
+) -> dict[str, Any]:
+    config = await reader.ensure_default_score_config_for_user(
+        project_id,
+        current_user.user_id,
+    )
+    return success(config)
+
+
 @router.get("/annotation-users")
 async def list_annotation_users(
     project_id: str,

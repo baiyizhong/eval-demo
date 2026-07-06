@@ -108,8 +108,8 @@ test('buildSidebarDataFromProjects keeps project scoped entries on the current p
     .map((item) => ('url' in item ? item.url : ''))
 
   assert.deepEqual(scopedLinks, [
-    '/projects/project-current/evaluation',
     '/projects/project-current/observability',
+    '/projects/project-current/evaluation',
     '/projects/project-current/settings/general',
   ])
 })
@@ -138,7 +138,7 @@ test('buildSidebarDataFromProjects only shows project scoped entries inside proj
 
   assert.deepEqual(
     items.map((item) => item.title),
-    ['应用评测', '应用观测', '项目设置']
+    ['应用观测', '应用评测', '项目设置']
   )
   assert.equal(
     items.some((item) =>

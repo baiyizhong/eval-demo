@@ -58,8 +58,7 @@ const appsTopbarNavigation: TopNavProps = {
   brand: {
     name: '智能评测系统',
     initial: 'A',
-    href: '/',
-    ariaLabel: 'Go to dashboard',
+    ariaLabel: '智能评测系统',
   },
   items: [
     { id: 'apps', label: '项目管理', href: '/apps', activeMatch: 'prefix' },
@@ -141,7 +140,7 @@ export const routes = [
             path: '',
             element: <SidebarLayout />,
             children: [
-              { index: true, element: <Dashboard /> },
+              { index: true, element: <Navigate to='/apps' replace /> },
               { path: 'dashboard', element: <Dashboard /> },
               { path: 'tasks', element: <Tasks /> },
               { path: 'tasks/evaluators', element: <TaskEvaluators /> },

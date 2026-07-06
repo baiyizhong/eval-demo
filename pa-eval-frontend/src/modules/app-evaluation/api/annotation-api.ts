@@ -18,6 +18,7 @@ import type {
 
 type AnnotationApiClient = {
   getProjectScoreConfigs: ApiMethod
+  ensureDefaultProjectScoreConfig: ApiMethod
   getProjectAnnotationUsers: ApiMethod
   getProjectAnnotationQueues: ApiMethod
   createProjectAnnotationQueue: ApiMethod
@@ -40,6 +41,23 @@ export function listProjectScoreConfigs(
   return api.getProjectScoreConfigs<ScoreConfigRecord[]>({
     path: { projectId },
   })
+}
+
+export function ensureDefaultProjectScoreConfig(
+  api: AnnotationApiClient,
+  projectId: string
+) {
+  return api.ensureDefaultProjectScoreConfig<ScoreConfigRecord>({
+    path: { projectId },
+  })
+}
+
+export async function listProjectScoreConfigsForAnnotation(
+  api: AnnotationApiClient,
+  projectId: string
+) {
+  await ensureDefaultProjectScoreConfig(api, projectId)
+  return listProjectScoreConfigs(api, projectId)
 }
 
 export function listProjectAnnotationUsers(

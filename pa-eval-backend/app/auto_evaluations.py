@@ -247,12 +247,73 @@ async def _list_trace_generation_samples(
     cursor: psycopg.AsyncCursor[dict[str, Any]],
     project_id: str,
     data_source_payload: dict[str, Any],
+    settings: Settings | None = None,
 ) -> list[dict[str, Any]]:
     trace_name = _stringify_value(data_source_payload.get("traceName")).strip()
     user_id = _stringify_value(data_source_payload.get("userId")).strip()
     session_id = _stringify_value(data_source_payload.get("sessionId")).strip()
     tags = data_source_payload.get("tags")
     tag_values = [str(tag) for tag in tags] if isinstance(tags, list) else []
+
+    if settings is not None:
+        conditions = [
+            f"t.project_id = {_clickhouse_quote(project_id)}",
+            "t.is_deleted = 0",
+            "o.is_deleted = 0",
+            "o.type = 'GENERATION'",
+        ]
+        time_condition = _trace_time_range_condition(
+            data_source_payload.get("timeRange")
+        )
+        if trace_name:
+            conditions.append(f"positionCaseInsensitive(t.name, {_clickhouse_quote(trace_name)}) > 0")
+        if user_id:
+            conditions.append(f"positionCaseInsensitive(ifNull(t.user_id, ''), {_clickhouse_quote(user_id)}) > 0")
+        if session_id:
+            conditions.append(f"positionCaseInsensitive(ifNull(t.session_id, ''), {_clickhouse_quote(session_id)}) > 0")
+        for tag in tag_values:
+            conditions.append(f"has(t.tags, {_clickhouse_quote(tag)})")
+
+        where_clause = " AND ".join(conditions)
+        query = f"""
+        SELECT
+            t.id AS trace_id,
+            t.project_id AS project_id,
+            t.name AS trace_name,
+            t.input AS trace_input,
+            t.output AS trace_output,
+            t.metadata AS trace_metadata,
+            t.user_id AS user_id,
+            t.session_id AS session_id,
+            t.tags AS tags,
+            t.timestamp AS trace_timestamp,
+            o.id AS observation_id,
+            o.name AS observation_name,
+            o.input AS observation_input,
+            o.output AS observation_output,
+            o.metadata AS observation_metadata,
+            o.start_time AS observation_start_time,
+            o.created_at AS observation_created_at
+        FROM traces t
+        INNER JOIN observations o
+            ON o.trace_id = t.id
+           AND o.project_id = t.project_id
+        WHERE {where_clause}
+          {time_condition}
+        ORDER BY o.start_time DESC, t.timestamp DESC, t.id DESC
+        LIMIT 500
+        FORMAT JSONEachRow
+        """
+        rows = await _query_clickhouse_json_each_row(settings, query)
+        latest_by_trace: dict[str, dict[str, Any]] = {}
+        for row in rows:
+            trace_id = _stringify_value(row.get("trace_id"))
+            if trace_id and trace_id not in latest_by_trace:
+                latest_by_trace[trace_id] = row
+        return [
+            _to_trace_generation_sample(row)
+            for row in latest_by_trace.values()
+        ]
 
     await cursor.execute(
         """
@@ -317,11 +378,13 @@ async def _count_trace_generation_samples(
     cursor: psycopg.AsyncCursor[dict[str, Any]],
     project_id: str,
     data_source_payload: dict[str, Any],
+    settings: Settings | None = None,
 ) -> int:
     samples = await _list_trace_generation_samples(
         cursor,
         project_id,
         data_source_payload,
+        settings,
     )
     return len(samples)
 
@@ -343,6 +406,52 @@ def _stringify_value(value: Any) -> str:
     if isinstance(value, str):
         return value
     return json.dumps(value, ensure_ascii=False)
+
+
+def _parse_json_object(value: Any) -> dict[str, Any]:
+    if isinstance(value, dict):
+        return value
+    if not isinstance(value, str) or not value.strip():
+        return {}
+    try:
+        parsed = json.loads(value)
+    except json.JSONDecodeError:
+        return {}
+    return parsed if isinstance(parsed, dict) else {}
+
+
+def _clickhouse_quote(value: str) -> str:
+    return "'" + value.replace("\\", "\\\\").replace("'", "\\'") + "'"
+
+
+def _trace_time_range_condition(time_range: Any) -> str:
+    normalized = str(time_range or "24h")
+    if normalized == "7d":
+        return "AND t.timestamp >= now() - INTERVAL 7 DAY"
+    if normalized == "30d":
+        return "AND t.timestamp >= now() - INTERVAL 30 DAY"
+    return "AND t.timestamp >= now() - INTERVAL 24 HOUR"
+
+
+async def _query_clickhouse_json_each_row(
+    settings: Settings,
+    query: str,
+) -> list[dict[str, Any]]:
+    async with httpx.AsyncClient(timeout=settings.pa_eval_api_timeout) as client:
+        response = await client.post(
+            settings.langfuse_clickhouse_url,
+            content=query,
+            auth=(
+                settings.langfuse_clickhouse_user,
+                settings.langfuse_clickhouse_password,
+            ),
+        )
+    response.raise_for_status()
+    return [
+        json.loads(line)
+        for line in response.text.splitlines()
+        if line.strip()
+    ]
 
 
 def _build_dify_inputs_from_dataset_item(item: dict[str, Any]) -> dict[str, str]:
@@ -389,7 +498,11 @@ def _to_trace_generation_sample(row: dict[str, Any]) -> dict[str, Any]:
         if isinstance(row.get("observation_metadata"), dict)
         else {}
     )
-    context = trace_metadata.get("context", observation_metadata.get("context", ""))
+    trace_input = _parse_json_object(row.get("trace_input"))
+    context = trace_input.get(
+        "context",
+        trace_metadata.get("context", observation_metadata.get("context", "")),
+    )
 
     return {
         "sourceType": "TRACE_GENERATION",
@@ -398,11 +511,15 @@ def _to_trace_generation_sample(row: dict[str, Any]) -> dict[str, Any]:
         "project_id": _stringify_value(row.get("project_id")),
         "dataset_id": "",
         "input": {
-            "input": _stringify_value(row.get("observation_input")),
-            "output": _stringify_value(row.get("observation_output")),
+            "input": _stringify_value(
+                trace_input.get("input", row.get("observation_input"))
+            ),
+            "output": _stringify_value(
+                trace_input.get("output", row.get("observation_output"))
+            ),
             "context": _stringify_value(context),
         },
-        "expected_output": "",
+        "expected_output": _stringify_value(trace_input.get("expected_output")),
         "metadata": {
             "sourceType": "TRACE_GENERATION",
             "traceName": _stringify_value(row.get("trace_name")),
@@ -1108,6 +1225,7 @@ async def create_auto_evaluation(
                 project_id,
                 payload,
                 current_user.user_id,
+                settings,
             )
             report_template_snapshot = await _resolve_report_template_snapshot(
                 cursor,
@@ -1199,6 +1317,7 @@ async def count_trace_generation_samples(
                 cursor,
                 project_id,
                 payload.trace_filter,
+                settings,
             )
     return success({"count": count})
 
@@ -1208,6 +1327,7 @@ async def _resolve_auto_evaluation_samples(
     project_id: str,
     payload: CreateAutoEvaluationPayload,
     user_id: str,
+    settings: Settings,
 ) -> tuple[dict[str, Any], list[dict[str, Any]]]:
     data_source_payload = payload.data_source or {}
     samples = [_build_single_sample(payload)]
@@ -1254,6 +1374,7 @@ async def _resolve_auto_evaluation_samples(
             cursor,
             project_id,
             data_source_payload,
+            settings,
         )
         samples = _sample_dataset_items(trace_samples, payload.sample_rate)
         if not samples:

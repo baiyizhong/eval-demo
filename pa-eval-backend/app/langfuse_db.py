@@ -155,13 +155,11 @@ class LangfuseDatabaseReader:
                 note,
                 public_key,
                 secret_key,
-                status,
-                last_used_at,
                 create_date,
+                update_by,
                 update_date
             FROM pa_project_api_keys
             WHERE project_id = %(project_id)s
-              AND status = 'ACTIVE'
             ORDER BY create_date DESC, id DESC
             """,
             {"project_id": project_id},
@@ -196,7 +194,6 @@ class LangfuseDatabaseReader:
                         note,
                         public_key,
                         secret_key,
-                        status,
                         create_by,
                         create_date,
                         update_by,
@@ -208,7 +205,6 @@ class LangfuseDatabaseReader:
                         %(note)s,
                         %(public_key)s,
                         %(secret_key)s,
-                        'ACTIVE',
                         %(create_by)s,
                         NOW(),
                         %(update_by)s,
@@ -220,9 +216,8 @@ class LangfuseDatabaseReader:
                         note,
                         public_key,
                         secret_key,
-                        status,
-                        last_used_at,
                         create_date,
+                        update_by,
                         update_date
                     """,
                     {
@@ -266,16 +261,14 @@ class LangfuseDatabaseReader:
                         update_date = NOW()
                     WHERE id = %(id)s
                       AND project_id = %(project_id)s
-                      AND status = 'ACTIVE'
                     RETURNING
                         id,
                         project_id,
                         note,
                         public_key,
                         secret_key,
-                        status,
-                        last_used_at,
                         create_date,
+                        update_by,
                         update_date
                     """,
                     {
@@ -688,6 +681,58 @@ class LangfuseDatabaseReader:
             },
         )
         return [self._to_score_config_payload(row) for row in rows]
+
+    async def ensure_default_score_config_for_user(
+        self,
+        project_id: str,
+        user_id: str,
+    ) -> dict[str, Any]:
+        if not self._database_url:
+            raise LangfuseDatabaseConfigError()
+
+        async with await psycopg.AsyncConnection.connect(
+            self._database_url,
+            row_factory=dict_row,
+        ) as connection:
+            async with connection.cursor() as cursor:
+                await self._get_project_for_user(cursor, project_id, user_id)
+                score_config_ids = await self._ensure_default_score_configs(
+                    cursor,
+                    project_id,
+                )
+                await cursor.execute(
+                    """
+                    SELECT
+                        id,
+                        project_id,
+                        name,
+                        data_type::text AS data_type,
+                        description,
+                        min_value,
+                        max_value,
+                        categories,
+                        is_archived,
+                        created_at,
+                        updated_at
+                    FROM score_configs
+                    WHERE project_id = %(project_id)s
+                      AND id = %(score_config_id)s
+                    LIMIT 1
+                    """,
+                    {
+                        "project_id": project_id,
+                        "score_config_id": score_config_ids[0],
+                    },
+                )
+                row = await cursor.fetchone()
+
+        if row is None:
+            raise BusinessError(
+                code=1024,
+                message="评分指标不存在或无访问权限",
+                status_code=400,
+            )
+        return self._to_score_config_payload(row)
 
     async def list_project_users_for_user(
         self,
@@ -2857,10 +2902,7 @@ class LangfuseDatabaseReader:
             "note": row.get("note") or "",
             "publicKey": row["public_key"],
             "secretKey": row["secret_key"],
-            "status": row["status"],
-            "lastUsedAt": _format_datetime(row["last_used_at"])
-            if row.get("last_used_at")
-            else None,
+            "updatedBy": row.get("update_by") or "",
             "createdAt": _format_datetime(row["create_date"]),
             "updatedAt": _format_datetime(row["update_date"]),
         }

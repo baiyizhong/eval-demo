@@ -98,6 +98,10 @@ export const apiRegistry = {
     method: 'GET',
     url: '/projects/:projectId/score-configs',
   },
+  ensureDefaultProjectScoreConfig: {
+    method: 'POST',
+    url: '/projects/:projectId/score-configs/default',
+  },
   getProjectAnnotationUsers: {
     method: 'GET',
     url: '/projects/:projectId/annotation-users',

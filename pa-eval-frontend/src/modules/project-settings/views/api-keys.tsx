@@ -211,8 +211,8 @@ export function ProjectApiKeysSettings() {
                 <TableHead>备注</TableHead>
                 <TableHead>LANGFUSE_PUBLIC_KEY</TableHead>
                 <TableHead>LANGFUSE_SECRET_KEY</TableHead>
-                <TableHead>最近使用</TableHead>
-                <TableHead>创建时间</TableHead>
+                <TableHead>更新人</TableHead>
+                <TableHead>更新时间</TableHead>
                 <TableHead className='text-end'>操作</TableHead>
               </TableRow>
             </TableHeader>
@@ -245,8 +245,8 @@ export function ProjectApiKeysSettings() {
                   <TableCell>
                     <KeyCell label='LANGFUSE_SECRET_KEY' value={apiKey.secretKey} />
                   </TableCell>
-                  <TableCell>{formatDateTime(apiKey.lastUsedAt)}</TableCell>
-                  <TableCell>{formatDateTime(apiKey.createdAt)}</TableCell>
+                  <TableCell>{apiKey.updatedBy || '-'}</TableCell>
+                  <TableCell>{formatDateTime(apiKey.updatedAt)}</TableCell>
                   <TableCell>
                     <div className='flex justify-end gap-2'>
                       <Button
