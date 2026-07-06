@@ -111,7 +111,7 @@ export async function exportProjectEvaluationReport(
       '',
       `- 样本数：${report.sampleCount}`,
       `- Badcase：${report.badcaseCount}`,
-      `- 平均分：${report.metrics.averageScore}`,
+      `- 平均分：${report.metrics.averageScore ?? 0}`,
     ].join('\n'),
   }
 }

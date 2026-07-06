@@ -2,8 +2,10 @@ import pytest
 
 from app.auto_evaluations import (
     _build_dify_inputs_from_dataset_item,
+    _build_report_from_template,
     _build_workflow_inputs,
     _build_workflow_headers,
+    _complete_auto_evaluation_success,
     _ensure_report_exists,
     _get_path_value,
     _get_pa_evaluator,
@@ -15,7 +17,8 @@ from app.auto_evaluations import (
     _resolve_mapping_template,
     _mark_auto_evaluation_failed,
     _sample_dataset_items,
-    _soft_delete_auto_evaluation_task,
+    _delete_auto_evaluation_task,
+    CreateAutoEvaluationPayload,
 )
 from app.errors import BusinessError
 
@@ -45,10 +48,10 @@ def _jsonb_value(value):
 
 
 @pytest.mark.anyio
-async def test_soft_delete_auto_evaluation_task_hides_task_and_reports() -> None:
+async def test_delete_auto_evaluation_task_physically_deletes_task_and_reports() -> None:
     cursor = FakeCursor({"id": "task-1"})
 
-    await _soft_delete_auto_evaluation_task(
+    await _delete_auto_evaluation_task(
         cursor,  # type: ignore[arg-type]
         project_id="project-1",
         task_id="task-1",
@@ -56,17 +59,16 @@ async def test_soft_delete_auto_evaluation_task_hides_task_and_reports() -> None
 
     task_sql, task_params = cursor.executions[0]
     report_sql, report_params = cursor.executions[1]
-    assert "UPDATE pa_auto_evaluation_tasks" in task_sql
-    assert "deleted_at = NOW()" in task_sql
-    assert "AND deleted_at IS NULL" in task_sql
+    assert "DELETE FROM pa_auto_evaluation_tasks" in task_sql
+    assert "RETURNING id" in task_sql
     assert task_params == {"project_id": "project-1", "task_id": "task-1"}
-    assert "UPDATE pa_evaluation_reports" in report_sql
+    assert "DELETE FROM pa_evaluation_reports" in report_sql
     assert "source_task_id = %(task_id)s" in report_sql
     assert report_params == {"project_id": "project-1", "task_id": "task-1"}
 
 
 @pytest.mark.anyio
-async def test_ensure_report_exists_ignores_soft_deleted_reports() -> None:
+async def test_ensure_report_exists_checks_report_identity() -> None:
     cursor = FakeCursor({"exists": 1})
 
     await _ensure_report_exists(
@@ -79,7 +81,7 @@ async def test_ensure_report_exists_ignores_soft_deleted_reports() -> None:
         "project_id": "project-1",
         "report_id": "report-1",
     }
-    assert "deleted_at IS NULL" in cursor.sql
+    assert "deleted_at" not in cursor.sql
 
 
 @pytest.mark.anyio
@@ -346,6 +348,126 @@ def test_build_workflow_headers_supports_bearer_token() -> None:
     assert headers == {"Authorization": "Bearer token-1"}
 
 
+def test_build_report_from_template_applies_title_summary_sections_and_badcase_rule() -> None:
+    report = _build_report_from_template(
+        task_name="客服质检",
+        score_name="quality",
+        report_id="report-1",
+        task_id="task-1",
+        evaluator={"id": "evaluator-1"},
+        data_source={"name": "baiyizhong-dataset"},
+        input_mapping={"input": "{{ sample.input }}"},
+        results=[
+            {
+                "score": 0.75,
+                "passed": True,
+                "raw": {"data": {"workflow_run_id": "run-1"}},
+            },
+            {
+                "score": 0.5,
+                "passed": True,
+                "raw": {"data": {"workflow_run_id": "run-2"}},
+            },
+        ],
+        template_snapshot={
+            "id": "template-1",
+            "name": "严格报告",
+            "titleTemplate": "{taskName} 自定义报告",
+            "summaryTemplate": (
+                "样本 {sampleCount} 条，平均 {averageScore}，"
+                "Badcase {badcaseCount} 条"
+            ),
+            "sections": {
+                "metrics": True,
+                "distribution": False,
+                "groupAnalysis": True,
+                "recommendations": False,
+                "risks": True,
+                "reproduction": False,
+                "items": True,
+                "badcases": True,
+            },
+            "badcaseRule": {
+                "mode": "SCORE_THRESHOLD",
+                "operator": "LTE",
+                "threshold": 0.6,
+            },
+            "recommendations": ["模板建议"],
+            "risks": ["模板风险"],
+        },
+    )
+
+    assert report["title"] == "客服质检 自定义报告"
+    assert report["badcaseCount"] == 1
+    assert report["summary"] == "样本 2 条，平均 0.62，Badcase 1 条"
+    assert report["distribution"] == []
+    assert report["recommendations"] == []
+    assert report["risks"] == ["模板风险"]
+    assert report["reproduction"] == {}
+    assert report["itemResults"] == ["normal", "badcase"]
+
+
+@pytest.mark.anyio
+async def test_complete_auto_evaluation_success_persists_report_template_snapshot() -> None:
+    cursor = FakeCursor({"create_date": None, "create_by": "creator@163.com"})
+    payload = CreateAutoEvaluationPayload.model_validate(
+        {
+            "name": "客服质检",
+            "scoreName": "quality",
+            "evaluatorId": "evaluator-1",
+            "dataSource": {"type": "DATASET", "datasetId": "dataset-1"},
+            "reportTemplateId": "template-1",
+            "reportTemplateSnapshot": {
+                "id": "template-1",
+                "name": "严格报告",
+                "titleTemplate": "{taskName} 自定义报告",
+                "summaryTemplate": "Badcase {badcaseCount} 条",
+                "badcaseRule": {
+                    "mode": "SCORE_THRESHOLD",
+                    "operator": "LTE",
+                    "threshold": 0.6,
+                },
+                "sections": {"recommendations": False},
+            },
+        }
+    )
+
+    await _complete_auto_evaluation_success(
+        cursor,  # type: ignore[arg-type]
+        project_id="project-1",
+        task_id="task-1",
+        run_id="run-1",
+        payload=payload,
+        evaluator={"id": "evaluator-1", "variables": [], "config": {}},
+        data_source={"name": "baiyizhong-dataset"},
+        results=[
+            {
+                "sample": {
+                    "id": "item-1",
+                    "source_trace_id": "trace-1",
+                    "source_observation_id": "obs-1",
+                },
+                "score": 0.5,
+                "passed": True,
+                "reason": "低于模板阈值",
+                "raw": {"data": {"workflow_run_id": "run-1"}},
+            }
+        ],
+        updated_by="admin@163.com",
+    )
+
+    report_sql, report_params = cursor.executions[1]
+    badcase_sql, badcase_params = cursor.executions[3]
+    assert "report_template_id" in report_sql
+    assert "report_template_snapshot" in report_sql
+    assert report_params["report_template_id"] == "template-1"
+    assert _jsonb_value(report_params["report_template_snapshot"])["name"] == "严格报告"
+    assert report_params["title"].endswith("自定义报告")
+    assert _jsonb_value(report_params["recommendations"]) == []
+    assert "INSERT INTO pa_evaluation_report_badcases" in badcase_sql
+    assert badcase_params["score_value"] == 0.5
+
+
 @pytest.mark.anyio
 async def test_insert_running_auto_evaluation_returns_before_report_generation() -> None:
     cursor = FakeCursor(None)
@@ -367,15 +489,26 @@ async def test_insert_running_auto_evaluation_returns_before_report_generation()
         data_source={"type": "DATASET", "sampleCount": 10},
         sample_rate=100,
         sample_count=10,
-        created_by="admin@163.com",
+        report_template_id="default",
+        report_template_snapshot={"id": "default", "name": "系统默认模板"},
+        create_by="admin@163.com",
         now=None,
     )
 
     task_sql, task_params = cursor.executions[0]
     run_sql, run_params = cursor.executions[1]
     assert "INSERT INTO pa_auto_evaluation_tasks" in task_sql
+    assert "create_by" in task_sql
+    assert "create_date" in task_sql
+    assert "update_by" in task_sql
+    assert "update_date" in task_sql
     assert task_params["status"] == "RUNNING"
     assert task_params["latest_report_id"] is None
+    assert task_params["report_template_id"] == "default"
+    assert _jsonb_value(task_params["report_template_snapshot"])["id"] == "default"
+    assert task_params["create_by"] == "admin@163.com"
+    assert task_params["update_by"] == "admin@163.com"
+    assert task_params["create_date"] == task_params["update_date"]
     assert _jsonb_value(task_params["execution_stats"]) == {
         "pending": 10,
         "running": 0,
@@ -384,9 +517,15 @@ async def test_insert_running_auto_evaluation_returns_before_report_generation()
         "cancelled": 0,
     }
     assert "INSERT INTO pa_auto_evaluation_runs" in run_sql
+    assert "create_by" in run_sql
+    assert "create_date" in run_sql
+    assert "update_by" in run_sql
+    assert "update_date" in run_sql
     assert run_params["status"] == "RUNNING"
     assert run_params["sample_count"] == 10
     assert run_params["ended_at"] is None
+    assert run_params["create_by"] == "admin@163.com"
+    assert run_params["update_by"] == "admin@163.com"
 
 
 @pytest.mark.anyio
@@ -400,13 +539,20 @@ async def test_mark_auto_evaluation_failed_updates_task_and_run() -> None:
         run_id="run-1",
         sample_count=10,
         message="Dify 工作流调用失败",
+        updated_by="admin@163.com",
     )
 
     task_sql, task_params = cursor.executions[0]
     run_sql, run_params = cursor.executions[1]
     assert "UPDATE pa_auto_evaluation_tasks" in task_sql
+    assert "update_by = %(update_by)s" in task_sql
+    assert "update_date = %(update_date)s" in task_sql
     assert task_params["status"] == "FAILED"
+    assert task_params["update_by"] == "admin@163.com"
     assert _jsonb_value(task_params["execution_stats"])["failed"] == 10
     assert "UPDATE pa_auto_evaluation_runs" in run_sql
+    assert "update_by = %(update_by)s" in run_sql
+    assert "update_date = %(update_date)s" in run_sql
     assert run_params["status"] == "FAILED"
     assert run_params["error_message"] == "Dify 工作流调用失败"
+    assert run_params["update_by"] == "admin@163.com"

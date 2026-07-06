@@ -57,6 +57,7 @@ describe('mock auto evaluation api', () => {
           output: 'trace.output',
           expected_output: 'dataset.expectedOutput',
         },
+        reportTemplateId: 'default',
         dataSource: { type: 'DATASET', datasetId: 'dataset_customer_qa' },
         sampleRate: 100,
         badcase: {

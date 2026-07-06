@@ -4,11 +4,7 @@ import { Plus } from 'lucide-react'
 import { useParams } from 'react-router'
 import { toast } from 'sonner'
 import { confirm } from '@/lib/confirm'
-import {
-  DataTable,
-  type DataTableFilterBinding,
-  type DataTableToolbarFilter,
-} from '@/components/common/data-table'
+import { DataTable } from '@/components/common/data-table'
 import { Loading } from '@/components/common/loading'
 import { Page } from '@/components/common/page'
 import {
@@ -21,30 +17,7 @@ import { createAnnotationQueueColumns } from '../components/annotation-queue-col
 import { AnnotationQueueFormDrawer } from '../components/annotation-queue-form-drawer'
 import { EvaluationPageNav } from '../components/evaluation-page-nav'
 import type { AnnotationQueueFormInput, AnnotationQueueRecord } from '../types'
-
-const queueUrlFilters: DataTableFilterBinding[] = [
-  { fieldId: 'assigneeIds', type: 'array' },
-  { fieldId: 'pendingState', type: 'array' },
-]
-
-const queueToolbarFilters: DataTableToolbarFilter[] = [
-  {
-    columnId: 'pendingState',
-    title: '处理状态',
-    options: [
-      { label: '包含待处理', value: 'hasPending' },
-      { label: '全部完成', value: 'completed' },
-    ],
-  },
-  {
-    columnId: 'assigneeIds',
-    title: '处理人',
-    options: [
-      { label: '张三', value: 'user_annotator_a' },
-      { label: '李四', value: 'user_annotator_b' },
-    ],
-  },
-]
+import { queueToolbarFilters, queueUrlFilters } from './annotation-queue-filters'
 
 export function ProjectAnnotationQueues() {
   const { projectId = 'project_customer_agent' } = useParams()

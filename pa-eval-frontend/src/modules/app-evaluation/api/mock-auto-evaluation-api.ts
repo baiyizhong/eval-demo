@@ -7,7 +7,7 @@ import {
   mockAutoEvaluationEvaluators,
   mockAutoEvaluationRuns,
   mockAutoEvaluationTasks,
-} from '../data/mock-auto-evaluations'
+} from '../data/mock-auto-evaluations.ts'
 import type {
   AutoEvaluationLatestReportSummary,
   AutoEvaluationRunRecord,

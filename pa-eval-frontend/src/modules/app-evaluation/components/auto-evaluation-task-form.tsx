@@ -23,9 +23,11 @@ import {
   createProjectAutoEvaluationTask,
 } from '../api/auto-evaluation-api'
 import { listProjectAutoEvaluationDatasets } from '../api/dataset-api'
+import { listProjectEvaluationReportTemplates } from '../api/report-template-api'
 import { listTaskEvaluators } from '@/modules/tasks/api/evaluator-api'
 import type {
   AutoEvaluationTaskFormInput,
+  EvaluationReportTemplateRecord,
   MockAutoEvaluationDataset,
   MockAutoEvaluationEvaluator,
 } from '../types'
@@ -36,6 +38,7 @@ const initialForm: AutoEvaluationTaskFormInput = {
   scoreName: '',
   evaluatorId: '',
   variableMapping: {},
+  reportTemplateId: 'default',
   dataSource: { type: 'DATASET', datasetId: '' },
   sampleRate: 100,
   badcase: {
@@ -76,6 +79,9 @@ export function AutoEvaluationTaskForm({
   const [datasetKeyword, setDatasetKeyword] = useState('')
   const [evaluators, setEvaluators] = useState<MockAutoEvaluationEvaluator[]>([])
   const [datasets, setDatasets] = useState<MockAutoEvaluationDataset[]>([])
+  const [reportTemplates, setReportTemplates] = useState<
+    EvaluationReportTemplateRecord[]
+  >([])
 
   useEffect(() => {
     void listTaskEvaluators($api, {
@@ -106,6 +112,12 @@ export function AutoEvaluationTaskForm({
       setDatasets
     )
   }, [$api, datasetKeyword, projectId])
+
+  useEffect(() => {
+    void listProjectEvaluationReportTemplates($api, projectId).then((result) => {
+      setReportTemplates(result.datas)
+    })
+  }, [$api, projectId])
 
   const selectedEvaluator = evaluators.find((item) => item.id === form.evaluatorId)
   let selectedDataset: MockAutoEvaluationDataset | null = null
@@ -169,6 +181,7 @@ export function AutoEvaluationTaskForm({
       sampleRate: form.sampleRate,
       dataSource: form.dataSource,
       variableMapping: form.variableMapping,
+      reportTemplateId: form.reportTemplateId,
     })
     onDirtyChange?.(false)
     toast.success('自动评测任务已创建并开始运行')
@@ -450,6 +463,28 @@ export function AutoEvaluationTaskForm({
               </TabsContent>
             </Tabs>
             <div className='grid gap-4 md:grid-cols-3'>
+              <Field label='报告模板'>
+                <Select
+                  value={form.reportTemplateId}
+                  onValueChange={(value) =>
+                    updateForm({ ...form, reportTemplateId: value })
+                  }
+                >
+                  <SelectTrigger className='w-full'>
+                    <SelectValue placeholder='选择报告模板' />
+                  </SelectTrigger>
+                  <SelectContent>
+                    <SelectGroup>
+                      {reportTemplates.map((template) => (
+                        <SelectItem key={template.id} value={template.id}>
+                          {template.name}
+                          {template.isDefault ? ' · 默认' : ''}
+                        </SelectItem>
+                      ))}
+                    </SelectGroup>
+                  </SelectContent>
+                </Select>
+              </Field>
               <Field label={`采样率：预计运行 ${estimatedRunCount} 条`}>
                 <Input
                   type='number'

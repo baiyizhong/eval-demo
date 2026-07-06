@@ -32,6 +32,7 @@ export function createProjectAutoEvaluationTask(
     sampleRate: number
     dataSource: AutoEvaluationTaskFormInput['dataSource']
     variableMapping: AutoEvaluationTaskFormInput['variableMapping']
+    reportTemplateId: string
   }
 ) {
   return api.createAutoEvaluationTask<AutoEvaluationTaskRecord>({

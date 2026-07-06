@@ -1,14 +1,11 @@
-import { useCallback, useMemo } from 'react'
+import { useCallback, useMemo, useState } from 'react'
+import { FileSliders } from 'lucide-react'
 import { useQueryClient } from '@tanstack/react-query'
 import { useNavigate, useParams } from 'react-router'
 import { toast } from 'sonner'
 import { confirm } from '@/lib/confirm'
 import { useAPI } from '@/hooks/use-api'
-import {
-  DataTable,
-  type DataTableFilterBinding,
-  type DataTableToolbarFilter,
-} from '@/components/common/data-table'
+import { DataTable } from '@/components/common/data-table'
 import { Loading } from '@/components/common/loading'
 import { Page } from '@/components/common/page'
 import {
@@ -18,47 +15,16 @@ import {
 } from '../api/evaluation-report-api'
 import { EvaluationPageNav } from '../components/evaluation-page-nav'
 import { createEvaluationReportColumns } from '../components/evaluation-report-columns'
+import { ReportTemplateDialog } from '../components/report-template-dialog'
 import type { EvaluationReportRecord } from '../types'
-
-const reportUrlFilters: DataTableFilterBinding[] = [
-  { fieldId: 'sourceType', type: 'array' },
-  { fieldId: 'status', type: 'array' },
-  { fieldId: 'hasBadcase', type: 'array' },
-]
-
-const reportToolbarFilters: DataTableToolbarFilter[] = [
-  {
-    columnId: 'sourceType',
-    title: '来源类型',
-    options: [
-      { label: '自动评测', value: 'AUTO_EVAL' },
-      { label: '人工标注', value: 'MANUAL_ANNOTATION' },
-    ],
-  },
-  {
-    columnId: 'status',
-    title: '报告状态',
-    options: [
-      { label: '生成中', value: 'GENERATING' },
-      { label: '已生成', value: 'READY' },
-      { label: '生成失败', value: 'FAILED' },
-    ],
-  },
-  {
-    columnId: 'hasBadcase',
-    title: 'Badcase',
-    options: [
-      { label: '存在 badcase', value: 'true' },
-      { label: '无 badcase', value: 'false' },
-    ],
-  },
-]
+import { reportToolbarFilters, reportUrlFilters } from './evaluation-report-filters'
 
 export function ProjectEvaluationReports() {
   const { projectId = 'project_customer_agent' } = useParams()
   const $api = useAPI()
   const navigate = useNavigate()
   const queryClient = useQueryClient()
+  const [templateOpen, setTemplateOpen] = useState(false)
 
   const invalidateReports = useCallback(async () => {
     await queryClient.invalidateQueries({
@@ -104,7 +70,21 @@ export function ProjectEvaluationReports() {
   return (
     <Page fixed fluid className='flex min-h-[calc(100svh-3.5rem)] flex-col'>
       <div className='flex min-h-0 flex-1 flex-col gap-4'>
-        <EvaluationPageNav />
+        <EvaluationPageNav
+          buttonGroups={{
+            buttons: [
+              {
+                id: 'report-template',
+                label: '报告模板',
+                icon: FileSliders,
+                iconPosition: 'start',
+                variant: 'outline',
+                size: 'sm',
+                onClick: () => setTemplateOpen(true),
+              },
+            ],
+          }}
+        />
         <section className='bg-card text-card-foreground flex min-h-0 min-w-0 flex-1 flex-col rounded-lg border p-4'>
           <DataTable<EvaluationReportRecord>
             className='min-h-0 flex-1'
@@ -149,6 +129,11 @@ export function ProjectEvaluationReports() {
           />
         </section>
       </div>
+      <ReportTemplateDialog
+        open={templateOpen}
+        onOpenChange={setTemplateOpen}
+        projectId={projectId}
+      />
     </Page>
   )
 }

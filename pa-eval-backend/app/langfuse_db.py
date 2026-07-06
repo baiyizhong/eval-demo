@@ -140,6 +140,194 @@ class LangfuseDatabaseReader:
     async def ensure_project_visible(self, project_id: str, user_id: str) -> None:
         await self._ensure_project_visible(project_id, user_id)
 
+    async def list_project_api_keys(
+        self,
+        project_id: str,
+        user_id: str,
+    ) -> list[dict[str, Any]]:
+        await self._ensure_project_visible(project_id, user_id)
+        rows = await self._fetch_all(
+            """
+            SELECT
+                id,
+                project_id,
+                note,
+                public_key,
+                secret_key,
+                status,
+                last_used_at,
+                create_date,
+                update_date
+            FROM pa_project_api_keys
+            WHERE project_id = %(project_id)s
+              AND status = 'ACTIVE'
+            ORDER BY create_date DESC, id DESC
+            """,
+            {"project_id": project_id},
+        )
+        return [self._to_project_api_key_payload(row) for row in rows]
+
+    async def create_project_api_key(
+        self,
+        project_id: str,
+        note: str,
+        user_email: str,
+        user_id: str,
+    ) -> dict[str, Any]:
+        if not self._database_url:
+            raise LangfuseDatabaseConfigError()
+
+        key_id = _new_langfuse_id("papikey")
+        public_key = f"pk-lf-{uuid4()}"
+        secret_key = f"sk-lf-{uuid4()}"
+
+        async with await psycopg.AsyncConnection.connect(
+            self._database_url,
+            row_factory=dict_row,
+        ) as connection:
+            async with connection.cursor() as cursor:
+                await self._get_project_for_user(cursor, project_id, user_id)
+                await cursor.execute(
+                    """
+                    INSERT INTO pa_project_api_keys (
+                        id,
+                        project_id,
+                        note,
+                        public_key,
+                        secret_key,
+                        status,
+                        create_by,
+                        create_date,
+                        update_by,
+                        update_date
+                    )
+                    VALUES (
+                        %(id)s,
+                        %(project_id)s,
+                        %(note)s,
+                        %(public_key)s,
+                        %(secret_key)s,
+                        'ACTIVE',
+                        %(create_by)s,
+                        NOW(),
+                        %(update_by)s,
+                        NOW()
+                    )
+                    RETURNING
+                        id,
+                        project_id,
+                        note,
+                        public_key,
+                        secret_key,
+                        status,
+                        last_used_at,
+                        create_date,
+                        update_date
+                    """,
+                    {
+                        "id": key_id,
+                        "project_id": project_id,
+                        "note": note,
+                        "public_key": public_key,
+                        "secret_key": secret_key,
+                        "create_by": user_email,
+                        "update_by": user_email,
+                    },
+                )
+                row = await cursor.fetchone()
+
+        assert row is not None
+        return self._to_project_api_key_payload(row)
+
+    async def update_project_api_key(
+        self,
+        project_id: str,
+        key_id: str,
+        note: str,
+        user_email: str,
+        user_id: str,
+    ) -> dict[str, Any]:
+        if not self._database_url:
+            raise LangfuseDatabaseConfigError()
+
+        async with await psycopg.AsyncConnection.connect(
+            self._database_url,
+            row_factory=dict_row,
+        ) as connection:
+            async with connection.cursor() as cursor:
+                await self._get_project_for_user(cursor, project_id, user_id)
+                await cursor.execute(
+                    """
+                    UPDATE pa_project_api_keys
+                    SET
+                        note = %(note)s,
+                        update_by = %(update_by)s,
+                        update_date = NOW()
+                    WHERE id = %(id)s
+                      AND project_id = %(project_id)s
+                      AND status = 'ACTIVE'
+                    RETURNING
+                        id,
+                        project_id,
+                        note,
+                        public_key,
+                        secret_key,
+                        status,
+                        last_used_at,
+                        create_date,
+                        update_date
+                    """,
+                    {
+                        "id": key_id,
+                        "project_id": project_id,
+                        "note": note,
+                        "update_by": user_email,
+                    },
+                )
+                row = await cursor.fetchone()
+
+        if row is None:
+            raise BusinessError(
+                code=1012,
+                message="项目 API Key 不存在或无访问权限",
+                status_code=404,
+            )
+        return self._to_project_api_key_payload(row)
+
+    async def delete_project_api_key(
+        self,
+        project_id: str,
+        key_id: str,
+        user_id: str,
+    ) -> dict[str, str]:
+        if not self._database_url:
+            raise LangfuseDatabaseConfigError()
+
+        async with await psycopg.AsyncConnection.connect(
+            self._database_url,
+            row_factory=dict_row,
+        ) as connection:
+            async with connection.cursor() as cursor:
+                await self._get_project_for_user(cursor, project_id, user_id)
+                await cursor.execute(
+                    """
+                    DELETE FROM pa_project_api_keys
+                    WHERE id = %(id)s
+                      AND project_id = %(project_id)s
+                    RETURNING id
+                    """,
+                    {"id": key_id, "project_id": project_id},
+                )
+                row = await cursor.fetchone()
+
+        if row is None:
+            raise BusinessError(
+                code=1012,
+                message="项目 API Key 不存在或无访问权限",
+                status_code=404,
+            )
+        return {"id": row["id"]}
+
     async def list_evaluators_for_user(self, user_id: str) -> list[dict[str, Any]]:
         langfuse_evaluators = await self._list_langfuse_evaluators_for_user(user_id)
         pa_evaluators = await self._list_pa_evaluators_for_user(user_id)
@@ -398,7 +586,7 @@ class LangfuseDatabaseReader:
                     pe.variables,
                     pe.project_id,
                     p.name AS project_name,
-                    pe.updated_at
+                    pe.update_date AS updated_at
                 FROM pa_evaluators pe
                 JOIN projects p ON p.id = pe.project_id
                 WHERE pe.status = 'ACTIVE'
@@ -408,7 +596,7 @@ class LangfuseDatabaseReader:
                     WHERE om.org_id = p.org_id
                       AND om.user_id = %(user_id)s
                 )
-                ORDER BY pe.updated_at DESC, pe.id DESC
+                ORDER BY pe.update_date DESC, pe.id DESC
                 """,
                 {"user_id": user_id},
             )
@@ -458,7 +646,7 @@ class LangfuseDatabaseReader:
                     pe.config,
                     pe.project_id,
                     p.name AS project_name,
-                    pe.updated_at
+                    pe.update_date AS updated_at
                 FROM pa_evaluators pe
                 JOIN projects p ON p.id = pe.project_id
                 WHERE pe.id = %(evaluator_id)s
@@ -698,7 +886,10 @@ class LangfuseDatabaseReader:
                         variables,
                         config,
                         status,
-                        created_by
+                        create_by,
+                        create_date,
+                        update_by,
+                        update_date
                     )
                     VALUES (
                         %(id)s,
@@ -711,7 +902,10 @@ class LangfuseDatabaseReader:
                         %(variables)s,
                         %(config)s,
                         'ACTIVE',
-                        %(created_by)s
+                        %(create_by)s,
+                        NOW(),
+                        %(update_by)s,
+                        NOW()
                     )
                     RETURNING
                         id,
@@ -722,7 +916,7 @@ class LangfuseDatabaseReader:
                         description,
                         variables,
                         project_id,
-                        updated_at
+                        update_date AS updated_at
                     """,
                     {
                         "id": evaluator_id,
@@ -733,7 +927,8 @@ class LangfuseDatabaseReader:
                         "description": payload.get("description") or "",
                         "variables": Jsonb(payload.get("variables") or []),
                         "config": Jsonb(payload.get("config") or {}),
-                        "created_by": user_email,
+                        "create_by": user_email,
+                        "update_by": user_email,
                     },
                 )
                 evaluator = await cursor.fetchone()
@@ -761,10 +956,8 @@ class LangfuseDatabaseReader:
             async with connection.cursor() as cursor:
                 await cursor.execute(
                     """
-                    UPDATE pa_evaluators pe
-                    SET status = 'ARCHIVED',
-                        updated_at = NOW()
-                    FROM projects p
+                    DELETE FROM pa_evaluators pe
+                    USING projects p
                     WHERE pe.project_id = p.id
                       AND pe.id = %(evaluator_id)s
                       AND pe.status = 'ACTIVE'
@@ -1078,6 +1271,22 @@ class LangfuseDatabaseReader:
             "status": "archived" if row.get("deleted_at") else "active",
             "createdAt": _format_datetime(row["created_at"]),
             "updatedAt": _format_datetime(row["updated_at"]),
+        }
+
+    @staticmethod
+    def _to_project_api_key_payload(row: dict[str, Any]) -> dict[str, Any]:
+        return {
+            "id": row["id"],
+            "projectId": row["project_id"],
+            "note": row.get("note") or "",
+            "publicKey": row["public_key"],
+            "secretKey": row["secret_key"],
+            "status": row["status"],
+            "lastUsedAt": _format_datetime(row["last_used_at"])
+            if row.get("last_used_at")
+            else None,
+            "createdAt": _format_datetime(row["create_date"]),
+            "updatedAt": _format_datetime(row["update_date"]),
         }
 
     @staticmethod

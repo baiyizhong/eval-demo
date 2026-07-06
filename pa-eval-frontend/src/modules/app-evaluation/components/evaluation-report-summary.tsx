@@ -6,11 +6,17 @@ export function EvaluationReportSummary({
 }: {
   report: EvaluationReportDetailRecord
 }) {
+  const metricValues = {
+    averageScore: report.metrics.averageScore ?? 0,
+    passRate: report.metrics.passRate ?? 0,
+    failureRate: report.metrics.failureRate ?? 0,
+    badcaseRate: report.metrics.badcaseRate ?? 0,
+  }
   const metrics = [
-    { label: '平均分', value: report.metrics.averageScore.toFixed(2) },
-    { label: '通过率', value: `${Math.round(report.metrics.passRate * 100)}%` },
-    { label: '失败率', value: `${Math.round(report.metrics.failureRate * 100)}%` },
-    { label: 'Badcase率', value: `${Math.round(report.metrics.badcaseRate * 100)}%` },
+    { label: '平均分', value: metricValues.averageScore.toFixed(2) },
+    { label: '通过率', value: `${Math.round(metricValues.passRate * 100)}%` },
+    { label: '失败率', value: `${Math.round(metricValues.failureRate * 100)}%` },
+    { label: 'Badcase率', value: `${Math.round(metricValues.badcaseRate * 100)}%` },
   ]
 
   return (

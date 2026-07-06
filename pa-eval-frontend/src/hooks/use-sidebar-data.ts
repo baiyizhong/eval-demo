@@ -1,4 +1,5 @@
 import { useQuery } from '@tanstack/react-query'
+import { useParams } from 'react-router'
 import { usePermissionStore } from '@/stores/permission.store'
 import { matchPermission } from '@/lib/permission'
 import {
@@ -52,6 +53,7 @@ export function useSidebarData(): {
   isLoading: boolean
 } {
   const $api = useAPI()
+  const { projectId } = useParams()
   const store = usePermissionStore()
 
   const { data, isLoading } = useQuery({
@@ -69,7 +71,7 @@ export function useSidebarData(): {
     return { data: undefined, isLoading }
   }
 
-  const sidebarData = buildSidebarDataFromProjects(data.datas)
+  const sidebarData = buildSidebarDataFromProjects(data.datas, projectId)
   const getPermissions = () => store.getPermissionsForProject('')
   const filteredNavGroups = filterNavGroupsByPermission(
     sidebarData.menuGroups,

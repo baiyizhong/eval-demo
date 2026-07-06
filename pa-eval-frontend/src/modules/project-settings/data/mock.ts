@@ -128,17 +128,23 @@ export const mockModelDefinitions: ModelDefinition[] = [
 export const mockProjectApiKeys: ProjectApiKey[] = [
   {
     id: 'key_eval_ci',
+    projectId: 'project_customer_agent',
     note: 'CI 评测流水线',
     publicKey: 'pk-lf-demo-ci',
-    displaySecretKey: 'sk-lf-...ci',
+    secretKey: 'sk-lf-demo-ci',
+    status: 'ACTIVE',
     lastUsedAt: '2026-07-03T08:42:00+08:00',
     createdAt: '2026-06-16T15:10:00+08:00',
+    updatedAt: '2026-06-16T15:10:00+08:00',
   },
   {
     id: 'key_local_debug',
+    projectId: 'project_customer_agent',
     note: '本地调试',
     publicKey: 'pk-lf-demo-local',
-    displaySecretKey: 'sk-lf-...local',
+    secretKey: 'sk-lf-demo-local',
+    status: 'ACTIVE',
     createdAt: '2026-06-25T11:20:00+08:00',
+    updatedAt: '2026-06-25T11:20:00+08:00',
   },
 ]

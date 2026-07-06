@@ -64,9 +64,12 @@ export type DefaultModel = {
 
 export type ProjectApiKey = {
   id: string
+  projectId: string
   note: string
   publicKey: string
-  displaySecretKey: string
+  secretKey: string
+  status: string
   lastUsedAt?: string
   createdAt: string
+  updatedAt: string
 }

@@ -26,12 +26,36 @@ test('createProjectAutoEvaluationTask sends task variable mapping', async () => 
       input: '{{ sample.input }}',
       output: '{{ sample.output }}',
     },
+    reportTemplateId: 'default',
   })
 
   assert.deepEqual(captured.requestBody?.variableMapping, {
     input: '{{ sample.input }}',
     output: '{{ sample.output }}',
   })
+})
+
+test('createProjectAutoEvaluationTask sends selected report template', async () => {
+  const captured: { requestBody?: Record<string, unknown> } = {}
+  const api = {
+    async createAutoEvaluationTask(input: { body: Record<string, unknown> }) {
+      captured.requestBody = input.body
+      return { id: 'task-1' }
+    },
+  }
+
+  await createProjectAutoEvaluationTask(api as never, 'project-1', {
+    name: '任务',
+    description: '',
+    scoreName: 'quality',
+    evaluatorId: 'eval-1',
+    sampleRate: 100,
+    dataSource: { type: 'DATASET', datasetId: 'dataset-1' },
+    variableMapping: {},
+    reportTemplateId: 'template-1',
+  })
+
+  assert.equal(captured.requestBody?.reportTemplateId, 'template-1')
 })
 
 test('countProjectAutoEvaluationTraces sends trace filter body', async () => {

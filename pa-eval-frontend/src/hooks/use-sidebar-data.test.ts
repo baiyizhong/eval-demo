@@ -27,6 +27,47 @@ test('buildSidebarDataFromProjects uses PA Eval brand and project evaluation ent
   assert.ok(!('items' in evaluation))
 })
 
+test('buildSidebarDataFromProjects keeps project scoped entries on the current project', () => {
+  const sidebar = buildSidebarDataFromProjects(
+    [
+      {
+        id: 'project-first',
+        name: '默认项目',
+        organizationId: 'org-1',
+        organizationName: '默认组织',
+        description: null,
+        status: 'active',
+        createdAt: '2026-07-02T08:00:00.000Z',
+        updatedAt: '2026-07-02T09:00:00.000Z',
+      },
+      {
+        id: 'project-current',
+        name: 'baiyizhong',
+        organizationId: 'org-2',
+        organizationName: 'pakj',
+        description: null,
+        status: 'active',
+        createdAt: '2026-07-02T08:00:00.000Z',
+        updatedAt: '2026-07-02T09:00:00.000Z',
+      },
+    ],
+    'project-current'
+  )
+
+  const items = sidebar.menuGroups[0]?.items ?? []
+  const scopedLinks = items
+    .filter((item) =>
+      ['应用评测', '应用观测', '项目设置'].includes(item.title)
+    )
+    .map((item) => ('url' in item ? item.url : ''))
+
+  assert.deepEqual(scopedLinks, [
+    '/projects/project-current/evaluation',
+    '/projects/project-current/observability',
+    '/projects/project-current/settings/general',
+  ])
+})
+
 test('buildSidebarDataFromProjects keeps global management entries in sidebar', () => {
   const sidebar = buildSidebarDataFromProjects([])
   const items = sidebar.menuGroups[0]?.items ?? []

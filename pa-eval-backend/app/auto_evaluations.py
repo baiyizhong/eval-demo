@@ -19,6 +19,33 @@ from app.response import success
 
 router = APIRouter(prefix="/api/projects/{project_id}", tags=["auto-evaluations"])
 
+DEFAULT_REPORT_SECTIONS = {
+    "metrics": True,
+    "distribution": True,
+    "groupAnalysis": True,
+    "recommendations": True,
+    "risks": True,
+    "reproduction": True,
+    "items": True,
+    "badcases": True,
+}
+
+DEFAULT_REPORT_TEMPLATE = {
+    "id": "default",
+    "name": "系统默认模板",
+    "description": "自动评测报告默认模板",
+    "isDefault": True,
+    "titleTemplate": "{taskName}报告",
+    "summaryTemplate": (
+        "评估完成，共运行 {sampleCount} 条样本，"
+        "平均得分 {averageScore}，通过率 {passRate}。"
+    ),
+    "sections": DEFAULT_REPORT_SECTIONS,
+    "badcaseRule": {"mode": "EVALUATOR_RESULT"},
+    "recommendations": ["可结合 Badcase 明细定位低分样本，并回流到数据集复测。"],
+    "risks": ["当前报告由工作流后台运行生成，工作流输出质量会影响评分稳定性。"],
+}
+
 
 class CreateAutoEvaluationPayload(BaseModel):
     name: str = Field(min_length=1, max_length=120)
@@ -38,6 +65,36 @@ class CreateAutoEvaluationPayload(BaseModel):
         default_factory=lambda: {"type": "TRACE_FILTER"},
         alias="dataSource",
     )
+    report_template_id: str | None = Field(default=None, alias="reportTemplateId")
+    report_template_snapshot: dict[str, Any] | None = Field(
+        default=None,
+        alias="reportTemplateSnapshot",
+    )
+
+
+class ReportTemplatePayload(BaseModel):
+    name: str = Field(min_length=1, max_length=120)
+    description: str = Field(default="", max_length=1000)
+    is_default: bool = Field(default=False, alias="isDefault")
+    title_template: str = Field(
+        default="{taskName}报告",
+        alias="titleTemplate",
+        min_length=1,
+        max_length=200,
+    )
+    summary_template: str = Field(
+        default=(
+            "评估完成，共运行 {sampleCount} 条样本，"
+            "平均得分 {averageScore}，通过率 {passRate}。"
+        ),
+        alias="summaryTemplate",
+        min_length=1,
+        max_length=1000,
+    )
+    sections: dict[str, Any] = Field(default_factory=dict)
+    badcase_rule: dict[str, Any] = Field(default_factory=dict, alias="badcaseRule")
+    recommendations: list[str] = Field(default_factory=list)
+    risks: list[str] = Field(default_factory=list)
 
 
 class TraceCountPayload(BaseModel):
@@ -579,6 +636,453 @@ def _bucket_scores(results: list[dict[str, Any]]) -> list[dict[str, Any]]:
     return buckets
 
 
+def _normalize_report_template_snapshot(
+    template: dict[str, Any] | None,
+) -> dict[str, Any]:
+    raw = template if isinstance(template, dict) else {}
+    sections = raw.get("sections") if isinstance(raw.get("sections"), dict) else {}
+    badcase_rule = (
+        raw.get("badcaseRule")
+        if isinstance(raw.get("badcaseRule"), dict)
+        else raw.get("badcase_rule")
+        if isinstance(raw.get("badcase_rule"), dict)
+        else {}
+    )
+    recommendations = raw.get("recommendations")
+    risks = raw.get("risks")
+
+    return {
+        **DEFAULT_REPORT_TEMPLATE,
+        "id": str(raw.get("id") or DEFAULT_REPORT_TEMPLATE["id"]),
+        "name": str(raw.get("name") or DEFAULT_REPORT_TEMPLATE["name"]),
+        "description": str(
+            raw.get("description") or DEFAULT_REPORT_TEMPLATE["description"]
+        ),
+        "isDefault": bool(raw.get("isDefault", raw.get("is_default", False))),
+        "titleTemplate": str(
+            raw.get("titleTemplate")
+            or raw.get("title_template")
+            or DEFAULT_REPORT_TEMPLATE["titleTemplate"]
+        ),
+        "summaryTemplate": str(
+            raw.get("summaryTemplate")
+            or raw.get("summary_template")
+            or DEFAULT_REPORT_TEMPLATE["summaryTemplate"]
+        ),
+        "sections": {**DEFAULT_REPORT_SECTIONS, **sections},
+        "badcaseRule": {
+            **DEFAULT_REPORT_TEMPLATE["badcaseRule"],
+            **badcase_rule,
+        },
+        "recommendations": (
+            [str(item) for item in recommendations]
+            if isinstance(recommendations, list)
+            else list(DEFAULT_REPORT_TEMPLATE["recommendations"])
+        ),
+        "risks": (
+            [str(item) for item in risks]
+            if isinstance(risks, list)
+            else list(DEFAULT_REPORT_TEMPLATE["risks"])
+        ),
+    }
+
+
+def _compare_score(score: float, operator: str, threshold: float) -> bool:
+    normalized = operator.upper()
+    if normalized == "LT":
+        return score < threshold
+    if normalized == "LTE":
+        return score <= threshold
+    if normalized == "GT":
+        return score > threshold
+    if normalized == "GTE":
+        return score >= threshold
+    if normalized == "EQ":
+        return score == threshold
+    return score <= threshold
+
+
+def _is_report_badcase(result: dict[str, Any], template_snapshot: dict[str, Any]) -> bool:
+    rule = template_snapshot.get("badcaseRule")
+    badcase_rule = rule if isinstance(rule, dict) else {}
+    mode = str(badcase_rule.get("mode") or "EVALUATOR_RESULT").upper()
+    if mode == "SCORE_THRESHOLD":
+        threshold = float(badcase_rule.get("threshold") or 0)
+        operator = str(badcase_rule.get("operator") or "LTE")
+        return _compare_score(float(result["score"]), operator, threshold)
+    return not bool(result["passed"])
+
+
+def _format_report_template(template: str, context: dict[str, str]) -> str:
+    rendered = template
+    for key, value in context.items():
+        rendered = rendered.replace(f"{{{key}}}", value)
+    return rendered
+
+
+def _build_report_from_template(
+    *,
+    task_name: str,
+    score_name: str,
+    report_id: str,
+    task_id: str,
+    evaluator: dict[str, Any],
+    data_source: dict[str, Any],
+    input_mapping: dict[str, Any],
+    results: list[dict[str, Any]],
+    template_snapshot: dict[str, Any] | None,
+) -> dict[str, Any]:
+    snapshot = _normalize_report_template_snapshot(template_snapshot)
+    sample_count = len(results)
+    item_results = [
+        "badcase" if _is_report_badcase(result, snapshot) else "normal"
+        for result in results
+    ]
+    badcase_count = item_results.count("badcase")
+    completed_count = sample_count - badcase_count
+    average_score = sum(result["score"] for result in results) / sample_count
+    pass_rate = completed_count / sample_count
+    badcase_rate = badcase_count / sample_count
+    context = {
+        "taskName": task_name,
+        "scoreName": score_name,
+        "sampleCount": str(sample_count),
+        "badcaseCount": str(badcase_count),
+        "averageScore": f"{average_score:.2f}",
+        "passRate": f"{pass_rate:.0%}",
+        "badcaseRate": f"{badcase_rate:.0%}",
+        "dataSourceName": str(data_source.get("name") or ""),
+    }
+    metrics = {
+        "averageScore": average_score,
+        "passRate": pass_rate,
+        "failureRate": badcase_rate,
+        "badcaseRate": badcase_rate,
+    }
+    group_analysis = [
+        {
+            "group": data_source["name"],
+            "sampleCount": sample_count,
+            "averageScore": average_score,
+        }
+    ]
+    reproduction = {
+        "reportId": report_id,
+        "sourceTaskId": task_id,
+        "scoreName": score_name,
+        "evaluatorId": evaluator["id"],
+        "workflowRunIds": [
+            (result["raw"].get("data") or {}).get("workflow_run_id")
+            for result in results
+        ],
+        "dataSource": data_source,
+        "inputMapping": input_mapping,
+    }
+    sections = snapshot["sections"]
+
+    return {
+        "title": _format_report_template(snapshot["titleTemplate"], context),
+        "summary": _format_report_template(snapshot["summaryTemplate"], context),
+        "metrics": metrics if sections.get("metrics", True) else {},
+        "distribution": _bucket_scores(results)
+        if sections.get("distribution", True)
+        else [],
+        "groupAnalysis": group_analysis
+        if sections.get("groupAnalysis", True)
+        else [],
+        "recommendations": snapshot["recommendations"]
+        if sections.get("recommendations", True)
+        else [],
+        "risks": snapshot["risks"] if sections.get("risks", True) else [],
+        "reproduction": reproduction if sections.get("reproduction", True) else {},
+        "badcaseCount": badcase_count,
+        "completedCount": completed_count,
+        "itemResults": item_results,
+        "templateSnapshot": snapshot,
+    }
+
+
+def _to_report_template(row: dict[str, Any]) -> dict[str, Any]:
+    return {
+        "id": row["id"],
+        "projectId": row.get("project_id"),
+        "name": row["name"],
+        "description": row.get("description") or "",
+        "isDefault": bool(row.get("is_default")),
+        "titleTemplate": row.get("title_template") or "{taskName}报告",
+        "summaryTemplate": row.get("summary_template")
+        or DEFAULT_REPORT_TEMPLATE["summaryTemplate"],
+        "sections": row.get("sections") or dict(DEFAULT_REPORT_SECTIONS),
+        "badcaseRule": row.get("badcase_rule")
+        or dict(DEFAULT_REPORT_TEMPLATE["badcaseRule"]),
+        "recommendations": row.get("recommendations") or [],
+        "risks": row.get("risks") or [],
+        "status": row.get("status") or "ACTIVE",
+        "createdBy": row.get("create_by", ""),
+        "createdAt": _format_datetime(row.get("create_date", "")),
+        "updatedAt": _format_datetime(row.get("update_date", "")),
+    }
+
+
+def _default_report_template_response(project_id: str) -> dict[str, Any]:
+    return {
+        **DEFAULT_REPORT_TEMPLATE,
+        "projectId": project_id,
+        "status": "ACTIVE",
+        "createdBy": "system",
+        "createdAt": "",
+        "updatedAt": "",
+    }
+
+
+@router.get("/report-templates")
+async def list_report_templates(
+    project_id: str,
+    page: int = Query(default=1, ge=1),
+    page_size: int = Query(default=50, ge=1, le=200, alias="pageSize"),
+    current_user: CurrentUserContext = Depends(get_current_user_context),
+    settings: Settings = Depends(get_settings),
+) -> dict[str, Any]:
+    offset = (page - 1) * page_size
+    async with await _connect(settings) as connection:
+        async with connection.cursor() as cursor:
+            await _ensure_project_access(cursor, project_id, current_user.user_id)
+            await cursor.execute(
+                """
+                SELECT COUNT(*)::int AS total
+                FROM pa_evaluation_report_templates
+                WHERE project_id = %(project_id)s
+                  AND status = 'ACTIVE'
+                """,
+                {"project_id": project_id},
+            )
+            total_row = await cursor.fetchone()
+            await cursor.execute(
+                """
+                SELECT id, project_id, name, description, is_default,
+                       title_template, summary_template, sections, badcase_rule,
+                       recommendations, risks, status,
+                       create_by, create_date, update_by, update_date
+                FROM pa_evaluation_report_templates
+                WHERE project_id = %(project_id)s
+                  AND status = 'ACTIVE'
+                ORDER BY is_default DESC, update_date DESC, id DESC
+                LIMIT %(limit)s OFFSET %(offset)s
+                """,
+                {"project_id": project_id, "limit": page_size, "offset": offset},
+            )
+            rows = list(await cursor.fetchall())
+
+    templates = [_to_report_template(row) for row in rows]
+    if page == 1:
+        templates = [_default_report_template_response(project_id), *templates]
+    total = (total_row or {}).get("total", 0) + 1
+    return success({"total": total, "datas": templates})
+
+
+@router.post("/report-templates")
+async def create_report_template(
+    project_id: str,
+    payload: ReportTemplatePayload,
+    current_user: CurrentUserContext = Depends(get_current_user_context),
+    settings: Settings = Depends(get_settings),
+) -> dict[str, Any]:
+    now = datetime.now(timezone.utc)
+    template_id = _new_id("pareporttpl")
+    async with await _connect(settings) as connection:
+        async with connection.cursor() as cursor:
+            await _ensure_project_access(cursor, project_id, current_user.user_id)
+            if payload.is_default:
+                await cursor.execute(
+                    """
+                    UPDATE pa_evaluation_report_templates
+                    SET is_default = FALSE,
+                        update_by = %(update_by)s,
+                        update_date = %(update_date)s
+                    WHERE project_id = %(project_id)s
+                      AND status = 'ACTIVE'
+                    """,
+                    {
+                        "project_id": project_id,
+                        "update_by": current_user.email,
+                        "update_date": now,
+                    },
+                )
+            await cursor.execute(
+                """
+                INSERT INTO pa_evaluation_report_templates (
+                    id, project_id, name, description, is_default,
+                    title_template, summary_template, sections, badcase_rule,
+                    recommendations, risks, status,
+                    create_by, create_date, update_by, update_date
+                )
+                VALUES (
+                    %(id)s, %(project_id)s, %(name)s, %(description)s, %(is_default)s,
+                    %(title_template)s, %(summary_template)s, %(sections)s, %(badcase_rule)s,
+                    %(recommendations)s, %(risks)s, 'ACTIVE',
+                    %(create_by)s, %(create_date)s, %(update_by)s, %(update_date)s
+                )
+                """,
+                {
+                    "id": template_id,
+                    "project_id": project_id,
+                    "name": payload.name,
+                    "description": payload.description,
+                    "is_default": payload.is_default,
+                    "title_template": payload.title_template,
+                    "summary_template": payload.summary_template,
+                    "sections": Jsonb(
+                        _normalize_report_template_snapshot(
+                            {"sections": payload.sections}
+                        )["sections"]
+                    ),
+                    "badcase_rule": Jsonb(
+                        _normalize_report_template_snapshot(
+                            {"badcaseRule": payload.badcase_rule}
+                        )["badcaseRule"]
+                    ),
+                    "recommendations": Jsonb(payload.recommendations),
+                    "risks": Jsonb(payload.risks),
+                    "create_by": current_user.email,
+                    "create_date": now,
+                    "update_by": current_user.email,
+                    "update_date": now,
+                },
+            )
+
+    return success(
+        {
+            "id": template_id,
+            "projectId": project_id,
+            **payload.model_dump(by_alias=True),
+            "status": "ACTIVE",
+            "createdBy": current_user.email,
+            "createdAt": _format_datetime(now),
+            "updatedAt": _format_datetime(now),
+        }
+    )
+
+
+@router.patch("/report-templates/{template_id}")
+async def update_report_template(
+    project_id: str,
+    template_id: str,
+    payload: ReportTemplatePayload,
+    current_user: CurrentUserContext = Depends(get_current_user_context),
+    settings: Settings = Depends(get_settings),
+) -> dict[str, Any]:
+    if template_id == "default":
+        raise BusinessError(4011, "系统默认模板不支持修改")
+
+    now = datetime.now(timezone.utc)
+    async with await _connect(settings) as connection:
+        async with connection.cursor() as cursor:
+            await _ensure_project_access(cursor, project_id, current_user.user_id)
+            if payload.is_default:
+                await cursor.execute(
+                    """
+                    UPDATE pa_evaluation_report_templates
+                    SET is_default = FALSE,
+                        update_by = %(update_by)s,
+                        update_date = %(update_date)s
+                    WHERE project_id = %(project_id)s
+                      AND id != %(template_id)s
+                      AND status = 'ACTIVE'
+                    """,
+                    {
+                        "project_id": project_id,
+                        "template_id": template_id,
+                        "update_by": current_user.email,
+                        "update_date": now,
+                    },
+                )
+            await cursor.execute(
+                """
+                UPDATE pa_evaluation_report_templates
+                SET name = %(name)s,
+                    description = %(description)s,
+                    is_default = %(is_default)s,
+                    title_template = %(title_template)s,
+                    summary_template = %(summary_template)s,
+                    sections = %(sections)s,
+                    badcase_rule = %(badcase_rule)s,
+                    recommendations = %(recommendations)s,
+                    risks = %(risks)s,
+                    update_by = %(update_by)s,
+                    update_date = %(update_date)s
+                WHERE project_id = %(project_id)s
+                  AND id = %(template_id)s
+                  AND status = 'ACTIVE'
+                RETURNING id
+                """,
+                {
+                    "project_id": project_id,
+                    "template_id": template_id,
+                    "name": payload.name,
+                    "description": payload.description,
+                    "is_default": payload.is_default,
+                    "title_template": payload.title_template,
+                    "summary_template": payload.summary_template,
+                    "sections": Jsonb(
+                        _normalize_report_template_snapshot(
+                            {"sections": payload.sections}
+                        )["sections"]
+                    ),
+                    "badcase_rule": Jsonb(
+                        _normalize_report_template_snapshot(
+                            {"badcaseRule": payload.badcase_rule}
+                        )["badcaseRule"]
+                    ),
+                    "recommendations": Jsonb(payload.recommendations),
+                    "risks": Jsonb(payload.risks),
+                    "update_by": current_user.email,
+                    "update_date": now,
+                },
+            )
+            updated = await cursor.fetchone()
+            if updated is None:
+                raise BusinessError(4010, "报告模板不存在或无访问权限", 404)
+
+    return success(
+        {
+            "id": template_id,
+            "projectId": project_id,
+            **payload.model_dump(by_alias=True),
+            "status": "ACTIVE",
+            "updatedAt": _format_datetime(now),
+        }
+    )
+
+
+@router.delete("/report-templates/{template_id}")
+async def delete_report_template(
+    project_id: str,
+    template_id: str,
+    current_user: CurrentUserContext = Depends(get_current_user_context),
+    settings: Settings = Depends(get_settings),
+) -> dict[str, Any]:
+    if template_id == "default":
+        raise BusinessError(4012, "系统默认模板不支持删除")
+
+    async with await _connect(settings) as connection:
+        async with connection.cursor() as cursor:
+            await _ensure_project_access(cursor, project_id, current_user.user_id)
+            await cursor.execute(
+                """
+                DELETE FROM pa_evaluation_report_templates
+                WHERE project_id = %(project_id)s
+                  AND id = %(template_id)s
+                RETURNING id
+                """,
+                {"project_id": project_id, "template_id": template_id},
+            )
+            deleted = await cursor.fetchone()
+            if deleted is None:
+                raise BusinessError(4010, "报告模板不存在或无访问权限", 404)
+
+    return success({"id": template_id})
+
+
 @router.post("/auto-evaluations")
 async def create_auto_evaluation(
     project_id: str,
@@ -605,6 +1109,17 @@ async def create_auto_evaluation(
                 payload,
                 current_user.user_id,
             )
+            report_template_snapshot = await _resolve_report_template_snapshot(
+                cursor,
+                project_id=project_id,
+                template_id=payload.report_template_id,
+            )
+            payload = payload.model_copy(
+                update={
+                    "report_template_id": report_template_snapshot["id"],
+                    "report_template_snapshot": report_template_snapshot,
+                }
+            )
             sample_count = len(samples)
             execution_stats = {
                 "pending": sample_count,
@@ -625,7 +1140,9 @@ async def create_auto_evaluation(
                 data_source=data_source,
                 sample_rate=payload.sample_rate,
                 sample_count=sample_count,
-                created_by=current_user.email,
+                report_template_id=payload.report_template_id,
+                report_template_snapshot=report_template_snapshot,
+                create_by=current_user.email,
                 now=now,
             )
 
@@ -639,6 +1156,7 @@ async def create_auto_evaluation(
         evaluator,
         samples,
         data_source,
+        current_user.email,
     )
 
     return success(
@@ -762,6 +1280,49 @@ async def _resolve_auto_evaluation_samples(
     return data_source, samples
 
 
+async def _resolve_report_template_snapshot(
+    cursor: psycopg.AsyncCursor[dict[str, Any]],
+    *,
+    project_id: str,
+    template_id: str | None,
+) -> dict[str, Any]:
+    if template_id == "default":
+        return _normalize_report_template_snapshot(DEFAULT_REPORT_TEMPLATE)
+
+    if template_id:
+        await cursor.execute(
+            """
+            SELECT id, name, description, is_default, title_template, summary_template,
+                   sections, badcase_rule, recommendations, risks
+            FROM pa_evaluation_report_templates
+            WHERE project_id = %(project_id)s
+              AND id = %(template_id)s
+              AND status = 'ACTIVE'
+            LIMIT 1
+            """,
+            {"project_id": project_id, "template_id": template_id},
+        )
+    else:
+        await cursor.execute(
+            """
+            SELECT id, name, description, is_default, title_template, summary_template,
+                   sections, badcase_rule, recommendations, risks
+            FROM pa_evaluation_report_templates
+            WHERE project_id = %(project_id)s
+              AND status = 'ACTIVE'
+            ORDER BY is_default DESC, update_date DESC, id DESC
+            LIMIT 1
+            """,
+            {"project_id": project_id},
+        )
+    row = await cursor.fetchone()
+    if row is None and template_id:
+        raise BusinessError(4010, "报告模板不存在或无访问权限", 404)
+    if row is None:
+        return _normalize_report_template_snapshot(DEFAULT_REPORT_TEMPLATE)
+    return _normalize_report_template_snapshot(_to_report_template(row))
+
+
 async def _insert_running_auto_evaluation(
     cursor: psycopg.AsyncCursor[dict[str, Any]],
     *,
@@ -775,7 +1336,9 @@ async def _insert_running_auto_evaluation(
     data_source: dict[str, Any],
     sample_rate: int,
     sample_count: int,
-    created_by: str,
+    report_template_id: str | None,
+    report_template_snapshot: dict[str, Any],
+    create_by: str,
     now: datetime | None,
 ) -> None:
     current_time = now or datetime.now(timezone.utc)
@@ -792,13 +1355,15 @@ async def _insert_running_auto_evaluation(
             id, project_id, name, description, score_name, status,
             evaluator_id, evaluator_name, evaluator_type, evaluator_version,
             data_source, sample_rate, execution_stats, badcase_count,
-            latest_report_id, created_by, last_run_at, created_at, updated_at
+            latest_report_id, report_template_id, report_template_snapshot,
+            create_by, last_run_at, create_date, update_by, update_date
         )
         VALUES (
             %(id)s, %(project_id)s, %(name)s, %(description)s, %(score_name)s, %(status)s,
             %(evaluator_id)s, %(evaluator_name)s, %(evaluator_type)s, %(evaluator_version)s,
             %(data_source)s, %(sample_rate)s, %(execution_stats)s, 0,
-            %(latest_report_id)s, %(created_by)s, %(last_run_at)s, %(created_at)s, %(updated_at)s
+            %(latest_report_id)s, %(report_template_id)s, %(report_template_snapshot)s,
+            %(create_by)s, %(last_run_at)s, %(create_date)s, %(update_by)s, %(update_date)s
         )
         """,
         {
@@ -816,21 +1381,26 @@ async def _insert_running_auto_evaluation(
             "sample_rate": sample_rate,
             "execution_stats": Jsonb(execution_stats),
             "latest_report_id": None,
-            "created_by": created_by,
+            "report_template_id": report_template_id,
+            "report_template_snapshot": Jsonb(report_template_snapshot),
+            "create_by": create_by,
             "last_run_at": current_time,
-            "created_at": current_time,
-            "updated_at": current_time,
+            "create_date": current_time,
+            "update_by": create_by,
+            "update_date": current_time,
         },
     )
     await cursor.execute(
         """
         INSERT INTO pa_auto_evaluation_runs (
             id, project_id, task_id, status, sample_count, completed_count,
-            failed_count, badcase_count, started_at, ended_at, duration_text
+            failed_count, badcase_count, started_at, ended_at, duration_text,
+            create_by, create_date, update_by, update_date
         )
         VALUES (
             %(id)s, %(project_id)s, %(task_id)s, %(status)s, %(sample_count)s, 0,
-            0, 0, %(started_at)s, %(ended_at)s, %(duration_text)s
+            0, 0, %(started_at)s, %(ended_at)s, %(duration_text)s,
+            %(create_by)s, %(create_date)s, %(update_by)s, %(update_date)s
         )
         """,
         {
@@ -842,6 +1412,10 @@ async def _insert_running_auto_evaluation(
             "started_at": current_time,
             "ended_at": None,
             "duration_text": "运行中",
+            "create_by": create_by,
+            "create_date": current_time,
+            "update_by": create_by,
+            "update_date": current_time,
         },
     )
 
@@ -855,6 +1429,7 @@ async def _run_auto_evaluation_background(
     evaluator: dict[str, Any],
     samples: list[dict[str, Any]],
     data_source: dict[str, Any],
+    updated_by: str,
 ) -> None:
     try:
         results: list[dict[str, Any]] = []
@@ -885,6 +1460,7 @@ async def _run_auto_evaluation_background(
                     evaluator=evaluator,
                     data_source=data_source,
                     results=results,
+                    updated_by=updated_by,
                 )
     except Exception as exc:
         message = _background_error_message(exc)
@@ -897,6 +1473,7 @@ async def _run_auto_evaluation_background(
                     run_id=run_id,
                     sample_count=len(samples),
                     message=message,
+                    updated_by=updated_by,
                 )
 
 
@@ -910,14 +1487,14 @@ async def _complete_auto_evaluation_success(
     evaluator: dict[str, Any],
     data_source: dict[str, Any],
     results: list[dict[str, Any]],
+    updated_by: str,
 ) -> None:
     await cursor.execute(
         """
-        SELECT created_at
+        SELECT create_date, create_by
         FROM pa_auto_evaluation_tasks
         WHERE project_id = %(project_id)s
           AND id = %(task_id)s
-          AND deleted_at IS NULL
         LIMIT 1
         """,
         {"project_id": project_id, "task_id": task_id},
@@ -927,11 +1504,27 @@ async def _complete_auto_evaluation_success(
         return
 
     now = datetime.now(timezone.utc)
-    started_at = task_row.get("created_at") or now
+    started_at = task_row.get("create_date") or now
+    create_by = task_row.get("create_by") or updated_by
     report_id = _new_id("pareport")
+    input_mapping = _get_effective_input_mapping(
+        evaluator,
+        payload.variable_mapping,
+    )
+    report = _build_report_from_template(
+        task_name=payload.name,
+        score_name=payload.score_name,
+        report_id=report_id,
+        task_id=task_id,
+        evaluator=evaluator,
+        data_source=data_source,
+        input_mapping=input_mapping,
+        results=results,
+        template_snapshot=payload.report_template_snapshot,
+    )
     sample_count = len(results)
-    badcase_count = sum(1 for result in results if not result["passed"])
-    completed_count = sample_count - badcase_count
+    badcase_count = report["badcaseCount"]
+    completed_count = report["completedCount"]
     execution_stats = {
         "pending": 0,
         "running": 0,
@@ -939,45 +1532,7 @@ async def _complete_auto_evaluation_success(
         "failed": badcase_count,
         "cancelled": 0,
     }
-    report_title = f"{payload.name}报告"
-    average_score = sum(result["score"] for result in results) / sample_count
-    pass_rate = completed_count / sample_count
-    badcase_rate = badcase_count / sample_count
-    summary = (
-        f"Dify 工作流评估完成，共运行 {sample_count} 条样本，"
-        f"平均得分 {average_score:.2f}，通过率 {pass_rate:.0%}。"
-    )
-    metrics = {
-        "averageScore": average_score,
-        "passRate": pass_rate,
-        "failureRate": badcase_rate,
-        "badcaseRate": badcase_rate,
-    }
-    distribution = _bucket_scores(results)
-    group_analysis = [
-        {
-            "group": data_source["name"],
-            "sampleCount": sample_count,
-            "averageScore": average_score,
-        }
-    ]
-    recommendations = ["可结合 Badcase 明细定位低分样本，并回流到数据集复测。"]
-    risks = ["当前报告由 Dify 工作流后台运行生成，工作流输出质量会影响评分稳定性。"]
-    reproduction = {
-        "reportId": report_id,
-        "sourceTaskId": task_id,
-        "scoreName": payload.score_name,
-        "evaluatorId": evaluator["id"],
-        "workflowRunIds": [
-            (result["raw"].get("data") or {}).get("workflow_run_id")
-            for result in results
-        ],
-        "dataSource": data_source,
-        "inputMapping": _get_effective_input_mapping(
-            evaluator,
-            payload.variable_mapping,
-        ),
-    }
+    report_template_snapshot = report["templateSnapshot"]
 
     await cursor.execute(
         """
@@ -985,42 +1540,56 @@ async def _complete_auto_evaluation_success(
             id, project_id, title, source_type, source_task_id, source_task_name,
             status, sample_count, badcase_count, flowback_count, generated_at,
             summary, metrics, distribution, group_analysis, recommendations,
-            risks, reproduction
+            risks, reproduction, report_template_id, report_template_snapshot,
+            create_by, create_date, update_by, update_date
         )
         VALUES (
             %(id)s, %(project_id)s, %(title)s, 'AUTO_EVAL', %(source_task_id)s, %(source_task_name)s,
             'READY', %(sample_count)s, %(badcase_count)s, 0, %(generated_at)s,
             %(summary)s, %(metrics)s, %(distribution)s, %(group_analysis)s, %(recommendations)s,
-            %(risks)s, %(reproduction)s
+            %(risks)s, %(reproduction)s, %(report_template_id)s, %(report_template_snapshot)s,
+            %(create_by)s, %(create_date)s, %(update_by)s, %(update_date)s
         )
         """,
         {
             "id": report_id,
             "project_id": project_id,
-            "title": report_title,
+            "title": report["title"],
             "source_task_id": task_id,
             "source_task_name": payload.name,
             "sample_count": sample_count,
             "badcase_count": badcase_count,
             "generated_at": now,
-            "summary": summary,
-            "metrics": Jsonb(metrics),
-            "distribution": Jsonb(distribution),
-            "group_analysis": Jsonb(group_analysis),
-            "recommendations": Jsonb(recommendations),
-            "risks": Jsonb(risks),
-            "reproduction": Jsonb(reproduction),
+            "summary": report["summary"],
+            "metrics": Jsonb(report["metrics"]),
+            "distribution": Jsonb(report["distribution"]),
+            "group_analysis": Jsonb(report["groupAnalysis"]),
+            "recommendations": Jsonb(report["recommendations"]),
+            "risks": Jsonb(report["risks"]),
+            "reproduction": Jsonb(report["reproduction"]),
+            "report_template_id": report_template_snapshot["id"],
+            "report_template_snapshot": Jsonb(report_template_snapshot),
+            "create_by": create_by,
+            "create_date": now,
+            "update_by": updated_by,
+            "update_date": now,
         },
     )
-    for result in results:
+    for index, result in enumerate(results):
         sample = result["sample"]
+        result_type = report["itemResults"][index]
         await cursor.execute(
             """
             INSERT INTO pa_evaluation_report_items (
                 id, project_id, report_id, source_id, score_summary, result_type,
-                execution_status, dataset_flowback_status
+                execution_status, dataset_flowback_status,
+                create_by, create_date, update_by, update_date
             )
-            VALUES (%(id)s, %(project_id)s, %(report_id)s, %(source_id)s, %(score_summary)s, %(result_type)s, 'COMPLETED', 'NONE')
+            VALUES (
+                %(id)s, %(project_id)s, %(report_id)s, %(source_id)s, %(score_summary)s,
+                %(result_type)s, 'COMPLETED', 'NONE',
+                %(create_by)s, %(create_date)s, %(update_by)s, %(update_date)s
+            )
             """,
             {
                 "id": _new_id("paitem"),
@@ -1028,18 +1597,24 @@ async def _complete_auto_evaluation_success(
                 "report_id": report_id,
                 "source_id": sample["id"],
                 "score_summary": f"{payload.score_name}: {result['score']:.2f}",
-                "result_type": "normal" if result["passed"] else "badcase",
+                "result_type": result_type,
+                "create_by": create_by,
+                "create_date": now,
+                "update_by": updated_by,
+                "update_date": now,
             },
         )
-        if not result["passed"]:
+        if result_type == "badcase":
             await cursor.execute(
                 """
                 INSERT INTO pa_evaluation_report_badcases (
                     id, project_id, report_id, trace_id, observation_id, dataset_item_id,
-                    score_name, score_value, reason, comment, source_type, flowback_status
+                    score_name, score_value, reason, comment, source_type, flowback_status,
+                    create_by, create_date, update_by, update_date
                 )
                 VALUES (%(id)s, %(project_id)s, %(report_id)s, %(trace_id)s, %(observation_id)s, %(dataset_item_id)s,
-                        %(score_name)s, %(score_value)s, %(reason)s, %(comment)s, 'AUTO_EVAL', 'NONE')
+                        %(score_name)s, %(score_value)s, %(reason)s, %(comment)s, 'AUTO_EVAL', 'NONE',
+                        %(create_by)s, %(create_date)s, %(update_by)s, %(update_date)s)
                 """,
                 {
                     "id": _new_id("pabadcase"),
@@ -1052,6 +1627,10 @@ async def _complete_auto_evaluation_success(
                     "score_value": result["score"],
                     "reason": result["reason"],
                     "comment": "Dify 工作流判定未通过。",
+                    "create_by": create_by,
+                    "create_date": now,
+                    "update_by": updated_by,
+                    "update_date": now,
                 },
             )
 
@@ -1062,10 +1641,10 @@ async def _complete_auto_evaluation_success(
             execution_stats = %(execution_stats)s,
             badcase_count = %(badcase_count)s,
             latest_report_id = %(latest_report_id)s,
-            updated_at = %(updated_at)s
+            update_by = %(update_by)s,
+            update_date = %(update_date)s
         WHERE project_id = %(project_id)s
           AND id = %(task_id)s
-          AND deleted_at IS NULL
         """,
         {
             "project_id": project_id,
@@ -1073,7 +1652,8 @@ async def _complete_auto_evaluation_success(
             "execution_stats": Jsonb(execution_stats),
             "badcase_count": badcase_count,
             "latest_report_id": report_id,
-            "updated_at": now,
+            "update_by": updated_by,
+            "update_date": now,
         },
     )
     await cursor.execute(
@@ -1084,7 +1664,9 @@ async def _complete_auto_evaluation_success(
             failed_count = %(failed_count)s,
             badcase_count = %(badcase_count)s,
             ended_at = %(ended_at)s,
-            duration_text = %(duration_text)s
+            duration_text = %(duration_text)s,
+            update_by = %(update_by)s,
+            update_date = %(update_date)s
         WHERE project_id = %(project_id)s
           AND task_id = %(task_id)s
           AND id = %(run_id)s
@@ -1098,6 +1680,8 @@ async def _complete_auto_evaluation_success(
             "badcase_count": badcase_count,
             "ended_at": now,
             "duration_text": _duration_text(started_at, now),
+            "update_by": updated_by,
+            "update_date": now,
         },
     )
 
@@ -1110,6 +1694,7 @@ async def _mark_auto_evaluation_failed(
     run_id: str,
     sample_count: int,
     message: str,
+    updated_by: str,
 ) -> None:
     now = datetime.now(timezone.utc)
     execution_stats = {
@@ -1124,17 +1709,18 @@ async def _mark_auto_evaluation_failed(
         UPDATE pa_auto_evaluation_tasks
         SET status = %(status)s,
             execution_stats = %(execution_stats)s,
-            updated_at = %(updated_at)s
+            update_by = %(update_by)s,
+            update_date = %(update_date)s
         WHERE project_id = %(project_id)s
           AND id = %(task_id)s
-          AND deleted_at IS NULL
         """,
         {
             "project_id": project_id,
             "task_id": task_id,
             "status": "FAILED",
             "execution_stats": Jsonb(execution_stats),
-            "updated_at": now,
+            "update_by": updated_by,
+            "update_date": now,
         },
     )
     await cursor.execute(
@@ -1144,7 +1730,9 @@ async def _mark_auto_evaluation_failed(
             failed_count = %(failed_count)s,
             ended_at = %(ended_at)s,
             duration_text = %(duration_text)s,
-            error_message = %(error_message)s
+            error_message = %(error_message)s,
+            update_by = %(update_by)s,
+            update_date = %(update_date)s
         WHERE project_id = %(project_id)s
           AND task_id = %(task_id)s
           AND id = %(run_id)s
@@ -1158,6 +1746,8 @@ async def _mark_auto_evaluation_failed(
             "ended_at": now,
             "duration_text": "执行失败",
             "error_message": message,
+            "update_by": updated_by,
+            "update_date": now,
         },
     )
 
@@ -1198,7 +1788,6 @@ async def list_auto_evaluations(
                 SELECT COUNT(*)::int AS total
                 FROM pa_auto_evaluation_tasks
                 WHERE project_id = %(project_id)s
-                  AND deleted_at IS NULL
                   AND (%(keyword)s = '' OR name ILIKE %(like)s OR description ILIKE %(like)s)
                 """,
                 {"project_id": project_id, "keyword": keyword or "", "like": like},
@@ -1209,9 +1798,8 @@ async def list_auto_evaluations(
                 SELECT *
                 FROM pa_auto_evaluation_tasks
                 WHERE project_id = %(project_id)s
-                  AND deleted_at IS NULL
                   AND (%(keyword)s = '' OR name ILIKE %(like)s OR description ILIKE %(like)s)
-                ORDER BY updated_at DESC, id DESC
+                ORDER BY update_date DESC, id DESC
                 LIMIT %(limit)s OFFSET %(offset)s
                 """,
                 {
@@ -1246,7 +1834,6 @@ async def get_auto_evaluation_summary(
                     COALESCE(SUM(badcase_count), 0)::int AS badcase
                 FROM pa_auto_evaluation_tasks
                 WHERE project_id = %(project_id)s
-                  AND deleted_at IS NULL
                 """,
                 {"project_id": project_id},
             )
@@ -1284,7 +1871,7 @@ async def delete_auto_evaluation(
     async with await _connect(settings) as connection:
         async with connection.cursor() as cursor:
             await _ensure_project_access(cursor, project_id, current_user.user_id)
-            await _soft_delete_auto_evaluation_task(cursor, project_id, task_id)
+            await _delete_auto_evaluation_task(cursor, project_id, task_id)
     return success({"id": task_id})
 
 
@@ -1343,7 +1930,6 @@ async def list_evaluation_reports(
                 SELECT COUNT(*)::int AS total
                 FROM pa_evaluation_reports
                 WHERE project_id = %(project_id)s
-                  AND deleted_at IS NULL
                   AND (%(keyword)s = '' OR title ILIKE %(like)s OR source_task_name ILIKE %(like)s)
                 """,
                 {"project_id": project_id, "keyword": keyword or "", "like": like},
@@ -1353,10 +1939,9 @@ async def list_evaluation_reports(
                 """
                 SELECT id, project_id, title, source_type, source_task_id, source_task_name,
                        status, sample_count, badcase_count, flowback_count,
-                       generated_at, summary, error_message
+                       generated_at, summary, error_message, report_template_id
                 FROM pa_evaluation_reports
                 WHERE project_id = %(project_id)s
-                  AND deleted_at IS NULL
                   AND (%(keyword)s = '' OR title ILIKE %(like)s OR source_task_name ILIKE %(like)s)
                 ORDER BY generated_at DESC, id DESC
                 LIMIT %(limit)s OFFSET %(offset)s
@@ -1389,7 +1974,6 @@ async def get_evaluation_report(
                 FROM pa_evaluation_reports
                 WHERE project_id = %(project_id)s
                   AND id = %(report_id)s
-                  AND deleted_at IS NULL
                 LIMIT 1
                 """,
                 {"project_id": project_id, "report_id": report_id},
@@ -1412,11 +1996,9 @@ async def delete_evaluation_report(
             await _ensure_project_access(cursor, project_id, current_user.user_id)
             await cursor.execute(
                 """
-                UPDATE pa_evaluation_reports
-                SET deleted_at = NOW()
+                DELETE FROM pa_evaluation_reports
                 WHERE project_id = %(project_id)s
                   AND id = %(report_id)s
-                  AND deleted_at IS NULL
                 RETURNING id
                 """,
                 {"project_id": project_id, "report_id": report_id},
@@ -1560,6 +2142,7 @@ def _to_report(row: dict[str, Any]) -> dict[str, Any]:
         "generatedAt": _format_datetime(row["generated_at"]),
         "summary": row["summary"],
         "errorMessage": row.get("error_message"),
+        "reportTemplateId": row.get("report_template_id"),
     }
 
 
@@ -1572,6 +2155,8 @@ def _to_report_detail(row: dict[str, Any]) -> dict[str, Any]:
         "recommendations": row.get("recommendations") or [],
         "risks": row.get("risks") or [],
         "reproduction": row.get("reproduction") or {},
+        "reportTemplateId": row.get("report_template_id"),
+        "reportTemplateSnapshot": row.get("report_template_snapshot") or {},
     }
 
 
@@ -1586,7 +2171,6 @@ async def _ensure_report_exists(
         FROM pa_evaluation_reports
         WHERE project_id = %(project_id)s
           AND id = %(report_id)s
-          AND deleted_at IS NULL
         LIMIT 1
         """,
         {"project_id": project_id, "report_id": report_id},
@@ -1595,19 +2179,16 @@ async def _ensure_report_exists(
         raise BusinessError(4004, "评测报告不存在", 404)
 
 
-async def _soft_delete_auto_evaluation_task(
+async def _delete_auto_evaluation_task(
     cursor: psycopg.AsyncCursor[dict[str, Any]],
     project_id: str,
     task_id: str,
 ) -> None:
     await cursor.execute(
         """
-        UPDATE pa_auto_evaluation_tasks
-        SET deleted_at = NOW(),
-            updated_at = NOW()
+        DELETE FROM pa_auto_evaluation_tasks
         WHERE project_id = %(project_id)s
           AND id = %(task_id)s
-          AND deleted_at IS NULL
         RETURNING id
         """,
         {"project_id": project_id, "task_id": task_id},
@@ -1617,11 +2198,9 @@ async def _soft_delete_auto_evaluation_task(
 
     await cursor.execute(
         """
-        UPDATE pa_evaluation_reports
-        SET deleted_at = NOW()
+        DELETE FROM pa_evaluation_reports
         WHERE project_id = %(project_id)s
           AND source_task_id = %(task_id)s
-          AND deleted_at IS NULL
         """,
         {"project_id": project_id, "task_id": task_id},
     )
@@ -1670,7 +2249,6 @@ async def _fetch_task(
                 FROM pa_auto_evaluation_tasks
                 WHERE project_id = %(project_id)s
                   AND id = %(task_id)s
-                  AND deleted_at IS NULL
                 LIMIT 1
                 """,
                 {"project_id": project_id, "task_id": task_id},
@@ -1687,7 +2265,6 @@ async def _fetch_task(
                     FROM pa_evaluation_reports
                     WHERE id = %(report_id)s
                       AND project_id = %(project_id)s
-                      AND deleted_at IS NULL
                     LIMIT 1
                     """,
                     {"report_id": row["latest_report_id"], "project_id": project_id},
@@ -1725,10 +2302,10 @@ def _to_task(row: dict[str, Any]) -> dict[str, Any]:
         "sampleRate": row["sample_rate"],
         "executionStats": row.get("execution_stats") or {},
         "badcaseCount": row["badcase_count"],
-        "createdBy": row["created_by"],
-        "createdAt": _format_datetime(row["created_at"]),
+        "createdBy": row["create_by"],
+        "createdAt": _format_datetime(row["create_date"]),
         "lastRunAt": _format_datetime(row["last_run_at"]) if row.get("last_run_at") else "",
-        "updatedAt": _format_datetime(row["updated_at"]),
+        "updatedAt": _format_datetime(row["update_date"]),
     }
 
 

@@ -17,11 +17,15 @@ export type PaginatedSidebarProjects = {
 }
 
 export function buildSidebarDataFromProjects(
-  projects: SidebarProject[]
+  projects: SidebarProject[],
+  currentProjectId?: string
 ): SidebarData {
+  const currentProject = currentProjectId
+    ? projects.find((project) => project.id === currentProjectId)
+    : undefined
   const firstProject =
     projects.find((project) => project.status === 'active') ?? projects[0]
-  const projectId = firstProject?.id
+  const projectId = currentProject?.id ?? firstProject?.id
 
   return {
     user: {

@@ -73,6 +73,9 @@ export function ProjectEvaluationReportDetail() {
 
   const report = reportQuery.data
   const activeTab = searchParams.get('tab') ?? 'overview'
+  const sections = report?.reportTemplateSnapshot?.sections
+  const showBadcases = sections?.badcases ?? true
+  const showItems = sections?.items ?? true
 
   const openFlowback = (
     type: EvaluationReportFlowbackType,
@@ -149,7 +152,7 @@ export function ProjectEvaluationReportDetail() {
                 icon: Send,
                 iconPosition: 'start',
                 size: 'sm',
-                disabled: !report || report.status !== 'READY',
+                disabled: !report || report.status !== 'READY' || !showBadcases,
                 onClick: () => openFlowback('BADCASE', 'BADCASE_ONLY'),
               },
               {
@@ -159,7 +162,7 @@ export function ProjectEvaluationReportDetail() {
                 iconPosition: 'start',
                 variant: 'outline',
                 size: 'sm',
-                disabled: !report || report.status !== 'READY',
+                disabled: !report || report.status !== 'READY' || !showItems,
                 onClick: () => openFlowback('EVALUATION_DATA', 'ALL'),
               },
             ],
@@ -188,8 +191,10 @@ export function ProjectEvaluationReportDetail() {
               <TabsList>
                 <TabsTrigger value='overview'>概览</TabsTrigger>
                 <TabsTrigger value='analysis'>分析</TabsTrigger>
-                <TabsTrigger value='badcases'>Badcase</TabsTrigger>
-                <TabsTrigger value='items'>评测数据</TabsTrigger>
+                {showBadcases ? (
+                  <TabsTrigger value='badcases'>Badcase</TabsTrigger>
+                ) : null}
+                {showItems ? <TabsTrigger value='items'>评测数据</TabsTrigger> : null}
                 <TabsTrigger value='flowbacks'>回流历史</TabsTrigger>
               </TabsList>
               <TabsContent value='overview'>

@@ -255,6 +255,38 @@ export type EvaluationReportFlowbackType = 'BADCASE' | 'EVALUATION_DATA'
 export type EvaluationReportFlowbackStatus =
   'PENDING' | 'RUNNING' | 'COMPLETED' | 'PARTIAL_FAILED' | 'FAILED'
 
+export type EvaluationReportTemplateSectionKey =
+  | 'metrics'
+  | 'distribution'
+  | 'groupAnalysis'
+  | 'recommendations'
+  | 'risks'
+  | 'reproduction'
+  | 'items'
+  | 'badcases'
+
+export type EvaluationReportTemplateRecord = {
+  id: string
+  projectId: string
+  name: string
+  description: string
+  isDefault: boolean
+  titleTemplate: string
+  summaryTemplate: string
+  sections: Record<EvaluationReportTemplateSectionKey, boolean>
+  badcaseRule: {
+    mode: 'EVALUATOR_RESULT' | 'SCORE_THRESHOLD'
+    operator?: 'LT' | 'LTE' | 'GT' | 'GTE' | 'EQ'
+    threshold?: number
+  }
+  recommendations: string[]
+  risks: string[]
+  status: 'ACTIVE'
+  createdBy: string
+  createdAt: string
+  updatedAt: string
+}
+
 export type AutoEvaluationEvaluatorSummary = {
   id: string
   name: string
@@ -343,6 +375,7 @@ export type AutoEvaluationTaskFormInput = {
   scoreName: string
   evaluatorId: string
   variableMapping: Record<string, string>
+  reportTemplateId: string
   dataSource:
     | { type: 'DATASET'; datasetId: string; projectId?: string }
     | {
@@ -421,22 +454,24 @@ export type EvaluationReportFlowbackRecord = {
 }
 
 export type EvaluationReportDetailRecord = EvaluationReportRecord & {
-  metrics: {
+  metrics: Partial<{
     averageScore: number
     passRate: number
     failureRate: number
     badcaseRate: number
-  }
+  }>
   distribution: { label: string; count: number }[]
   groupAnalysis: { group: string; sampleCount: number; averageScore: number }[]
   recommendations: string[]
   risks: string[]
   reproduction: {
-    reportId: string
-    sourceTaskId: string
-    scoreName: string
-    generatedConfig: string
+    reportId?: string
+    sourceTaskId?: string
+    scoreName?: string
+    generatedConfig?: string
   }
+  reportTemplateId?: string
+  reportTemplateSnapshot?: EvaluationReportTemplateRecord
 }
 
 export type EvaluationReportFlowbackInput = {

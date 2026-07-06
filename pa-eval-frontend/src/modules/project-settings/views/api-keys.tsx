@@ -1,5 +1,7 @@
 import { type FormEvent, useState } from 'react'
-import { KeyRound, Pencil, Plus, Trash2 } from 'lucide-react'
+import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
+import { Copy, KeyRound, Pencil, Plus, Trash2 } from 'lucide-react'
+import { useParams } from 'react-router'
 import { toast } from 'sonner'
 import {
   AlertDialog,
@@ -32,10 +34,18 @@ import {
   TableRow,
 } from '@/components/ui/table'
 import { ContentSection } from '@/components/common/content-section'
-import { mockProjectApiKeys } from '../data/mock'
+import { useAPI } from '@/hooks/use-api'
+import {
+  createProjectApiKey,
+  deleteProjectApiKey,
+  listProjectApiKeys,
+  updateProjectApiKey,
+} from '../api/api-keys-api'
 import type { ProjectApiKey } from '../types'
 
-function formatDateTime(value?: string) {
+const DEFAULT_PROJECT_ID = 'project_customer_agent'
+
+function formatDateTime(value?: string | null) {
   if (!value) {
     return '-'
   }
@@ -55,25 +65,64 @@ function formatDateTime(value?: string) {
   }).format(date)
 }
 
-function createMockKey(note: string): ProjectApiKey {
-  const timestamp = Date.now()
-
-  return {
-    id: `key_${timestamp}`,
-    note,
-    publicKey: `pk-lf-mock-${String(timestamp).slice(-6)}`,
-    displaySecretKey: 'sk-lf-...mock',
-    createdAt: new Date().toISOString(),
-  }
+async function copyValue(label: string, value: string) {
+  await navigator.clipboard.writeText(value)
+  toast.success(`${label} 已复制`)
 }
 
 export function ProjectApiKeysSettings() {
-  const [apiKeys, setApiKeys] = useState(mockProjectApiKeys)
+  const $api = useAPI()
+  const queryClient = useQueryClient()
+  const { projectId = DEFAULT_PROJECT_ID } = useParams()
   const [dialogOpen, setDialogOpen] = useState(false)
   const [editingKey, setEditingKey] = useState<ProjectApiKey | null>(null)
   const [deletingKey, setDeletingKey] = useState<ProjectApiKey | null>(null)
   const [note, setNote] = useState('')
-  const [oneTimeSecret, setOneTimeSecret] = useState<string | null>(null)
+  const [createdKey, setCreatedKey] = useState<ProjectApiKey | null>(null)
+
+  const queryKey = ['project-api-keys', $api, projectId] as const
+  const apiKeysQuery = useQuery({
+    queryKey,
+    queryFn: () =>
+      listProjectApiKeys($api, projectId, {
+        page: 1,
+        pageSize: 100,
+      }),
+  })
+
+  const invalidate = async () => {
+    await queryClient.invalidateQueries({ queryKey })
+  }
+
+  const createMutation = useMutation({
+    mutationFn: (input: { note: string }) =>
+      createProjectApiKey($api, projectId, input),
+    onSuccess: async (apiKey) => {
+      setCreatedKey(apiKey)
+      setDialogOpen(false)
+      await invalidate()
+      toast.success('项目 API Key 已创建')
+    },
+  })
+
+  const updateMutation = useMutation({
+    mutationFn: ({ keyId, input }: { keyId: string; input: { note: string } }) =>
+      updateProjectApiKey($api, projectId, keyId, input),
+    onSuccess: async () => {
+      setDialogOpen(false)
+      await invalidate()
+      toast.success('API Key 备注已更新')
+    },
+  })
+
+  const deleteMutation = useMutation({
+    mutationFn: (keyId: string) => deleteProjectApiKey($api, projectId, keyId),
+    onSuccess: async () => {
+      setDeletingKey(null)
+      await invalidate()
+      toast.success('API Key 已删除')
+    },
+  })
 
   const openCreateDialog = () => {
     setEditingKey(null)
@@ -92,81 +141,96 @@ export function ProjectApiKeysSettings() {
     const trimmedNote = note.trim() || '未命名 Key'
 
     if (editingKey) {
-      setApiKeys((current) =>
-        current.map((item) =>
-          item.id === editingKey.id ? { ...item, note: trimmedNote } : item
-        )
-      )
-      setDialogOpen(false)
-      toast.success('API Key 备注已更新')
+      updateMutation.mutate({
+        keyId: editingKey.id,
+        input: { note: trimmedNote },
+      })
       return
     }
 
-    const nextKey = createMockKey(trimmedNote)
-    setApiKeys((current) => [nextKey, ...current])
-    setOneTimeSecret(`sk-lf-mock-secret-${Date.now()}`)
-    setDialogOpen(false)
-    toast.success('API Key 已创建')
+    createMutation.mutate({ note: trimmedNote })
   }
 
   const handleDelete = () => {
     if (!deletingKey) {
       return
     }
-
-    setApiKeys((current) =>
-      current.filter((apiKey) => apiKey.id !== deletingKey.id)
-    )
-    toast.success('API Key 已删除')
-    setDeletingKey(null)
+    deleteMutation.mutate(deletingKey.id)
   }
+
+  const apiKeys = apiKeysQuery.data?.datas ?? []
 
   return (
     <ContentSection
-      title='API Keys'
-      desc='管理项目级 API Keys。Secret Key 只在创建成功时完整展示一次。'
+      title='Project API Keys'
+      desc='管理当前项目的 Langfuse 访问密钥。Public Key 和 Secret Key 会保存在 PA 扩展表中，可重复查看和复制。'
     >
       <div className='flex flex-col gap-4'>
+        <div className='border-border bg-muted/40 flex items-start gap-3 rounded-md border p-3 text-sm'>
+          <KeyRound className='mt-0.5 size-4 shrink-0' />
+          <div className='space-y-1'>
+            <div className='font-medium'>Secret Key 当前支持重复查看</div>
+            <p className='text-muted-foreground'>
+              请只在 Dify、n8n、本地调试或可信服务中使用，不要写入前端代码、文档或日志。
+            </p>
+          </div>
+        </div>
+
+        {createdKey ? (
+          <div className='flex flex-col gap-3 rounded-md border p-4'>
+            <div className='flex items-center gap-2 font-medium'>
+              <KeyRound className='size-4' />
+              新创建的 Langfuse 密钥
+            </div>
+            <KeyValueRow label='LANGFUSE_PUBLIC_KEY' value={createdKey.publicKey} />
+            <KeyValueRow label='LANGFUSE_SECRET_KEY' value={createdKey.secretKey} />
+            <div>
+              <Button
+                type='button'
+                variant='outline'
+                size='sm'
+                onClick={() => setCreatedKey(null)}
+              >
+                收起
+              </Button>
+            </div>
+          </div>
+        ) : null}
+
         <div className='flex justify-end'>
           <Button onClick={openCreateDialog}>
             <Plus data-icon='inline-start' />
             新增 Key
           </Button>
         </div>
-        {oneTimeSecret ? (
-          <div className='flex flex-col gap-3 rounded-lg border p-4'>
-            <div className='flex items-center gap-2'>
-              <KeyRound />
-              <div className='font-medium'>Secret Key 仅展示一次</div>
-            </div>
-            <div className='bg-muted rounded-md p-3 font-mono text-xs'>
-              {oneTimeSecret}
-            </div>
-            <div>
-              <Button
-                type='button'
-                variant='outline'
-                size='sm'
-                onClick={() => setOneTimeSecret(null)}
-              >
-                我已保存
-              </Button>
-            </div>
-          </div>
-        ) : null}
+
         <div className='rounded-lg border'>
           <Table>
             <TableHeader>
               <TableRow>
                 <TableHead>备注</TableHead>
-                <TableHead>Public Key</TableHead>
-                <TableHead>Secret</TableHead>
+                <TableHead>LANGFUSE_PUBLIC_KEY</TableHead>
+                <TableHead>LANGFUSE_SECRET_KEY</TableHead>
                 <TableHead>最近使用</TableHead>
                 <TableHead>创建时间</TableHead>
                 <TableHead className='text-end'>操作</TableHead>
               </TableRow>
             </TableHeader>
             <TableBody>
+              {apiKeysQuery.isLoading ? (
+                <TableRow>
+                  <TableCell colSpan={6} className='text-muted-foreground h-24 text-center'>
+                    正在加载项目 API Keys
+                  </TableCell>
+                </TableRow>
+              ) : null}
+              {!apiKeysQuery.isLoading && apiKeys.length === 0 ? (
+                <TableRow>
+                  <TableCell colSpan={6} className='text-muted-foreground h-24 text-center'>
+                    当前项目暂无 API Keys
+                  </TableCell>
+                </TableRow>
+              ) : null}
               {apiKeys.map((apiKey) => (
                 <TableRow key={apiKey.id}>
                   <TableCell>
@@ -175,11 +239,11 @@ export function ProjectApiKeysSettings() {
                       <Badge variant='outline'>PROJECT</Badge>
                     </div>
                   </TableCell>
-                  <TableCell className='font-mono text-xs'>
-                    {apiKey.publicKey}
+                  <TableCell>
+                    <KeyCell label='LANGFUSE_PUBLIC_KEY' value={apiKey.publicKey} />
                   </TableCell>
-                  <TableCell className='font-mono text-xs'>
-                    {apiKey.displaySecretKey}
+                  <TableCell>
+                    <KeyCell label='LANGFUSE_SECRET_KEY' value={apiKey.secretKey} />
                   </TableCell>
                   <TableCell>{formatDateTime(apiKey.lastUsedAt)}</TableCell>
                   <TableCell>{formatDateTime(apiKey.createdAt)}</TableCell>
@@ -210,6 +274,7 @@ export function ProjectApiKeysSettings() {
             </TableBody>
           </Table>
         </div>
+
         <Dialog open={dialogOpen} onOpenChange={setDialogOpen}>
           <DialogContent>
             <DialogHeader>
@@ -217,7 +282,8 @@ export function ProjectApiKeysSettings() {
                 {editingKey ? '编辑 Key 备注' : '新增项目 Key'}
               </DialogTitle>
               <DialogDescription>
-                Mock 模式会生成假的 Public Key 和一次性 Secret Key。
+                创建后会生成一组可重复查看的 LANGFUSE_PUBLIC_KEY 和
+                LANGFUSE_SECRET_KEY。
               </DialogDescription>
             </DialogHeader>
             <form className='flex flex-col gap-4' onSubmit={handleSubmit}>
@@ -227,7 +293,7 @@ export function ProjectApiKeysSettings() {
                   id='api-key-note'
                   value={note}
                   onChange={(event) => setNote(event.target.value)}
-                  placeholder='例如 CI 评测流水线'
+                  placeholder='例如 Dify 评估工作流'
                 />
               </div>
               <DialogFooter>
@@ -238,11 +304,17 @@ export function ProjectApiKeysSettings() {
                 >
                   取消
                 </Button>
-                <Button type='submit'>{editingKey ? '保存' : '创建'}</Button>
+                <Button
+                  type='submit'
+                  disabled={createMutation.isPending || updateMutation.isPending}
+                >
+                  {editingKey ? '保存' : '创建'}
+                </Button>
               </DialogFooter>
             </form>
           </DialogContent>
         </Dialog>
+
         <AlertDialog
           open={Boolean(deletingKey)}
           onOpenChange={(open) => {
@@ -255,16 +327,57 @@ export function ProjectApiKeysSettings() {
             <AlertDialogHeader>
               <AlertDialogTitle>删除 API Key</AlertDialogTitle>
               <AlertDialogDescription>
-                删除后该项目 Key 将不可再用于访问项目 API。
+                删除后该项目 Key 将不可再用于访问项目 API。历史记录不会被修改。
               </AlertDialogDescription>
             </AlertDialogHeader>
             <AlertDialogFooter>
               <AlertDialogCancel>取消</AlertDialogCancel>
-              <AlertDialogAction onClick={handleDelete}>删除</AlertDialogAction>
+              <AlertDialogAction onClick={() => void handleDelete()}>
+                删除
+              </AlertDialogAction>
             </AlertDialogFooter>
           </AlertDialogContent>
         </AlertDialog>
       </div>
     </ContentSection>
+  )
+}
+
+function KeyValueRow({ label, value }: { label: string; value: string }) {
+  return (
+    <div className='grid gap-1'>
+      <Label>{label}</Label>
+      <div className='bg-muted flex items-center justify-between gap-2 rounded-md p-3'>
+        <code className='min-w-0 break-all text-xs'>{value}</code>
+        <Button
+          type='button'
+          variant='outline'
+          size='sm'
+          onClick={() => void copyValue(label, value)}
+        >
+          <Copy data-icon='inline-start' />
+          复制
+        </Button>
+      </div>
+    </div>
+  )
+}
+
+function KeyCell({ label, value }: { label: string; value: string }) {
+  return (
+    <div className='flex max-w-[360px] items-center gap-2'>
+      <code className='bg-muted min-w-0 flex-1 rounded px-2 py-1 text-xs break-all'>
+        {value}
+      </code>
+      <Button
+        type='button'
+        variant='ghost'
+        size='sm'
+        onClick={() => void copyValue(label, value)}
+      >
+        <Copy className='size-4' />
+        <span className='sr-only'>复制 {label}</span>
+      </Button>
+    </div>
   )
 }

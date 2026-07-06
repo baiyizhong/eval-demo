@@ -14,6 +14,22 @@ export const apiRegistry = {
     method: 'GET',
     url: '/projects',
   },
+  getProjectApiKeys: {
+    method: 'GET',
+    url: '/projects/:projectId/settings/api-keys',
+  },
+  createProjectApiKey: {
+    method: 'POST',
+    url: '/projects/:projectId/settings/api-keys',
+  },
+  updateProjectApiKey: {
+    method: 'PATCH',
+    url: '/projects/:projectId/settings/api-keys/:keyId',
+  },
+  deleteProjectApiKey: {
+    method: 'DELETE',
+    url: '/projects/:projectId/settings/api-keys/:keyId',
+  },
   getEvaluators: {
     method: 'GET',
     url: '/evaluators',
@@ -33,6 +49,22 @@ export const apiRegistry = {
   getEvaluationReports: {
     method: 'GET',
     url: '/projects/:projectId/evaluation-reports',
+  },
+  getEvaluationReportTemplates: {
+    method: 'GET',
+    url: '/projects/:projectId/report-templates',
+  },
+  createEvaluationReportTemplate: {
+    method: 'POST',
+    url: '/projects/:projectId/report-templates',
+  },
+  updateEvaluationReportTemplate: {
+    method: 'PATCH',
+    url: '/projects/:projectId/report-templates/:templateId',
+  },
+  deleteEvaluationReportTemplate: {
+    method: 'DELETE',
+    url: '/projects/:projectId/report-templates/:templateId',
   },
   getProjectDatasets: {
     method: 'GET',
