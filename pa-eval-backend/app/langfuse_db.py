@@ -429,6 +429,161 @@ class LangfuseDatabaseReader:
             )
         return self._to_dataset_payload(rows[0])
 
+    async def create_dataset_for_user(
+        self,
+        project_id: str,
+        user_id: str,
+        payload: dict[str, Any],
+    ) -> dict[str, Any]:
+        if not self._database_url:
+            raise LangfuseDatabaseConfigError()
+
+        dataset_id = _new_langfuse_id("dataset")
+        try:
+            async with await psycopg.AsyncConnection.connect(
+                self._database_url,
+                row_factory=dict_row,
+            ) as connection:
+                async with connection.cursor() as cursor:
+                    await self._get_project_for_user(cursor, project_id, user_id)
+                    await cursor.execute(
+                        """
+                        INSERT INTO datasets (
+                            id,
+                            project_id,
+                            name,
+                            description,
+                            metadata,
+                            input_schema,
+                            expected_output_schema,
+                            created_at,
+                            updated_at
+                        )
+                        VALUES (
+                            %(id)s,
+                            %(project_id)s,
+                            %(name)s,
+                            %(description)s,
+                            %(metadata)s,
+                            %(input_schema)s,
+                            %(expected_output_schema)s,
+                            NOW(),
+                            NOW()
+                        )
+                        """,
+                        {
+                            "id": dataset_id,
+                            "project_id": project_id,
+                            "name": payload["name"],
+                            "description": payload.get("description") or "",
+                            "metadata": Jsonb(payload.get("metadata") or {}),
+                            "input_schema": Jsonb(payload.get("inputSchema") or {}),
+                            "expected_output_schema": Jsonb(
+                                payload.get("expectedOutputSchema") or {}
+                            ),
+                        },
+                    )
+        except psycopg.errors.UniqueViolation as exc:
+            raise BusinessError(
+                code=1013,
+                message="数据集名称已存在",
+                status_code=409,
+            ) from exc
+
+        return await self.get_dataset_for_user(project_id, dataset_id, user_id)
+
+    async def update_dataset_for_user(
+        self,
+        project_id: str,
+        dataset_id: str,
+        user_id: str,
+        payload: dict[str, Any],
+    ) -> dict[str, Any]:
+        if not self._database_url:
+            raise LangfuseDatabaseConfigError()
+
+        try:
+            async with await psycopg.AsyncConnection.connect(
+                self._database_url,
+                row_factory=dict_row,
+            ) as connection:
+                async with connection.cursor() as cursor:
+                    await self._get_project_for_user(cursor, project_id, user_id)
+                    await cursor.execute(
+                        """
+                        UPDATE datasets
+                        SET
+                            name = %(name)s,
+                            description = %(description)s,
+                            metadata = %(metadata)s,
+                            input_schema = %(input_schema)s,
+                            expected_output_schema = %(expected_output_schema)s,
+                            updated_at = NOW()
+                        WHERE id = %(id)s
+                          AND project_id = %(project_id)s
+                        RETURNING id
+                        """,
+                        {
+                            "id": dataset_id,
+                            "project_id": project_id,
+                            "name": payload["name"],
+                            "description": payload.get("description") or "",
+                            "metadata": Jsonb(payload.get("metadata") or {}),
+                            "input_schema": Jsonb(payload.get("inputSchema") or {}),
+                            "expected_output_schema": Jsonb(
+                                payload.get("expectedOutputSchema") or {}
+                            ),
+                        },
+                    )
+                    row = await cursor.fetchone()
+        except psycopg.errors.UniqueViolation as exc:
+            raise BusinessError(
+                code=1013,
+                message="数据集名称已存在",
+                status_code=409,
+            ) from exc
+
+        if row is None:
+            raise BusinessError(
+                code=1011,
+                message="数据集不存在或无访问权限",
+                status_code=404,
+            )
+        return await self.get_dataset_for_user(project_id, dataset_id, user_id)
+
+    async def delete_dataset_for_user(
+        self,
+        project_id: str,
+        dataset_id: str,
+        user_id: str,
+    ) -> None:
+        if not self._database_url:
+            raise LangfuseDatabaseConfigError()
+
+        async with await psycopg.AsyncConnection.connect(
+            self._database_url,
+            row_factory=dict_row,
+        ) as connection:
+            async with connection.cursor() as cursor:
+                await self._get_project_for_user(cursor, project_id, user_id)
+                await cursor.execute(
+                    """
+                    DELETE FROM datasets
+                    WHERE id = %(id)s
+                      AND project_id = %(project_id)s
+                    RETURNING id
+                    """,
+                    {"id": dataset_id, "project_id": project_id},
+                )
+                row = await cursor.fetchone()
+
+        if row is None:
+            raise BusinessError(
+                code=1011,
+                message="数据集不存在或无访问权限",
+                status_code=404,
+            )
+
     async def get_dataset_metric_summary_for_user(
         self,
         project_id: str,

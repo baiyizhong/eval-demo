@@ -1,6 +1,11 @@
 import assert from 'node:assert/strict'
 import { test } from 'node:test'
-import { listProjectAutoEvaluationDatasets } from './dataset-api.ts'
+import {
+  createProjectDataset,
+  deleteProjectDataset,
+  listProjectAutoEvaluationDatasets,
+  updateProjectDataset,
+} from './dataset-api.ts'
 
 test('listProjectAutoEvaluationDatasets merges datasets from visible active projects', async () => {
   const requestedProjectIds: string[] = []
@@ -55,5 +60,47 @@ test('listProjectAutoEvaluationDatasets merges datasets from visible active proj
       itemCount: 10,
       updatedAt: '2026-07-04T10:00:00.000Z',
     },
+  ])
+})
+
+test('dataset mutations call project-scoped Langfuse dataset endpoints', async () => {
+  const calls: unknown[] = []
+  const input = {
+    name: '新增评测集',
+    type: 'evaluation' as const,
+    description: 'desc',
+    metadata: { type: 'evaluation' as const },
+    inputSchema: {},
+    expectedOutputSchema: {},
+  }
+  const api = {
+    async createProjectDataset(options: unknown) {
+      calls.push(['create', options])
+      return { id: 'dataset-1' }
+    },
+    async updateProjectDataset(options: unknown) {
+      calls.push(['update', options])
+      return { id: 'dataset-1' }
+    },
+    async deleteProjectDataset(options: unknown) {
+      calls.push(['delete', options])
+      return { id: 'dataset-1' }
+    },
+  }
+
+  await createProjectDataset(api as never, 'project-1', input)
+  await updateProjectDataset(api as never, 'project-1', 'dataset-1', input)
+  await deleteProjectDataset(api as never, 'project-1', 'dataset-1')
+
+  assert.deepEqual(calls, [
+    ['create', { path: { projectId: 'project-1' }, body: input }],
+    [
+      'update',
+      {
+        path: { projectId: 'project-1', datasetId: 'dataset-1' },
+        body: input,
+      },
+    ],
+    ['delete', { path: { projectId: 'project-1', datasetId: 'dataset-1' } }],
   ])
 })

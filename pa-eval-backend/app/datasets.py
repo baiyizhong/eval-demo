@@ -1,6 +1,7 @@
 from typing import Any, Literal
 
 from fastapi import APIRouter, Depends, Query
+from pydantic import BaseModel, Field
 
 from app.auth_context import CurrentUserContext, get_current_user_context
 from app.langfuse_db import LangfuseDatabaseReader, get_langfuse_db_reader
@@ -9,6 +10,18 @@ from app.response import success
 router = APIRouter(prefix="/api/projects/{project_id}/datasets", tags=["datasets"])
 
 DatasetType = Literal["evaluation", "badcase", "golden", "anomaly"]
+
+
+class DatasetPayload(BaseModel):
+    name: str = Field(min_length=1)
+    type: DatasetType
+    description: str = ""
+    metadata: dict[str, Any] = Field(default_factory=dict)
+    input_schema: dict[str, Any] = Field(default_factory=dict, alias="inputSchema")
+    expected_output_schema: dict[str, Any] = Field(
+        default_factory=dict,
+        alias="expectedOutputSchema",
+    )
 
 
 def _paginate(items: list[dict[str, Any]], page: int, page_size: int) -> dict[str, Any]:
@@ -46,6 +59,18 @@ def _matches_item_keyword(item: dict[str, Any], keyword: str | None) -> bool:
     return any(needle in field.lower() for field in fields)
 
 
+def _to_dataset_payload(payload: DatasetPayload) -> dict[str, Any]:
+    metadata = {**payload.metadata, "type": payload.type}
+    return {
+        "name": payload.name.strip(),
+        "type": payload.type,
+        "description": payload.description,
+        "metadata": metadata,
+        "inputSchema": payload.input_schema,
+        "expectedOutputSchema": payload.expected_output_schema,
+    }
+
+
 @router.get("")
 async def list_datasets(
     project_id: str,
@@ -65,6 +90,21 @@ async def list_datasets(
     return success(_paginate(filtered, page, page_size))
 
 
+@router.post("")
+async def create_dataset(
+    project_id: str,
+    payload: DatasetPayload,
+    current_user: CurrentUserContext = Depends(get_current_user_context),
+    reader: LangfuseDatabaseReader = Depends(get_langfuse_db_reader),
+) -> dict[str, Any]:
+    dataset = await reader.create_dataset_for_user(
+        project_id,
+        current_user.user_id,
+        _to_dataset_payload(payload),
+    )
+    return success(dataset)
+
+
 @router.get("/{dataset_id}")
 async def get_dataset(
     project_id: str,
@@ -78,6 +118,38 @@ async def get_dataset(
         current_user.user_id,
     )
     return success(dataset)
+
+
+@router.patch("/{dataset_id}")
+async def update_dataset(
+    project_id: str,
+    dataset_id: str,
+    payload: DatasetPayload,
+    current_user: CurrentUserContext = Depends(get_current_user_context),
+    reader: LangfuseDatabaseReader = Depends(get_langfuse_db_reader),
+) -> dict[str, Any]:
+    dataset = await reader.update_dataset_for_user(
+        project_id,
+        dataset_id,
+        current_user.user_id,
+        _to_dataset_payload(payload),
+    )
+    return success(dataset)
+
+
+@router.delete("/{dataset_id}")
+async def delete_dataset(
+    project_id: str,
+    dataset_id: str,
+    current_user: CurrentUserContext = Depends(get_current_user_context),
+    reader: LangfuseDatabaseReader = Depends(get_langfuse_db_reader),
+) -> dict[str, Any]:
+    await reader.delete_dataset_for_user(
+        project_id,
+        dataset_id,
+        current_user.user_id,
+    )
+    return success({"id": dataset_id})
 
 
 @router.get("/{dataset_id}/metrics")

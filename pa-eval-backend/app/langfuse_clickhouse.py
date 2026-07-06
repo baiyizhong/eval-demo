@@ -258,7 +258,10 @@ class LangfuseClickHouseReader:
             **{f"param_{key}": value for key, value in params.items()},
         }
         try:
-            async with httpx.AsyncClient(timeout=self._timeout) as client:
+            async with httpx.AsyncClient(
+                timeout=self._timeout,
+                trust_env=False,
+            ) as client:
                 response = await client.post(
                     self._url,
                     params=request_params,

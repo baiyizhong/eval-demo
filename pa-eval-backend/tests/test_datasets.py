@@ -9,6 +9,9 @@ class FakeDatabaseReader:
     def __init__(self) -> None:
         self.user_id = None
         self.project_id = None
+        self.created = None
+        self.updated = None
+        self.deleted = None
 
     async def list_datasets_for_user(self, project_id: str, user_id: str) -> list[dict]:
         self.project_id = project_id
@@ -105,6 +108,65 @@ class FakeDatabaseReader:
             }
         ]
 
+    async def create_dataset_for_user(
+        self,
+        project_id: str,
+        user_id: str,
+        payload: dict,
+    ) -> dict:
+        self.project_id = project_id
+        self.user_id = user_id
+        self.created = payload
+        return {
+            "id": "dataset-created",
+            "projectId": project_id,
+            "name": payload["name"],
+            "description": payload["description"],
+            "type": payload["type"],
+            "metadata": payload["metadata"],
+            "inputSchema": payload["inputSchema"],
+            "expectedOutputSchema": payload["expectedOutputSchema"],
+            "itemCount": 0,
+            "runCount": 0,
+            "createdAt": "2026-07-02T08:00:00.000Z",
+            "updatedAt": "2026-07-02T08:00:00.000Z",
+        }
+
+    async def update_dataset_for_user(
+        self,
+        project_id: str,
+        dataset_id: str,
+        user_id: str,
+        payload: dict,
+    ) -> dict:
+        self.project_id = project_id
+        self.user_id = user_id
+        self.updated = {"dataset_id": dataset_id, "payload": payload}
+        return {
+            "id": dataset_id,
+            "projectId": project_id,
+            "name": payload["name"],
+            "description": payload["description"],
+            "type": payload["type"],
+            "metadata": payload["metadata"],
+            "inputSchema": payload["inputSchema"],
+            "expectedOutputSchema": payload["expectedOutputSchema"],
+            "itemCount": 0,
+            "runCount": 0,
+            "createdAt": "2026-07-02T08:00:00.000Z",
+            "updatedAt": "2026-07-02T09:00:00.000Z",
+        }
+
+    async def delete_dataset_for_user(
+        self,
+        project_id: str,
+        dataset_id: str,
+        user_id: str,
+    ) -> None:
+        self.project_id = project_id
+        self.user_id = user_id
+        self.deleted = dataset_id
+
 
 def override_reader(fake_reader: FakeDatabaseReader):
     async def _override() -> LangfuseDatabaseReader:
@@ -187,3 +249,44 @@ def test_gets_langfuse_dataset_detail_and_items() -> None:
     assert metric_response.json()["data"]["total"] == 12
     assert item_response.status_code == 200
     assert item_response.json()["data"]["datas"][0]["id"] == "item-1"
+
+
+def test_creates_updates_and_deletes_langfuse_dataset() -> None:
+    fake_reader = FakeDatabaseReader()
+    override_reader(fake_reader)
+    payload = {
+        "name": "新增评测集",
+        "type": "evaluation",
+        "description": "用于回归测试",
+        "metadata": {"owner": "qa", "type": "evaluation"},
+        "inputSchema": {"type": "object"},
+        "expectedOutputSchema": {"type": "object"},
+    }
+
+    try:
+        create_response = TestClient(app).post(
+            "/api/projects/project-1/datasets",
+            json=payload,
+        )
+        update_response = TestClient(app).patch(
+            "/api/projects/project-1/datasets/dataset-created",
+            json={**payload, "name": "更新评测集"},
+        )
+        delete_response = TestClient(app).delete(
+            "/api/projects/project-1/datasets/dataset-created"
+        )
+    finally:
+        clear_overrides()
+
+    assert create_response.status_code == 200
+    assert create_response.json()["data"]["name"] == "新增评测集"
+    assert fake_reader.created == payload
+    assert update_response.status_code == 200
+    assert update_response.json()["data"]["name"] == "更新评测集"
+    assert fake_reader.updated == {
+        "dataset_id": "dataset-created",
+        "payload": {**payload, "name": "更新评测集"},
+    }
+    assert delete_response.status_code == 200
+    assert delete_response.json()["data"] == {"id": "dataset-created"}
+    assert fake_reader.deleted == "dataset-created"

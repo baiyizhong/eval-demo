@@ -6,11 +6,6 @@ import {
   SlidersHorizontal,
   type LucideIcon,
 } from 'lucide-react'
-import {
-  buildProjectModuleSwitchPath,
-  findProjectContext,
-  type ProjectContextSummary,
-} from '@/modules/project-context/project-context-utils'
 
 type EvaluationTopNavLink = {
   title: string
@@ -23,8 +18,6 @@ type BuildEvaluationTopNavLinksInput = {
   pathname: string
   projectId: string
 }
-
-export type EvaluationProjectSummary = ProjectContextSummary
 
 export function buildEvaluationTopNavLinks({
   pathname,
@@ -64,25 +57,4 @@ export function buildEvaluationTopNavLinks({
       isActive: pathname.startsWith(`${basePath}/reports`),
     },
   ]
-}
-
-export function findEvaluationProject(
-  projects: EvaluationProjectSummary[],
-  projectId: string
-) {
-  return findProjectContext(projects, projectId)
-}
-
-export function buildEvaluationProjectSwitchPath(
-  pathname: string,
-  currentProjectId: string,
-  nextProjectId: string
-) {
-  return buildProjectModuleSwitchPath({
-    pathname,
-    currentProjectId,
-    nextProjectId,
-    moduleSegment: 'evaluation',
-    defaultSubPath: '/datasets',
-  })
 }

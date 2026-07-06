@@ -1,6 +1,6 @@
 import { useCallback, useMemo, useState } from 'react'
-import { RefreshCw } from 'lucide-react'
-import { useQueryClient } from '@tanstack/react-query'
+import { Plus, RefreshCw } from 'lucide-react'
+import { useMutation, useQueryClient } from '@tanstack/react-query'
 import { useParams } from 'react-router'
 import { toast } from 'sonner'
 import { useAPI } from '@/hooks/use-api'
@@ -10,12 +10,20 @@ import {
   type DataTableQueryState,
 } from '@/components/common/data-table'
 import { Loading } from '@/components/common/loading'
+import { ConfirmDialog } from '@/components/common/confirm-dialog'
 import { Tabs, TabsList, TabsTrigger } from '@/components/ui/tabs'
-import { listProjectDatasets } from '../api/dataset-api'
+import {
+  createProjectDataset,
+  deleteProjectDataset,
+  listProjectDatasets,
+  updateProjectDataset,
+} from '../api/dataset-api'
 import { createDatasetColumns } from '../components/dataset-columns'
+import { DatasetFormDrawer } from '../components/dataset-form-drawer'
 import { EvaluationPageNav } from '../components/evaluation-page-nav'
 import {
   datasetTypeLabels,
+  type DatasetFormInput,
   type DatasetRecord,
   type DatasetTypeFilter,
 } from '../types'
@@ -33,6 +41,13 @@ export function ProjectDatasets() {
   const $api = useAPI()
   const queryClient = useQueryClient()
   const [activeType, setActiveType] = useState<DatasetTypeFilter>('all')
+  const [createOpen, setCreateOpen] = useState(false)
+  const [editingDataset, setEditingDataset] = useState<DatasetRecord | null>(
+    null
+  )
+  const [deletingDataset, setDeletingDataset] = useState<DatasetRecord | null>(
+    null
+  )
 
   const invalidateDatasets = useCallback(
     () =>
@@ -42,11 +57,43 @@ export function ProjectDatasets() {
     [projectId, queryClient]
   )
 
+  const createMutation = useMutation({
+    mutationFn: (input: DatasetFormInput) =>
+      createProjectDataset($api, projectId, input),
+    onSuccess: async () => {
+      await invalidateDatasets()
+      toast.success('数据集已创建')
+    },
+  })
+  const updateMutation = useMutation({
+    mutationFn: ({
+      datasetId,
+      input,
+    }: {
+      datasetId: string
+      input: DatasetFormInput
+    }) => updateProjectDataset($api, projectId, datasetId, input),
+    onSuccess: async () => {
+      await invalidateDatasets()
+      toast.success('数据集已保存')
+    },
+  })
+  const deleteMutation = useMutation({
+    mutationFn: (datasetId: string) =>
+      deleteProjectDataset($api, projectId, datasetId),
+    onSuccess: async () => {
+      await invalidateDatasets()
+      setDeletingDataset(null)
+      toast.success('数据集已删除')
+    },
+  })
+
   const columns = useMemo(
     () =>
       createDatasetColumns({
         projectId,
-        readOnly: true,
+        onEdit: setEditingDataset,
+        onDelete: setDeletingDataset,
       }),
     [projectId]
   )
@@ -56,12 +103,39 @@ export function ProjectDatasets() {
     toast.success('数据集已刷新')
   }
 
+  const handleSubmitDataset = async (input: DatasetFormInput) => {
+    if (editingDataset) {
+      await updateMutation.mutateAsync({
+        datasetId: editingDataset.id,
+        input,
+      })
+      setEditingDataset(null)
+      return
+    }
+
+    await createMutation.mutateAsync(input)
+    setCreateOpen(false)
+  }
+
+  const handleDeleteDataset = async () => {
+    if (!deletingDataset) return
+    await deleteMutation.mutateAsync(deletingDataset.id)
+  }
+
   return (
     <Page fixed fluid className='flex min-h-[calc(100svh-3.5rem)] flex-col'>
       <div className='flex min-h-0 flex-1 flex-col gap-4'>
         <EvaluationPageNav
           buttonGroups={{
             buttons: [
+              {
+                id: 'create',
+                label: '新建数据集',
+                icon: Plus,
+                iconPosition: 'start',
+                size: 'sm',
+                onClick: () => setCreateOpen(true),
+              },
               {
                 id: 'refresh',
                 label: '刷新',
@@ -128,6 +202,35 @@ export function ProjectDatasets() {
             />
           </section>
         </Tabs>
+        <DatasetFormDrawer
+          open={createOpen || Boolean(editingDataset)}
+          dataset={editingDataset}
+          onOpenChange={(open) => {
+            if (!open) {
+              setCreateOpen(false)
+              setEditingDataset(null)
+            }
+          }}
+          onSubmit={handleSubmitDataset}
+        />
+        <ConfirmDialog
+          open={Boolean(deletingDataset)}
+          onOpenChange={(open) => {
+            if (!open) setDeletingDataset(null)
+          }}
+          title='删除数据集'
+          desc={
+            <>
+              删除后将移除数据集
+              {deletingDataset ? `「${deletingDataset.name}」` : ''}
+              及其关联数据项，此操作不可撤销。
+            </>
+          }
+          destructive
+          confirmText='删除'
+          isLoading={deleteMutation.isPending}
+          handleConfirm={() => void handleDeleteDataset()}
+        />
       </div>
     </Page>
   )

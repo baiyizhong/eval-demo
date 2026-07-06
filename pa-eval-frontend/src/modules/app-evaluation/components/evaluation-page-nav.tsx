@@ -1,6 +1,5 @@
 import { useLocation, useParams } from 'react-router'
 import { PageNav } from '@/components/common/page-nav'
-import { ProjectContextSwitcher } from '@/modules/project-context/project-context-switcher'
 import { buildEvaluationTopNavLinks } from './evaluation-page-nav-utils'
 
 type EvaluationPageNavProps = {
@@ -20,15 +19,6 @@ export function EvaluationPageNav({ buttonGroups }: EvaluationPageNavProps) {
           projectId,
         }),
       }}
-      trailing={
-        <ProjectContextSwitcher
-          currentProjectId={projectId}
-          moduleSegment='evaluation'
-          defaultSubPath='/datasets'
-          queryKeyScope='evaluation'
-          ariaLabel='切换评测项目'
-        />
-      }
       buttonGroups={buttonGroups}
     />
   )

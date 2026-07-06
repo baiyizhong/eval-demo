@@ -5,6 +5,7 @@ from fastapi.testclient import TestClient
 
 from app.auth_context import CurrentUserContext, get_current_user_context
 from app.config import Settings
+from app.errors import LangfuseUpstreamError
 from app.langfuse_clickhouse import (
     LangfuseClickHouseReader,
     get_langfuse_clickhouse_reader,
@@ -92,6 +93,18 @@ class FakeTraceReader:
         }
 
 
+class FailingTraceReader(FakeTraceReader):
+    async def get_trace_metrics(self, project_id: str, **kwargs) -> dict:
+        self.project_id = project_id
+        self.metrics_kwargs = kwargs
+        raise LangfuseUpstreamError("Langfuse ClickHouse 查询失败")
+
+    async def list_traces(self, project_id: str, **kwargs) -> dict:
+        self.project_id = project_id
+        self.list_kwargs = kwargs
+        raise LangfuseUpstreamError("Langfuse ClickHouse 查询失败")
+
+
 def override_readers(fake_db: FakeDatabaseReader, fake_trace: FakeTraceReader):
     async def _db_override() -> LangfuseDatabaseReader:
         return fake_db  # type: ignore[return-value]
@@ -170,6 +183,78 @@ def test_forwards_trace_dashboard_filters_to_trace_reader() -> None:
     }
 
 
+def test_accepts_bracket_array_trace_filters_from_frontend() -> None:
+    fake_db = FakeDatabaseReader()
+    fake_trace = FakeTraceReader()
+    override_readers(fake_db, fake_trace)
+
+    try:
+        response = TestClient(app).get(
+            "/api/projects/project-1/traces",
+            params={
+                "environments[]": ["production", "staging"],
+                "statuses[]": ["failed"],
+            },
+        )
+    finally:
+        clear_overrides()
+
+    assert response.status_code == 200
+    assert fake_trace.list_kwargs["environments"] == ["production", "staging"]
+    assert fake_trace.list_kwargs["statuses"] == ["failed"]
+
+
+def test_trace_metrics_returns_empty_payload_when_clickhouse_is_unavailable() -> None:
+    fake_db = FakeDatabaseReader()
+    fake_trace = FailingTraceReader()
+    override_readers(fake_db, fake_trace)
+
+    try:
+        response = TestClient(app).get("/api/projects/project-1/trace-metrics")
+    finally:
+        clear_overrides()
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["code"] == 0
+    assert body["data"] == {
+        "summary": {
+            "total": 0,
+            "success": 0,
+            "failed": 0,
+            "failureRate": 0,
+            "averageLatency": 0,
+            "p95Latency": 0,
+            "totalChangeRate": 0,
+        },
+        "traceTrend": [],
+        "latencyTrend": [],
+        "environmentDistribution": [],
+        "slowTraces": [],
+    }
+    assert fake_db.project_id == "project-1"
+
+
+def test_trace_list_returns_empty_payload_when_clickhouse_is_unavailable() -> None:
+    fake_db = FakeDatabaseReader()
+    fake_trace = FailingTraceReader()
+    override_readers(fake_db, fake_trace)
+
+    try:
+        response = TestClient(app).get(
+            "/api/projects/project-1/traces",
+            params={"page": 1, "pageSize": 10},
+        )
+    finally:
+        clear_overrides()
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["code"] == 0
+    assert body["data"] == {"total": 0, "datas": []}
+    assert fake_db.project_id == "project-1"
+
+
 @pytest.mark.anyio
 async def test_fetches_trace_rows_with_time_and_environment_filters(monkeypatch) -> None:
     reader = LangfuseClickHouseReader(Settings())
@@ -198,3 +283,34 @@ async def test_fetches_trace_rows_with_time_and_environment_filters(monkeypatch)
         "end_time": datetime(2026, 7, 6, 0, 0, 0),
         "environment_0": "default",
     }
+
+
+@pytest.mark.anyio
+async def test_clickhouse_reader_disables_environment_proxy(monkeypatch) -> None:
+    reader = LangfuseClickHouseReader(Settings())
+    captured = {}
+
+    class FakeResponse:
+        text = ""
+
+        def raise_for_status(self) -> None:
+            return None
+
+    class FakeAsyncClient:
+        def __init__(self, **kwargs) -> None:
+            captured["client_kwargs"] = kwargs
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, exc_type, exc, tb) -> None:
+            return None
+
+        async def post(self, *args, **kwargs) -> FakeResponse:
+            return FakeResponse()
+
+    monkeypatch.setattr("app.langfuse_clickhouse.httpx.AsyncClient", FakeAsyncClient)
+
+    await reader._query_json_each_row("SELECT 1 FORMAT JSONEachRow", {})
+
+    assert captured["client_kwargs"]["trust_env"] is False

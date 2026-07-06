@@ -20,12 +20,7 @@ export function buildSidebarDataFromProjects(
   projects: SidebarProject[],
   currentProjectId?: string
 ): SidebarData {
-  const currentProject = currentProjectId
-    ? projects.find((project) => project.id === currentProjectId)
-    : undefined
-  const firstProject =
-    projects.find((project) => project.status === 'active') ?? projects[0]
-  const projectId = currentProject?.id ?? firstProject?.id
+  const projectId = currentProjectId
 
   return {
     user: {
@@ -33,53 +28,94 @@ export function buildSidebarDataFromProjects(
       email: '',
       avatar: '',
     },
-    teams: [
-      {
-        name: '智能评测系统',
-        logo: 'Command',
-        plan: '评测管理平台',
-      },
-    ],
+    teams: projectId
+      ? buildProjectSwitcherItems(projects, projectId)
+      : buildPlatformSwitcherItems(),
     menuGroups: [
       {
-        title: '工作台',
-        items: [
-          {
-            title: '数字面板',
-            url: '/dashboard',
-            icon: 'LayoutDashboard',
-          },
-          {
-            title: '项目管理',
-            url: '/apps',
-            icon: 'Package',
-            activeMatch: 'prefix',
-          },
-          {
-            title: '组织管理',
-            url: '/settings/info',
-            icon: 'Users',
-            activeMatch: 'prefix',
-          },
-          {
-            title: '评测管理',
-            url: '/tasks',
-            icon: 'ListTodo',
-            activeMatch: 'prefix',
-          },
-          ...buildEvaluationNavItems(projectId),
-          ...buildProjectScopedNavItems(projectId),
-        ],
+        title: projectId ? '项目' : '工作台',
+        items: projectId
+          ? buildProjectNavItems(projectId)
+          : buildPlatformNavItems(),
       },
     ],
   }
 }
 
-function buildEvaluationNavItems(projectId: string | undefined): NavItem[] {
-  if (!projectId) {
-    return []
+function buildPlatformSwitcherItems(): SidebarData['teams'] {
+  return [
+    {
+      name: '智能评测系统',
+      logo: 'Command',
+      plan: '评测管理平台',
+    },
+  ]
+}
+
+function buildProjectSwitcherItems(
+  projects: SidebarProject[],
+  currentProjectId: string
+): SidebarData['teams'] {
+  const activeProjects = projects.filter((project) => project.status === 'active')
+  const sortedProjects = activeProjects.length > 0 ? activeProjects : projects
+  const currentProject = sortedProjects.find(
+    (project) => project.id === currentProjectId
+  )
+  const orderedProjects = currentProject
+    ? [
+        currentProject,
+        ...sortedProjects.filter((project) => project.id !== currentProject.id),
+      ]
+    : sortedProjects
+
+  if (orderedProjects.length === 0) {
+    return [
+      {
+        id: currentProjectId,
+        name: currentProjectId,
+        logo: 'Package',
+        plan: '当前项目',
+      },
+    ]
   }
 
+  return orderedProjects.map((project) => ({
+    id: project.id,
+    name: project.name,
+    logo: 'Package',
+    plan: project.organizationName,
+  }))
+}
+
+function buildPlatformNavItems(): NavItem[] {
+  return [
+    {
+      title: '数字面板',
+      url: '/dashboard',
+      icon: 'LayoutDashboard',
+    },
+    {
+      title: '项目管理',
+      url: '/apps',
+      icon: 'Package',
+      activeMatch: 'prefix',
+    },
+    {
+      title: '组织管理',
+      url: '/settings/info',
+      icon: 'Users',
+      activeMatch: 'prefix',
+    },
+    {
+      title: '评测管理',
+      url: '/tasks',
+      icon: 'ListTodo',
+      activeMatch: 'prefix',
+    },
+  ]
+}
+
+function buildProjectNavItems(projectId: string): NavItem[] {
   const encodedProjectId = encodeURIComponent(projectId)
   return [
     {
@@ -88,16 +124,6 @@ function buildEvaluationNavItems(projectId: string | undefined): NavItem[] {
       icon: 'Database',
       activeMatch: 'prefix',
     },
-  ]
-}
-
-function buildProjectScopedNavItems(projectId: string | undefined): NavItem[] {
-  if (!projectId) {
-    return []
-  }
-
-  const encodedProjectId = encodeURIComponent(projectId)
-  return [
     {
       title: '应用观测',
       url: `/projects/${encodedProjectId}/observability`,

@@ -4,6 +4,7 @@ import type {
   DataTableQueryState,
 } from '@/components/common/data-table'
 import type {
+  DatasetFormInput,
   DatasetItemRecord,
   DatasetMetricSummary,
   DatasetRecord,
@@ -14,7 +15,10 @@ import type {
 type DatasetApiClient = {
   getProjects: ApiMethod
   getProjectDatasets: ApiMethod
+  createProjectDataset: ApiMethod
   getProjectDataset: ApiMethod
+  updateProjectDataset: ApiMethod
+  deleteProjectDataset: ApiMethod
   getProjectDatasetMetrics: ApiMethod
   getProjectDatasetItems: ApiMethod
 }
@@ -44,12 +48,45 @@ export function listProjectDatasets(
   })
 }
 
+export function createProjectDataset(
+  api: DatasetApiClient,
+  projectId: string,
+  input: DatasetFormInput
+) {
+  return api.createProjectDataset<DatasetRecord>({
+    path: { projectId },
+    body: input,
+  })
+}
+
 export function getProjectDataset(
   api: DatasetApiClient,
   projectId: string,
   datasetId: string
 ) {
   return api.getProjectDataset<DatasetRecord>({
+    path: { projectId, datasetId },
+  })
+}
+
+export function updateProjectDataset(
+  api: DatasetApiClient,
+  projectId: string,
+  datasetId: string,
+  input: DatasetFormInput
+) {
+  return api.updateProjectDataset<DatasetRecord>({
+    path: { projectId, datasetId },
+    body: input,
+  })
+}
+
+export function deleteProjectDataset(
+  api: DatasetApiClient,
+  projectId: string,
+  datasetId: string
+) {
+  return api.deleteProjectDataset<{ id: string }>({
     path: { projectId, datasetId },
   })
 }

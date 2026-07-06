@@ -4,33 +4,22 @@ export type ProjectContextSummary = {
   organizationName: string
 }
 
-export function findProjectContext(
-  projects: ProjectContextSummary[],
-  projectId: string
-) {
-  return projects.find((project) => project.id === projectId) ?? null
-}
-
-export function buildProjectModuleSwitchPath({
+export function buildProjectSwitchPath({
   pathname,
   currentProjectId,
   nextProjectId,
-  moduleSegment,
-  defaultSubPath,
 }: {
   pathname: string
   currentProjectId: string
   nextProjectId: string
-  moduleSegment: string
-  defaultSubPath: string
 }) {
-  const currentPrefix = `/projects/${currentProjectId}/${moduleSegment}`
-  const nextPrefix = `/projects/${nextProjectId}/${moduleSegment}`
+  const currentPrefix = `/projects/${encodeURIComponent(currentProjectId)}`
+  const nextPrefix = `/projects/${encodeURIComponent(nextProjectId)}`
 
   if (!pathname.startsWith(currentPrefix)) {
-    return `${nextPrefix}${defaultSubPath}`
+    return `${nextPrefix}/evaluation`
   }
 
   const suffix = pathname.slice(currentPrefix.length)
-  return `${nextPrefix}${suffix || defaultSubPath}`
+  return `${nextPrefix}${suffix || '/evaluation'}`
 }

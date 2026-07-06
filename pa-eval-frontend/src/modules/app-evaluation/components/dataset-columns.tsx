@@ -86,7 +86,7 @@ export function createDatasetColumns({
     },
   ]
 
-  if (!readOnly && onEdit && onImport && onExport && onDelete) {
+  if (!readOnly && (onEdit || onImport || onExport || onDelete)) {
     columns.push({
       id: 'actions',
       enableHiding: false,

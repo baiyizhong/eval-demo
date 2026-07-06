@@ -70,8 +70,20 @@ export const apiRegistry = {
     method: 'GET',
     url: '/projects/:projectId/datasets',
   },
+  createProjectDataset: {
+    method: 'POST',
+    url: '/projects/:projectId/datasets',
+  },
   getProjectDataset: {
     method: 'GET',
+    url: '/projects/:projectId/datasets/:datasetId',
+  },
+  updateProjectDataset: {
+    method: 'PATCH',
+    url: '/projects/:projectId/datasets/:datasetId',
+  },
+  deleteProjectDataset: {
+    method: 'DELETE',
     url: '/projects/:projectId/datasets/:datasetId',
   },
   getProjectDatasetMetrics: {
