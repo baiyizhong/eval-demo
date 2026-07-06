@@ -1,3 +1,4 @@
+import json
 from datetime import datetime
 from typing import Any
 from uuid import uuid4
@@ -654,6 +655,934 @@ class LangfuseDatabaseReader:
         )
         return [self._to_dataset_item_payload(row) for row in rows]
 
+    async def list_score_configs_for_user(
+        self,
+        project_id: str,
+        user_id: str,
+        *,
+        include_archived: bool = False,
+    ) -> list[dict[str, Any]]:
+        await self._ensure_project_visible(project_id, user_id)
+        rows = await self._fetch_all(
+            """
+            SELECT
+                id,
+                project_id,
+                name,
+                data_type::text AS data_type,
+                description,
+                min_value,
+                max_value,
+                categories,
+                is_archived,
+                created_at,
+                updated_at
+            FROM score_configs
+            WHERE project_id = %(project_id)s
+              AND (%(include_archived)s IS TRUE OR is_archived IS FALSE)
+            ORDER BY is_archived ASC, updated_at DESC, created_at DESC, id DESC
+            """,
+            {
+                "project_id": project_id,
+                "include_archived": include_archived,
+            },
+        )
+        return [self._to_score_config_payload(row) for row in rows]
+
+    async def list_project_users_for_user(
+        self,
+        project_id: str,
+        user_id: str,
+    ) -> list[dict[str, Any]]:
+        await self._ensure_project_visible(project_id, user_id)
+        rows = await self._fetch_all(
+            """
+            SELECT DISTINCT
+                u.id,
+                u.name,
+                u.email
+            FROM projects p
+            JOIN organization_memberships om ON om.org_id = p.org_id
+            JOIN users u ON u.id = om.user_id
+            WHERE p.id = %(project_id)s
+              AND p.deleted_at IS NULL
+            ORDER BY u.name NULLS LAST, u.email NULLS LAST, u.id
+            """,
+            {"project_id": project_id},
+        )
+        return [self._to_project_user_payload(row) for row in rows]
+
+    async def list_annotation_queues_for_user(
+        self,
+        project_id: str,
+        user_id: str,
+    ) -> list[dict[str, Any]]:
+        await self._ensure_project_visible(project_id, user_id)
+        rows = await self._fetch_all(
+            self._annotation_queue_select_sql()
+            + """
+            WHERE aq.project_id = %(project_id)s
+            ORDER BY aq.updated_at DESC, aq.created_at DESC, aq.id DESC
+            """,
+            {"project_id": project_id},
+        )
+        return [self._to_annotation_queue_payload(row) for row in rows]
+
+    async def get_annotation_queue_for_user(
+        self,
+        project_id: str,
+        queue_id: str,
+        user_id: str,
+    ) -> dict[str, Any]:
+        await self._ensure_project_visible(project_id, user_id)
+        rows = await self._fetch_all(
+            self._annotation_queue_select_sql()
+            + """
+            WHERE aq.project_id = %(project_id)s
+              AND aq.id = %(queue_id)s
+            LIMIT 1
+            """,
+            {"project_id": project_id, "queue_id": queue_id},
+        )
+        if not rows:
+            raise BusinessError(
+                code=1021,
+                message="人工标注任务不存在或无访问权限",
+                status_code=404,
+            )
+        return self._to_annotation_queue_payload(rows[0])
+
+    async def create_annotation_queue_for_user(
+        self,
+        project_id: str,
+        user_id: str,
+        payload: dict[str, Any],
+    ) -> dict[str, Any]:
+        if not self._database_url:
+            raise LangfuseDatabaseConfigError()
+
+        queue_id = _new_langfuse_id("annqueue")
+        try:
+            async with await psycopg.AsyncConnection.connect(
+                self._database_url,
+                row_factory=dict_row,
+            ) as connection:
+                async with connection.cursor() as cursor:
+                    await self._get_project_for_user(cursor, project_id, user_id)
+                    await self._validate_score_configs(
+                        cursor,
+                        project_id,
+                        payload["scoreConfigIds"],
+                    )
+                    await cursor.execute(
+                        """
+                        INSERT INTO annotation_queues (
+                            id,
+                            project_id,
+                            name,
+                            description,
+                            score_config_ids,
+                            created_at,
+                            updated_at
+                        )
+                        VALUES (
+                            %(id)s,
+                            %(project_id)s,
+                            %(name)s,
+                            %(description)s,
+                            %(score_config_ids)s,
+                            NOW(),
+                            NOW()
+                        )
+                        """,
+                        {
+                            "id": queue_id,
+                            "project_id": project_id,
+                            "name": payload["name"],
+                            "description": payload.get("description") or "",
+                            "score_config_ids": payload["scoreConfigIds"],
+                        },
+                    )
+                    await self._replace_annotation_assignments(
+                        cursor,
+                        project_id,
+                        queue_id,
+                        payload.get("assigneeIds") or [],
+                    )
+        except psycopg.errors.UniqueViolation as exc:
+            raise BusinessError(
+                code=1022,
+                message="人工标注任务名称已存在",
+                status_code=409,
+            ) from exc
+
+        return await self.get_annotation_queue_for_user(project_id, queue_id, user_id)
+
+    async def update_annotation_queue_for_user(
+        self,
+        project_id: str,
+        queue_id: str,
+        user_id: str,
+        payload: dict[str, Any],
+    ) -> dict[str, Any]:
+        if not self._database_url:
+            raise LangfuseDatabaseConfigError()
+
+        try:
+            async with await psycopg.AsyncConnection.connect(
+                self._database_url,
+                row_factory=dict_row,
+            ) as connection:
+                async with connection.cursor() as cursor:
+                    await self._get_project_for_user(cursor, project_id, user_id)
+                    await self._validate_score_configs(
+                        cursor,
+                        project_id,
+                        payload["scoreConfigIds"],
+                    )
+                    await cursor.execute(
+                        """
+                        UPDATE annotation_queues
+                        SET
+                            name = %(name)s,
+                            description = %(description)s,
+                            score_config_ids = %(score_config_ids)s,
+                            updated_at = NOW()
+                        WHERE id = %(id)s
+                          AND project_id = %(project_id)s
+                        RETURNING id
+                        """,
+                        {
+                            "id": queue_id,
+                            "project_id": project_id,
+                            "name": payload["name"],
+                            "description": payload.get("description") or "",
+                            "score_config_ids": payload["scoreConfigIds"],
+                        },
+                    )
+                    updated = await cursor.fetchone()
+                    if updated is None:
+                        raise BusinessError(
+                            code=1021,
+                            message="人工标注任务不存在或无访问权限",
+                            status_code=404,
+                        )
+                    await self._replace_annotation_assignments(
+                        cursor,
+                        project_id,
+                        queue_id,
+                        payload.get("assigneeIds") or [],
+                    )
+        except psycopg.errors.UniqueViolation as exc:
+            raise BusinessError(
+                code=1022,
+                message="人工标注任务名称已存在",
+                status_code=409,
+            ) from exc
+
+        return await self.get_annotation_queue_for_user(project_id, queue_id, user_id)
+
+    async def delete_annotation_queue_for_user(
+        self,
+        project_id: str,
+        queue_id: str,
+        user_id: str,
+    ) -> None:
+        if not self._database_url:
+            raise LangfuseDatabaseConfigError()
+
+        async with await psycopg.AsyncConnection.connect(
+            self._database_url,
+            row_factory=dict_row,
+        ) as connection:
+            async with connection.cursor() as cursor:
+                await self._get_project_for_user(cursor, project_id, user_id)
+                await cursor.execute(
+                    """
+                    DELETE FROM annotation_queue_assignments
+                    WHERE project_id = %(project_id)s
+                      AND queue_id = %(queue_id)s
+                    """,
+                    {"project_id": project_id, "queue_id": queue_id},
+                )
+                await cursor.execute(
+                    """
+                    DELETE FROM annotation_queue_items
+                    WHERE project_id = %(project_id)s
+                      AND queue_id = %(queue_id)s
+                    """,
+                    {"project_id": project_id, "queue_id": queue_id},
+                )
+                await cursor.execute(
+                    """
+                    DELETE FROM annotation_queues
+                    WHERE project_id = %(project_id)s
+                      AND id = %(queue_id)s
+                    RETURNING id
+                    """,
+                    {"project_id": project_id, "queue_id": queue_id},
+                )
+                deleted = await cursor.fetchone()
+
+        if deleted is None:
+            raise BusinessError(
+                code=1021,
+                message="人工标注任务不存在或无访问权限",
+                status_code=404,
+            )
+
+    async def get_annotation_queue_metrics_for_user(
+        self,
+        project_id: str,
+        queue_id: str,
+        user_id: str,
+    ) -> dict[str, Any]:
+        queue = await self.get_annotation_queue_for_user(project_id, queue_id, user_id)
+        total = queue["completedCount"] + queue["pendingCount"]
+        return {
+            "total": total,
+            "pending": queue["pendingCount"],
+            "completed": queue["completedCount"],
+            "completionRate": round((queue["completedCount"] / total) * 100)
+            if total
+            else 0,
+            "updatedAt": queue["updatedAt"],
+        }
+
+    async def list_annotation_queue_items_for_user(
+        self,
+        project_id: str,
+        queue_id: str,
+        user_id: str,
+    ) -> list[dict[str, Any]]:
+        await self.get_annotation_queue_for_user(project_id, queue_id, user_id)
+        rows = await self._fetch_all(
+            self._annotation_item_select_sql()
+            + """
+            WHERE aqi.project_id = %(project_id)s
+              AND aqi.queue_id = %(queue_id)s
+            ORDER BY aqi.updated_at DESC, aqi.created_at DESC, aqi.id DESC
+            """,
+            {"project_id": project_id, "queue_id": queue_id},
+        )
+        return [self._to_annotation_item_payload(row) for row in rows]
+
+    async def get_annotation_queue_item_for_user(
+        self,
+        project_id: str,
+        queue_id: str,
+        item_id: str,
+        user_id: str,
+    ) -> dict[str, Any]:
+        await self.get_annotation_queue_for_user(project_id, queue_id, user_id)
+        rows = await self._fetch_all(
+            self._annotation_item_select_sql()
+            + """
+            WHERE aqi.project_id = %(project_id)s
+              AND aqi.queue_id = %(queue_id)s
+              AND aqi.id = %(item_id)s
+            LIMIT 1
+            """,
+            {
+                "project_id": project_id,
+                "queue_id": queue_id,
+                "item_id": item_id,
+            },
+        )
+        if not rows:
+            raise BusinessError(
+                code=1023,
+                message="标注数据不存在或无访问权限",
+                status_code=404,
+            )
+        return self._to_annotation_item_payload(rows[0])
+
+    async def create_annotation_queue_item_for_user(
+        self,
+        project_id: str,
+        queue_id: str,
+        user_id: str,
+        payload: dict[str, Any],
+    ) -> dict[str, Any]:
+        if not self._database_url:
+            raise LangfuseDatabaseConfigError()
+
+        item_id = _new_langfuse_id("annitem")
+        async with await psycopg.AsyncConnection.connect(
+            self._database_url,
+            row_factory=dict_row,
+        ) as connection:
+            async with connection.cursor() as cursor:
+                await self._get_project_for_user(cursor, project_id, user_id)
+                await self._get_annotation_queue_row(cursor, project_id, queue_id)
+                await cursor.execute(
+                    """
+                    SELECT id
+                    FROM annotation_queue_items
+                    WHERE project_id = %(project_id)s
+                      AND queue_id = %(queue_id)s
+                      AND object_id = %(object_id)s
+                      AND object_type::text = %(object_type)s
+                    LIMIT 1
+                    """,
+                    {
+                        "project_id": project_id,
+                        "queue_id": queue_id,
+                        "object_id": payload["objectId"],
+                        "object_type": payload["objectType"],
+                    },
+                )
+                existing = await cursor.fetchone()
+                if existing is not None:
+                    item_id = existing["id"]
+                else:
+                    await cursor.execute(
+                        """
+                        INSERT INTO annotation_queue_items (
+                            id,
+                            project_id,
+                            queue_id,
+                            object_id,
+                            object_type,
+                            status,
+                            created_at,
+                            updated_at
+                        )
+                        VALUES (
+                            %(id)s,
+                            %(project_id)s,
+                            %(queue_id)s,
+                            %(object_id)s,
+                            %(object_type)s::"AnnotationQueueObjectType",
+                            'PENDING'::"AnnotationQueueStatus",
+                            NOW(),
+                            NOW()
+                        )
+                        """,
+                        {
+                            "id": item_id,
+                            "project_id": project_id,
+                            "queue_id": queue_id,
+                            "object_id": payload["objectId"],
+                            "object_type": payload["objectType"],
+                        },
+                    )
+
+        return await self.get_annotation_queue_item_for_user(
+            project_id,
+            queue_id,
+            item_id,
+            user_id,
+        )
+
+    async def delete_annotation_queue_items_for_user(
+        self,
+        project_id: str,
+        queue_id: str,
+        user_id: str,
+        item_ids: list[str],
+    ) -> list[str]:
+        if not self._database_url:
+            raise LangfuseDatabaseConfigError()
+
+        async with await psycopg.AsyncConnection.connect(
+            self._database_url,
+            row_factory=dict_row,
+        ) as connection:
+            async with connection.cursor() as cursor:
+                await self._get_project_for_user(cursor, project_id, user_id)
+                await self._get_annotation_queue_row(cursor, project_id, queue_id)
+                await cursor.execute(
+                    """
+                    DELETE FROM annotation_queue_items
+                    WHERE project_id = %(project_id)s
+                      AND queue_id = %(queue_id)s
+                      AND id = ANY(%(item_ids)s)
+                    RETURNING id
+                    """,
+                    {
+                        "project_id": project_id,
+                        "queue_id": queue_id,
+                        "item_ids": item_ids,
+                    },
+                )
+                rows = list(await cursor.fetchall())
+
+        return [row["id"] for row in rows]
+
+    async def create_trace_annotation_task_for_user(
+        self,
+        project_id: str,
+        user_id: str,
+        payload: dict[str, Any],
+    ) -> dict[str, Any]:
+        if not self._database_url:
+            raise LangfuseDatabaseConfigError()
+
+        trace_ids = list(dict.fromkeys(payload.get("traceIds") or []))
+        async with await psycopg.AsyncConnection.connect(
+            self._database_url,
+            row_factory=dict_row,
+        ) as connection:
+            async with connection.cursor() as cursor:
+                await self._get_project_for_user(cursor, project_id, user_id)
+                score_config_ids = await self._ensure_default_score_configs(
+                    cursor,
+                    project_id,
+                )
+                queue_id = payload.get("queueId")
+                if queue_id:
+                    await self._get_annotation_queue_row(cursor, project_id, queue_id)
+                else:
+                    queue_name = payload.get("queueName") or "Trace 人工标注"
+                    queue_id = await self._get_or_create_annotation_queue(
+                        cursor,
+                        project_id,
+                        queue_name,
+                        score_config_ids,
+                        user_id,
+                    )
+
+                created_count = 0
+                skipped_count = 0
+                for trace_id in trace_ids:
+                    await cursor.execute(
+                        """
+                        SELECT id
+                        FROM annotation_queue_items
+                        WHERE project_id = %(project_id)s
+                          AND queue_id = %(queue_id)s
+                          AND object_id = %(trace_id)s
+                          AND object_type::text = 'TRACE'
+                        LIMIT 1
+                        """,
+                        {
+                            "project_id": project_id,
+                            "queue_id": queue_id,
+                            "trace_id": trace_id,
+                        },
+                    )
+                    if await cursor.fetchone():
+                        skipped_count += 1
+                        continue
+
+                    await cursor.execute(
+                        """
+                        INSERT INTO annotation_queue_items (
+                            id,
+                            project_id,
+                            queue_id,
+                            object_id,
+                            object_type,
+                            status,
+                            created_at,
+                            updated_at
+                        )
+                        VALUES (
+                            %(id)s,
+                            %(project_id)s,
+                            %(queue_id)s,
+                            %(trace_id)s,
+                            'TRACE'::"AnnotationQueueObjectType",
+                            'PENDING'::"AnnotationQueueStatus",
+                            NOW(),
+                            NOW()
+                        )
+                        """,
+                        {
+                            "id": _new_langfuse_id("annitem"),
+                            "project_id": project_id,
+                            "queue_id": queue_id,
+                            "trace_id": trace_id,
+                        },
+                    )
+                    created_count += 1
+
+                await cursor.execute(
+                    """
+                    UPDATE annotation_queues
+                    SET updated_at = NOW()
+                    WHERE project_id = %(project_id)s
+                      AND id = %(queue_id)s
+                    """,
+                    {"project_id": project_id, "queue_id": queue_id},
+                )
+
+        return {
+            "queueId": queue_id,
+            "createdCount": created_count,
+            "skippedCount": skipped_count,
+        }
+
+    async def save_annotation_scores_for_user(
+        self,
+        project_id: str,
+        queue_id: str,
+        item_id: str,
+        user_id: str,
+        payload: dict[str, Any],
+    ) -> dict[str, Any]:
+        if not self._database_url:
+            raise LangfuseDatabaseConfigError()
+
+        async with await psycopg.AsyncConnection.connect(
+            self._database_url,
+            row_factory=dict_row,
+        ) as connection:
+            async with connection.cursor() as cursor:
+                await self._get_project_for_user(cursor, project_id, user_id)
+                item = await self._get_annotation_item_score_context(
+                    cursor,
+                    project_id,
+                    queue_id,
+                    item_id,
+                )
+                score_config_ids = set(item["score_config_ids"] or [])
+                trace_id = item.get("resolved_trace_id") or item["object_id"]
+                observation_id = (
+                    item["object_id"] if item["object_type"] == "OBSERVATION" else None
+                )
+
+                for score in payload.get("scores") or []:
+                    config_id = score["configId"]
+                    if config_id not in score_config_ids:
+                        raise BusinessError(
+                            code=1024,
+                            message="评分指标不属于当前人工标注任务",
+                            status_code=400,
+                        )
+                    config = await self._get_score_config_row(
+                        cursor,
+                        project_id,
+                        config_id,
+                    )
+                    await cursor.execute(
+                        """
+                        DELETE FROM scores
+                        WHERE project_id = %(project_id)s
+                          AND queue_id = %(queue_id)s
+                          AND config_id = %(config_id)s
+                          AND trace_id = %(trace_id)s
+                          AND (
+                            (
+                                %(observation_id)s::text IS NULL
+                                AND observation_id IS NULL
+                            )
+                            OR observation_id = %(observation_id)s::text
+                          )
+                          AND source::text = 'ANNOTATION'
+                        """,
+                        {
+                            "project_id": project_id,
+                            "queue_id": queue_id,
+                            "config_id": config_id,
+                            "trace_id": trace_id,
+                            "observation_id": observation_id,
+                        },
+                    )
+                    value, string_value = self._normalize_score_value(
+                        config["data_type"],
+                        score.get("value"),
+                        score.get("stringValue") or "",
+                    )
+                    await cursor.execute(
+                        """
+                        INSERT INTO scores (
+                            id,
+                            timestamp,
+                            project_id,
+                            name,
+                            value,
+                            source,
+                            author_user_id,
+                            comment,
+                            trace_id,
+                            observation_id,
+                            config_id,
+                            string_value,
+                            queue_id,
+                            created_at,
+                            updated_at,
+                            data_type
+                        )
+                        VALUES (
+                            %(id)s,
+                            NOW(),
+                            %(project_id)s,
+                            %(name)s,
+                            %(value)s,
+                            'ANNOTATION'::"ScoreSource",
+                            %(author_user_id)s,
+                            %(comment)s,
+                            %(trace_id)s,
+                            %(observation_id)s,
+                            %(config_id)s,
+                            %(string_value)s,
+                            %(queue_id)s,
+                            NOW(),
+                            NOW(),
+                            %(data_type)s::"ScoreConfigDataType"
+                        )
+                        """,
+                        {
+                            "id": _new_langfuse_id("score"),
+                            "project_id": project_id,
+                            "name": config["name"],
+                            "value": value,
+                            "author_user_id": user_id,
+                            "comment": score.get("comment") or "",
+                            "trace_id": trace_id,
+                            "observation_id": observation_id,
+                            "config_id": config_id,
+                            "string_value": string_value,
+                            "queue_id": queue_id,
+                            "data_type": config["data_type"],
+                        },
+                    )
+
+                await cursor.execute(
+                    """
+                    UPDATE annotation_queue_items
+                    SET
+                        status = 'COMPLETED'::"AnnotationQueueStatus",
+                        annotator_user_id = %(user_id)s,
+                        completed_at = COALESCE(completed_at, NOW()),
+                        updated_at = NOW()
+                    WHERE project_id = %(project_id)s
+                      AND queue_id = %(queue_id)s
+                      AND id = %(item_id)s
+                    """,
+                    {
+                        "project_id": project_id,
+                        "queue_id": queue_id,
+                        "item_id": item_id,
+                        "user_id": user_id,
+                    },
+                )
+                await cursor.execute(
+                    """
+                    UPDATE annotation_queues
+                    SET updated_at = NOW()
+                    WHERE project_id = %(project_id)s
+                      AND id = %(queue_id)s
+                    """,
+                    {"project_id": project_id, "queue_id": queue_id},
+                )
+
+        return await self.get_annotation_queue_item_for_user(
+            project_id,
+            queue_id,
+            item_id,
+            user_id,
+        )
+
+    async def add_annotation_item_to_dataset_for_user(
+        self,
+        project_id: str,
+        queue_id: str,
+        item_id: str,
+        user_id: str,
+        payload: dict[str, Any],
+    ) -> dict[str, Any]:
+        if not self._database_url:
+            raise LangfuseDatabaseConfigError()
+
+        dataset_item_id = _new_langfuse_id("datasetitem")
+        async with await psycopg.AsyncConnection.connect(
+            self._database_url,
+            row_factory=dict_row,
+        ) as connection:
+            async with connection.cursor() as cursor:
+                await self._get_project_for_user(cursor, project_id, user_id)
+                item = await self._get_annotation_item_score_context(
+                    cursor,
+                    project_id,
+                    queue_id,
+                    item_id,
+                )
+                await cursor.execute(
+                    """
+                    SELECT id
+                    FROM datasets
+                    WHERE project_id = %(project_id)s
+                      AND id = %(dataset_id)s
+                    LIMIT 1
+                    """,
+                    {
+                        "project_id": project_id,
+                        "dataset_id": payload["datasetId"],
+                    },
+                )
+                if await cursor.fetchone() is None:
+                    raise BusinessError(
+                        code=1011,
+                        message="数据集不存在或无访问权限",
+                        status_code=404,
+                    )
+
+                source_trace_id = item.get("resolved_trace_id") or ""
+                source_observation_id = (
+                    item["object_id"] if item["object_type"] == "OBSERVATION" else ""
+                )
+                await cursor.execute(
+                    """
+                    INSERT INTO dataset_items (
+                        id,
+                        project_id,
+                        dataset_id,
+                        status,
+                        input,
+                        expected_output,
+                        metadata,
+                        source_trace_id,
+                        source_observation_id,
+                        created_at,
+                        updated_at,
+                        valid_from,
+                        is_deleted
+                    )
+                    VALUES (
+                        %(id)s,
+                        %(project_id)s,
+                        %(dataset_id)s,
+                        'ACTIVE'::"DatasetStatus",
+                        %(input)s,
+                        %(expected_output)s,
+                        %(metadata)s,
+                        %(source_trace_id)s,
+                        %(source_observation_id)s,
+                        NOW(),
+                        NOW(),
+                        NOW(),
+                        FALSE
+                    )
+                    RETURNING
+                        id,
+                        project_id,
+                        dataset_id,
+                        status::text AS status,
+                        input,
+                        expected_output,
+                        metadata,
+                        source_trace_id,
+                        source_observation_id,
+                        is_deleted,
+                        created_at,
+                        updated_at
+                    """,
+                    {
+                        "id": dataset_item_id,
+                        "project_id": project_id,
+                        "dataset_id": payload["datasetId"],
+                        "input": Jsonb(payload.get("input")),
+                        "expected_output": Jsonb(payload.get("expectedOutput")),
+                        "metadata": Jsonb(payload.get("metadata") or {}),
+                        "source_trace_id": source_trace_id,
+                        "source_observation_id": source_observation_id,
+                    },
+                )
+                row = await cursor.fetchone()
+
+        assert row is not None
+        return self._to_dataset_item_payload(row)
+
+    async def add_traces_to_dataset_for_user(
+        self,
+        project_id: str,
+        user_id: str,
+        payload: dict[str, Any],
+    ) -> dict[str, Any]:
+        if not self._database_url:
+            raise LangfuseDatabaseConfigError()
+
+        traces = payload.get("traces") or []
+        item_ids: list[str] = []
+        async with await psycopg.AsyncConnection.connect(
+            self._database_url,
+            row_factory=dict_row,
+        ) as connection:
+            async with connection.cursor() as cursor:
+                await self._get_project_for_user(cursor, project_id, user_id)
+                await cursor.execute(
+                    """
+                    SELECT id
+                    FROM datasets
+                    WHERE project_id = %(project_id)s
+                      AND id = %(dataset_id)s
+                    LIMIT 1
+                    """,
+                    {
+                        "project_id": project_id,
+                        "dataset_id": payload["datasetId"],
+                    },
+                )
+                if await cursor.fetchone() is None:
+                    raise BusinessError(
+                        code=1011,
+                        message="数据集不存在或无访问权限",
+                        status_code=404,
+                    )
+
+                for trace in traces:
+                    item_id = _new_langfuse_id("datasetitem")
+                    await cursor.execute(
+                        """
+                        INSERT INTO dataset_items (
+                            id,
+                            project_id,
+                            dataset_id,
+                            status,
+                            input,
+                            expected_output,
+                            metadata,
+                            source_trace_id,
+                            source_observation_id,
+                            created_at,
+                            updated_at,
+                            valid_from,
+                            is_deleted
+                        )
+                        VALUES (
+                            %(id)s,
+                            %(project_id)s,
+                            %(dataset_id)s,
+                            'ACTIVE'::"DatasetStatus",
+                            %(input)s,
+                            %(expected_output)s,
+                            %(metadata)s,
+                            %(source_trace_id)s,
+                            '',
+                            NOW(),
+                            NOW(),
+                            NOW(),
+                            FALSE
+                        )
+                        RETURNING id
+                        """,
+                        {
+                            "id": item_id,
+                            "project_id": project_id,
+                            "dataset_id": payload["datasetId"],
+                            "input": Jsonb(_decode_jsonish(trace.get("input"))),
+                            "expected_output": Jsonb(
+                                _decode_jsonish(trace.get("output"))
+                            ),
+                            "metadata": Jsonb(_trace_dataset_metadata(trace)),
+                            "source_trace_id": trace.get("traceId") or "",
+                        },
+                    )
+                    row = await cursor.fetchone()
+                    if row is not None:
+                        item_ids.append(row["id"])
+
+        return {
+            "datasetId": payload["datasetId"],
+            "successCount": len(item_ids),
+            "failureCount": 0,
+            "itemIds": item_ids,
+            "failures": [],
+        }
+
     async def _list_langfuse_evaluators_for_user(
         self, user_id: str
     ) -> list[dict[str, Any]]:
@@ -1305,6 +2234,191 @@ class LangfuseDatabaseReader:
             }
         )
 
+    @staticmethod
+    def _annotation_queue_select_sql() -> str:
+        return """
+            SELECT
+                aq.id,
+                aq.project_id,
+                aq.name,
+                aq.description,
+                aq.score_config_ids,
+                aq.created_at,
+                aq.updated_at,
+                COALESCE(counts.completed_count, 0)::int AS completed_count,
+                COALESCE(counts.pending_count, 0)::int AS pending_count,
+                COALESCE(assignments.assignee_ids, ARRAY[]::text[]) AS assignee_ids,
+                COALESCE(assignments.assignees, '[]'::jsonb) AS assignees,
+                COALESCE(score_configs.score_configs, '[]'::jsonb) AS score_configs
+            FROM annotation_queues aq
+            LEFT JOIN LATERAL (
+                SELECT
+                    COUNT(*) FILTER (WHERE status::text = 'COMPLETED')::int
+                        AS completed_count,
+                    COUNT(*) FILTER (WHERE status::text = 'PENDING')::int
+                        AS pending_count
+                FROM annotation_queue_items aqi
+                WHERE aqi.project_id = aq.project_id
+                  AND aqi.queue_id = aq.id
+            ) counts ON TRUE
+            LEFT JOIN LATERAL (
+                SELECT
+                    ARRAY_AGG(aqa.user_id ORDER BY aqa.created_at, aqa.user_id)
+                        AS assignee_ids,
+                    JSONB_AGG(
+                        JSONB_BUILD_OBJECT(
+                            'id', u.id,
+                            'name', COALESCE(u.name, u.email, u.id),
+                            'email', COALESCE(u.email, '')
+                        )
+                        ORDER BY aqa.created_at, aqa.user_id
+                    ) AS assignees
+                FROM annotation_queue_assignments aqa
+                LEFT JOIN users u ON u.id = aqa.user_id
+                WHERE aqa.project_id = aq.project_id
+                  AND aqa.queue_id = aq.id
+            ) assignments ON TRUE
+            LEFT JOIN LATERAL (
+                SELECT JSONB_AGG(
+                    JSONB_BUILD_OBJECT(
+                        'id', sc.id,
+                        'projectId', sc.project_id,
+                        'name', sc.name,
+                        'dataType', sc.data_type::text,
+                        'description', COALESCE(sc.description, ''),
+                        'minValue', sc.min_value,
+                        'maxValue', sc.max_value,
+                        'categories', sc.categories,
+                        'archived', sc.is_archived
+                    )
+                    ORDER BY array_position(aq.score_config_ids, sc.id)
+                ) AS score_configs
+                FROM score_configs sc
+                WHERE sc.project_id = aq.project_id
+                  AND sc.id = ANY(aq.score_config_ids)
+            ) score_configs ON TRUE
+            """
+
+    @staticmethod
+    def _annotation_item_select_sql() -> str:
+        return """
+            SELECT
+                aqi.id,
+                aqi.project_id,
+                aqi.queue_id,
+                aqi.object_id,
+                aqi.object_type::text AS object_type,
+                aqi.status::text AS status,
+                aqi.completed_at,
+                aqi.created_at,
+                aqi.updated_at,
+                completed_user.id AS completed_by_id,
+                completed_user.name AS completed_by_name,
+                completed_user.email AS completed_by_email,
+                COALESCE(scores.scores, '[]'::jsonb) AS scores,
+                CASE
+                    WHEN aqi.object_type::text = 'TRACE' THEN COALESCE(t.name, t.id)
+                    WHEN aqi.object_type::text = 'OBSERVATION' THEN COALESCE(o.name, o.id)
+                    ELSE COALESCE(ts.id, aqi.object_id)
+                END AS source_title,
+                COALESCE(t.input, o.input) AS source_input,
+                COALESCE(t.output, o.output) AS source_output,
+                COALESCE(t.metadata, o.metadata, '{}'::jsonb) AS source_metadata,
+                COALESCE(t.id, o.trace_id, trace_from_observation.id, '') AS trace_id,
+                CASE
+                    WHEN aqi.object_type::text = 'OBSERVATION' THEN aqi.object_id
+                    ELSE ''
+                END AS observation_id,
+                COALESCE(t.session_id, trace_from_observation.session_id, ts.id, '')
+                    AS session_id,
+                COALESCE(t.user_id, trace_from_observation.user_id, '') AS user_id,
+                COALESCE(
+                    CASE
+                        WHEN aqi.object_type::text = 'OBSERVATION'
+                             AND o.end_time IS NOT NULL
+                        THEN EXTRACT(EPOCH FROM (o.end_time - o.start_time)) * 1000
+                        ELSE trace_latency.latency_ms
+                    END,
+                    0
+                ) AS latency_ms,
+                COALESCE(
+                    o.total_cost,
+                    o.calculated_total_cost,
+                    trace_cost.total_cost,
+                    0
+                ) AS cost_usd,
+                COALESCE(t.timestamp, o.start_time, ts.created_at, aqi.created_at)
+                    AS source_created_at
+            FROM annotation_queue_items aqi
+            LEFT JOIN users completed_user ON completed_user.id = aqi.annotator_user_id
+            LEFT JOIN traces t
+                ON aqi.object_type::text = 'TRACE'
+               AND t.project_id = aqi.project_id
+               AND t.id = aqi.object_id
+            LEFT JOIN observations o
+                ON aqi.object_type::text = 'OBSERVATION'
+               AND o.project_id = aqi.project_id
+               AND o.id = aqi.object_id
+            LEFT JOIN traces trace_from_observation
+                ON trace_from_observation.project_id = aqi.project_id
+               AND trace_from_observation.id = o.trace_id
+            LEFT JOIN trace_sessions ts
+                ON aqi.object_type::text = 'SESSION'
+               AND ts.project_id = aqi.project_id
+               AND ts.id = aqi.object_id
+            LEFT JOIN LATERAL (
+                SELECT EXTRACT(EPOCH FROM (MAX(end_time) - MIN(start_time))) * 1000
+                    AS latency_ms
+                FROM observations latency_observation
+                WHERE latency_observation.project_id = aqi.project_id
+                  AND latency_observation.trace_id = t.id
+            ) trace_latency ON TRUE
+            LEFT JOIN LATERAL (
+                SELECT SUM(
+                    COALESCE(total_cost, calculated_total_cost, 0)
+                ) AS total_cost
+                FROM observations cost_observation
+                WHERE cost_observation.project_id = aqi.project_id
+                  AND cost_observation.trace_id = COALESCE(t.id, o.trace_id)
+            ) trace_cost ON TRUE
+            LEFT JOIN LATERAL (
+                SELECT JSONB_AGG(
+                    JSONB_BUILD_OBJECT(
+                        'id', s.id,
+                        'configId', s.config_id,
+                        'name', s.name,
+                        'dataType', s.data_type::text,
+                        'value', s.value,
+                        'stringValue', COALESCE(s.string_value, ''),
+                        'comment', COALESCE(s.comment, ''),
+                        'authorUserId', COALESCE(s.author_user_id, ''),
+                        'createdAt', s.created_at,
+                        'updatedAt', s.updated_at
+                    )
+                    ORDER BY s.updated_at DESC, s.created_at DESC, s.id DESC
+                ) AS scores
+                FROM scores s
+                WHERE s.project_id = aqi.project_id
+                  AND s.queue_id = aqi.queue_id
+                  AND s.source::text = 'ANNOTATION'
+                  AND (
+                    (
+                        aqi.object_type::text = 'TRACE'
+                        AND s.trace_id = aqi.object_id
+                        AND s.observation_id IS NULL
+                    )
+                    OR (
+                        aqi.object_type::text = 'OBSERVATION'
+                        AND s.observation_id = aqi.object_id
+                    )
+                    OR (
+                        aqi.object_type::text = 'SESSION'
+                        AND s.trace_id = aqi.object_id
+                    )
+                  )
+            ) scores ON TRUE
+            """
+
     async def _fetch_all(
         self,
         sql: str,
@@ -1398,6 +2512,313 @@ class LangfuseDatabaseReader:
         )
         row = await cursor.fetchone()
         return int((row or {}).get("latest_version") or 0)
+
+    @staticmethod
+    async def _validate_score_configs(
+        cursor: psycopg.AsyncCursor[dict[str, Any]],
+        project_id: str,
+        score_config_ids: list[str],
+    ) -> None:
+        await cursor.execute(
+            """
+            SELECT id
+            FROM score_configs
+            WHERE project_id = %(project_id)s
+              AND id = ANY(%(score_config_ids)s)
+            """,
+            {"project_id": project_id, "score_config_ids": score_config_ids},
+        )
+        rows = await cursor.fetchall()
+        found = {row["id"] for row in rows}
+        missing = [config_id for config_id in score_config_ids if config_id not in found]
+        if missing:
+            raise BusinessError(
+                code=1024,
+                message="评分指标不存在或无访问权限",
+                status_code=400,
+            )
+
+    @staticmethod
+    async def _replace_annotation_assignments(
+        cursor: psycopg.AsyncCursor[dict[str, Any]],
+        project_id: str,
+        queue_id: str,
+        assignee_ids: list[str],
+    ) -> None:
+        await cursor.execute(
+            """
+            DELETE FROM annotation_queue_assignments
+            WHERE project_id = %(project_id)s
+              AND queue_id = %(queue_id)s
+            """,
+            {"project_id": project_id, "queue_id": queue_id},
+        )
+        for assignee_id in dict.fromkeys(assignee_ids):
+            await cursor.execute(
+                """
+                INSERT INTO annotation_queue_assignments (
+                    id,
+                    project_id,
+                    queue_id,
+                    user_id,
+                    created_at,
+                    updated_at
+                )
+                VALUES (
+                    %(id)s,
+                    %(project_id)s,
+                    %(queue_id)s,
+                    %(user_id)s,
+                    NOW(),
+                    NOW()
+                )
+                """,
+                {
+                    "id": _new_langfuse_id("annassign"),
+                    "project_id": project_id,
+                    "queue_id": queue_id,
+                    "user_id": assignee_id,
+                },
+            )
+
+    @staticmethod
+    async def _get_annotation_queue_row(
+        cursor: psycopg.AsyncCursor[dict[str, Any]],
+        project_id: str,
+        queue_id: str,
+    ) -> dict[str, Any]:
+        await cursor.execute(
+            """
+            SELECT id, name, score_config_ids
+            FROM annotation_queues
+            WHERE project_id = %(project_id)s
+              AND id = %(queue_id)s
+            LIMIT 1
+            """,
+            {"project_id": project_id, "queue_id": queue_id},
+        )
+        row = await cursor.fetchone()
+        if row is None:
+            raise BusinessError(
+                code=1021,
+                message="人工标注任务不存在或无访问权限",
+                status_code=404,
+            )
+        return row
+
+    @staticmethod
+    async def _ensure_default_score_configs(
+        cursor: psycopg.AsyncCursor[dict[str, Any]],
+        project_id: str,
+    ) -> list[str]:
+        await cursor.execute(
+            """
+            SELECT id
+            FROM score_configs
+            WHERE project_id = %(project_id)s
+              AND is_archived IS FALSE
+            ORDER BY created_at ASC, id ASC
+            """,
+            {"project_id": project_id},
+        )
+        rows = await cursor.fetchall()
+        if rows:
+            return [row["id"] for row in rows]
+
+        config_id = _new_langfuse_id("scorecfg")
+        await cursor.execute(
+            """
+            INSERT INTO score_configs (
+                id,
+                project_id,
+                name,
+                data_type,
+                description,
+                min_value,
+                max_value,
+                is_archived,
+                created_at,
+                updated_at
+            )
+            VALUES (
+                %(id)s,
+                %(project_id)s,
+                '人工质量评分',
+                'NUMERIC'::"ScoreConfigDataType",
+                'Trace 人工标注默认评分指标',
+                1,
+                5,
+                FALSE,
+                NOW(),
+                NOW()
+            )
+            """,
+            {"id": config_id, "project_id": project_id},
+        )
+        return [config_id]
+
+    @staticmethod
+    async def _get_or_create_annotation_queue(
+        cursor: psycopg.AsyncCursor[dict[str, Any]],
+        project_id: str,
+        queue_name: str,
+        score_config_ids: list[str],
+        user_id: str,
+    ) -> str:
+        await cursor.execute(
+            """
+            SELECT id, score_config_ids
+            FROM annotation_queues
+            WHERE project_id = %(project_id)s
+              AND name = %(name)s
+            LIMIT 1
+            """,
+            {"project_id": project_id, "name": queue_name},
+        )
+        existing = await cursor.fetchone()
+        if existing is not None:
+            if not existing.get("score_config_ids"):
+                await cursor.execute(
+                    """
+                    UPDATE annotation_queues
+                    SET score_config_ids = %(score_config_ids)s,
+                        updated_at = NOW()
+                    WHERE project_id = %(project_id)s
+                      AND id = %(id)s
+                    """,
+                    {
+                        "project_id": project_id,
+                        "id": existing["id"],
+                        "score_config_ids": score_config_ids,
+                    },
+                )
+            return existing["id"]
+
+        queue_id = _new_langfuse_id("annqueue")
+        await cursor.execute(
+            """
+            INSERT INTO annotation_queues (
+                id,
+                project_id,
+                name,
+                description,
+                score_config_ids,
+                created_at,
+                updated_at
+            )
+            VALUES (
+                %(id)s,
+                %(project_id)s,
+                %(name)s,
+                '从 Trace 页面批量创建的人工标注任务',
+                %(score_config_ids)s,
+                NOW(),
+                NOW()
+            )
+            """,
+            {
+                "id": queue_id,
+                "project_id": project_id,
+                "name": queue_name,
+                "score_config_ids": score_config_ids,
+            },
+        )
+        await LangfuseDatabaseReader._replace_annotation_assignments(
+            cursor,
+            project_id,
+            queue_id,
+            [user_id],
+        )
+        return queue_id
+
+    @staticmethod
+    async def _get_annotation_item_score_context(
+        cursor: psycopg.AsyncCursor[dict[str, Any]],
+        project_id: str,
+        queue_id: str,
+        item_id: str,
+    ) -> dict[str, Any]:
+        await cursor.execute(
+            """
+            SELECT
+                aqi.id,
+                aqi.object_id,
+                aqi.object_type::text AS object_type,
+                aq.score_config_ids,
+                o.trace_id AS observation_trace_id
+            FROM annotation_queue_items aqi
+            JOIN annotation_queues aq
+              ON aq.project_id = aqi.project_id
+             AND aq.id = aqi.queue_id
+            LEFT JOIN observations o
+              ON aqi.object_type::text = 'OBSERVATION'
+             AND o.project_id = aqi.project_id
+             AND o.id = aqi.object_id
+            WHERE aqi.project_id = %(project_id)s
+              AND aqi.queue_id = %(queue_id)s
+              AND aqi.id = %(item_id)s
+            LIMIT 1
+            """,
+            {
+                "project_id": project_id,
+                "queue_id": queue_id,
+                "item_id": item_id,
+            },
+        )
+        item = await cursor.fetchone()
+        if item is None:
+            raise BusinessError(
+                code=1023,
+                message="标注数据不存在或无访问权限",
+                status_code=404,
+            )
+        resolved_trace_id = (
+            item.get("observation_trace_id")
+            if item["object_type"] == "OBSERVATION"
+            else item["object_id"]
+        )
+        return {**item, "resolved_trace_id": resolved_trace_id}
+
+    @staticmethod
+    async def _get_score_config_row(
+        cursor: psycopg.AsyncCursor[dict[str, Any]],
+        project_id: str,
+        config_id: str,
+    ) -> dict[str, Any]:
+        await cursor.execute(
+            """
+            SELECT
+                id,
+                name,
+                data_type::text AS data_type
+            FROM score_configs
+            WHERE project_id = %(project_id)s
+              AND id = %(config_id)s
+            LIMIT 1
+            """,
+            {"project_id": project_id, "config_id": config_id},
+        )
+        config = await cursor.fetchone()
+        if config is None:
+            raise BusinessError(
+                code=1024,
+                message="评分指标不存在或无访问权限",
+                status_code=400,
+            )
+        return config
+
+    @staticmethod
+    def _normalize_score_value(
+        data_type: str,
+        value: Any,
+        string_value: str,
+    ) -> tuple[float | None, str | None]:
+        if data_type == "NUMERIC":
+            return (float(value) if value is not None else None, None)
+        if data_type == "BOOLEAN":
+            boolean_value = bool(value)
+            return (1.0 if boolean_value else 0.0, str(boolean_value).lower())
+        return None, string_value or None
 
     @staticmethod
     def _to_organization_payload(row: dict[str, Any]) -> dict[str, Any]:
@@ -1542,6 +2963,105 @@ class LangfuseDatabaseReader:
         }
 
     @staticmethod
+    def _to_score_config_payload(row: dict[str, Any]) -> dict[str, Any]:
+        return {
+            "id": row["id"],
+            "projectId": row["project_id"],
+            "name": row["name"],
+            "dataType": row["data_type"],
+            "description": row.get("description") or "",
+            "minValue": _to_float_or_none(row.get("min_value")),
+            "maxValue": _to_float_or_none(row.get("max_value")),
+            "categories": _normalize_score_categories(row.get("categories")),
+            "archived": bool(row.get("is_archived")),
+        }
+
+    @staticmethod
+    def _to_project_user_payload(row: dict[str, Any]) -> dict[str, Any]:
+        email = row.get("email") or ""
+        return {
+            "id": row["id"],
+            "name": row.get("name") or email.split("@")[0] or row["id"],
+            "email": email,
+        }
+
+    @staticmethod
+    def _to_annotation_queue_payload(row: dict[str, Any]) -> dict[str, Any]:
+        score_configs = [
+            _normalize_score_config_object(config)
+            for config in (row.get("score_configs") or [])
+        ]
+        assignees = [
+            {
+                "id": assignee.get("id") or "",
+                "name": assignee.get("name") or assignee.get("email") or "",
+                "email": assignee.get("email") or "",
+            }
+            for assignee in (row.get("assignees") or [])
+        ]
+
+        return {
+            "id": row["id"],
+            "projectId": row["project_id"],
+            "name": row["name"],
+            "description": row.get("description") or "",
+            "scoreConfigIds": row.get("score_config_ids") or [],
+            "assigneeIds": row.get("assignee_ids") or [],
+            "completedCount": row.get("completed_count") or 0,
+            "pendingCount": row.get("pending_count") or 0,
+            "scoreConfigs": score_configs,
+            "assignees": assignees,
+            "createdAt": _format_datetime(row["created_at"]),
+            "updatedAt": _format_datetime(row["updated_at"]),
+        }
+
+    @staticmethod
+    def _to_annotation_item_payload(row: dict[str, Any]) -> dict[str, Any]:
+        completed_by = None
+        if row.get("completed_by_id"):
+            completed_by = {
+                "id": row["completed_by_id"],
+                "name": row.get("completed_by_name")
+                or row.get("completed_by_email")
+                or row["completed_by_id"],
+                "email": row.get("completed_by_email") or "",
+            }
+
+        return {
+            "id": row["id"],
+            "projectId": row["project_id"],
+            "queueId": row["queue_id"],
+            "objectId": row["object_id"],
+            "objectType": row["object_type"],
+            "status": row["status"],
+            "source": {
+                "objectId": row["object_id"],
+                "objectType": row["object_type"],
+                "title": row.get("source_title") or row["object_id"],
+                "input": row.get("source_input"),
+                "output": row.get("source_output"),
+                "metadata": row.get("source_metadata") or {},
+                "traceId": row.get("trace_id") or "",
+                "observationId": row.get("observation_id") or "",
+                "sessionId": row.get("session_id") or "",
+                "userId": row.get("user_id") or "",
+                "latencyMs": int(float(row.get("latency_ms") or 0)),
+                "costUsd": float(row.get("cost_usd") or 0),
+                "createdAt": _format_datetime(row["source_created_at"]),
+            },
+            "scores": [
+                _normalize_annotation_score_object(score)
+                for score in (row.get("scores") or [])
+            ],
+            "completedAt": _format_datetime(row["completed_at"])
+            if row.get("completed_at")
+            else "",
+            "completedBy": completed_by,
+            "createdAt": _format_datetime(row["created_at"]),
+            "updatedAt": _format_datetime(row["updated_at"]),
+        }
+
+    @staticmethod
     def _redact_evaluator_config(config: dict[str, Any]) -> dict[str, Any]:
         redacted = dict(config)
         auth_token = redacted.pop("authToken", None)
@@ -1574,6 +3094,84 @@ def _format_datetime(value: Any) -> str:
             return f"{formatted}Z"
         return formatted.replace("+00:00", "Z")
     return str(value)
+
+
+def _to_float_or_none(value: Any) -> float | None:
+    if value is None:
+        return None
+    return float(value)
+
+
+def _normalize_score_categories(value: Any) -> list[str]:
+    if not isinstance(value, list):
+        return []
+
+    categories: list[str] = []
+    for item in value:
+        if isinstance(item, str):
+            categories.append(item)
+        elif isinstance(item, dict):
+            raw_value = item.get("value") or item.get("label")
+            if raw_value:
+                categories.append(str(raw_value))
+    return categories
+
+
+def _normalize_score_config_object(config: dict[str, Any]) -> dict[str, Any]:
+    return {
+        "id": config.get("id") or "",
+        "projectId": config.get("projectId") or "",
+        "name": config.get("name") or "",
+        "dataType": config.get("dataType") or "NUMERIC",
+        "description": config.get("description") or "",
+        "minValue": _to_float_or_none(config.get("minValue")),
+        "maxValue": _to_float_or_none(config.get("maxValue")),
+        "categories": _normalize_score_categories(config.get("categories")),
+        "archived": bool(config.get("archived")),
+    }
+
+
+def _normalize_annotation_score_object(score: dict[str, Any]) -> dict[str, Any]:
+    return {
+        "id": score.get("id") or "",
+        "configId": score.get("configId") or "",
+        "name": score.get("name") or "",
+        "dataType": score.get("dataType") or "NUMERIC",
+        "value": score.get("value"),
+        "stringValue": score.get("stringValue") or "",
+        "comment": score.get("comment") or "",
+        "authorUserId": score.get("authorUserId") or "",
+        "createdAt": _format_datetime(score.get("createdAt")),
+        "updatedAt": _format_datetime(score.get("updatedAt")),
+    }
+
+
+def _decode_jsonish(value: Any) -> Any:
+    if not isinstance(value, str):
+        return value
+    stripped = value.strip()
+    if not stripped:
+        return None
+    try:
+        return json.loads(stripped)
+    except json.JSONDecodeError:
+        return stripped
+
+
+def _trace_dataset_metadata(trace: dict[str, Any]) -> dict[str, Any]:
+    return {
+        "source": "trace_log_bulk",
+        "traceId": trace.get("traceId") or "",
+        "sessionId": trace.get("sessionId") or "",
+        "userId": trace.get("userId") or "",
+        "businessId": trace.get("businessId") or "",
+        "environment": trace.get("environment") or "",
+        "status": trace.get("status") or "",
+        "latencyMs": trace.get("latency") or 0,
+        "tags": trace.get("tags") or [],
+        "traceMetadata": trace.get("metadata") or {},
+        "createdAt": trace.get("createdAt") or "",
+    }
 
 
 def _new_langfuse_id(prefix: str) -> str:

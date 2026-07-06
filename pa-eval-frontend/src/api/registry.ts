@@ -94,6 +94,70 @@ export const apiRegistry = {
     method: 'GET',
     url: '/projects/:projectId/datasets/:datasetId/items',
   },
+  getProjectScoreConfigs: {
+    method: 'GET',
+    url: '/projects/:projectId/score-configs',
+  },
+  getProjectAnnotationUsers: {
+    method: 'GET',
+    url: '/projects/:projectId/annotation-users',
+  },
+  getProjectAnnotationQueues: {
+    method: 'GET',
+    url: '/projects/:projectId/annotation-queues',
+  },
+  createProjectAnnotationQueue: {
+    method: 'POST',
+    url: '/projects/:projectId/annotation-queues',
+  },
+  getProjectAnnotationQueue: {
+    method: 'GET',
+    url: '/projects/:projectId/annotation-queues/:queueId',
+  },
+  updateProjectAnnotationQueue: {
+    method: 'PATCH',
+    url: '/projects/:projectId/annotation-queues/:queueId',
+  },
+  deleteProjectAnnotationQueue: {
+    method: 'DELETE',
+    url: '/projects/:projectId/annotation-queues/:queueId',
+  },
+  getProjectAnnotationQueueMetrics: {
+    method: 'GET',
+    url: '/projects/:projectId/annotation-queues/:queueId/metrics',
+  },
+  getProjectAnnotationQueueItems: {
+    method: 'GET',
+    url: '/projects/:projectId/annotation-queues/:queueId/items',
+  },
+  createProjectAnnotationQueueItem: {
+    method: 'POST',
+    url: '/projects/:projectId/annotation-queues/:queueId/items',
+  },
+  deleteProjectAnnotationQueueItems: {
+    method: 'DELETE',
+    url: '/projects/:projectId/annotation-queues/:queueId/items',
+  },
+  getProjectAnnotationQueueItem: {
+    method: 'GET',
+    url: '/projects/:projectId/annotation-queues/:queueId/items/:itemId',
+  },
+  saveProjectAnnotationScores: {
+    method: 'POST',
+    url: '/projects/:projectId/annotation-queues/:queueId/items/:itemId/scores',
+  },
+  addProjectAnnotationItemToDataset: {
+    method: 'POST',
+    url: '/projects/:projectId/annotation-queues/:queueId/items/:itemId/dataset-items',
+  },
+  createTraceAnnotationTask: {
+    method: 'POST',
+    url: '/projects/:projectId/traces/annotation-task',
+  },
+  addProjectTracesToDataset: {
+    method: 'POST',
+    url: '/projects/:projectId/traces/dataset-items',
+  },
   getEvaluationReport: {
     method: 'GET',
     url: '/projects/:projectId/evaluation-reports/:reportId',

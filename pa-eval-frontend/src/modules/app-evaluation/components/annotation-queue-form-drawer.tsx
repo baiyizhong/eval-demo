@@ -13,11 +13,12 @@ import { Input } from '@/components/ui/input'
 import { Textarea } from '@/components/ui/textarea'
 import { BaseForm } from '@/components/common/base-form'
 import { Drawer } from '@/components/common/drawer'
-import { mockAnnotationUsers, mockScoreConfigs } from '../data/mock-annotations'
 import {
   scoreDataTypeLabels,
   type AnnotationQueueFormInput,
   type AnnotationQueueRecord,
+  type ProjectUserRecord,
+  type ScoreConfigRecord,
 } from '../types'
 
 const annotationQueueFormSchema = z.object({
@@ -32,6 +33,8 @@ type AnnotationQueueFormValues = z.infer<typeof annotationQueueFormSchema>
 type AnnotationQueueFormDrawerProps = {
   open: boolean
   queue?: AnnotationQueueRecord | null
+  scoreConfigs: ScoreConfigRecord[]
+  users: ProjectUserRecord[]
   onOpenChange: (open: boolean) => void
   onSubmit: (input: AnnotationQueueFormInput) => Promise<void> | void
 }
@@ -39,6 +42,8 @@ type AnnotationQueueFormDrawerProps = {
 export function AnnotationQueueFormDrawer({
   open,
   queue,
+  scoreConfigs,
+  users,
   onOpenChange,
   onSubmit,
 }: AnnotationQueueFormDrawerProps) {
@@ -114,7 +119,7 @@ export function AnnotationQueueFormDrawer({
                     标注详情页会按所选指标生成评分表单。
                   </FormDescription>
                   <div className='flex flex-col gap-2'>
-                    {mockScoreConfigs.map((config) => (
+                    {scoreConfigs.map((config) => (
                       <FormField
                         key={config.id}
                         control={form.control}
@@ -142,6 +147,11 @@ export function AnnotationQueueFormDrawer({
                         )}
                       />
                     ))}
+                    {scoreConfigs.length === 0 ? (
+                      <div className='text-muted-foreground text-sm'>
+                        当前项目暂无可用评分指标
+                      </div>
+                    ) : null}
                   </div>
                   <FormMessage />
                 </FormItem>
@@ -154,7 +164,7 @@ export function AnnotationQueueFormDrawer({
                 <FormItem>
                   <FormLabel>处理人</FormLabel>
                   <div className='flex flex-col gap-2'>
-                    {mockAnnotationUsers.map((user) => (
+                    {users.map((user) => (
                       <FormField
                         key={user.id}
                         control={form.control}
@@ -179,6 +189,11 @@ export function AnnotationQueueFormDrawer({
                         )}
                       />
                     ))}
+                    {users.length === 0 ? (
+                      <div className='text-muted-foreground text-sm'>
+                        当前项目暂无可分配成员
+                      </div>
+                    ) : null}
                   </div>
                 </FormItem>
               )}

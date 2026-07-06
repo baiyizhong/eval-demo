@@ -5,6 +5,7 @@ from fastapi.exceptions import RequestValidationError
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 
+from app.annotations import router as annotations_router
 from app.auto_evaluations import router as auto_evaluations_router
 from app.auth import router as auth_router
 from app.config import get_settings
@@ -36,6 +37,7 @@ def create_app() -> FastAPI:
     app.include_router(evaluators_router)
     app.include_router(auto_evaluations_router)
     app.include_router(datasets_router)
+    app.include_router(annotations_router)
     app.include_router(observability_router)
     app.include_router(system_router)
 

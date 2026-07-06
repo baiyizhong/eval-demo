@@ -4,6 +4,7 @@ import { Download } from 'lucide-react'
 import { useNavigate, useParams, useSearchParams } from 'react-router'
 import { toast } from 'sonner'
 import { confirm } from '@/lib/confirm'
+import { useAPI } from '@/hooks/use-api'
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card'
 import {
   DataTable,
@@ -15,16 +16,17 @@ import { Loading } from '@/components/common/loading'
 import { Page } from '@/components/common/page'
 import { PageAction } from '@/components/common/page-action'
 import {
-  deleteProjectAnnotationQueueItemsMock,
-  exportProjectAnnotationQueueMock,
-  getProjectAnnotationQueueMetricSummaryMock,
-  getProjectAnnotationQueueMock,
-  listProjectAnnotationQueueItemsMock,
-} from '../api/mock-annotation-api'
+  deleteProjectAnnotationQueueItems,
+  exportProjectAnnotationQueue,
+  getProjectAnnotationQueue,
+  getProjectAnnotationQueueMetricSummary,
+  listProjectAnnotationQueueItems,
+  listProjectAnnotationUsers,
+} from '../api/annotation-api'
 import { AnnotationQueueItemBulkActions } from '../components/annotation-queue-item-bulk-actions'
 import { createAnnotationQueueItemColumns } from '../components/annotation-queue-item-columns'
 import { downloadJson, formatDateTime } from '../components/format'
-import type { AnnotationQueueItemRecord } from '../types'
+import type { AnnotationQueueItemRecord, ProjectUserRecord } from '../types'
 
 const itemUrlFilters: DataTableFilterBinding[] = [
   { fieldId: 'status', type: 'array' },
@@ -32,35 +34,8 @@ const itemUrlFilters: DataTableFilterBinding[] = [
   { fieldId: 'completedBy', type: 'array' },
 ]
 
-const itemToolbarFilters: DataTableToolbarFilter[] = [
-  {
-    columnId: 'status',
-    title: '状态',
-    options: [
-      { label: '待处理', value: 'PENDING' },
-      { label: '已完成', value: 'COMPLETED' },
-    ],
-  },
-  {
-    columnId: 'objectType',
-    title: '类型',
-    options: [
-      { label: '追踪', value: 'TRACE' },
-      { label: '观测', value: 'OBSERVATION' },
-      { label: '会话', value: 'SESSION' },
-    ],
-  },
-  {
-    columnId: 'completedBy',
-    title: '完成人',
-    options: [
-      { label: '张三', value: 'user_annotator_a' },
-      { label: '李四', value: 'user_annotator_b' },
-    ],
-  },
-]
-
 export function ProjectAnnotationQueueDetail() {
+  const $api = useAPI()
   const navigate = useNavigate()
   const queryClient = useQueryClient()
   const [searchParams] = useSearchParams()
@@ -83,14 +58,18 @@ export function ProjectAnnotationQueueDetail() {
 
   const queueQuery = useQuery({
     queryKey: ['project-annotation-queue', projectId, queueId],
-    queryFn: () => getProjectAnnotationQueueMock(projectId, queueId),
+    queryFn: () => getProjectAnnotationQueue($api, projectId, queueId),
     enabled: Boolean(queueId),
   })
   const metricQuery = useQuery({
     queryKey: ['project-annotation-queue-metrics', projectId, queueId],
     queryFn: () =>
-      getProjectAnnotationQueueMetricSummaryMock(projectId, queueId),
+      getProjectAnnotationQueueMetricSummary($api, projectId, queueId),
     enabled: Boolean(queueId),
+  })
+  const usersQuery = useQuery({
+    queryKey: ['project-annotation-users', projectId],
+    queryFn: () => listProjectAnnotationUsers($api, projectId),
   })
 
   const invalidateDetail = useCallback(
@@ -118,10 +97,14 @@ export function ProjectAnnotationQueueDetail() {
         projectId,
         queueId,
         onDelete: (item) => {
-          void handleDeleteItem(projectId, queueId, item, invalidateDetail)
+          void handleDeleteItem($api, projectId, queueId, item, invalidateDetail)
         },
       }),
-    [invalidateDetail, projectId, queueId]
+    [$api, invalidateDetail, projectId, queueId]
+  )
+  const toolbarFilters = useMemo(
+    () => createItemToolbarFilters(usersQuery.data ?? []),
+    [usersQuery.data]
   )
 
   const queue = queueQuery.data
@@ -145,7 +128,7 @@ export function ProjectAnnotationQueueDetail() {
                 variant: 'outline',
                 size: 'sm',
                 onClick: () => {
-                  void handleFullExport(projectId, queueId, queryState)
+                  void handleFullExport($api, projectId, queueId, queryState)
                 },
               },
             ],
@@ -193,7 +176,7 @@ export function ProjectAnnotationQueueDetail() {
                 state,
               ],
               queryFn: (state) =>
-                listProjectAnnotationQueueItemsMock(projectId, queueId, state),
+                listProjectAnnotationQueueItems($api, projectId, queueId, state),
               enabled: Boolean(queueId),
             }}
             urlState={{
@@ -203,7 +186,7 @@ export function ProjectAnnotationQueueDetail() {
             }}
             toolbar={{
               searchPlaceholder: '搜索数据 ID / 源对象 / JSON 内容',
-              filters: itemToolbarFilters,
+              filters: toolbarFilters,
               columnLabels: {
                 id: '数据 ID',
                 objectType: '类型',
@@ -217,6 +200,7 @@ export function ProjectAnnotationQueueDetail() {
             bulkActions={(table) => (
               <AnnotationQueueItemBulkActions
                 table={table}
+                api={$api}
                 projectId={projectId}
                 queueId={queueId}
                 onChanged={invalidateDetail}
@@ -235,6 +219,38 @@ export function ProjectAnnotationQueueDetail() {
       </div>
     </Page>
   )
+}
+
+function createItemToolbarFilters(
+  users: ProjectUserRecord[]
+): DataTableToolbarFilter[] {
+  return [
+    {
+      columnId: 'status',
+      title: '状态',
+      options: [
+        { label: '待处理', value: 'PENDING' },
+        { label: '已完成', value: 'COMPLETED' },
+      ],
+    },
+    {
+      columnId: 'objectType',
+      title: '类型',
+      options: [
+        { label: '追踪', value: 'TRACE' },
+        { label: '观测', value: 'OBSERVATION' },
+        { label: '会话', value: 'SESSION' },
+      ],
+    },
+    {
+      columnId: 'completedBy',
+      title: '完成人',
+      options: users.map((user) => ({
+        label: user.name || user.email,
+        value: user.id,
+      })),
+    },
+  ]
 }
 
 function MetricCard({
@@ -266,11 +282,13 @@ function MetricCard({
 }
 
 async function handleFullExport(
+  $api: Parameters<typeof exportProjectAnnotationQueue>[0],
   projectId: string,
   queueId: string,
   queryState: DataTableQueryState
 ) {
-  const payload = await exportProjectAnnotationQueueMock(
+  const payload = await exportProjectAnnotationQueue(
+    $api,
     projectId,
     queueId,
     queryState
@@ -280,6 +298,7 @@ async function handleFullExport(
 }
 
 async function handleDeleteItem(
+  $api: Parameters<typeof deleteProjectAnnotationQueueItems>[0],
   projectId: string,
   queueId: string,
   item: AnnotationQueueItemRecord,
@@ -287,14 +306,14 @@ async function handleDeleteItem(
 ) {
   const confirmed = await confirm({
     title: '删除标注数据',
-    desc: `将仅移除 ${item.id} 这条 mock 队列数据，不删除源对象、历史评分或数据集项。确定继续吗？`,
+    desc: `将仅移除 ${item.id} 这条队列数据，不删除源对象、历史评分或数据集项。确定继续吗？`,
     confirmText: '删除',
     destructive: true,
   })
 
   if (!confirmed) return
 
-  await deleteProjectAnnotationQueueItemsMock(projectId, queueId, [item.id])
+  await deleteProjectAnnotationQueueItems($api, projectId, queueId, [item.id])
   await onDeleted()
   toast.success(`已删除标注数据：${item.id}`)
 }

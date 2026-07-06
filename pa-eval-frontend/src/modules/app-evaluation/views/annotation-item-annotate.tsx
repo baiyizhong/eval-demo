@@ -3,15 +3,16 @@ import { ArrowLeft, ArrowRight } from 'lucide-react'
 import { useQuery, useQueryClient } from '@tanstack/react-query'
 import { useNavigate, useParams, useSearchParams } from 'react-router'
 import { toast } from 'sonner'
+import { useAPI } from '@/hooks/use-api'
 import { Page } from '@/components/common/page'
 import { PageAction } from '@/components/common/page-action'
 import { Loading } from '@/components/common/loading'
 import {
-  addProjectAnnotationItemToDatasetMock,
-  getProjectAnnotationNavigationMock,
-  getProjectAnnotationQueueMock,
-  saveProjectAnnotationScoresMock,
-} from '../api/mock-annotation-api'
+  addProjectAnnotationItemToDataset,
+  getProjectAnnotationNavigation,
+  getProjectAnnotationQueue,
+  saveProjectAnnotationScores,
+} from '../api/annotation-api'
 import { AnnotationDatasetDialog } from '../components/annotation-dataset-dialog'
 import { AnnotationScoreForm } from '../components/annotation-score-form'
 import { AnnotationSourcePanel } from '../components/annotation-source-panel'
@@ -21,6 +22,7 @@ import type {
 } from '../types'
 
 export function ProjectAnnotationItemAnnotate() {
+  const $api = useAPI()
   const navigate = useNavigate()
   const queryClient = useQueryClient()
   const [searchParams] = useSearchParams()
@@ -48,7 +50,7 @@ export function ProjectAnnotationItemAnnotate() {
 
   const queueQuery = useQuery({
     queryKey: ['project-annotation-queue', projectId, queueId],
-    queryFn: () => getProjectAnnotationQueueMock(projectId, queueId),
+    queryFn: () => getProjectAnnotationQueue($api, projectId, queueId),
     enabled: Boolean(queueId),
   })
 
@@ -61,7 +63,7 @@ export function ProjectAnnotationItemAnnotate() {
       queryState,
     ],
     queryFn: () =>
-      getProjectAnnotationNavigationMock(projectId, queueId, itemId, queryState),
+      getProjectAnnotationNavigation($api, projectId, queueId, itemId, queryState),
     enabled: Boolean(queueId && itemId),
   })
 
@@ -99,11 +101,12 @@ export function ProjectAnnotationItemAnnotate() {
     input: AnnotationScoreFormInput,
     mode: 'save' | 'saveNext'
   ) => {
-    await saveProjectAnnotationScoresMock(projectId, queueId, itemId, input)
+    await saveProjectAnnotationScores($api, projectId, queueId, itemId, input)
     await invalidateAnnotation()
 
     if (mode === 'saveNext') {
-      const nextNavigation = await getProjectAnnotationNavigationMock(
+      const nextNavigation = await getProjectAnnotationNavigation(
+        $api,
         projectId,
         queueId,
         itemId,
@@ -122,7 +125,13 @@ export function ProjectAnnotationItemAnnotate() {
   }
 
   const handleAddToDataset = async (input: AddAnnotationItemToDatasetInput) => {
-    await addProjectAnnotationItemToDatasetMock(projectId, queueId, itemId, input)
+    await addProjectAnnotationItemToDataset(
+      $api,
+      projectId,
+      queueId,
+      itemId,
+      input
+    )
     await queryClient.invalidateQueries({
       queryKey: ['project-datasets', projectId],
     })
