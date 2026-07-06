@@ -4,7 +4,11 @@ import {
   environmentOptions,
   isEnvironmentCode,
 } from '../modules/environment/environment-options.ts'
-import { getEnvironmentRedirectPath } from '../modules/environment/environment-routing.ts'
+import {
+  getEnvironmentPageRedirectPath,
+  getEnvironmentRedirectPath,
+  getProtectedRouteRedirectPath,
+} from '../modules/environment/environment-routing.ts'
 
 test('environmentOptions exposes the supported business environments', () => {
   assert.deepEqual(
@@ -37,4 +41,32 @@ test('getEnvironmentRedirectPath redirects protected pages until environment is 
   assert.equal(getEnvironmentRedirectPath('/login', null), null)
   assert.equal(getEnvironmentRedirectPath('/environment', null), null)
   assert.equal(getEnvironmentRedirectPath('/apps', 'general'), null)
+})
+
+test('getProtectedRouteRedirectPath redirects unauthenticated protected pages to login', () => {
+  assert.equal(getProtectedRouteRedirectPath('/', '', null), '/login')
+  assert.equal(getProtectedRouteRedirectPath('/apps', '', null), '/login')
+  assert.equal(
+    getProtectedRouteRedirectPath(
+      '/projects/project-1/evaluation/datasets',
+      '',
+      null
+    ),
+    '/login'
+  )
+  assert.equal(getProtectedRouteRedirectPath('/login', '', null), null)
+  assert.equal(getProtectedRouteRedirectPath('/environment', '', null), null)
+  assert.equal(
+    getProtectedRouteRedirectPath('/apps', 'pa.token.signature', null),
+    '/environment'
+  )
+  assert.equal(
+    getProtectedRouteRedirectPath('/apps', 'pa.token.signature', 'general'),
+    null
+  )
+})
+
+test('getEnvironmentPageRedirectPath redirects unauthenticated users to login', () => {
+  assert.equal(getEnvironmentPageRedirectPath(''), '/login')
+  assert.equal(getEnvironmentPageRedirectPath('pa.token.signature'), null)
 })

@@ -20,3 +20,23 @@ export function getEnvironmentRedirectPath(
 
   return '/environment'
 }
+
+export function getProtectedRouteRedirectPath(
+  pathname: string,
+  accessToken: string,
+  environmentCode: EnvironmentCode | null
+) {
+  if (publicPaths.has(pathname)) {
+    return null
+  }
+
+  if (!accessToken) {
+    return '/login'
+  }
+
+  return getEnvironmentRedirectPath(pathname, environmentCode)
+}
+
+export function getEnvironmentPageRedirectPath(accessToken: string) {
+  return accessToken ? null : '/login'
+}

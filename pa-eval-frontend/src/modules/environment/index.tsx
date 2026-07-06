@@ -1,15 +1,18 @@
 import { useQueryClient } from '@tanstack/react-query'
 import { ArrowRight, CheckCircle2 } from 'lucide-react'
-import { useNavigate } from 'react-router'
+import { Navigate, useNavigate } from 'react-router'
+import { useAuthStore } from '@/stores/auth-store'
 import { useEnvironmentStore } from '@/stores/environment-store'
 import { useOrganizationStore } from '@/stores/organization.store'
 import { cn } from '@/lib/utils'
 import { Button } from '@/components/ui/button'
 import { environmentOptions } from './environment-options'
+import { getEnvironmentPageRedirectPath } from './environment-routing'
 
 export function EnvironmentSelect() {
   const navigate = useNavigate()
   const queryClient = useQueryClient()
+  const accessToken = useAuthStore((state) => state.auth.accessToken)
   const environmentCode = useEnvironmentStore((state) => state.environmentCode)
   const setEnvironmentCode = useEnvironmentStore(
     (state) => state.setEnvironmentCode
@@ -23,6 +26,11 @@ export function EnvironmentSelect() {
     resetOrganizations()
     queryClient.clear()
     navigate('/apps', { replace: true })
+  }
+  const redirectPath = getEnvironmentPageRedirectPath(accessToken)
+
+  if (redirectPath) {
+    return <Navigate to={redirectPath} replace />
   }
 
   return (
