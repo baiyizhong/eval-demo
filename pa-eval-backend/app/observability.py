@@ -16,6 +16,7 @@ from app.response import success
 
 router = APIRouter(prefix="/api/projects/{project_id}", tags=["observability"])
 logger = logging.getLogger(__name__)
+TRACE_TIME_RANGE_PATTERN = "^(1d|3d|7d|14d)$"
 
 
 class TracePatchPayload(BaseModel):
@@ -27,7 +28,7 @@ class TracePatchPayload(BaseModel):
 @router.get("/trace-metrics")
 async def get_trace_metrics(
     project_id: str,
-    time_range: str = Query(default="24h", alias="timeRange", pattern="^(24h|7d|30d)$"),
+    time_range: str = Query(default="1d", alias="timeRange", pattern=TRACE_TIME_RANGE_PATTERN),
     environment: str = Query(default="all"),
     current_user: CurrentUserContext = Depends(get_current_user_context),
     db_reader: LangfuseDatabaseReader = Depends(get_langfuse_db_reader),
@@ -67,7 +68,11 @@ async def list_traces(
     metadata_value: str | None = Query(default=None, alias="metadataValue"),
     metadata_filters: str | None = Query(default=None, alias="metadataFilters"),
     created_at_range: list[str] | None = Query(default=None, alias="createdAtRange"),
-    time_range: str | None = Query(default=None, alias="timeRange", pattern="^(24h|7d|30d)$"),
+    created_at_range_bracket: list[str] | None = Query(
+        default=None,
+        alias="createdAtRange[]",
+    ),
+    time_range: str = Query(default="1d", alias="timeRange", pattern=TRACE_TIME_RANGE_PATTERN),
     current_user: CurrentUserContext = Depends(get_current_user_context),
     db_reader: LangfuseDatabaseReader = Depends(get_langfuse_db_reader),
     trace_reader: LangfuseClickHouseReader = Depends(get_langfuse_clickhouse_reader),
@@ -88,7 +93,10 @@ async def list_traces(
             metadata_key=metadata_key,
             metadata_value=metadata_value,
             metadata_filters=_parse_metadata_filters(metadata_filters),
-            created_at_range=created_at_range,
+            created_at_range=_first_non_empty_list(
+                created_at_range,
+                created_at_range_bracket,
+            ),
             time_range=time_range,
         )
     except LangfuseUpstreamError:

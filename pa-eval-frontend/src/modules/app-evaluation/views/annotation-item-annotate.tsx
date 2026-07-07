@@ -78,19 +78,22 @@ export function ProjectAnnotationItemAnnotate() {
     () =>
       Promise.all([
         queryClient.invalidateQueries({
-          queryKey: ['project-annotation-navigation', projectId, queueId],
+          queryKey: ['project-annotation-navigation'],
         }),
         queryClient.invalidateQueries({
-          queryKey: ['project-annotation-queue-items', projectId, queueId],
+          queryKey: ['project-annotation-queue'],
         }),
         queryClient.invalidateQueries({
-          queryKey: ['project-annotation-queue-metrics', projectId, queueId],
+          queryKey: ['project-annotation-queue-items'],
         }),
         queryClient.invalidateQueries({
-          queryKey: ['project-annotation-queues', projectId],
+          queryKey: ['project-annotation-queue-metrics'],
+        }),
+        queryClient.invalidateQueries({
+          queryKey: ['project-annotation-queues'],
         }),
       ]),
-    [projectId, queueId, queryClient]
+    [queryClient]
   )
 
   const navigation = navigationQuery.data
@@ -203,11 +206,11 @@ export function ProjectAnnotationItemAnnotate() {
           <section className='grid min-h-0 flex-1 grid-cols-1 gap-4 xl:grid-cols-[minmax(0,1.15fr)_minmax(380px,.85fr)]'>
             <AnnotationSourcePanel item={item} />
             <div className='bg-card text-card-foreground flex min-h-0 flex-col overflow-hidden rounded-lg border'>
-              <div className='shrink-0 border-b p-4'>
-                <div className='text-muted-foreground text-xs'>
-                  人工标注表单
-                </div>
-                <h2 className='text-base font-semibold'>评分指标</h2>
+              <div className='flex shrink-0 items-center justify-between gap-3 border-b px-3 py-2.5'>
+                <h2 className='text-sm font-semibold'>评分指标</h2>
+                <span className='text-muted-foreground text-xs'>
+                  {queue.scoreConfigs.length} 项
+                </span>
               </div>
               <AnnotationScoreForm
                 item={item}

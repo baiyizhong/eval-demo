@@ -4520,7 +4520,9 @@ class LangfuseDatabaseReader:
         if data_type == "NUMERIC":
             return (float(value) if value is not None else None, None)
         if data_type == "BOOLEAN":
-            boolean_value = bool(value)
+            boolean_value = _parse_boolean_score_value(value, string_value)
+            if boolean_value is None:
+                return None, None
             return (1.0 if boolean_value else 0.0, str(boolean_value).lower())
         return None, string_value or None
 
@@ -4859,6 +4861,29 @@ def _to_float_or_none(value: Any) -> float | None:
     if value is None:
         return None
     return float(value)
+
+
+def _parse_boolean_score_value(value: Any, string_value: str = "") -> bool | None:
+    candidate = value if value is not None else string_value
+    if candidate is None:
+        return None
+    if isinstance(candidate, bool):
+        return candidate
+    if isinstance(candidate, (int, float)):
+        if candidate == 1:
+            return True
+        if candidate == 0:
+            return False
+        return None
+    if isinstance(candidate, str):
+        normalized = candidate.strip().lower()
+        if not normalized:
+            return None
+        if normalized in {"1", "true", "yes", "y", "是"}:
+            return True
+        if normalized in {"0", "false", "no", "n", "否"}:
+            return False
+    return None
 
 
 def _normalize_score_categories(value: Any) -> list[str]:

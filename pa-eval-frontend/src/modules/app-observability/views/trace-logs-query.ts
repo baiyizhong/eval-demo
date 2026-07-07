@@ -1,5 +1,12 @@
 import type { DataTableQueryState } from '@/components/common/data-table'
+import {
+  DEFAULT_TRACE_QUICK_TIME_RANGE,
+  normalizeTraceQuickTimeRange,
+} from '../trace-time-ranges.ts'
 import type { TraceListQuery, TraceMetadataFilter } from '../types'
+
+const DEFAULT_TRACE_LOG_TIME_RANGE: NonNullable<TraceListQuery['timeRange']> =
+  DEFAULT_TRACE_QUICK_TIME_RANGE
 
 function optionalString(value: unknown): string | undefined {
   const text = String(value ?? '').trim()
@@ -11,6 +18,7 @@ export function buildTraceListQuery(
   projectId: string
 ): TraceListQuery {
   const createdAtRange = state.filters.createdAtRange as string[] | undefined
+  const timeRange = normalizeTraceLogTimeRange(state.filters.timeRange)
   const metadataFilters = normalizeMetadataFilters(
     state.filters.metadataFilters
   )
@@ -20,7 +28,7 @@ export function buildTraceListQuery(
     pageSize: state.pageSize,
     keyword: state.keyword,
     createdAtRange,
-    timeRange: createdAtRange?.length ? undefined : '24h',
+    timeRange: createdAtRange?.length ? undefined : timeRange,
     environments: state.filters.environment as string[] | undefined,
     statuses: state.filters.status as string[] | undefined,
     tags: state.filters.tags as string[] | undefined,
@@ -33,6 +41,12 @@ export function buildTraceListQuery(
     metadataValue: optionalString(state.filters.metadataValue),
     metadataFilters: metadataFilters.length ? metadataFilters : undefined,
   }
+}
+
+function normalizeTraceLogTimeRange(
+  value: unknown
+): NonNullable<TraceListQuery['timeRange']> {
+  return normalizeTraceQuickTimeRange(value) ?? DEFAULT_TRACE_LOG_TIME_RANGE
 }
 
 function normalizeMetadataFilters(value: unknown): TraceMetadataFilter[] {

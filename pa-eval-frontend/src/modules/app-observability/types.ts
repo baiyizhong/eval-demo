@@ -67,7 +67,7 @@ export type TraceListQuery = {
   pageSize: number
   keyword?: string
   createdAtRange?: string[]
-  timeRange?: '24h' | '7d' | '30d'
+  timeRange?: '1d' | '3d' | '7d' | '14d'
   environments?: string[]
   statuses?: string[]
   tags?: string[]

@@ -27,6 +27,7 @@ import {
 import {
   FilterPanel,
   type FilterGroup,
+  type FilterChangeMeta,
   type FilterPanelProps,
   type FilterRendererMap,
   type FilterValues,
@@ -57,13 +58,26 @@ export type DataTableFilterBinding = {
 }
 
 export type DataTableToolbarFilter = {
-  columnId: string
+  columnId?: string
+  fieldId?: string
   title: string
+  selectionMode?: 'single' | 'multiple'
+  defaultValue?:
+    | string
+    | string[]
+    | ((filterValues: Record<string, unknown>) => string | string[] | undefined)
   options: {
     label: string
     value: string
     icon?: React.ComponentType<{ className?: string }>
   }[]
+}
+
+export type DataTableFilterChangeContext = {
+  source: 'column' | 'filterPanel' | 'toolbar'
+  fieldId: string
+  value: unknown
+  meta?: FilterChangeMeta
 }
 
 type DataTableRequestConfig<TData, TResponse> = {
@@ -82,6 +96,10 @@ type DataTableUrlStateConfig = {
   sortKey?: string
   defaultPageSize?: number
   filters?: DataTableFilterBinding[]
+  normalizeFilters?: (
+    nextFilters: Record<string, unknown>,
+    context: DataTableFilterChangeContext
+  ) => Record<string, unknown>
 }
 
 type DataTableFilterPanelConfig = {
@@ -274,6 +292,32 @@ function DataTableContent<
     nextParams.delete(pageKey)
   }
 
+  const normalizeFilters = (
+    nextFilters: Record<string, unknown>,
+    context: DataTableFilterChangeContext
+  ) => urlState?.normalizeFilters?.(nextFilters, context) ?? nextFilters
+
+  const writeFilterParams = (
+    nextParams: URLSearchParams,
+    nextFilters: Record<string, unknown>
+  ) => {
+    filterBindings.forEach((binding) => {
+      const queryKey = binding.queryKey ?? binding.fieldId
+      const value = nextFilters[binding.fieldId]
+
+      if (binding.type === 'array') {
+        updateListParam(nextParams, queryKey, value)
+        return
+      }
+      if (binding.type === 'json') {
+        updateJsonParam(nextParams, queryKey, value)
+        return
+      }
+
+      updateStringParam(nextParams, queryKey, value)
+    })
+  }
+
   const onGlobalFilterChange: OnChangeFn<unknown> = (updater) => {
     const nextValue = typeof updater === 'function' ? updater(keyword) : updater
     updateSearchParams((nextParams) => {
@@ -286,22 +330,20 @@ function DataTableContent<
     const next =
       typeof updater === 'function' ? updater(columnFilters) : updater
     updateSearchParams((nextParams) => {
+      const nextFilterValues = { ...filters }
       filterBindings.forEach((binding) => {
-        const queryKey = binding.queryKey ?? binding.fieldId
         const columnId = binding.columnId ?? binding.fieldId
         const filter = next.find((item) => item.id === columnId)
-
-        if (binding.type === 'array') {
-          updateListParam(nextParams, queryKey, filter?.value)
-          return
-        }
-        if (binding.type === 'json') {
-          updateJsonParam(nextParams, queryKey, filter?.value)
-          return
-        }
-
-        updateStringParam(nextParams, queryKey, filter?.value)
+        nextFilterValues[binding.fieldId] = filter?.value
       })
+      writeFilterParams(
+        nextParams,
+        normalizeFilters(nextFilterValues, {
+          source: 'column',
+          fieldId: '*',
+          value: next,
+        })
+      )
       resetPage(nextParams)
     })
   }
@@ -323,29 +365,43 @@ function DataTableContent<
   }
 
   const handleFilterPanelChange: FilterPanelProps['onChange'] = (
-    nextValues
+    nextValues,
+    meta
   ) => {
     updateSearchParams((nextParams) => {
+      const normalizedFilters = normalizeFilters(nextValues, {
+        source: 'filterPanel',
+        fieldId: meta.fieldId,
+        value: nextValues[meta.fieldId],
+        meta,
+      })
       updateStringParam(
         nextParams,
         globalFilterKey,
-        nextValues[globalFilterKey]
+        normalizedFilters[globalFilterKey]
       )
-      filterBindings.forEach((binding) => {
-        const queryKey = binding.queryKey ?? binding.fieldId
-        const value = nextValues[binding.fieldId]
+      writeFilterParams(nextParams, normalizedFilters)
+      resetPage(nextParams)
+    })
+  }
 
-        if (binding.type === 'array') {
-          updateListParam(nextParams, queryKey, value)
-          return
-        }
-        if (binding.type === 'json') {
-          updateJsonParam(nextParams, queryKey, value)
-          return
-        }
+  const handleToolbarFilterValueChange = (
+    fieldId: string,
+    nextValue: unknown
+  ) => {
+    const binding = filterBindings.find((item) => item.fieldId === fieldId)
+    if (!binding) return
 
-        updateStringParam(nextParams, queryKey, value)
-      })
+    updateSearchParams((nextParams) => {
+      const nextFilterValues = normalizeFilters(
+        { ...filters, [fieldId]: nextValue },
+        {
+          source: 'toolbar',
+          fieldId,
+          value: nextValue,
+        }
+      )
+      writeFilterParams(nextParams, nextFilterValues)
       resetPage(nextParams)
     })
   }
@@ -432,6 +488,8 @@ function DataTableContent<
           }
           onReset={handleResetFilters}
           filters={toolbar?.filters}
+          filterValues={filters}
+          onFilterValueChange={handleToolbarFilterValueChange}
           columnLabels={toolbar?.columnLabels}
         />
 

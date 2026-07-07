@@ -516,6 +516,23 @@ def test_saves_annotation_scores_and_completes_queue_item() -> None:
     )
 
 
+def test_normalizes_boolean_annotation_score_values() -> None:
+    normalize = LangfuseDatabaseReader._normalize_score_value
+
+    assert normalize("BOOLEAN", True, "") == (1.0, "true")
+    assert normalize("BOOLEAN", 1, "") == (1.0, "true")
+    assert normalize("BOOLEAN", "1", "") == (1.0, "true")
+    assert normalize("BOOLEAN", "true", "") == (1.0, "true")
+    assert normalize("BOOLEAN", "是", "") == (1.0, "true")
+
+    assert normalize("BOOLEAN", False, "") == (0.0, "false")
+    assert normalize("BOOLEAN", 0, "") == (0.0, "false")
+    assert normalize("BOOLEAN", "0", "") == (0.0, "false")
+    assert normalize("BOOLEAN", "false", "") == (0.0, "false")
+    assert normalize("BOOLEAN", "否", "") == (0.0, "false")
+    assert normalize("BOOLEAN", None, "") == (None, None)
+
+
 def test_lists_annotation_queue_items_with_large_page_size_for_navigation() -> None:
     fake_reader = FakeAnnotationDatabaseReader()
     override_reader(fake_reader)

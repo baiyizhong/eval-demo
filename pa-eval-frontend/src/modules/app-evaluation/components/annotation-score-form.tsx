@@ -1,5 +1,6 @@
 import { z } from 'zod'
 import type { UseFormReturn } from 'react-hook-form'
+import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
 import {
   FormControl,
@@ -9,9 +10,17 @@ import {
   FormMessage,
 } from '@/components/ui/form'
 import { Input } from '@/components/ui/input'
-import { RadioGroup, RadioGroupItem } from '@/components/ui/radio-group'
 import { Textarea } from '@/components/ui/textarea'
+import { ToggleGroup, ToggleGroupItem } from '@/components/ui/toggle-group'
 import { BaseForm } from '@/components/common/base-form'
+import {
+  buildAnnotationScoreDefaultValues,
+  getBooleanScoreOptions,
+  getBooleanScoreRadioValue,
+  getCategoricalScoreOptions,
+  normalizeAnnotationScoreFormInput,
+  parseBooleanScoreInput,
+} from './annotation-score-values'
 import {
   scoreDataTypeLabels,
   type AnnotationQueueItemRecord,
@@ -55,56 +64,87 @@ export function AnnotationScoreForm({
       key={item.id}
       id={formId}
       schema={scoreFormSchema}
-      defaultValues={getDefaultValues(item, scoreConfigs)}
-      onSubmit={(values) => onSubmit(values, 'save')}
+      defaultValues={buildAnnotationScoreDefaultValues(item, scoreConfigs)}
+      onSubmit={(values) =>
+        onSubmit(normalizeAnnotationScoreFormInput(values, scoreConfigs), 'save')
+      }
       className='flex min-h-0 flex-1 flex-col p-0'
     >
       {(form) => (
         <>
-          <div className='min-h-0 flex-1 overflow-auto p-4'>
-            <div className='flex flex-col gap-4'>
+          <div className='min-h-0 flex-1 overflow-auto p-3'>
+            <div className='annotation-score-list rounded-md border'>
               {scoreConfigs.map((config, index) => (
-                <div key={config.id} className='rounded-lg border p-3'>
-                  <div className='mb-3'>
-                    <div className='font-medium'>{config.name}</div>
-                    <div className='text-muted-foreground text-xs'>
-                      {scoreDataTypeLabels[config.dataType]} ·{' '}
-                      {config.description}
+                <div
+                  key={config.id}
+                  className='annotation-score-row grid gap-2 border-b p-2.5 last:border-b-0'
+                >
+                  <div className='min-w-0'>
+                    <div className='flex min-w-0 items-center gap-2'>
+                      <div className='truncate text-sm font-medium'>
+                        {config.name}
+                      </div>
+                      <Badge variant='outline' className='shrink-0'>
+                        {scoreDataTypeLabels[config.dataType]}
+                      </Badge>
                     </div>
+                    {config.description ? (
+                      <div className='text-muted-foreground mt-0.5 line-clamp-1 text-xs'>
+                        {config.description}
+                      </div>
+                    ) : null}
                   </div>
-                  <ScoreValueField index={index} config={config} form={form} />
-                  <FormField
-                    control={form.control}
-                    name={`scores.${index}.comment`}
-                    render={({ field }) => (
-                      <FormItem className='mt-3'>
-                        <FormLabel>备注</FormLabel>
-                        <FormControl>
-                          <Textarea
-                            placeholder='填写该指标的标注备注'
-                            {...field}
-                          />
-                        </FormControl>
-                        <FormMessage />
-                      </FormItem>
-                    )}
-                  />
+                  <div className='grid gap-2 xl:grid-cols-[minmax(150px,200px)_minmax(0,1fr)]'>
+                    <ScoreValueField
+                      index={index}
+                      config={config}
+                      form={form}
+                    />
+                    <FormField
+                      control={form.control}
+                      name={`scores.${index}.comment`}
+                      render={({ field }) => (
+                        <FormItem>
+                          <FormLabel className='sr-only'>
+                            {config.name} 备注
+                          </FormLabel>
+                          <FormControl>
+                            <Input
+                              className='h-8'
+                              placeholder='备注（可选）'
+                              {...field}
+                            />
+                          </FormControl>
+                          <FormMessage />
+                        </FormItem>
+                      )}
+                    />
+                  </div>
                 </div>
               ))}
             </div>
           </div>
-          <div className='flex shrink-0 justify-end gap-2 border-t p-4'>
-            <Button type='button' variant='outline' onClick={onAddToDataset}>
+          <div className='flex shrink-0 justify-end gap-2 border-t p-3'>
+            <Button
+              type='button'
+              variant='outline'
+              size='sm'
+              onClick={onAddToDataset}
+            >
               加入数据集
             </Button>
-            <Button type='submit' variant='outline'>
+            <Button type='submit' variant='outline' size='sm'>
               保存
             </Button>
             <Button
               type='button'
+              size='sm'
               onClick={() => {
                 void form.handleSubmit((values) =>
-                  onSubmit(values, 'saveNext')
+                  onSubmit(
+                    normalizeAnnotationScoreFormInput(values, scoreConfigs),
+                    'saveNext'
+                  )
                 )()
               }}
             >
@@ -133,10 +173,11 @@ function ScoreValueField({
         name={`scores.${index}.value`}
         render={({ field }) => (
           <FormItem>
-            <FormLabel>评分值</FormLabel>
+            <FormLabel className='sr-only'>{config.name} 评分值</FormLabel>
             <FormControl>
               <Input
                 type='number'
+                placeholder='评分值'
                 min={config.minValue}
                 max={config.maxValue}
                 value={typeof field.value === 'number' ? field.value : ''}
@@ -155,39 +196,84 @@ function ScoreValueField({
   }
 
   if (config.dataType === 'BOOLEAN') {
-    const options = getScoreOptions(config, [
-      { value: '1', label: '是' },
-      { value: '0', label: '否' },
-    ])
     return (
       <FormField
         control={form.control}
         name={`scores.${index}.value`}
         render={({ field }) => (
           <FormItem>
-            <FormLabel>评分值</FormLabel>
+            <FormLabel className='sr-only'>{config.name} 评分值</FormLabel>
             <FormControl>
-              <RadioGroup
-                value={
-                  field.value === true
-                    ? '1'
-                    : field.value === false
-                      ? '0'
-                      : ''
-                }
-                onValueChange={(value) =>
-                  field.onChange(value === '1' || value === 'true')
-                }
+              <ToggleGroup
+                type='single'
+                variant='outline'
+                size='sm'
+                spacing={0}
+                className='grid w-full grid-cols-2'
+                value={getBooleanScoreRadioValue(field.value)}
+                onValueChange={(value) => {
+                  if (!value) return
+                  field.onChange(parseBooleanScoreInput(value))
+                }}
               >
-                {options.map((option) => (
-                  <FormItem key={option.value} className='flex items-center gap-2'>
-                    <FormControl>
-                      <RadioGroupItem value={option.value} />
-                    </FormControl>
-                    <FormLabel className='font-normal'>{option.label}</FormLabel>
-                  </FormItem>
+                {getBooleanScoreOptions().map((option) => (
+                  <ToggleGroupItem
+                    key={option.value}
+                    value={option.value}
+                    aria-label={`${config.name} ${option.label}`}
+                    className='w-full'
+                  >
+                    {option.label}
+                  </ToggleGroupItem>
                 ))}
-              </RadioGroup>
+              </ToggleGroup>
+            </FormControl>
+            <FormMessage />
+          </FormItem>
+        )}
+      />
+    )
+  }
+
+  if (config.dataType === 'CATEGORICAL') {
+    const options = getCategoricalScoreOptions(config)
+    return (
+      <FormField
+        control={form.control}
+        name={`scores.${index}.stringValue`}
+        render={({ field }) => (
+          <FormItem>
+            <FormLabel className='sr-only'>{config.name} 评分值</FormLabel>
+            <FormControl>
+              {options.length ? (
+                <ToggleGroup
+                  type='single'
+                  variant='outline'
+                  size='sm'
+                  spacing={0}
+                  value={field.value}
+                  onValueChange={(value) => {
+                    if (!value) return
+                    field.onChange(value)
+                  }}
+                  className='flex w-full flex-wrap'
+                >
+                  {options.map((option) => (
+                    <ToggleGroupItem
+                      key={option.value}
+                      value={option.value}
+                      aria-label={`${config.name} ${option.label}`}
+                      className='min-w-16 flex-1'
+                    >
+                      {option.label}
+                    </ToggleGroupItem>
+                  ))}
+                </ToggleGroup>
+              ) : (
+                <div className='text-muted-foreground flex h-8 items-center text-xs'>
+                  未配置选项
+                </div>
+              )}
             </FormControl>
             <FormMessage />
           </FormItem>
@@ -202,60 +288,17 @@ function ScoreValueField({
       name={`scores.${index}.stringValue`}
       render={({ field }) => (
         <FormItem>
-          <FormLabel>评分值</FormLabel>
+          <FormLabel className='sr-only'>{config.name} 评分值</FormLabel>
           <FormControl>
-            {config.dataType === 'TEXT' ? (
-              <Textarea placeholder='填写文本评分' {...field} />
-            ) : (
-              <RadioGroup value={field.value} onValueChange={field.onChange}>
-                {getScoreOptions(config).map((option) => (
-                  <FormItem key={option.value} className='flex items-center gap-2'>
-                    <FormControl>
-                      <RadioGroupItem value={option.value} />
-                    </FormControl>
-                    <FormLabel className='font-normal'>{option.label}</FormLabel>
-                  </FormItem>
-                ))}
-              </RadioGroup>
-            )}
+            <Textarea
+              placeholder='文本评分'
+              className='min-h-16 resize-y'
+              {...field}
+            />
           </FormControl>
           <FormMessage />
         </FormItem>
       )}
     />
   )
-}
-
-function getScoreOptions(
-  config: ScoreConfigRecord,
-  fallback: { value: string; label: string }[] = []
-) {
-  const categories = config.categories ?? []
-  if (!categories.length) return fallback
-  return categories.map(parseScoreOption)
-}
-
-function parseScoreOption(value: string) {
-  const [rawValue, rawLabel] = value.split('|')
-  return {
-    value: rawValue || value,
-    label: rawLabel || rawValue || value,
-  }
-}
-
-function getDefaultValues(
-  item: AnnotationQueueItemRecord,
-  scoreConfigs: ScoreConfigRecord[]
-): ScoreFormValues {
-  return {
-    scores: scoreConfigs.map((config) => {
-      const existing = item.scores.find((score) => score.configId === config.id)
-      return {
-        configId: config.id,
-        value: existing?.value ?? null,
-        stringValue: existing?.stringValue ?? '',
-        comment: existing?.comment ?? '',
-      }
-    }),
-  }
 }

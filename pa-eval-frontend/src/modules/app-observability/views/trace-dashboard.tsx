@@ -13,13 +13,19 @@ import {
   TraceTrendChart,
 } from '../components/trace-dashboard-charts'
 import { TraceDashboardFilters } from '../components/trace-dashboard-filters'
+import {
+  DEFAULT_TRACE_QUICK_TIME_RANGE,
+  type TraceQuickTimeRange,
+} from '../trace-time-ranges'
 import type { TraceMetrics } from '../types'
 
 export function TraceDashboard() {
   const $api = useAPI()
   const navigate = useNavigate()
   const { projectId = 'project_customer_agent' } = useParams()
-  const [timeRange, setTimeRange] = useState('24h')
+  const [timeRange, setTimeRange] = useState<TraceQuickTimeRange>(
+    DEFAULT_TRACE_QUICK_TIME_RANGE
+  )
   const [environment, setEnvironment] = useState('all')
   const metricsQuery = useQuery({
     queryKey: ['trace-metrics', $api, projectId, timeRange, environment],

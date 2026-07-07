@@ -33,7 +33,7 @@ class LangfuseClickHouseReader:
         metadata_value: str | None = None,
         metadata_filters: list[dict[str, Any]] | None = None,
         created_at_range: list[str] | None = None,
-        time_range: str | None = None,
+        time_range: str | None = "1d",
     ) -> dict[str, Any]:
         start_time, end_time = _resolve_time_window(
             time_range=time_range,
@@ -72,7 +72,7 @@ class LangfuseClickHouseReader:
         self,
         project_id: str,
         *,
-        time_range: str = "24h",
+        time_range: str = "1d",
         environment: str = "all",
     ) -> dict[str, Any]:
         start_time, end_time = _resolve_time_window(time_range=time_range)
@@ -380,9 +380,10 @@ def _resolve_time_window(
         return None, None
 
     durations = {
-        "24h": timedelta(hours=24),
+        "1d": timedelta(days=1),
+        "3d": timedelta(days=3),
         "7d": timedelta(days=7),
-        "30d": timedelta(days=30),
+        "14d": timedelta(days=14),
     }
     duration = durations.get(time_range)
     if duration is None:

@@ -6,11 +6,15 @@ import {
   SelectTrigger,
   SelectValue,
 } from '@/components/ui/select'
+import {
+  TRACE_QUICK_TIME_RANGE_OPTIONS,
+  type TraceQuickTimeRange,
+} from '../trace-time-ranges'
 
 type TraceDashboardFiltersProps = {
-  timeRange: string
+  timeRange: TraceQuickTimeRange
   environment: string
-  onTimeRangeChange: (value: string) => void
+  onTimeRangeChange: (value: TraceQuickTimeRange) => void
   onEnvironmentChange: (value: string) => void
 }
 
@@ -22,15 +26,22 @@ export function TraceDashboardFilters({
 }: TraceDashboardFiltersProps) {
   return (
     <div className='flex flex-wrap items-center gap-2'>
-      <Select value={timeRange} onValueChange={onTimeRangeChange}>
+      <Select
+        value={timeRange}
+        onValueChange={(value) =>
+          onTimeRangeChange(value as TraceQuickTimeRange)
+        }
+      >
         <SelectTrigger className='h-9 w-[150px]'>
           <SelectValue placeholder='时间范围' />
         </SelectTrigger>
         <SelectContent>
           <SelectGroup>
-            <SelectItem value='24h'>最近 24 小时</SelectItem>
-            <SelectItem value='7d'>最近 7 天</SelectItem>
-            <SelectItem value='30d'>最近 30 天</SelectItem>
+            {TRACE_QUICK_TIME_RANGE_OPTIONS.map((option) => (
+              <SelectItem key={option.value} value={option.value}>
+                {option.label}
+              </SelectItem>
+            ))}
           </SelectGroup>
         </SelectContent>
       </Select>

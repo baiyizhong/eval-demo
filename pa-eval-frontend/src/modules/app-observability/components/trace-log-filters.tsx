@@ -13,9 +13,14 @@ import type {
   DataTableToolbarFilter,
 } from '@/components/common/data-table'
 import type { FilterGroup } from '@/components/common/filter-panel'
+import {
+  getTraceQuickTimeRangeToolbarDefault,
+  TRACE_QUICK_TIME_RANGE_OPTIONS,
+} from '../trace-time-ranges'
 import type { TraceMetadataFilter } from '../types'
 
 export const traceLogUrlFilters: DataTableFilterBinding[] = [
+  { fieldId: 'timeRange', type: 'string' },
   { fieldId: 'createdAtRange', type: 'array' },
   { fieldId: 'environment', type: 'array', columnId: 'environment' },
   { fieldId: 'status', type: 'array', columnId: 'status' },
@@ -31,6 +36,13 @@ export const traceLogUrlFilters: DataTableFilterBinding[] = [
 ]
 
 export const traceLogToolbarFilters: DataTableToolbarFilter[] = [
+  {
+    fieldId: 'timeRange',
+    title: '时间',
+    selectionMode: 'single',
+    defaultValue: getTraceQuickTimeRangeToolbarDefault,
+    options: TRACE_QUICK_TIME_RANGE_OPTIONS,
+  },
   {
     columnId: 'environment',
     title: '环境',
@@ -62,7 +74,7 @@ export const traceLogFilterGroups: FilterGroup[] = [
       {
         id: 'createdAtRange',
         type: 'dateRange',
-        label: '时间范围',
+        label: '自定义时间范围',
         showTime: true,
         placeholder: '选择 Trace 创建时间范围',
       },

@@ -3,7 +3,6 @@ import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import {
   archiveProjectScoreConfig,
   createProjectScoreConfig,
-  ensureDefaultProjectScoreConfig,
   listProjectScoreConfigs,
   restoreProjectScoreConfig,
   updateProjectScoreConfig,
@@ -51,6 +50,11 @@ const DATA_TYPE_LABELS: Record<ScoreConfigDataType, string> = {
   TEXT: '文本',
 }
 
+const BOOLEAN_SCORE_OPTIONS: ScoreOptionRow[] = [
+  { value: '1', label: '是' },
+  { value: '0', label: '否' },
+]
+
 function formatDateTime(value: string) {
   const date = new Date(value)
   if (Number.isNaN(date.getTime())) return value
@@ -71,11 +75,13 @@ function getConfigRange(config: ScoreConfig) {
     return config.categories?.map(formatScoreOption).join(', ') || '-'
   }
   if (config.dataType === 'BOOLEAN') {
-    return (config.categories?.length ? config.categories : ['1|是', '0|否'])
-      .map(formatScoreOption)
-      .join(', ')
+    return formatBooleanScoreOptions()
   }
   return '-'
+}
+
+function formatBooleanScoreOptions() {
+  return BOOLEAN_SCORE_OPTIONS.map((option) => option.label).join(' / ')
 }
 
 export function ProjectScoreConfigsSettings() {
@@ -101,15 +107,6 @@ export function ProjectScoreConfigsSettings() {
         createdAt: record.createdAt,
         updatedAt: record.updatedAt || record.createdAt || '',
       }))
-    },
-  })
-  const ensureDefaultMutation = useMutation({
-    mutationFn: () => ensureDefaultProjectScoreConfig($api, projectId),
-    onSuccess: async () => {
-      await queryClient.invalidateQueries({
-        queryKey: ['project-score-configs'],
-      })
-      toast.success('默认评分指标已准备好')
     },
   })
   const saveMutation = useMutation({
@@ -163,13 +160,6 @@ export function ProjectScoreConfigsSettings() {
     >
       <div className='flex flex-col gap-4'>
         <div className='flex justify-end gap-2'>
-          <Button
-            variant='outline'
-            onClick={() => ensureDefaultMutation.mutate()}
-            disabled={ensureDefaultMutation.isPending}
-          >
-            准备推荐指标
-          </Button>
           <Button onClick={openCreate}>
             <Plus data-icon='inline-start' />
             新增指标
@@ -324,9 +314,11 @@ function ScoreConfigDialog({
       maxValue:
         dataType === 'NUMERIC' && maxValue !== '' ? Number(maxValue) : null,
       categories:
-        dataType === 'CATEGORICAL' || dataType === 'BOOLEAN'
-          ? categoryValues
-          : [],
+        dataType === 'BOOLEAN'
+          ? BOOLEAN_SCORE_OPTIONS.map(encodeScoreOption)
+          : dataType === 'CATEGORICAL'
+            ? categoryValues
+            : [],
     })
   }
 
@@ -394,11 +386,7 @@ function ScoreConfigDialog({
             />
           ) : null}
           {dataType === 'BOOLEAN' ? (
-            <ScoreOptionRows
-              rows={categoryRows}
-              onChange={setCategoryRows}
-              addLabel='新增布尔值'
-            />
+            <BooleanScoreOptionRows />
           ) : null}
         </div>
         <DialogFooter>
@@ -421,6 +409,24 @@ function ScoreConfigDialog({
 type ScoreOptionRow = {
   value: string
   label: string
+}
+
+function BooleanScoreOptionRows() {
+  return (
+    <div className='flex flex-col gap-2'>
+      <Label>选项配置</Label>
+      <div className='flex flex-wrap gap-2'>
+        {BOOLEAN_SCORE_OPTIONS.map((row) => (
+          <Badge key={row.value} variant='secondary' className='px-3 py-1'>
+            {row.label}
+          </Badge>
+        ))}
+      </div>
+      <p className='text-muted-foreground text-xs'>
+        布尔类型固定为“是 / 否”，不支持自定义修改。
+      </p>
+    </div>
+  )
 }
 
 function ScoreOptionRows({
@@ -480,14 +486,11 @@ function ScoreOptionRows({
 }
 
 function getInitialScoreOptionRows(config: ScoreConfig | null): ScoreOptionRow[] {
+  if (config?.dataType === 'BOOLEAN') {
+    return BOOLEAN_SCORE_OPTIONS
+  }
   if (config?.categories?.length) {
     return config.categories.map(parseScoreOption)
-  }
-  if (config?.dataType === 'BOOLEAN') {
-    return [
-      { value: '1', label: '是' },
-      { value: '0', label: '否' },
-    ]
   }
   return [
     { value: 'good', label: '好' },

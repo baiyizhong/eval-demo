@@ -3,7 +3,6 @@ import { useQuery } from '@tanstack/react-query'
 import {
   Database,
   FileClock,
-  Filter,
   HelpCircle,
   RefreshCw,
   ShieldCheck,
@@ -12,11 +11,6 @@ import {
 import { useAPI } from '@/hooks/use-api'
 import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
-import {
-  Collapsible,
-  CollapsibleContent,
-  CollapsibleTrigger,
-} from '@/components/ui/collapsible'
 import {
   Card,
   CardContent,
@@ -144,12 +138,14 @@ function SystemPageShell({
   description,
   icon: Icon,
   fullWidth = false,
+  showHeader = true,
   children,
 }: PropsWithChildren<{
   title: string
   description: string
   icon: LucideIcon
   fullWidth?: boolean
+  showHeader?: boolean
 }>) {
   return (
     <div
@@ -159,17 +155,21 @@ function SystemPageShell({
           : 'mx-auto flex w-full max-w-7xl flex-col gap-4 px-6 py-6'
       }
     >
-      <div className='flex items-start justify-between gap-4'>
-        <div className='flex items-start gap-3'>
-          <div className='border-border bg-muted flex size-10 shrink-0 items-center justify-center rounded-md border'>
-            <Icon className='text-muted-foreground size-5' />
-          </div>
-          <div className='flex min-w-0 flex-col gap-1'>
-            <h1 className='text-2xl font-semibold tracking-normal'>{title}</h1>
-            <p className='text-muted-foreground text-sm'>{description}</p>
+      {showHeader ? (
+        <div className='flex items-start justify-between gap-4'>
+          <div className='flex items-start gap-3'>
+            <div className='border-border bg-muted flex size-10 shrink-0 items-center justify-center rounded-md border'>
+              <Icon className='text-muted-foreground size-5' />
+            </div>
+            <div className='flex min-w-0 flex-col gap-1'>
+              <h1 className='text-2xl font-semibold tracking-normal'>
+                {title}
+              </h1>
+              <p className='text-muted-foreground text-sm'>{description}</p>
+            </div>
           </div>
         </div>
-      </div>
+      ) : null}
       {children}
     </div>
   )
@@ -307,7 +307,6 @@ export function OperationAudit() {
   const [keyword, setKeyword] = useState('')
   const [status, setStatus] = useState('ALL')
   const [action, setAction] = useState('ALL')
-  const [filtersOpen, setFiltersOpen] = useState(true)
   const [createdFrom, setCreatedFrom] = useState('')
   const [createdTo, setCreatedTo] = useState('')
   const pageSize = 10
@@ -339,26 +338,12 @@ export function OperationAudit() {
       description='集中查看 PA Eval 的关键写操作、执行结果、资源路径和问题定位 txId。'
       icon={FileClock}
       fullWidth
+      showHeader={false}
     >
-      <Collapsible open={filtersOpen} onOpenChange={setFiltersOpen}>
-        <Card className='rounded-md'>
-          <CardHeader className='flex flex-row items-center justify-between gap-4'>
-            <div>
-              <CardTitle className='text-base'>筛选</CardTitle>
-              <CardDescription>
-                支持按关键字、动作、执行状态和操作时间查询。
-              </CardDescription>
-            </div>
-            <CollapsibleTrigger asChild>
-              <Button type='button' variant='outline' size='sm'>
-                <Filter data-icon='inline-start' />
-                {filtersOpen ? '收起筛选' : '展开筛选'}
-              </Button>
-            </CollapsibleTrigger>
-          </CardHeader>
-          <CollapsibleContent>
-            <CardContent className='grid gap-3 md:grid-cols-2 xl:grid-cols-6'>
+      <Card className='rounded-md'>
+        <CardContent className='flex flex-wrap items-center gap-2 p-3'>
           <Input
+            className='h-9 min-w-64 flex-1'
             value={keyword}
             onChange={(event) => {
               setKeyword(event.target.value)
@@ -373,7 +358,7 @@ export function OperationAudit() {
               setPage(1)
             }}
           >
-            <SelectTrigger className='w-full md:w-40'>
+            <SelectTrigger className='h-9 w-full sm:w-36'>
               <SelectValue />
             </SelectTrigger>
             <SelectContent>
@@ -400,7 +385,7 @@ export function OperationAudit() {
               setPage(1)
             }}
           >
-            <SelectTrigger className='w-full md:w-36'>
+            <SelectTrigger className='h-9 w-full sm:w-28'>
               <SelectValue />
             </SelectTrigger>
             <SelectContent>
@@ -410,6 +395,7 @@ export function OperationAudit() {
             </SelectContent>
           </Select>
           <Input
+            className='h-9 w-full sm:w-44'
             type='datetime-local'
             value={createdFrom}
             onChange={(event) => {
@@ -418,7 +404,11 @@ export function OperationAudit() {
             }}
             aria-label='开始时间'
           />
+          <span className='text-muted-foreground hidden text-xs sm:inline'>
+            至
+          </span>
           <Input
+            className='h-9 w-full sm:w-44'
             type='datetime-local'
             value={createdTo}
             onChange={(event) => {
@@ -430,15 +420,15 @@ export function OperationAudit() {
           <Button
             type='button'
             variant='outline'
+            size='sm'
+            className='h-9'
             onClick={() => auditQuery.refetch()}
           >
             <RefreshCw data-icon='inline-start' />
             刷新
           </Button>
-            </CardContent>
-          </CollapsibleContent>
-        </Card>
-      </Collapsible>
+        </CardContent>
+      </Card>
 
       {auditQuery.isLoading ? (
         <Loading text='加载操作审计中...' className='min-h-64' />

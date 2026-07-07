@@ -28,15 +28,31 @@ type DataTableFacetedFilterProps<TData, TValue> = {
     value: string
     icon?: React.ComponentType<{ className?: string }>
   }[]
+  selectedValues?: string[]
+  selectionMode?: 'single' | 'multiple'
+  onSelectedValuesChange?: (values: string[]) => void
 }
 
 export function DataTableFacetedFilter<TData, TValue>({
   column,
   title,
   options,
+  selectedValues: controlledSelectedValues,
+  selectionMode = 'multiple',
+  onSelectedValuesChange,
 }: DataTableFacetedFilterProps<TData, TValue>) {
   const facets = column?.getFacetedUniqueValues()
-  const selectedValues = new Set(column?.getFilterValue() as string[])
+  const selectedValues = new Set(
+    controlledSelectedValues ??
+      ((column?.getFilterValue() as string[] | undefined) ?? [])
+  )
+  const updateSelectedValues = (values: string[]) => {
+    if (onSelectedValuesChange) {
+      onSelectedValuesChange(values)
+      return
+    }
+    column?.setFilterValue(values.length ? values : undefined)
+  }
 
   return (
     <Popover>
@@ -91,15 +107,17 @@ export function DataTableFacetedFilter<TData, TValue>({
                   <CommandItem
                     key={option.value}
                     onSelect={() => {
+                      if (selectionMode === 'single') {
+                        updateSelectedValues([option.value])
+                        return
+                      }
                       if (isSelected) {
                         selectedValues.delete(option.value)
                       } else {
                         selectedValues.add(option.value)
                       }
                       const filterValues = Array.from(selectedValues)
-                      column?.setFilterValue(
-                        filterValues.length ? filterValues : undefined
-                      )
+                      updateSelectedValues(filterValues)
                     }}
                   >
                     <div
@@ -125,12 +143,12 @@ export function DataTableFacetedFilter<TData, TValue>({
                 )
               })}
             </CommandGroup>
-            {selectedValues.size > 0 && (
+            {selectedValues.size > 0 && selectionMode !== 'single' && (
               <>
                 <CommandSeparator />
                 <CommandGroup>
                   <CommandItem
-                    onSelect={() => column?.setFilterValue(undefined)}
+                    onSelect={() => updateSelectedValues([])}
                     className='justify-center text-center'
                   >
                     清除筛选

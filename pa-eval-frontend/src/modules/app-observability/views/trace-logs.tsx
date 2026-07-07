@@ -13,6 +13,7 @@ import {
   traceLogToolbarFilters,
   traceLogUrlFilters,
 } from '../components/trace-log-filters'
+import { normalizeTraceTimeFilterValues } from '../trace-time-ranges'
 import type { TraceListResponse, TraceLogRow } from '../types'
 import { buildTraceListQuery } from './trace-logs-query'
 
@@ -66,6 +67,7 @@ export function TraceLogs() {
               defaultPageSize: 10,
               globalFilterKey: 'keyword',
               filters: traceLogUrlFilters,
+              normalizeFilters: normalizeTraceTimeFilterValues,
             }}
             toolbar={{
               searchPlaceholder: '搜索 traceId / sessionId',

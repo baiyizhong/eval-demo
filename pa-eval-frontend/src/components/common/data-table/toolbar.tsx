@@ -17,14 +17,24 @@ type DataTableToolbarProps<TData> = {
   onReset?: () => void
   columnLabels?: Record<string, string>
   filters?: {
-    columnId: string
+    columnId?: string
+    fieldId?: string
     title: string
+    selectionMode?: 'single' | 'multiple'
+    defaultValue?:
+      | string
+      | string[]
+      | ((
+          filterValues: Record<string, unknown>
+        ) => string | string[] | undefined)
     options: {
       label: string
       value: string
       icon?: React.ComponentType<{ className?: string }>
     }[]
   }[]
+  filterValues?: Record<string, unknown>
+  onFilterValueChange?: (fieldId: string, value: unknown) => void
 }
 
 export function DataTableToolbar<TData>({
@@ -36,6 +46,8 @@ export function DataTableToolbar<TData>({
   onReset,
   columnLabels,
   filters = [],
+  filterValues = {},
+  onFilterValueChange,
 }: DataTableToolbarProps<TData>) {
   const committedSearchValue = searchKey
     ? ((table.getColumn(searchKey)?.getFilterValue() as string) ?? '')
@@ -128,14 +140,41 @@ export function DataTableToolbar<TData>({
         )}
         <div className='flex gap-x-2'>
           {filters.map((filter) => {
-            const column = table.getColumn(filter.columnId)
-            if (!column) return null
+            const column = filter.columnId
+              ? table.getColumn(filter.columnId)
+              : undefined
+            const fieldId = filter.fieldId ?? filter.columnId
+            if (column) {
+              return (
+                <DataTableFacetedFilter
+                  key={fieldId}
+                  column={column}
+                  title={filter.title}
+                  options={filter.options}
+                  selectionMode={filter.selectionMode}
+                />
+              )
+            }
+            if (!fieldId || !onFilterValueChange) return null
             return (
               <DataTableFacetedFilter
-                key={filter.columnId}
-                column={column}
+                key={fieldId}
                 title={filter.title}
                 options={filter.options}
+                selectionMode={filter.selectionMode}
+                selectedValues={normalizeToolbarFilterValue(
+                  filterValues[fieldId],
+                  resolveToolbarFilterDefaultValue(
+                    filter.defaultValue,
+                    filterValues
+                  )
+                )}
+                onSelectedValuesChange={(values) =>
+                  onFilterValueChange(
+                    fieldId,
+                    filter.selectionMode === 'single' ? (values[0] ?? '') : values
+                  )
+                }
               />
             )
           })}
@@ -163,4 +202,36 @@ export function DataTableToolbar<TData>({
       <DataTableViewOptions table={table} columnLabels={columnLabels} />
     </div>
   )
+}
+
+function normalizeToolbarFilterValue(
+  value: unknown,
+  defaultValue?: string | string[]
+) {
+  if (Array.isArray(value)) {
+    return value.filter((item): item is string => typeof item === 'string')
+  }
+  if (typeof value === 'string' && value) {
+    return [value]
+  }
+  if (Array.isArray(defaultValue)) {
+    return defaultValue
+  }
+  if (typeof defaultValue === 'string' && defaultValue) {
+    return [defaultValue]
+  }
+  return []
+}
+
+function resolveToolbarFilterDefaultValue(
+  defaultValue:
+    | string
+    | string[]
+    | ((filterValues: Record<string, unknown>) => string | string[] | undefined)
+    | undefined,
+  filterValues: Record<string, unknown>
+) {
+  return typeof defaultValue === 'function'
+    ? defaultValue(filterValues)
+    : defaultValue
 }

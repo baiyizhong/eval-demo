@@ -76,19 +76,19 @@ export function ProjectAnnotationQueueDetail() {
     () =>
       Promise.all([
         queryClient.invalidateQueries({
-          queryKey: ['project-annotation-queue', projectId, queueId],
+          queryKey: ['project-annotation-queue'],
         }),
         queryClient.invalidateQueries({
-          queryKey: ['project-annotation-queue-metrics', projectId, queueId],
+          queryKey: ['project-annotation-queue-metrics'],
         }),
         queryClient.invalidateQueries({
-          queryKey: ['project-annotation-queue-items', projectId, queueId],
+          queryKey: ['project-annotation-queue-items'],
         }),
         queryClient.invalidateQueries({
-          queryKey: ['project-annotation-queues', projectId],
+          queryKey: ['project-annotation-queues'],
         }),
       ]),
-    [projectId, queueId, queryClient]
+    [queryClient]
   )
 
   const columns = useMemo(

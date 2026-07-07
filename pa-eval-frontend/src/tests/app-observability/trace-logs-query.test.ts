@@ -11,19 +11,35 @@ const baseState: DataTableQueryState = {
   sorting: [],
 }
 
-test('trace logs query defaults to the last 24 hours when no time filter is selected', () => {
+test('trace logs query defaults to the last 1 day when no time filter is selected', () => {
   const query = buildTraceListQuery(baseState, 'project-1')
 
-  assert.equal(query.timeRange, '24h')
+  assert.equal(query.timeRange, '1d')
   assert.equal(query.createdAtRange, undefined)
 })
 
-test('trace logs query keeps an explicit createdAtRange instead of defaulting to 24 hours', () => {
+test('trace logs query uses quick time range when selected', () => {
+  const query = buildTraceListQuery(
+    {
+      ...baseState,
+      filters: {
+        timeRange: '14d',
+      },
+    },
+    'project-1'
+  )
+
+  assert.equal(query.timeRange, '14d')
+  assert.equal(query.createdAtRange, undefined)
+})
+
+test('trace logs query keeps an explicit createdAtRange instead of defaulting to quick time range', () => {
   const query = buildTraceListQuery(
     {
       ...baseState,
       filters: {
         createdAtRange: ['2026-07-05 00:00:00', '2026-07-05 23:59:59'],
+        timeRange: '7d',
       },
     },
     'project-1'

@@ -37,9 +37,9 @@ export function ProjectAnnotationQueues() {
   const invalidateQueues = useCallback(
     () =>
       queryClient.invalidateQueries({
-        queryKey: ['project-annotation-queues', projectId],
+        queryKey: ['project-annotation-queues'],
       }),
-    [projectId, queryClient]
+    [queryClient]
   )
 
   const columns = useMemo(

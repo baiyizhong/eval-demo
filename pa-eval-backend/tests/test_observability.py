@@ -178,7 +178,50 @@ def test_lists_project_traces_after_project_visibility_check() -> None:
     assert body["code"] == 0
     assert fake_db.project_id == "project-1"
     assert fake_db.user_id == "user-1"
+    assert fake_trace.list_kwargs["time_range"] == "1d"
     assert body["data"]["datas"][0]["projectName"] == "演示组织 默认项目"
+
+
+def test_lists_project_traces_accepts_quick_time_range() -> None:
+    fake_db = FakeDatabaseReader()
+    fake_trace = FakeTraceReader()
+    override_readers(fake_db, fake_trace)
+
+    try:
+        response = TestClient(app).get(
+            "/api/projects/project-1/traces",
+            params={"timeRange": "14d"},
+        )
+    finally:
+        clear_overrides()
+
+    assert response.status_code == 200
+    assert fake_trace.list_kwargs["time_range"] == "14d"
+
+
+def test_lists_project_traces_accepts_bracket_created_at_range_from_frontend() -> None:
+    fake_db = FakeDatabaseReader()
+    fake_trace = FakeTraceReader()
+    override_readers(fake_db, fake_trace)
+
+    try:
+        response = TestClient(app).get(
+            "/api/projects/project-1/traces",
+            params={
+                "createdAtRange[]": [
+                    "2026-07-01 00:00:00",
+                    "2026-07-02 23:59:59",
+                ],
+            },
+        )
+    finally:
+        clear_overrides()
+
+    assert response.status_code == 200
+    assert fake_trace.list_kwargs["created_at_range"] == [
+        "2026-07-01 00:00:00",
+        "2026-07-02 23:59:59",
+    ]
 
 
 def test_lists_project_traces_passes_multiple_metadata_filters() -> None:
@@ -274,14 +317,14 @@ def test_forwards_trace_dashboard_filters_to_trace_reader() -> None:
     try:
         response = TestClient(app).get(
             "/api/projects/project-1/trace-metrics",
-            params={"timeRange": "24h", "environment": "default"},
+            params={"timeRange": "3d", "environment": "default"},
         )
     finally:
         clear_overrides()
 
     assert response.status_code == 200
     assert fake_trace.metrics_kwargs == {
-        "time_range": "24h",
+        "time_range": "3d",
         "environment": "default",
     }
 
