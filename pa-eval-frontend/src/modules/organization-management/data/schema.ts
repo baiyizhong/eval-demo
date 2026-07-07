@@ -94,6 +94,7 @@ export type ImportOrganizationMemberFailure = z.infer<
   typeof importOrganizationMemberFailureSchema
 >
 
-export type ImportOrganizationMembersResult = PaginatedResult<OrganizationMember> & {
-  failures: ImportOrganizationMemberFailure[]
-}
+export type ImportOrganizationMembersResult =
+  PaginatedResult<OrganizationMember> & {
+    failures: ImportOrganizationMemberFailure[]
+  }

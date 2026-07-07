@@ -1,18 +1,18 @@
 import { useState } from 'react'
 import type { JsonData } from 'json-edit-react'
+import { cn } from '@/lib/utils'
+import { Button } from '@/components/ui/button'
+import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card'
 import {
   Collapsible,
   CollapsibleContent,
   CollapsibleTrigger,
 } from '@/components/ui/collapsible'
-import { Button } from '@/components/ui/button'
-import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card'
-import { cn } from '@/lib/utils'
 import { JsonEditorPanel } from '@/components/common/json-editor'
-import { formatDateTime } from './format'
+import type { AnnotationQueueItemRecord } from '../types'
 import { AnnotationObjectTypeBadge } from './annotation-object-type-badge'
 import { AnnotationStatusBadge } from './annotation-status-badge'
-import type { AnnotationQueueItemRecord } from '../types'
+import { formatDateTime } from './format'
 
 type AnnotationSourcePanelProps = {
   item: AnnotationQueueItemRecord
@@ -28,7 +28,9 @@ export function AnnotationSourcePanel({ item }: AnnotationSourcePanelProps) {
     <div
       className={cn(
         'flex min-h-0 flex-col gap-3 pr-1',
-        hasOpenSection ? 'overflow-y-auto overflow-x-hidden' : 'overflow-visible'
+        hasOpenSection
+          ? 'overflow-x-hidden overflow-y-auto'
+          : 'overflow-visible'
       )}
     >
       <Collapsible
@@ -50,15 +52,24 @@ export function AnnotationSourcePanel({ item }: AnnotationSourcePanelProps) {
               <InfoItem label='Source ID' value={item.objectId} mono />
               <InfoItem
                 label='类型'
-                value={<AnnotationObjectTypeBadge objectType={item.objectType} />}
+                value={
+                  <AnnotationObjectTypeBadge objectType={item.objectType} />
+                }
               />
               <InfoItem
                 label='状态'
                 value={<AnnotationStatusBadge status={item.status} />}
               />
-              <InfoItem label='Session' value={item.source.sessionId || '-'} mono />
+              <InfoItem
+                label='Session'
+                value={item.source.sessionId || '-'}
+                mono
+              />
               <InfoItem label='User' value={item.source.userId || '-'} mono />
-              <InfoItem label='创建时间' value={formatDateTime(item.createdAt)} />
+              <InfoItem
+                label='创建时间'
+                value={formatDateTime(item.createdAt)}
+              />
               <InfoItem label='Latency' value={`${item.source.latencyMs} ms`} />
               <InfoItem label='Cost' value={`$${item.source.costUsd}`} />
               <InfoItem label='标题' value={item.source.title} />

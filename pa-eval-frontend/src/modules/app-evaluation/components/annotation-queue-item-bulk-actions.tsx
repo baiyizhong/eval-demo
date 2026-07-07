@@ -8,8 +8,8 @@ import {
   deleteProjectAnnotationQueueItems,
   exportProjectAnnotationQueueItems,
 } from '../api/annotation-api'
-import { downloadJson } from './format'
 import type { AnnotationQueueItemRecord } from '../types'
+import { downloadJson } from './format'
 
 type AnnotationQueueItemBulkActionsProps = {
   table: Table<AnnotationQueueItemRecord>

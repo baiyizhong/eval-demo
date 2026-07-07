@@ -6,6 +6,8 @@ import type {
 import type {
   EvaluationReportBadcaseRecord,
   EvaluationReportDetailRecord,
+  EvaluationReportFlowbackInput,
+  EvaluationReportFlowbackRecord,
   EvaluationReportItemRecord,
   EvaluationReportRecord,
 } from '../types'
@@ -16,6 +18,16 @@ type EvaluationReportApiClient = {
   deleteEvaluationReport: ApiMethod
   getEvaluationReportItems: ApiMethod
   getEvaluationReportBadcases: ApiMethod
+  getEvaluationReportFlowbacks: ApiMethod
+  previewEvaluationReportFlowback: ApiMethod
+  createEvaluationReportFlowback: ApiMethod
+}
+
+export type EvaluationReportFlowbackPreview = {
+  matchedCount: number
+  duplicateCount: number
+  willCreateCount: number
+  defaultDatasetName: string
 }
 
 export function listProjectEvaluationReports(
@@ -25,7 +37,9 @@ export function listProjectEvaluationReports(
 ) {
   const keyword = query.keyword.trim()
 
-  return api.getEvaluationReports<DataTableListResponse<EvaluationReportRecord>>({
+  return api.getEvaluationReports<
+    DataTableListResponse<EvaluationReportRecord>
+  >({
     path: { projectId },
     query: {
       page: query.page,
@@ -92,6 +106,40 @@ export function listProjectEvaluationReportBadcases(
       pageSize: query.pageSize,
       ...(keyword ? { keyword } : {}),
     },
+  })
+}
+
+export function listProjectEvaluationReportFlowbacks(
+  api: EvaluationReportApiClient,
+  projectId: string,
+  reportId: string
+) {
+  return api.getEvaluationReportFlowbacks<EvaluationReportFlowbackRecord[]>({
+    path: { projectId, reportId },
+  })
+}
+
+export function previewProjectEvaluationReportFlowback(
+  api: EvaluationReportApiClient,
+  projectId: string,
+  reportId: string,
+  input: EvaluationReportFlowbackInput
+) {
+  return api.previewEvaluationReportFlowback<EvaluationReportFlowbackPreview>({
+    path: { projectId, reportId },
+    body: input,
+  })
+}
+
+export function createProjectEvaluationReportFlowback(
+  api: EvaluationReportApiClient,
+  projectId: string,
+  reportId: string,
+  input: EvaluationReportFlowbackInput
+) {
+  return api.createEvaluationReportFlowback<EvaluationReportFlowbackRecord>({
+    path: { projectId, reportId },
+    body: input,
   })
 }
 

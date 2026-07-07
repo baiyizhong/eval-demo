@@ -4,7 +4,7 @@ from fastapi import APIRouter, Depends, Query
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 from app.auth_context import CurrentUserContext, get_current_user_context
-from app.errors import UnsupportedOperationError
+from app.errors import BusinessError
 from app.langfuse_db import LangfuseDatabaseReader, get_langfuse_db_reader
 from app.response import success
 
@@ -227,7 +227,11 @@ async def delete_evaluator(
         current_user.user_id,
     )
     if evaluator["provider"] == "LANGFUSE":
-        raise UnsupportedOperationError("Langfuse 原生评估器暂不支持在 PA Eval 中删除")
+        raise BusinessError(
+            4018,
+            "Langfuse 原生评估器由 Langfuse 管理，请在 Langfuse 中删除",
+            409,
+        )
 
     await reader.delete_pa_evaluator_for_user(evaluator_id, current_user.user_id)
     return success({"id": evaluator_id})

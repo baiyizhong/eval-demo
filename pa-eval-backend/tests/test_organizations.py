@@ -9,6 +9,9 @@ class FakeDatabaseReader:
     def __init__(self) -> None:
         self.created_payload = None
         self.updated_payload = None
+        self.created_member_payload = None
+        self.updated_member_payload = None
+        self.deleted_member_payload = None
         self.organizations = [
             {
                 "id": "org-1",
@@ -72,6 +75,67 @@ class FakeDatabaseReader:
                 "updatedAt": "2026-07-02T09:00:00.000Z",
             },
         ]
+
+    async def create_organization_member(
+        self,
+        organization_id: str,
+        payload: dict,
+    ) -> dict:
+        if payload["email"] == "missing@example.com":
+            from app.errors import BusinessError
+
+            raise BusinessError(1015, "用户不存在，请先让该用户登录 Langfuse", 404)
+        self.created_member_payload = {
+            "organization_id": organization_id,
+            "payload": payload,
+        }
+        return {
+            "id": "mem-created",
+            "organizationId": organization_id,
+            "userId": "user-created",
+            "name": payload.get("name") or "New Member",
+            "email": payload["email"],
+            "role": payload["role"],
+            "status": "ACTIVE",
+            "joinedAt": "2026-07-03T08:00:00.000Z",
+            "createdAt": "2026-07-03T08:00:00.000Z",
+            "updatedAt": "2026-07-03T08:00:00.000Z",
+        }
+
+    async def update_organization_member(
+        self,
+        organization_id: str,
+        member_id: str,
+        payload: dict,
+    ) -> dict:
+        self.updated_member_payload = {
+            "organization_id": organization_id,
+            "member_id": member_id,
+            "payload": payload,
+        }
+        return {
+            "id": member_id,
+            "organizationId": organization_id,
+            "userId": "user-2",
+            "name": "Viewer",
+            "email": "viewer@example.com",
+            "role": payload["role"],
+            "status": "ACTIVE",
+            "joinedAt": "2026-07-02T09:00:00.000Z",
+            "createdAt": "2026-07-02T09:00:00.000Z",
+            "updatedAt": "2026-07-03T09:00:00.000Z",
+        }
+
+    async def delete_organization_member(
+        self,
+        organization_id: str,
+        member_id: str,
+    ) -> dict:
+        self.deleted_member_payload = {
+            "organization_id": organization_id,
+            "member_id": member_id,
+        }
+        return {"id": member_id}
 
     async def create_organization_with_default_project(
         self,
@@ -232,6 +296,109 @@ def test_filters_organization_members_by_role() -> None:
     assert response.status_code == 200
     assert response.json()["data"]["total"] == 1
     assert response.json()["data"]["datas"][0]["email"] == "viewer@example.com"
+
+
+def test_creates_organization_member_through_database_reader() -> None:
+    fake_reader = FakeDatabaseReader()
+    override_reader(fake_reader)
+
+    try:
+        response = TestClient(app).post(
+            "/api/organizations/org-1/members",
+            json={
+                "email": "new@example.com",
+                "name": "New Member",
+                "role": "MEMBER",
+            },
+        )
+    finally:
+        clear_overrides()
+
+    assert response.status_code == 200
+    assert fake_reader.created_member_payload == {
+        "organization_id": "org-1",
+        "payload": {
+            "email": "new@example.com",
+            "name": "New Member",
+            "role": "MEMBER",
+        },
+    }
+    assert response.json()["data"]["id"] == "mem-created"
+
+
+def test_updates_organization_member_role_through_database_reader() -> None:
+    fake_reader = FakeDatabaseReader()
+    override_reader(fake_reader)
+
+    try:
+        response = TestClient(app).patch(
+            "/api/organizations/org-1/members/mem-2",
+            json={"role": "ADMIN"},
+        )
+    finally:
+        clear_overrides()
+
+    assert response.status_code == 200
+    assert fake_reader.updated_member_payload == {
+        "organization_id": "org-1",
+        "member_id": "mem-2",
+        "payload": {"role": "ADMIN"},
+    }
+    assert response.json()["data"]["role"] == "ADMIN"
+
+
+def test_deletes_organization_member_through_database_reader() -> None:
+    fake_reader = FakeDatabaseReader()
+    override_reader(fake_reader)
+
+    try:
+        response = TestClient(app).delete("/api/organizations/org-1/members/mem-2")
+    finally:
+        clear_overrides()
+
+    assert response.status_code == 200
+    assert fake_reader.deleted_member_payload == {
+        "organization_id": "org-1",
+        "member_id": "mem-2",
+    }
+    assert response.json()["data"] == {"id": "mem-2"}
+
+
+def test_imports_organization_members_with_partial_failures() -> None:
+    fake_reader = FakeDatabaseReader()
+    override_reader(fake_reader)
+
+    try:
+        response = TestClient(app).post(
+            "/api/organizations/org-1/members/import",
+            json={
+                "members": [
+                    {
+                        "email": "new@example.com",
+                        "name": "New Member",
+                        "role": "MEMBER",
+                    },
+                    {
+                        "email": "missing@example.com",
+                        "name": "Missing",
+                        "role": "VIEWER",
+                    },
+                ]
+            },
+        )
+    finally:
+        clear_overrides()
+
+    assert response.status_code == 200
+    assert response.json()["data"]["total"] == 1
+    assert response.json()["data"]["datas"][0]["email"] == "new@example.com"
+    assert response.json()["data"]["failures"] == [
+        {
+            "row": 2,
+            "email": "missing@example.com",
+            "reason": "用户不存在，请先让该用户登录 Langfuse",
+        }
+    ]
 
 
 def test_creates_langfuse_organization_with_pa_eval_metadata() -> None:

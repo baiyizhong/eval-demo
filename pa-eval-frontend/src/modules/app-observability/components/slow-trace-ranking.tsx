@@ -9,10 +9,7 @@ type SlowTraceRankingProps = {
   onOpenTrace: (traceId: string) => void
 }
 
-export function SlowTraceRanking({
-  rows,
-  onOpenTrace,
-}: SlowTraceRankingProps) {
+export function SlowTraceRanking({ rows, onOpenTrace }: SlowTraceRankingProps) {
   return (
     <Card>
       <CardHeader>
@@ -33,7 +30,7 @@ export function SlowTraceRanking({
               >
                 <span className='truncate'>{row.traceId}</span>
               </Button>
-              <p className='truncate text-sm text-muted-foreground'>
+              <p className='text-muted-foreground truncate text-sm'>
                 {row.sessionId} · {formatDateTime(row.createdAt)}
               </p>
             </div>

@@ -7,10 +7,5 @@ export function AppEvaluation() {
 export function AppEvaluationIndexRedirect() {
   const { projectId = 'project_customer_agent' } = useParams()
 
-  return (
-    <Navigate
-      to={`/projects/${projectId}/evaluation/datasets`}
-      replace
-    />
-  )
+  return <Navigate to={`/projects/${projectId}/evaluation/datasets`} replace />
 }

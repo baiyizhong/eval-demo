@@ -1,11 +1,8 @@
 import { useMemo, useState, type ReactNode } from 'react'
 import * as Accordion from '@radix-ui/react-accordion'
-import * as Checkbox from '@radix-ui/react-checkbox'
 import * as Slider from '@radix-ui/react-slider'
-import * as ToggleGroup from '@radix-ui/react-toggle-group'
 import {
   CalendarIcon,
-  Check,
   ChevronDown,
   ChevronUp,
   Filter,
@@ -16,12 +13,15 @@ import { cn } from '@/lib/utils'
 import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
 import { Calendar } from '@/components/ui/calendar'
+import { Checkbox } from '@/components/ui/checkbox'
 import { Input } from '@/components/ui/input'
 import {
   Popover,
   PopoverContent,
   PopoverTrigger,
 } from '@/components/ui/popover'
+import { Separator } from '@/components/ui/separator'
+import { ToggleGroup, ToggleGroupItem } from '@/components/ui/toggle-group'
 
 export type FilterValues = Record<string, unknown>
 
@@ -229,7 +229,7 @@ export function FilterPanel({
   return (
     <div
       className={cn(
-        'w-[280px] overflow-x-hidden overflow-y-auto rounded-md border border-gray-200 opacity-100 transition-[width,opacity,border-color] duration-300 ease-in-out',
+        'w-[280px] overflow-x-hidden overflow-y-auto rounded-md border opacity-100 transition-[width,opacity,border-color] duration-300 ease-in-out',
         collapsed && 'pointer-events-none border-transparent opacity-0',
         className
       )}
@@ -245,47 +245,42 @@ export function FilterPanel({
       }}
     >
       <div className='flex items-center justify-between px-5 pt-5 pb-4'>
-        <div className='flex items-center'>
-          <span className='flex size-7 shrink-0 items-center justify-center rounded-md border-gray-200 bg-white text-gray-900'>
+        <div className='flex items-center gap-2'>
+          <span className='bg-background text-foreground flex size-7 shrink-0 items-center justify-center rounded-md border'>
             <Filter size={16} />
           </span>
-          <span className='text-sm font-semibold tracking-tight whitespace-nowrap text-gray-900'>
+          <span className='text-sm font-semibold tracking-tight whitespace-nowrap'>
             {title}
           </span>
         </div>
-        <button
-          type='button'
-          onClick={clearAll}
-          className='text-sm text-gray-400 transition-colors hover:text-gray-600'
-        >
+        <Button type='button' variant='ghost' size='sm' onClick={clearAll}>
           清空
-        </button>
+        </Button>
       </div>
 
       <div className='px-5 pb-4'>
-        <div className='flex items-center gap-2.5 rounded-md bg-gray-100 px-3.5 py-2.5'>
+        <div className='relative'>
           <Search
+            className='text-muted-foreground pointer-events-none absolute top-1/2 left-3 -translate-y-1/2'
             size={16}
-            strokeWidth={2}
-            className='shrink-0 text-gray-400'
           />
-          <input
+          <Input
             type='text'
             value={searchQuery}
             onChange={(event) => setSearchQuery(event.target.value)}
             placeholder={searchPlaceholder}
-            className='min-w-0 flex-1 bg-transparent text-sm text-gray-700 outline-none placeholder:text-gray-400'
+            className='pl-9'
           />
         </div>
       </div>
 
-      <div className='border-t border-gray-100' />
+      <Separator />
 
       <Accordion.Root
         type='multiple'
         value={openGroups}
         onValueChange={setOpenGroups}
-        className='divide-y divide-gray-100'
+        className='divide-border divide-y'
       >
         {visibleGroups.map((group) => {
           const isOpen = openGroups.includes(group.id)
@@ -297,9 +292,9 @@ export function FilterPanel({
             <Accordion.Item key={group.id} value={group.id}>
               <Accordion.Header>
                 <Accordion.Trigger className='group flex w-full items-center justify-between px-5 py-4 focus:outline-none'>
-                  <div className='flex min-w-0 items-center gap-3 text-gray-900'>
+                  <div className='text-foreground flex min-w-0 items-center gap-3'>
                     {group.icon ? (
-                      <span className='shrink-0 text-gray-500'>
+                      <span className='text-muted-foreground shrink-0'>
                         {group.icon}
                       </span>
                     ) : null}
@@ -316,7 +311,7 @@ export function FilterPanel({
                         {activeCount}
                       </Badge>
                     ) : null}
-                    <span className='text-gray-400'>
+                    <span className='text-muted-foreground'>
                       {isOpen ? (
                         <ChevronUp size={16} />
                       ) : (
@@ -363,7 +358,9 @@ export function FilterPanel({
       </Accordion.Root>
 
       {visibleGroups.length === 0 ? (
-        <p className='px-5 py-4 text-sm text-gray-400'>没有匹配的筛选项</p>
+        <p className='text-muted-foreground px-5 py-4 text-sm'>
+          没有匹配的筛选项
+        </p>
       ) : null}
 
       <div className='h-2' />
@@ -383,11 +380,9 @@ function FieldFrame({
       {field.type !== 'custom' ? (
         <div className='flex items-start justify-between gap-3'>
           <div className='min-w-0'>
-            <div className='text-sm font-medium text-gray-800'>
-              {field.label}
-            </div>
+            <div className='text-sm font-medium'>{field.label}</div>
             {field.description ? (
-              <div className='mt-1 text-xs leading-5 text-gray-400'>
+              <div className='text-muted-foreground mt-1 text-xs leading-5'>
                 {field.description}
               </div>
             ) : null}
@@ -443,7 +438,7 @@ function renderField({
         onChange={(event) => setFieldValue(event.target.value, 'input')}
         placeholder={(field as InputFilterField).placeholder}
         disabled={field.disabled}
-        className='h-10 rounded-md border-gray-200 bg-gray-50 text-sm'
+        className='h-10 text-sm'
       />
     )
   }
@@ -521,7 +516,7 @@ function renderField({
   }
 
   return (
-    <div className='rounded-md border border-dashed border-gray-200 px-3 py-2 text-sm text-gray-400'>
+    <div className='text-muted-foreground rounded-md border border-dashed px-3 py-2 text-sm'>
       未配置字段渲染器：{field.type}
     </div>
   )
@@ -551,19 +546,15 @@ function CheckboxList({
         <li key={option.value}>
           <label className='group flex cursor-pointer items-center justify-between'>
             <div className='flex min-w-0 items-center gap-3'>
-              <Checkbox.Root
+              <Checkbox
                 checked={value.includes(option.value)}
                 disabled={field.disabled || option.disabled}
                 onCheckedChange={(checked) =>
                   toggleOption(option.value, checked === true)
                 }
-                className='flex h-5 w-5 shrink-0 items-center justify-center rounded-md border-2 border-gray-300 bg-white transition-colors focus:outline-none focus-visible:ring-2 focus-visible:ring-gray-400 disabled:cursor-not-allowed disabled:opacity-50 data-[state=checked]:border-gray-900 data-[state=checked]:bg-gray-900'
-              >
-                <Checkbox.Indicator>
-                  <Check size={12} strokeWidth={3} className='text-white' />
-                </Checkbox.Indicator>
-              </Checkbox.Root>
-              <span className='truncate text-sm text-gray-700 transition-colors group-hover:text-gray-900'>
+                className='size-5'
+              />
+              <span className='text-muted-foreground group-hover:text-foreground truncate text-sm transition-colors'>
                 {option.label}
               </span>
             </div>
@@ -597,17 +588,17 @@ function RangeControl({
         onValueChange={(nextValue) => onChange(toRangeValue(nextValue, field))}
         className='relative flex w-full touch-none items-center select-none'
       >
-        <Slider.Track className='relative h-2 w-full grow overflow-hidden rounded-md bg-gray-100'>
-          <Slider.Range className='absolute h-full bg-gray-900' />
+        <Slider.Track className='bg-muted relative h-2 w-full grow overflow-hidden rounded-md'>
+          <Slider.Range className='bg-primary absolute h-full' />
         </Slider.Track>
         {value.map((_, index) => (
           <Slider.Thumb
             key={index}
-            className='block h-4 w-4 rounded-md border border-gray-900 bg-white shadow-sm transition-shadow hover:ring-4 hover:ring-gray-200 focus:outline-none focus-visible:ring-4 focus-visible:ring-gray-200 disabled:pointer-events-none disabled:opacity-50'
+            className='border-primary bg-background focus-visible:ring-ring hover:ring-ring/20 block size-4 rounded-md border shadow-sm transition-shadow hover:ring-4 focus:outline-none focus-visible:ring-4 disabled:pointer-events-none disabled:opacity-50'
           />
         ))}
       </Slider.Root>
-      <div className='flex items-center justify-between text-xs text-gray-500'>
+      <div className='text-muted-foreground flex items-center justify-between text-xs'>
         <span>{formatValue(value[0])}</span>
         <span>{formatValue(value[1])}</span>
       </div>
@@ -625,24 +616,26 @@ function TagsControl({
   onChange: (nextValue: string[]) => void
 }) {
   return (
-    <ToggleGroup.Root
+    <ToggleGroup
       type='multiple'
       value={value}
       onValueChange={onChange}
       disabled={field.disabled}
       className='flex flex-wrap gap-2'
+      variant='outline'
+      size='sm'
+      spacing={2}
     >
       {field.options.map((option) => (
-        <ToggleGroup.Item
+        <ToggleGroupItem
           key={option.value}
           value={option.value}
           disabled={option.disabled}
-          className='rounded-md border border-gray-200 px-3 py-1.5 text-sm text-gray-600 transition-colors hover:border-gray-300 hover:text-gray-900 focus:outline-none focus-visible:ring-2 focus-visible:ring-gray-400 disabled:cursor-not-allowed disabled:opacity-50 data-[state=on]:border-gray-900 data-[state=on]:bg-gray-900 data-[state=on]:text-white'
         >
           {option.label}
-        </ToggleGroup.Item>
+        </ToggleGroupItem>
       ))}
-    </ToggleGroup.Root>
+    </ToggleGroup>
   )
 }
 
@@ -686,12 +679,12 @@ function DateControl({
           type='button'
           variant='outline'
           className={cn(
-            'h-10 justify-start rounded-md border-gray-200 bg-gray-50 px-3 text-left font-normal',
-            !value && 'text-gray-400'
+            'h-10 justify-start px-3 text-left font-normal',
+            !value && 'text-muted-foreground'
           )}
           disabled={field.disabled}
         >
-          <CalendarIcon size={16} strokeWidth={1.75} />
+          <CalendarIcon data-icon='inline-start' />
           <span className='truncate'>
             {value || field.placeholder || '选择日期'}
           </span>
@@ -705,7 +698,7 @@ function DateControl({
           initialFocus
         />
         {field.showTime ? (
-          <div className='border-t border-gray-100 p-3'>
+          <div className='border-t p-3'>
             <Input
               type='time'
               step={
@@ -789,12 +782,12 @@ function DateRangeControl({
           type='button'
           variant='outline'
           className={cn(
-            'h-auto min-h-10 justify-start rounded-md border-gray-200 bg-gray-50 px-3 text-left font-normal',
-            value.length === 0 && 'text-gray-400'
+            'h-auto min-h-10 justify-start px-3 text-left font-normal',
+            value.length === 0 && 'text-muted-foreground'
           )}
           disabled={field.disabled}
         >
-          <CalendarIcon size={16} strokeWidth={1.75} />
+          <CalendarIcon data-icon='inline-start' />
           <span className='truncate'>{displayText}</span>
         </Button>
       </PopoverTrigger>
@@ -806,7 +799,7 @@ function DateRangeControl({
           initialFocus
         />
         {field.showTime ? (
-          <div className='grid grid-cols-2 gap-2 border-t border-gray-100 p-3'>
+          <div className='grid grid-cols-2 gap-2 border-t p-3'>
             <Input
               type='time'
               step={

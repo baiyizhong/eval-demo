@@ -1,10 +1,10 @@
 import { useQuery } from '@tanstack/react-query'
-import { useAPI } from '@/hooks/use-api'
 import {
   type OrganizationMember,
   type OrganizationRole,
   type PaginatedResult,
 } from '@/modules/organization-management/data/schema'
+import { useAPI } from '@/hooks/use-api'
 
 const MOCK_CURRENT_MEMBER_USER_ID = 'user-current'
 

@@ -1,8 +1,11 @@
 import type { ColumnDef } from '@tanstack/react-table'
-import { Button } from '@/components/ui/button'
-import { Badge } from '@/components/ui/badge'
 import { useAPI } from '@/hooks/use-api'
-import { DataTable, DataTableColumnHeader } from '@/components/common/data-table'
+import { Badge } from '@/components/ui/badge'
+import { Button } from '@/components/ui/button'
+import {
+  DataTable,
+  DataTableColumnHeader,
+} from '@/components/common/data-table'
 import { Loading } from '@/components/common/loading'
 import { listProjectEvaluationReportBadcases } from '../api/evaluation-report-api'
 import type { EvaluationReportBadcaseRecord } from '../types'
@@ -13,7 +16,9 @@ const columns: ColumnDef<EvaluationReportBadcaseRecord>[] = [
   { accessorKey: 'scoreName', header: 'Score' },
   {
     accessorKey: 'scoreValue',
-    header: ({ column }) => <DataTableColumnHeader column={column} title='分数' />,
+    header: ({ column }) => (
+      <DataTableColumnHeader column={column} title='分数' />
+    ),
   },
   { accessorKey: 'reason', header: '原因' },
   { accessorKey: 'comment', header: '备注' },
@@ -21,7 +26,13 @@ const columns: ColumnDef<EvaluationReportBadcaseRecord>[] = [
     accessorKey: 'flowbackStatus',
     header: '回流',
     cell: ({ row }) => (
-      <Badge variant={row.original.flowbackStatus === 'FLOWED_BACK' ? 'secondary' : 'outline'}>
+      <Badge
+        variant={
+          row.original.flowbackStatus === 'FLOWED_BACK'
+            ? 'secondary'
+            : 'outline'
+        }
+      >
         {row.original.flowbackStatus === 'FLOWED_BACK' ? '已回流' : '未回流'}
       </Badge>
     ),
@@ -40,7 +51,7 @@ export function EvaluationReportBadcaseTable({
   const $api = useAPI()
 
   return (
-    <section className='flex min-h-0 min-w-0 flex-1 flex-col gap-3 rounded-lg border bg-card p-4 text-card-foreground'>
+    <section className='bg-card text-card-foreground flex min-h-0 min-w-0 flex-1 flex-col gap-3 rounded-lg border p-4'>
       <div className='flex justify-end'>
         <Button type='button' size='sm' onClick={() => onFlowback([])}>
           回流 Badcase
@@ -74,14 +85,24 @@ export function EvaluationReportBadcaseTable({
             state,
           ],
           queryFn: (state) =>
-            listProjectEvaluationReportBadcases($api, projectId, reportId, state),
+            listProjectEvaluationReportBadcases(
+              $api,
+              projectId,
+              reportId,
+              state
+            ),
         }}
         urlState={{
           defaultPageSize: 10,
           globalFilterKey: 'badcaseKeyword',
         }}
         toolbar={{ searchPlaceholder: '搜索 Trace / 备注' }}
-        loadingText={<Loading text='加载 Badcase 中...' className='min-h-24 border-0 bg-transparent' />}
+        loadingText={
+          <Loading
+            text='加载 Badcase 中...'
+            className='min-h-24 border-0 bg-transparent'
+          />
+        }
         emptyText='暂无 Badcase'
         minTableWidth={1100}
       />

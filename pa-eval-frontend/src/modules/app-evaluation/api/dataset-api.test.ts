@@ -49,7 +49,10 @@ test('listProjectAutoEvaluationDatasets merges datasets from visible active proj
     'baiyizhong'
   )
 
-  assert.deepEqual(requestedProjectIds, ['project-empty', 'project-with-dataset'])
+  assert.deepEqual(requestedProjectIds, [
+    'project-empty',
+    'project-with-dataset',
+  ])
   assert.deepEqual(datasets, [
     {
       id: 'dataset-1',

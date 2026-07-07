@@ -3,14 +3,14 @@ import { Link } from 'react-router'
 import { Badge } from '@/components/ui/badge'
 import { DataTableColumnHeader } from '@/components/common/data-table'
 import { LongText } from '@/components/common/long-text'
-import { formatDateTime } from './format'
-import { AutoEvaluationRowActions } from './auto-evaluation-row-actions'
-import { AutoEvaluationStatusBadge } from './auto-evaluation-status-badge'
 import {
   autoEvaluationDataSourceLabels,
   autoEvaluationEvaluatorTypeLabels,
   type AutoEvaluationTaskRecord,
 } from '../types'
+import { AutoEvaluationRowActions } from './auto-evaluation-row-actions'
+import { AutoEvaluationStatusBadge } from './auto-evaluation-status-badge'
+import { formatDateTime } from './format'
 
 type CreateAutoEvaluationColumnsOptions = {
   projectId: string
@@ -49,7 +49,9 @@ export function createAutoEvaluationColumns({
       header: ({ column }) => (
         <DataTableColumnHeader column={column} title='状态' />
       ),
-      cell: ({ row }) => <AutoEvaluationStatusBadge status={row.original.status} />,
+      cell: ({ row }) => (
+        <AutoEvaluationStatusBadge status={row.original.status} />
+      ),
     },
     {
       accessorKey: 'evaluator',
@@ -108,7 +110,9 @@ export function createAutoEvaluationColumns({
         <DataTableColumnHeader column={column} title='Badcase' />
       ),
       cell: ({ row }) => (
-        <Badge variant={row.original.badcaseCount > 0 ? 'secondary' : 'outline'}>
+        <Badge
+          variant={row.original.badcaseCount > 0 ? 'secondary' : 'outline'}
+        >
           {row.original.badcaseCount}
         </Badge>
       ),

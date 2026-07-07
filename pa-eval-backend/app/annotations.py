@@ -16,6 +16,7 @@ router = APIRouter(prefix="/api/projects/{project_id}", tags=["annotations"])
 
 AnnotationObjectType = Literal["TRACE", "OBSERVATION", "SESSION"]
 AnnotationItemStatus = Literal["PENDING", "COMPLETED"]
+ScoreConfigDataType = Literal["NUMERIC", "CATEGORICAL", "BOOLEAN", "TEXT"]
 
 
 class AnnotationQueuePayload(BaseModel):
@@ -23,6 +24,15 @@ class AnnotationQueuePayload(BaseModel):
     description: str = ""
     score_config_ids: list[str] = Field(min_length=1, alias="scoreConfigIds")
     assignee_ids: list[str] = Field(default_factory=list, alias="assigneeIds")
+
+
+class ScoreConfigPayload(BaseModel):
+    name: str = Field(min_length=1, max_length=120)
+    data_type: ScoreConfigDataType = Field(alias="dataType")
+    description: str = Field(default="", max_length=1000)
+    min_value: float | None = Field(default=None, alias="minValue")
+    max_value: float | None = Field(default=None, alias="maxValue")
+    categories: list[str] = Field(default_factory=list)
 
 
 class AnnotationQueueItemPayload(BaseModel):
@@ -109,6 +119,17 @@ def _queue_payload(payload: AnnotationQueuePayload) -> dict[str, Any]:
     }
 
 
+def _score_config_payload(payload: ScoreConfigPayload) -> dict[str, Any]:
+    return {
+        "name": payload.name.strip(),
+        "dataType": payload.data_type,
+        "description": payload.description,
+        "minValue": payload.min_value,
+        "maxValue": payload.max_value,
+        "categories": payload.categories,
+    }
+
+
 def _first_non_empty_list(
     primary: list[Any] | None,
     fallback: list[Any] | None,
@@ -140,6 +161,70 @@ async def ensure_default_score_config(
     config = await reader.ensure_default_score_config_for_user(
         project_id,
         current_user.user_id,
+    )
+    return success(config)
+
+
+@router.post("/score-configs")
+async def create_score_config(
+    project_id: str,
+    payload: ScoreConfigPayload,
+    current_user: CurrentUserContext = Depends(get_current_user_context),
+    reader: LangfuseDatabaseReader = Depends(get_langfuse_db_reader),
+) -> dict[str, Any]:
+    config = await reader.create_score_config_for_user(
+        project_id,
+        current_user.user_id,
+        _score_config_payload(payload),
+    )
+    return success(config)
+
+
+@router.patch("/score-configs/{config_id}")
+async def update_score_config(
+    project_id: str,
+    config_id: str,
+    payload: ScoreConfigPayload,
+    current_user: CurrentUserContext = Depends(get_current_user_context),
+    reader: LangfuseDatabaseReader = Depends(get_langfuse_db_reader),
+) -> dict[str, Any]:
+    config = await reader.update_score_config_for_user(
+        project_id,
+        config_id,
+        current_user.user_id,
+        _score_config_payload(payload),
+    )
+    return success(config)
+
+
+@router.post("/score-configs/{config_id}/archive")
+async def archive_score_config(
+    project_id: str,
+    config_id: str,
+    current_user: CurrentUserContext = Depends(get_current_user_context),
+    reader: LangfuseDatabaseReader = Depends(get_langfuse_db_reader),
+) -> dict[str, Any]:
+    config = await reader.set_score_config_archived_for_user(
+        project_id,
+        config_id,
+        current_user.user_id,
+        True,
+    )
+    return success(config)
+
+
+@router.post("/score-configs/{config_id}/restore")
+async def restore_score_config(
+    project_id: str,
+    config_id: str,
+    current_user: CurrentUserContext = Depends(get_current_user_context),
+    reader: LangfuseDatabaseReader = Depends(get_langfuse_db_reader),
+) -> dict[str, Any]:
+    config = await reader.set_score_config_archived_for_user(
+        project_id,
+        config_id,
+        current_user.user_id,
+        False,
     )
     return success(config)
 

@@ -1,6 +1,7 @@
-import type { JsonData } from 'json-edit-react'
-import { useQuery } from '@tanstack/react-query'
 import { z } from 'zod'
+import { useQuery } from '@tanstack/react-query'
+import type { JsonData } from 'json-edit-react'
+import { useAPI } from '@/hooks/use-api'
 import {
   FormControl,
   FormField,
@@ -17,10 +18,9 @@ import {
   SelectValue,
 } from '@/components/ui/select'
 import { BaseForm } from '@/components/common/base-form'
+import type { DataTableQueryState } from '@/components/common/data-table'
 import { FormDialog } from '@/components/common/form-dialog'
 import { JsonEditorPanel } from '@/components/common/json-editor'
-import type { DataTableQueryState } from '@/components/common/data-table'
-import { useAPI } from '@/hooks/use-api'
 import { listProjectDatasets } from '../api/dataset-api'
 import type {
   AddAnnotationItemToDatasetInput,

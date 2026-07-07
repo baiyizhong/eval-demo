@@ -18,5 +18,9 @@ export function EvaluationReportStatusBadge({
 }: {
   status: EvaluationReportStatus
 }) {
-  return <Badge variant={variants[status]}>{evaluationReportStatusLabels[status]}</Badge>
+  return (
+    <Badge variant={variants[status]}>
+      {evaluationReportStatusLabels[status]}
+    </Badge>
+  )
 }

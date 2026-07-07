@@ -19,6 +19,10 @@ import type {
 type AnnotationApiClient = {
   getProjectScoreConfigs: ApiMethod
   ensureDefaultProjectScoreConfig: ApiMethod
+  createProjectScoreConfig: ApiMethod
+  updateProjectScoreConfig: ApiMethod
+  archiveProjectScoreConfig: ApiMethod
+  restoreProjectScoreConfig: ApiMethod
   getProjectAnnotationUsers: ApiMethod
   getProjectAnnotationQueues: ApiMethod
   createProjectAnnotationQueue: ApiMethod
@@ -34,12 +38,23 @@ type AnnotationApiClient = {
   addProjectTracesToDataset: ApiMethod
 }
 
+export type ScoreConfigInput = {
+  name: string
+  dataType: ScoreConfigRecord['dataType']
+  description: string
+  minValue?: number | null
+  maxValue?: number | null
+  categories: string[]
+}
+
 export function listProjectScoreConfigs(
   api: AnnotationApiClient,
-  projectId: string
+  projectId: string,
+  includeArchived = false
 ) {
   return api.getProjectScoreConfigs<ScoreConfigRecord[]>({
     path: { projectId },
+    query: includeArchived ? { includeArchived: true } : undefined,
   })
 }
 
@@ -49,6 +64,49 @@ export function ensureDefaultProjectScoreConfig(
 ) {
   return api.ensureDefaultProjectScoreConfig<ScoreConfigRecord>({
     path: { projectId },
+  })
+}
+
+export function createProjectScoreConfig(
+  api: AnnotationApiClient,
+  projectId: string,
+  input: ScoreConfigInput
+) {
+  return api.createProjectScoreConfig<ScoreConfigRecord, ScoreConfigInput>({
+    path: { projectId },
+    body: input,
+  })
+}
+
+export function updateProjectScoreConfig(
+  api: AnnotationApiClient,
+  projectId: string,
+  configId: string,
+  input: ScoreConfigInput
+) {
+  return api.updateProjectScoreConfig<ScoreConfigRecord, ScoreConfigInput>({
+    path: { projectId, configId },
+    body: input,
+  })
+}
+
+export function archiveProjectScoreConfig(
+  api: AnnotationApiClient,
+  projectId: string,
+  configId: string
+) {
+  return api.archiveProjectScoreConfig<ScoreConfigRecord>({
+    path: { projectId, configId },
+  })
+}
+
+export function restoreProjectScoreConfig(
+  api: AnnotationApiClient,
+  projectId: string,
+  configId: string
+) {
+  return api.restoreProjectScoreConfig<ScoreConfigRecord>({
+    path: { projectId, configId },
   })
 }
 
@@ -178,11 +236,16 @@ export async function getProjectAnnotationNavigation(
   itemId: string,
   query: DataTableQueryState
 ): Promise<AnnotationNavigationResult> {
-  const result = await listProjectAnnotationQueueItems(api, projectId, queueId, {
-    ...query,
-    page: 1,
-    pageSize: 5000,
-  })
+  const result = await listProjectAnnotationQueueItems(
+    api,
+    projectId,
+    queueId,
+    {
+      ...query,
+      page: 1,
+      pageSize: 5000,
+    }
+  )
   const index = result.datas.findIndex((item) => item.id === itemId)
   if (index < 0) {
     throw new Error('当前筛选条件下找不到该标注数据')

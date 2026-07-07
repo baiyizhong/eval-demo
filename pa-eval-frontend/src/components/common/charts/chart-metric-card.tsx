@@ -34,7 +34,7 @@ export function ChartMetricCard({
     <Card className={className} {...props}>
       <CardHeader
         className={cn(
-          'flex flex-row items-center justify-between space-y-0 pb-2',
+          'flex flex-row items-center justify-between gap-2 pb-2',
           headerClassName
         )}
       >

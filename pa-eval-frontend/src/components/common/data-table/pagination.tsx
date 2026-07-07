@@ -63,11 +63,11 @@ export function DataTablePagination<TData>({
         </div>
       </div>
 
-      <div className='flex items-center sm:space-x-6 lg:space-x-8'>
+      <div className='flex items-center sm:gap-6 lg:gap-8'>
         <div className='flex w-[100px] items-center justify-center text-sm font-medium @max-3xl/content:hidden'>
           第 {currentPage} / {totalPages} 页
         </div>
-        <div className='flex items-center space-x-2'>
+        <div className='flex items-center gap-2'>
           <Button
             variant='outline'
             className='size-8 p-0 @max-md/content:hidden'
@@ -75,7 +75,7 @@ export function DataTablePagination<TData>({
             disabled={!table.getCanPreviousPage()}
           >
             <span className='sr-only'>跳到第一页</span>
-            <DoubleArrowLeftIcon className='h-4 w-4' />
+            <DoubleArrowLeftIcon />
           </Button>
           <Button
             variant='outline'
@@ -84,7 +84,7 @@ export function DataTablePagination<TData>({
             disabled={!table.getCanPreviousPage()}
           >
             <span className='sr-only'>跳到上一页</span>
-            <ChevronLeftIcon className='h-4 w-4' />
+            <ChevronLeftIcon />
           </Button>
 
           {/* 页码按钮 */}
@@ -112,7 +112,7 @@ export function DataTablePagination<TData>({
             disabled={!table.getCanNextPage()}
           >
             <span className='sr-only'>跳到下一页</span>
-            <ChevronRightIcon className='h-4 w-4' />
+            <ChevronRightIcon />
           </Button>
           <Button
             variant='outline'
@@ -121,7 +121,7 @@ export function DataTablePagination<TData>({
             disabled={!table.getCanNextPage()}
           >
             <span className='sr-only'>跳到最后一页</span>
-            <DoubleArrowRightIcon className='h-4 w-4' />
+            <DoubleArrowRightIcon />
           </Button>
         </div>
       </div>

@@ -1,5 +1,6 @@
 import type { MouseEvent } from 'react'
 import type { LucideIcon } from 'lucide-react'
+import { cn } from '@/lib/utils'
 import { Avatar, AvatarFallback, AvatarImage } from '@/components/ui/avatar'
 import { Button } from '@/components/ui/button'
 import {
@@ -11,7 +12,6 @@ import {
   DropdownMenuSeparator,
   DropdownMenuTrigger,
 } from '@/components/ui/dropdown-menu'
-import { cn } from '@/lib/utils'
 
 export type ProfileDropdownUser = {
   name: string
@@ -127,7 +127,7 @@ export function ProfileDropdown(props: ProfileDropdownProps = {}) {
             ) : null}
             <AvatarFallback
               className={cn(
-                'bg-blue-600 text-sm font-semibold text-white',
+                'bg-primary text-primary-foreground text-sm font-semibold',
                 fallbackClassName
               )}
             >

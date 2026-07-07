@@ -71,7 +71,10 @@ export function AccountForm() {
 
   return (
     <Form {...form}>
-      <form onSubmit={form.handleSubmit(onSubmit)} className='space-y-8'>
+      <form
+        onSubmit={form.handleSubmit(onSubmit)}
+        className='flex flex-col gap-8'
+      >
         <FormField
           control={form.control}
           name='name'
@@ -95,9 +98,7 @@ export function AccountForm() {
             <FormItem className='flex flex-col'>
               <FormLabel>出生日期</FormLabel>
               <DatePicker selected={field.value} onSelect={field.onChange} />
-              <FormDescription>
-                出生日期将用于计算你的年龄。
-              </FormDescription>
+              <FormDescription>出生日期将用于计算你的年龄。</FormDescription>
               <FormMessage />
             </FormItem>
           )}
@@ -158,9 +159,7 @@ export function AccountForm() {
                   </Command>
                 </PopoverContent>
               </Popover>
-              <FormDescription>
-                仪表盘将使用该语言显示。
-              </FormDescription>
+              <FormDescription>仪表盘将使用该语言显示。</FormDescription>
               <FormMessage />
             </FormItem>
           )}

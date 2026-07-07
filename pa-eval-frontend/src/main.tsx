@@ -16,7 +16,6 @@ const defaultPermissions: UserPermissionPayload = {
 }
 
 async function bootstrap() {
-
   try {
     const res = await fetch('/api/permissions')
     if (!res.ok) {
@@ -26,7 +25,10 @@ async function bootstrap() {
     const payload = result.data ?? result
     usePermissionStore.getState().setPermissions(payload)
   } catch (err) {
-    console.error('[PermissionInitializer] 权限数据加载失败，权限数据加载失败，将以默认最小权限继续运行:', err)
+    console.error(
+      '[PermissionInitializer] 权限数据加载失败，权限数据加载失败，将以默认最小权限继续运行:',
+      err
+    )
     usePermissionStore.getState().setPermissions(defaultPermissions)
   }
 

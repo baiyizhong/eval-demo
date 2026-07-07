@@ -1,9 +1,9 @@
-import { mockTraceDetails } from '@/modules/app-observability/data/mock-traces'
 import {
   getProjectTraceMock,
   listProjectTracesMock,
   patchProjectTraceMock,
 } from '@/modules/app-observability/api/mock-trace-api'
+import { mockTraceDetails } from '@/modules/app-observability/data/mock-traces'
 import {
   formatLatency,
   formatPercent,

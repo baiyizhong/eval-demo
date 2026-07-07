@@ -24,17 +24,16 @@ const readBasePath = (value: string | undefined) => {
   return normalized || '/'
 }
 
+const viteEnv = import.meta.env ?? {}
+
 export const env = {
-  appTitle: import.meta.env.VITE_APP_TITLE || 'AEP Admin',
-  appBasePath: readBasePath(import.meta.env.VITE_APP_BASE_PATH),
-  apiBaseURL: import.meta.env.VITE_API_BASE_URL || '/api',
-  apiTimeout: readNumber(import.meta.env.VITE_API_TIMEOUT, 20000),
-  authCookieName:
-    import.meta.env.VITE_AUTH_COOKIE_NAME || 'thisisjustarandomstring',
-  apiWithCredentials: readBoolean(
-    import.meta.env.VITE_API_WITH_CREDENTIALS,
-    false
-  ),
-  enableMock: readBoolean(import.meta.env.VITE_ENABLE_MOCK, false),
-  buildSourcemap: readBoolean(import.meta.env.VITE_BUILD_SOURCEMAP, false),
+  appTitle: viteEnv.VITE_APP_TITLE || 'AEP Admin',
+  appBasePath: readBasePath(viteEnv.VITE_APP_BASE_PATH),
+  apiBaseURL: viteEnv.VITE_API_BASE_URL || '/api',
+  authBaseURL: viteEnv.VITE_AUTH_BASE_URL || '',
+  apiTimeout: readNumber(viteEnv.VITE_API_TIMEOUT, 20000),
+  authCookieName: viteEnv.VITE_AUTH_COOKIE_NAME || 'thisisjustarandomstring',
+  apiWithCredentials: readBoolean(viteEnv.VITE_API_WITH_CREDENTIALS, false),
+  enableMock: readBoolean(viteEnv.VITE_ENABLE_MOCK, false),
+  buildSourcemap: readBoolean(viteEnv.VITE_BUILD_SOURCEMAP, false),
 }

@@ -6,6 +6,11 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 
 from app.annotations import router as annotations_router
+from app.audit import (
+    admin_router,
+    audit_http_request,
+    audit_router,
+)
 from app.auto_evaluations import router as auto_evaluations_router
 from app.auth import router as auth_router
 from app.config import get_settings
@@ -39,7 +44,19 @@ def create_app() -> FastAPI:
     app.include_router(datasets_router)
     app.include_router(annotations_router)
     app.include_router(observability_router)
+    app.include_router(admin_router)
+    app.include_router(audit_router)
     app.include_router(system_router)
+
+    @app.middleware("http")
+    async def audit_write_requests(request: Request, call_next: Any) -> Any:
+        response = await call_next(request)
+        await audit_http_request(
+            request,
+            status_code=response.status_code,
+            settings=settings,
+        )
+        return response
 
     @app.get("/health")
     async def health() -> dict[str, Any]:

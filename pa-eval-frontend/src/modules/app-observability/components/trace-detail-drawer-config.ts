@@ -5,4 +5,3 @@ export const TRACE_METADATA_JSON_EDITOR_CONFIG = {
   rootName: 'metadata',
   searchable: true,
 } satisfies Pick<JsonEditorPanelProps, 'title' | 'rootName' | 'searchable'>
-

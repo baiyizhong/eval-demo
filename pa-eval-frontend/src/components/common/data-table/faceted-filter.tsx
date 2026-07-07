@@ -42,7 +42,7 @@ export function DataTableFacetedFilter<TData, TValue>({
     <Popover>
       <PopoverTrigger asChild>
         <Button variant='outline' size='sm' className='h-8 border-dashed'>
-          <PlusCircledIcon className='size-4' />
+          <PlusCircledIcon data-icon='inline-start' />
           {title}
           {selectedValues?.size > 0 && (
             <>
@@ -53,7 +53,7 @@ export function DataTableFacetedFilter<TData, TValue>({
               >
                 {selectedValues.size}
               </Badge>
-              <div className='hidden space-x-1 lg:flex'>
+              <div className='hidden gap-1 lg:flex'>
                 {selectedValues.size > 2 ? (
                   <Badge
                     variant='secondary'
@@ -110,7 +110,7 @@ export function DataTableFacetedFilter<TData, TValue>({
                           : 'opacity-50 [&_svg]:invisible'
                       )}
                     >
-                      <CheckIcon className={cn('text-background h-4 w-4')} />
+                      <CheckIcon />
                     </div>
                     {option.icon && (
                       <option.icon className='text-muted-foreground size-4' />

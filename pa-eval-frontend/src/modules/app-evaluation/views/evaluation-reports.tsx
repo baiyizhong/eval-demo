@@ -1,6 +1,6 @@
 import { useCallback, useMemo, useState } from 'react'
-import { FileSliders } from 'lucide-react'
 import { useQueryClient } from '@tanstack/react-query'
+import { FileSliders } from 'lucide-react'
 import { useNavigate, useParams } from 'react-router'
 import { toast } from 'sonner'
 import { confirm } from '@/lib/confirm'
@@ -17,7 +17,10 @@ import { EvaluationPageNav } from '../components/evaluation-page-nav'
 import { createEvaluationReportColumns } from '../components/evaluation-report-columns'
 import { ReportTemplateDialog } from '../components/report-template-dialog'
 import type { EvaluationReportRecord } from '../types'
-import { reportToolbarFilters, reportUrlFilters } from './evaluation-report-filters'
+import {
+  reportToolbarFilters,
+  reportUrlFilters,
+} from './evaluation-report-filters'
 
 export function ProjectEvaluationReports() {
   const { projectId = 'project_customer_agent' } = useParams()
@@ -165,7 +168,7 @@ async function handleRegenerate(
 ) {
   const confirmed = await confirm({
     title: '重新生成评测报告',
-    desc: `将基于 mock 报告数据重新生成「${report.title}」。确定继续吗？`,
+    desc: `将刷新「${report.title}」的报告数据。确定继续吗？`,
     confirmText: '重新生成',
   })
   if (!confirmed) return

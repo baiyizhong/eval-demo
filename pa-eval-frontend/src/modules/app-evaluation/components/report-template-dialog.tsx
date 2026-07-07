@@ -1,10 +1,10 @@
 import { useMemo, useState, type ReactNode } from 'react'
-import { Plus, Save, Trash2 } from 'lucide-react'
 import { useQuery, useQueryClient } from '@tanstack/react-query'
+import { Plus, Save, Trash2 } from 'lucide-react'
 import { toast } from 'sonner'
-import { useAPI } from '@/hooks/use-api'
 import { confirm } from '@/lib/confirm'
 import { cn } from '@/lib/utils'
+import { useAPI } from '@/hooks/use-api'
 import { Button } from '@/components/ui/button'
 import {
   Dialog,
@@ -130,7 +130,11 @@ export function ReportTemplateDialog({
       destructive: true,
     })
     if (!confirmed) return
-    await deleteProjectEvaluationReportTemplate($api, projectId, selectedTemplate.id)
+    await deleteProjectEvaluationReportTemplate(
+      $api,
+      projectId,
+      selectedTemplate.id
+    )
     setSelectedId('new')
     await invalidate()
     toast.success('报告模板已删除')
@@ -173,7 +177,9 @@ export function ReportTemplateDialog({
                 <span className='flex min-w-0 flex-col'>
                   <span className='truncate'>{template.name}</span>
                   <span className='text-muted-foreground truncate text-xs'>
-                    {template.isDefault ? '默认模板' : template.description || '自定义模板'}
+                    {template.isDefault
+                      ? '默认模板'
+                      : template.description || '自定义模板'}
                   </span>
                 </span>
               </Button>
@@ -185,7 +191,9 @@ export function ReportTemplateDialog({
                 <Input
                   value={form.name}
                   disabled={selectedTemplate?.id === 'default'}
-                  onChange={(event) => setForm({ ...form, name: event.target.value })}
+                  onChange={(event) =>
+                    setForm({ ...form, name: event.target.value })
+                  }
                 />
               </Field>
               <Field label='默认模板'>
@@ -242,8 +250,12 @@ export function ReportTemplateDialog({
                     </SelectTrigger>
                     <SelectContent>
                       <SelectGroup>
-                        <SelectItem value='EVALUATOR_RESULT'>评估器结果</SelectItem>
-                        <SelectItem value='SCORE_THRESHOLD'>分数阈值</SelectItem>
+                        <SelectItem value='EVALUATOR_RESULT'>
+                          评估器结果
+                        </SelectItem>
+                        <SelectItem value='SCORE_THRESHOLD'>
+                          分数阈值
+                        </SelectItem>
                       </SelectGroup>
                     </SelectContent>
                   </Select>
@@ -289,7 +301,9 @@ export function ReportTemplateDialog({
                       <span>{label}</span>
                       <Switch
                         checked={
-                          form.sections[key as EvaluationReportTemplateSectionKey]
+                          form.sections[
+                            key as EvaluationReportTemplateSectionKey
+                          ]
                         }
                         disabled={selectedTemplate?.id === 'default'}
                         onCheckedChange={(checked) =>
@@ -329,7 +343,9 @@ export function ReportTemplateDialog({
               <Button
                 type='button'
                 variant='outline'
-                disabled={!selectedTemplate || selectedTemplate.id === 'default'}
+                disabled={
+                  !selectedTemplate || selectedTemplate.id === 'default'
+                }
                 onClick={() => void deleteTemplate()}
               >
                 <Trash2 className='size-4' />

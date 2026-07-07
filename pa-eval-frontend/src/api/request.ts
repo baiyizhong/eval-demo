@@ -1,6 +1,6 @@
 import axios, { type AxiosError } from 'axios'
-import { toast } from 'sonner'
 import { env } from '@/config/env'
+import { toast } from 'sonner'
 import type { ApiErrorPayload } from './types'
 
 export const request = axios.create({
@@ -64,7 +64,8 @@ request.interceptors.response.use(
         504: '网关超时，请稍后重试',
       }
       const id = `http-${status}` as string
-      const serverMessage = (error.response?.data as Record<string, unknown>)?.message
+      const serverMessage = (error.response?.data as Record<string, unknown>)
+        ?.message
       const msg = serverMessage
         ? String(serverMessage)
         : statusMessages[status] || `网络失败 (${status})`
@@ -75,7 +76,7 @@ request.interceptors.response.use(
       message: error.message || 'Request failed',
       status: error.response?.status,
       code: error.code,
-        details: error.response?.data as Record<string, unknown>,
+      details: error.response?.data as Record<string, unknown>,
     }
 
     return Promise.reject(payload)

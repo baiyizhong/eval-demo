@@ -1,6 +1,5 @@
 import assert from 'node:assert/strict'
 import { test } from 'node:test'
-
 import { authMenuActions } from '../lib/auth-menu.ts'
 
 test('authMenuActions exposes logout without a passive href', () => {

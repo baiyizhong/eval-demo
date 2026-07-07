@@ -1,19 +1,20 @@
 import { useMemo } from 'react'
-import { RefreshCw, RotateCcw, Trash2 } from 'lucide-react'
 import { useQuery, useQueryClient } from '@tanstack/react-query'
+import { RefreshCw, RotateCcw, Trash2 } from 'lucide-react'
 import { useNavigate, useParams } from 'react-router'
 import { toast } from 'sonner'
-import { useAPI } from '@/hooks/use-api'
 import { confirm } from '@/lib/confirm'
+import { useAPI } from '@/hooks/use-api'
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card'
+import { Loading } from '@/components/common/loading'
 import { Page } from '@/components/common/page'
 import { PageAction } from '@/components/common/page-action'
-import { Loading } from '@/components/common/loading'
 import {
   deleteProjectAutoEvaluationTask,
   getProjectAutoEvaluationLatestReport,
   getProjectAutoEvaluationTask,
   listProjectAutoEvaluationRuns,
+  rerunProjectAutoEvaluationTask,
 } from '../api/auto-evaluation-api'
 import { AutoEvaluationReportCard } from '../components/auto-evaluation-report-card'
 import { AutoEvaluationRunRecords } from '../components/auto-evaluation-run-records'
@@ -34,7 +35,12 @@ export function ProjectAutoEvaluationDetail() {
       query.state.data?.status === 'RUNNING' ? 3000 : false,
   })
   const reportQuery = useQuery({
-    queryKey: ['project-auto-evaluation-latest-report', $api, projectId, taskId],
+    queryKey: [
+      'project-auto-evaluation-latest-report',
+      $api,
+      projectId,
+      taskId,
+    ],
     queryFn: () =>
       getProjectAutoEvaluationLatestReport($api, projectId, taskId),
     enabled: Boolean(taskId),
@@ -90,11 +96,19 @@ export function ProjectAutoEvaluationDetail() {
 
   const handleRerun = async () => {
     if (!task) return
-    await confirm({
+    if (task.status === 'RUNNING') {
+      toast.warning('任务已在运行中')
+      return
+    }
+    const confirmed = await confirm({
       title: '确认重新运行该自动评测任务？',
-      desc: '当前真实自动评测任务暂未接入重新运行接口。',
-      confirmText: '知道了',
+      desc: `将基于「${task.name}」当前配置重新创建运行记录并生成报告。确定继续吗？`,
+      confirmText: '重新运行',
     })
+    if (!confirmed) return
+    await rerunProjectAutoEvaluationTask($api, projectId, task.id)
+    await invalidateDetail()
+    toast.success('自动评测任务已重新运行')
   }
 
   const handleDelete = async () => {
@@ -121,7 +135,9 @@ export function ProjectAutoEvaluationDetail() {
       <div className='flex min-h-0 flex-1 flex-col gap-4 overflow-auto'>
         <PageAction
           showBackButton
-          onBack={() => navigate(`/projects/${projectId}/evaluation/auto-evaluations`)}
+          onBack={() =>
+            navigate(`/projects/${projectId}/evaluation/auto-evaluations`)
+          }
           buttonGroups={{
             buttons: [
               {
@@ -162,7 +178,10 @@ export function ProjectAutoEvaluationDetail() {
           <>
             <section className='grid gap-3 md:grid-cols-4'>
               <MetricCard label='样本数' value={task.dataSource.sampleCount} />
-              <MetricCard label='已完成' value={task.executionStats.completed} />
+              <MetricCard
+                label='已完成'
+                value={task.executionStats.completed}
+              />
               <MetricCard label='失败' value={task.executionStats.failed} />
               <MetricCard label='Badcase' value={task.badcaseCount} />
             </section>
@@ -181,10 +200,15 @@ export function ProjectAutoEvaluationDetail() {
                   <Info label='数据源' value={task.dataSource.name} />
                   <Info label='采样率' value={`${task.sampleRate}%`} />
                   <Info label='创建人' value={task.createdBy} />
-                  <Info label='创建时间' value={formatDateTime(task.createdAt)} />
+                  <Info
+                    label='创建时间'
+                    value={formatDateTime(task.createdAt)}
+                  />
                   <Info
                     label='最近运行'
-                    value={task.lastRunAt ? formatDateTime(task.lastRunAt) : '-'}
+                    value={
+                      task.lastRunAt ? formatDateTime(task.lastRunAt) : '-'
+                    }
                   />
                 </CardContent>
               </Card>
@@ -212,7 +236,7 @@ function MetricCard({ label, value }: { label: string; value: number }) {
   return (
     <Card>
       <CardHeader>
-        <CardTitle className='text-sm text-muted-foreground'>{label}</CardTitle>
+        <CardTitle className='text-muted-foreground text-sm'>{label}</CardTitle>
       </CardHeader>
       <CardContent className='text-2xl font-semibold'>{value}</CardContent>
     </Card>

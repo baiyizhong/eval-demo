@@ -1,17 +1,18 @@
 import { useCallback, useMemo, useState } from 'react'
-import { Plus, RefreshCw } from 'lucide-react'
 import { useQuery, useQueryClient } from '@tanstack/react-query'
+import { Plus, RefreshCw } from 'lucide-react'
 import { useNavigate, useParams } from 'react-router'
 import { toast } from 'sonner'
-import { useAPI } from '@/hooks/use-api'
 import { confirm } from '@/lib/confirm'
-import { Page } from '@/components/common/page'
+import { useAPI } from '@/hooks/use-api'
 import { DataTable } from '@/components/common/data-table'
 import { Loading } from '@/components/common/loading'
+import { Page } from '@/components/common/page'
 import {
   deleteProjectAutoEvaluationTask,
   getProjectAutoEvaluationTaskSummary,
   listProjectAutoEvaluationTasks,
+  rerunProjectAutoEvaluationTask,
 } from '../api/auto-evaluation-api'
 import { createAutoEvaluationColumns } from '../components/auto-evaluation-columns'
 import {
@@ -29,21 +30,18 @@ export function ProjectAutoEvaluations() {
   const [activeFilter, setActiveFilter] =
     useState<AutoEvaluationSummaryFilter>('all')
 
-  const invalidateTasks = useCallback(
-    async () => {
-      await queryClient.invalidateQueries({
-        predicate: (query) =>
-          query.queryKey[0] === 'project-auto-evaluations' &&
-          query.queryKey.includes(projectId),
-      })
-      await queryClient.invalidateQueries({
-        predicate: (query) =>
-          query.queryKey[0] === 'project-evaluation-reports' &&
-          query.queryKey.includes(projectId),
-      })
-    },
-    [projectId, queryClient]
-  )
+  const invalidateTasks = useCallback(async () => {
+    await queryClient.invalidateQueries({
+      predicate: (query) =>
+        query.queryKey[0] === 'project-auto-evaluations' &&
+        query.queryKey.includes(projectId),
+    })
+    await queryClient.invalidateQueries({
+      predicate: (query) =>
+        query.queryKey[0] === 'project-evaluation-reports' &&
+        query.queryKey.includes(projectId),
+    })
+  }, [projectId, queryClient])
 
   const summaryQuery = useQuery({
     queryKey: ['project-auto-evaluations', $api, projectId, 'summary'],
@@ -55,7 +53,7 @@ export function ProjectAutoEvaluations() {
       createAutoEvaluationColumns({
         projectId,
         onRerun: (task) => {
-          void handleRerun(task)
+          void handleRerun($api, projectId, task, invalidateTasks)
         },
         onDelete: (task) => {
           void handleDelete($api, projectId, task, invalidateTasks)
@@ -112,7 +110,7 @@ export function ProjectAutoEvaluations() {
           active={activeFilter}
           onChange={setActiveFilter}
         />
-        <section className='flex min-h-0 min-w-0 flex-1 flex-col rounded-lg border bg-card p-4 text-card-foreground'>
+        <section className='bg-card text-card-foreground flex min-h-0 min-w-0 flex-1 flex-col rounded-lg border p-4'>
           <DataTable<AutoEvaluationTaskRecord>
             className='min-h-0 flex-1'
             columns={columns}
@@ -125,11 +123,7 @@ export function ProjectAutoEvaluations() {
                 state,
               ],
               queryFn: (state) =>
-                listProjectAutoEvaluationTasks(
-                  $api,
-                  projectId,
-                  state
-                ),
+                listProjectAutoEvaluationTasks($api, projectId, state),
             }}
             urlState={{
               defaultPageSize: 10,
@@ -165,18 +159,25 @@ export function ProjectAutoEvaluations() {
 }
 
 async function handleRerun(
-  task: AutoEvaluationTaskRecord
+  api: Parameters<typeof rerunProjectAutoEvaluationTask>[0],
+  projectId: string,
+  task: AutoEvaluationTaskRecord,
+  onCompleted: () => Promise<unknown>
 ) {
   if (task.status === 'RUNNING') {
     toast.warning('任务已在运行中')
     return
   }
 
-  await confirm({
+  const confirmed = await confirm({
     title: '确认重新运行该自动评测任务？',
-    desc: '当前真实自动评测任务暂未接入重新运行接口。',
-    confirmText: '知道了',
+    desc: `将基于「${task.name}」当前配置重新创建运行记录并生成报告。确定继续吗？`,
+    confirmText: '重新运行',
   })
+  if (!confirmed) return
+  await rerunProjectAutoEvaluationTask(api, projectId, task.id)
+  await onCompleted()
+  toast.success('自动评测任务已重新运行')
 }
 
 async function handleDelete(

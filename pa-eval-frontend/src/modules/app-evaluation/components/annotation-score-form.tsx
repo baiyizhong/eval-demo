@@ -1,5 +1,5 @@
-import type { UseFormReturn } from 'react-hook-form'
 import { z } from 'zod'
+import type { UseFormReturn } from 'react-hook-form'
 import { Button } from '@/components/ui/button'
 import {
   FormControl,
@@ -80,7 +80,10 @@ export function AnnotationScoreForm({
                       <FormItem className='mt-3'>
                         <FormLabel>备注</FormLabel>
                         <FormControl>
-                          <Textarea placeholder='填写该指标的标注备注' {...field} />
+                          <Textarea
+                            placeholder='填写该指标的标注备注'
+                            {...field}
+                          />
                         </FormControl>
                         <FormMessage />
                       </FormItem>
@@ -100,7 +103,9 @@ export function AnnotationScoreForm({
             <Button
               type='button'
               onClick={() => {
-                void form.handleSubmit((values) => onSubmit(values, 'saveNext'))()
+                void form.handleSubmit((values) =>
+                  onSubmit(values, 'saveNext')
+                )()
               }}
             >
               保存并下一条

@@ -3,7 +3,6 @@ import { Download } from 'lucide-react'
 import { toast } from 'sonner'
 import { Button } from '@/components/ui/button'
 import { DataTableBulkActions } from '@/components/common/data-table'
-import { exportProjectDatasetItemsMock } from '../api/mock-dataset-api'
 import type { DatasetItemRecord } from '../types'
 import { downloadJson } from './format'
 
@@ -19,14 +18,14 @@ export function DatasetItemBulkActions({
   datasetId,
 }: DatasetItemBulkActionsProps) {
   const selectedRows = table.getFilteredSelectedRowModel().rows
-  const itemIds = selectedRows.map((row) => row.original.id)
+  const selectedItems = selectedRows.map((row) => row.original)
 
   const handlePartialExport = async () => {
-    const payload = await exportProjectDatasetItemsMock(
+    const payload = {
       projectId,
       datasetId,
-      itemIds
-    )
+      items: selectedItems,
+    }
     downloadJson(
       `dataset-items-${datasetId}-${payload.items.length}-${Date.now()}.json`,
       payload

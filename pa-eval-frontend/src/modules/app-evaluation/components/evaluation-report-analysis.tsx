@@ -9,9 +9,9 @@ export function EvaluationReportAnalysis({
   const maxCount = Math.max(...report.distribution.map((item) => item.count), 1)
   const hasReproduction = Boolean(
     report.reproduction.reportId ||
-      report.reproduction.sourceTaskId ||
-      report.reproduction.scoreName ||
-      report.reproduction.generatedConfig
+    report.reproduction.sourceTaskId ||
+    report.reproduction.scoreName ||
+    report.reproduction.generatedConfig
   )
 
   return (
@@ -23,12 +23,17 @@ export function EvaluationReportAnalysis({
           </CardHeader>
           <CardContent className='flex flex-col gap-3'>
             {report.distribution.map((item) => (
-              <div key={item.label} className='grid grid-cols-[72px_1fr_48px] items-center gap-3 text-sm'>
+              <div
+                key={item.label}
+                className='grid grid-cols-[72px_1fr_48px] items-center gap-3 text-sm'
+              >
                 <span>{item.label}</span>
                 <div className='bg-muted h-2 rounded'>
                   <div
                     className='bg-primary h-2 rounded'
-                    style={{ width: `${Math.round((item.count / maxCount) * 100)}%` }}
+                    style={{
+                      width: `${Math.round((item.count / maxCount) * 100)}%`,
+                    }}
                   />
                 </div>
                 <span>{item.count}</span>
@@ -44,7 +49,10 @@ export function EvaluationReportAnalysis({
           </CardHeader>
           <CardContent className='flex flex-col gap-2'>
             {report.groupAnalysis.map((item) => (
-              <div key={item.group} className='flex justify-between gap-4 text-sm'>
+              <div
+                key={item.group}
+                className='flex justify-between gap-4 text-sm'
+              >
                 <span>{item.group}</span>
                 <span className='text-muted-foreground'>
                   {item.sampleCount} 条 · {item.averageScore.toFixed(2)}
@@ -54,7 +62,9 @@ export function EvaluationReportAnalysis({
           </CardContent>
         </Card>
       ) : null}
-      {report.risks.length ? <ListCard title='风险限制' items={report.risks} /> : null}
+      {report.risks.length ? (
+        <ListCard title='风险限制' items={report.risks} />
+      ) : null}
       {report.recommendations.length ? (
         <ListCard title='改进建议' items={report.recommendations} />
       ) : null}

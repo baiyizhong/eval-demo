@@ -5,6 +5,7 @@ import type {
 } from '@/components/common/data-table'
 import type {
   DatasetFormInput,
+  DatasetItemFormInput,
   DatasetItemRecord,
   DatasetMetricSummary,
   DatasetRecord,
@@ -21,6 +22,9 @@ type DatasetApiClient = {
   deleteProjectDataset: ApiMethod
   getProjectDatasetMetrics: ApiMethod
   getProjectDatasetItems: ApiMethod
+  createProjectDatasetItem: ApiMethod
+  updateProjectDatasetItem: ApiMethod
+  archiveProjectDatasetItem: ApiMethod
 }
 
 type VisibleProject = {
@@ -121,13 +125,51 @@ export function listProjectDatasetItems(
   })
 }
 
+export function createProjectDatasetItem(
+  api: DatasetApiClient,
+  projectId: string,
+  datasetId: string,
+  input: DatasetItemFormInput
+) {
+  return api.createProjectDatasetItem<DatasetItemRecord>({
+    path: { projectId, datasetId },
+    body: input,
+  })
+}
+
+export function updateProjectDatasetItem(
+  api: DatasetApiClient,
+  projectId: string,
+  datasetId: string,
+  itemId: string,
+  input: DatasetItemFormInput
+) {
+  return api.updateProjectDatasetItem<DatasetItemRecord>({
+    path: { projectId, datasetId, itemId },
+    body: input,
+  })
+}
+
+export function archiveProjectDatasetItem(
+  api: DatasetApiClient,
+  projectId: string,
+  datasetId: string,
+  itemId: string
+) {
+  return api.archiveProjectDatasetItem<DatasetItemRecord>({
+    path: { projectId, datasetId, itemId },
+  })
+}
+
 export async function listProjectAutoEvaluationDatasets(
   api: DatasetApiClient,
   projectId: string,
   keyword = ''
 ): Promise<MockAutoEvaluationDataset[]> {
   const normalizedKeyword = keyword.trim()
-  const projectsResult = await api.getProjects<DataTableListResponse<VisibleProject>>({
+  const projectsResult = await api.getProjects<
+    DataTableListResponse<VisibleProject>
+  >({
     query: {
       page: 1,
       pageSize: 200,
@@ -165,7 +207,10 @@ export async function listProjectAutoEvaluationDatasets(
   )
 }
 
-function sortCurrentProjectFirst(projects: VisibleProject[], projectId: string) {
+function sortCurrentProjectFirst(
+  projects: VisibleProject[],
+  projectId: string
+) {
   return [...projects].sort((left, right) => {
     if (left.id === projectId) return -1
     if (right.id === projectId) return 1

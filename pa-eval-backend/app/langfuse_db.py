@@ -12,6 +12,24 @@ from app.config import Settings, get_settings
 from app.errors import BusinessError
 
 
+PROJECT_ACCESS_EXISTS_SQL = """
+EXISTS (
+    SELECT 1
+    FROM organization_memberships om
+    LEFT JOIN project_memberships pm
+      ON pm.org_membership_id = om.id
+     AND pm.project_id = p.id
+     AND pm.user_id = om.user_id
+    WHERE om.org_id = p.org_id
+      AND om.user_id = %(user_id)s
+      AND (
+        om.role::text <> 'NONE'
+        OR pm.role::text <> 'NONE'
+      )
+)
+"""
+
+
 class LangfuseDatabaseConfigError(BusinessError):
     def __init__(self) -> None:
         super().__init__(
@@ -114,7 +132,7 @@ class LangfuseDatabaseReader:
 
     async def list_projects_for_user(self, user_id: str) -> list[dict[str, Any]]:
         rows = await self._fetch_all(
-            """
+            f"""
             SELECT
                 p.id,
                 p.name,
@@ -126,17 +144,172 @@ class LangfuseDatabaseReader:
                 p.metadata
             FROM projects p
             JOIN organizations o ON o.id = p.org_id
-            WHERE EXISTS (
-                SELECT 1
-                FROM organization_memberships om
-                WHERE om.org_id = p.org_id
-                  AND om.user_id = %(user_id)s
-            )
+            WHERE {PROJECT_ACCESS_EXISTS_SQL}
             ORDER BY p.created_at DESC, p.id DESC
             """,
             {"user_id": user_id},
         )
         return [self._to_project_payload(row) for row in rows]
+
+    async def create_project_for_user(
+        self,
+        organization_id: str,
+        user_id: str,
+        user_email: str,
+        payload: dict[str, Any],
+    ) -> dict[str, Any]:
+        if not self._database_url:
+            raise LangfuseDatabaseConfigError()
+
+        project_id = _new_langfuse_id("project")
+        async with await psycopg.AsyncConnection.connect(
+            self._database_url,
+            row_factory=dict_row,
+        ) as connection:
+            async with connection.cursor() as cursor:
+                organization = await self._get_organization_for_user(
+                    cursor,
+                    organization_id,
+                    user_id,
+                )
+                metadata = _merge_pa_eval_metadata(
+                    None,
+                    {
+                        "description": payload.get("description") or "",
+                        "createdBy": user_email,
+                        "updatedBy": user_email,
+                    },
+                )
+                await cursor.execute(
+                    """
+                    INSERT INTO projects (id, name, org_id, metadata)
+                    VALUES (%(id)s, %(name)s, %(org_id)s, %(metadata)s)
+                    RETURNING id, name, org_id, created_at, updated_at, deleted_at, metadata
+                    """,
+                    {
+                        "id": project_id,
+                        "name": payload["name"],
+                        "org_id": organization_id,
+                        "metadata": Jsonb(metadata),
+                    },
+                )
+                row = await cursor.fetchone()
+                await cursor.execute(
+                    """
+                    INSERT INTO project_memberships (
+                        project_id,
+                        user_id,
+                        org_membership_id,
+                        role,
+                        created_at,
+                        updated_at
+                    )
+                    SELECT
+                        %(project_id)s,
+                        om.user_id,
+                        om.id,
+                        CASE
+                            WHEN om.role::text = 'NONE' THEN 'MEMBER'::"Role"
+                            ELSE om.role
+                        END,
+                        NOW(),
+                        NOW()
+                    FROM organization_memberships om
+                    WHERE om.org_id = %(organization_id)s
+                      AND om.user_id = %(user_id)s
+                    ON CONFLICT (project_id, user_id) DO UPDATE
+                    SET
+                        org_membership_id = EXCLUDED.org_membership_id,
+                        role = EXCLUDED.role,
+                        updated_at = NOW()
+                    """,
+                    {
+                        "project_id": project_id,
+                        "organization_id": organization_id,
+                        "user_id": user_id,
+                    },
+                )
+
+        assert row is not None
+        return self._to_project_payload(
+            {**row, "organization_name": organization["name"]}
+        )
+
+    async def update_project_for_user(
+        self,
+        project_id: str,
+        user_id: str,
+        user_email: str,
+        payload: dict[str, Any],
+    ) -> dict[str, Any]:
+        if not self._database_url:
+            raise LangfuseDatabaseConfigError()
+
+        async with await psycopg.AsyncConnection.connect(
+            self._database_url,
+            row_factory=dict_row,
+        ) as connection:
+            async with connection.cursor() as cursor:
+                current = await self._get_project_detail_for_user(
+                    cursor,
+                    project_id,
+                    user_id,
+                )
+                metadata = _merge_pa_eval_metadata(
+                    current.get("metadata"),
+                    {
+                        "description": payload.get("description") or "",
+                        "updatedBy": user_email,
+                    },
+                )
+                await cursor.execute(
+                    """
+                    UPDATE projects
+                    SET
+                        name = %(name)s,
+                        metadata = %(metadata)s,
+                        updated_at = NOW()
+                    WHERE id = %(project_id)s
+                    RETURNING id, name, org_id, created_at, updated_at, deleted_at, metadata
+                    """,
+                    {
+                        "project_id": project_id,
+                        "name": payload["name"],
+                        "metadata": Jsonb(metadata),
+                    },
+                )
+                row = await cursor.fetchone()
+
+        assert row is not None
+        return self._to_project_payload(
+            {**row, "organization_name": current["organization_name"]}
+        )
+
+    async def archive_project_for_user(
+        self,
+        project_id: str,
+        user_id: str,
+        user_email: str,
+    ) -> dict[str, Any]:
+        return await self._set_project_archive_state_for_user(
+            project_id=project_id,
+            user_id=user_id,
+            user_email=user_email,
+            archived=True,
+        )
+
+    async def restore_project_for_user(
+        self,
+        project_id: str,
+        user_id: str,
+        user_email: str,
+    ) -> dict[str, Any]:
+        return await self._set_project_archive_state_for_user(
+            project_id=project_id,
+            user_id=user_id,
+            user_email=user_email,
+            archived=False,
+        )
 
     async def ensure_project_visible(self, project_id: str, user_id: str) -> None:
         await self._ensure_project_visible(project_id, user_id)
@@ -322,6 +495,503 @@ class LangfuseDatabaseReader:
             )
         return {"id": row["id"]}
 
+    async def get_project_model_settings_for_user(
+        self,
+        project_id: str,
+        user_id: str,
+    ) -> dict[str, Any]:
+        await self._ensure_project_visible(project_id, user_id)
+        connections = await self._fetch_all(
+            """
+            SELECT
+                id,
+                provider,
+                adapter,
+                secret_key,
+                base_url,
+                custom_models,
+                with_default_models
+            FROM pa_project_llm_connections
+            WHERE project_id = %(project_id)s
+              AND status = 'ACTIVE'
+            ORDER BY update_date DESC, create_date DESC, id DESC
+            """,
+            {"project_id": project_id},
+        )
+        definitions = await self._fetch_all(
+            """
+            SELECT
+                id,
+                model_name,
+                match_pattern,
+                unit,
+                input_price,
+                output_price,
+                tokenizer_id
+            FROM pa_project_model_definitions
+            WHERE project_id = %(project_id)s
+              AND status = 'ACTIVE'
+            ORDER BY update_date DESC, create_date DESC, id DESC
+            """,
+            {"project_id": project_id},
+        )
+        settings_rows = await self._fetch_all(
+            """
+            SELECT
+                pms.id,
+                pms.llm_connection_id,
+                pms.model,
+                pms.temperature,
+                plc.provider,
+                plc.adapter
+            FROM pa_project_model_settings pms
+            LEFT JOIN pa_project_llm_connections plc
+              ON plc.project_id = pms.project_id
+             AND plc.id = pms.llm_connection_id
+            WHERE pms.project_id = %(project_id)s
+            LIMIT 1
+            """,
+            {"project_id": project_id},
+        )
+        connection_payloads = [
+            self._to_llm_connection_payload(row) for row in connections
+        ]
+        default_model = self._to_default_model_payload(
+            settings_rows[0] if settings_rows else None,
+            connection_payloads[0] if connection_payloads else None,
+            project_id,
+        )
+        return {
+            "defaultModel": default_model,
+            "connections": connection_payloads,
+            "modelDefinitions": [
+                self._to_model_definition_payload(row) for row in definitions
+            ],
+        }
+
+    async def update_project_default_model_for_user(
+        self,
+        project_id: str,
+        user_id: str,
+        user_email: str,
+        payload: dict[str, Any],
+    ) -> dict[str, Any]:
+        if not self._database_url:
+            raise LangfuseDatabaseConfigError()
+
+        setting_id = f"pamodeldefault_{project_id}"
+        async with await psycopg.AsyncConnection.connect(
+            self._database_url,
+            row_factory=dict_row,
+        ) as connection:
+            async with connection.cursor() as cursor:
+                await self._get_project_for_user(cursor, project_id, user_id)
+                connection_row = await self._get_llm_connection_row(
+                    cursor,
+                    project_id,
+                    payload["llmConnectionId"],
+                )
+                await cursor.execute(
+                    """
+                    INSERT INTO pa_project_model_settings (
+                        id,
+                        project_id,
+                        llm_connection_id,
+                        model,
+                        temperature,
+                        create_by,
+                        create_date,
+                        update_by,
+                        update_date
+                    )
+                    VALUES (
+                        %(id)s,
+                        %(project_id)s,
+                        %(llm_connection_id)s,
+                        %(model)s,
+                        %(temperature)s,
+                        %(create_by)s,
+                        NOW(),
+                        %(update_by)s,
+                        NOW()
+                    )
+                    ON CONFLICT (project_id) DO UPDATE
+                    SET
+                        llm_connection_id = EXCLUDED.llm_connection_id,
+                        model = EXCLUDED.model,
+                        temperature = EXCLUDED.temperature,
+                        update_by = EXCLUDED.update_by,
+                        update_date = NOW()
+                    RETURNING id, llm_connection_id, model, temperature
+                    """,
+                    {
+                        "id": setting_id,
+                        "project_id": project_id,
+                        "llm_connection_id": payload["llmConnectionId"],
+                        "model": payload["model"],
+                        "temperature": payload["temperature"],
+                        "create_by": user_email,
+                        "update_by": user_email,
+                    },
+                )
+                row = await cursor.fetchone()
+
+        assert row is not None
+        return self._to_default_model_payload(
+            {
+                **row,
+                "provider": connection_row["provider"],
+                "adapter": connection_row["adapter"],
+            },
+            None,
+            project_id,
+        )
+
+    async def create_project_llm_connection_for_user(
+        self,
+        project_id: str,
+        user_id: str,
+        user_email: str,
+        payload: dict[str, Any],
+    ) -> dict[str, Any]:
+        if not self._database_url:
+            raise LangfuseDatabaseConfigError()
+
+        connection_id = _new_langfuse_id("pallm")
+        async with await psycopg.AsyncConnection.connect(
+            self._database_url,
+            row_factory=dict_row,
+        ) as connection:
+            async with connection.cursor() as cursor:
+                await self._get_project_for_user(cursor, project_id, user_id)
+                await cursor.execute(
+                    """
+                    INSERT INTO pa_project_llm_connections (
+                        id,
+                        project_id,
+                        provider,
+                        adapter,
+                        secret_key,
+                        base_url,
+                        custom_models,
+                        with_default_models,
+                        create_by,
+                        create_date,
+                        update_by,
+                        update_date
+                    )
+                    VALUES (
+                        %(id)s,
+                        %(project_id)s,
+                        %(provider)s,
+                        %(adapter)s,
+                        %(secret_key)s,
+                        %(base_url)s,
+                        %(custom_models)s,
+                        %(with_default_models)s,
+                        %(create_by)s,
+                        NOW(),
+                        %(update_by)s,
+                        NOW()
+                    )
+                    RETURNING
+                        id,
+                        provider,
+                        adapter,
+                        secret_key,
+                        base_url,
+                        custom_models,
+                        with_default_models
+                    """,
+                    {
+                        "id": connection_id,
+                        "project_id": project_id,
+                        "provider": payload["provider"],
+                        "adapter": payload["adapter"],
+                        "secret_key": payload.get("secretKey") or "",
+                        "base_url": payload.get("baseUrl") or "",
+                        "custom_models": Jsonb(payload.get("customModels") or []),
+                        "with_default_models": bool(
+                            payload.get("withDefaultModels", True)
+                        ),
+                        "create_by": user_email,
+                        "update_by": user_email,
+                    },
+                )
+                row = await cursor.fetchone()
+
+        assert row is not None
+        return self._to_llm_connection_payload(row)
+
+    async def update_project_llm_connection_for_user(
+        self,
+        project_id: str,
+        connection_id: str,
+        user_id: str,
+        user_email: str,
+        payload: dict[str, Any],
+    ) -> dict[str, Any]:
+        if not self._database_url:
+            raise LangfuseDatabaseConfigError()
+
+        async with await psycopg.AsyncConnection.connect(
+            self._database_url,
+            row_factory=dict_row,
+        ) as connection:
+            async with connection.cursor() as cursor:
+                await self._get_project_for_user(cursor, project_id, user_id)
+                await cursor.execute(
+                    """
+                    UPDATE pa_project_llm_connections
+                    SET provider = %(provider)s,
+                        adapter = %(adapter)s,
+                        secret_key = CASE
+                            WHEN %(secret_key)s = '' THEN secret_key
+                            ELSE %(secret_key)s
+                        END,
+                        base_url = %(base_url)s,
+                        custom_models = %(custom_models)s,
+                        with_default_models = %(with_default_models)s,
+                        update_by = %(update_by)s,
+                        update_date = NOW()
+                    WHERE project_id = %(project_id)s
+                      AND id = %(connection_id)s
+                      AND status = 'ACTIVE'
+                    RETURNING
+                        id,
+                        provider,
+                        adapter,
+                        secret_key,
+                        base_url,
+                        custom_models,
+                        with_default_models
+                    """,
+                    {
+                        "project_id": project_id,
+                        "connection_id": connection_id,
+                        "provider": payload["provider"],
+                        "adapter": payload["adapter"],
+                        "secret_key": payload.get("secretKey") or "",
+                        "base_url": payload.get("baseUrl") or "",
+                        "custom_models": Jsonb(payload.get("customModels") or []),
+                        "with_default_models": bool(
+                            payload.get("withDefaultModels", True)
+                        ),
+                        "update_by": user_email,
+                    },
+                )
+                row = await cursor.fetchone()
+        if row is None:
+            raise BusinessError(1013, "LLM 连接不存在或已不可用", 404)
+        return self._to_llm_connection_payload(row)
+
+    async def delete_project_llm_connection_for_user(
+        self,
+        project_id: str,
+        connection_id: str,
+        user_id: str,
+        user_email: str,
+    ) -> dict[str, Any]:
+        if not self._database_url:
+            raise LangfuseDatabaseConfigError()
+
+        async with await psycopg.AsyncConnection.connect(
+            self._database_url,
+            row_factory=dict_row,
+        ) as connection:
+            async with connection.cursor() as cursor:
+                await self._get_project_for_user(cursor, project_id, user_id)
+                await cursor.execute(
+                    """
+                    UPDATE pa_project_llm_connections
+                    SET status = 'ARCHIVED',
+                        update_by = %(update_by)s,
+                        update_date = NOW()
+                    WHERE project_id = %(project_id)s
+                      AND id = %(connection_id)s
+                      AND status = 'ACTIVE'
+                    RETURNING id
+                    """,
+                    {
+                        "project_id": project_id,
+                        "connection_id": connection_id,
+                        "update_by": user_email,
+                    },
+                )
+                row = await cursor.fetchone()
+        if row is None:
+            raise BusinessError(1013, "LLM 连接不存在或已不可用", 404)
+        return {"id": row["id"]}
+
+    async def create_project_model_definition_for_user(
+        self,
+        project_id: str,
+        user_id: str,
+        user_email: str,
+        payload: dict[str, Any],
+    ) -> dict[str, Any]:
+        if not self._database_url:
+            raise LangfuseDatabaseConfigError()
+
+        model_id = _new_langfuse_id("pamodel")
+        async with await psycopg.AsyncConnection.connect(
+            self._database_url,
+            row_factory=dict_row,
+        ) as connection:
+            async with connection.cursor() as cursor:
+                await self._get_project_for_user(cursor, project_id, user_id)
+                await cursor.execute(
+                    """
+                    INSERT INTO pa_project_model_definitions (
+                        id,
+                        project_id,
+                        model_name,
+                        match_pattern,
+                        unit,
+                        input_price,
+                        output_price,
+                        tokenizer_id,
+                        create_by,
+                        create_date,
+                        update_by,
+                        update_date
+                    )
+                    VALUES (
+                        %(id)s,
+                        %(project_id)s,
+                        %(model_name)s,
+                        %(match_pattern)s,
+                        %(unit)s,
+                        %(input_price)s,
+                        %(output_price)s,
+                        %(tokenizer_id)s,
+                        %(create_by)s,
+                        NOW(),
+                        %(update_by)s,
+                        NOW()
+                    )
+                    RETURNING
+                        id,
+                        model_name,
+                        match_pattern,
+                        unit,
+                        input_price,
+                        output_price,
+                        tokenizer_id
+                    """,
+                    {
+                        "id": model_id,
+                        "project_id": project_id,
+                        "model_name": payload["modelName"],
+                        "match_pattern": payload.get("matchPattern") or "",
+                        "unit": payload.get("unit") or "TOKENS",
+                        "input_price": payload.get("inputPrice") or "",
+                        "output_price": payload.get("outputPrice") or "",
+                        "tokenizer_id": payload.get("tokenizerId") or "",
+                        "create_by": user_email,
+                        "update_by": user_email,
+                    },
+                )
+                row = await cursor.fetchone()
+
+        assert row is not None
+        return self._to_model_definition_payload(row)
+
+    async def update_project_model_definition_for_user(
+        self,
+        project_id: str,
+        model_id: str,
+        user_id: str,
+        user_email: str,
+        payload: dict[str, Any],
+    ) -> dict[str, Any]:
+        if not self._database_url:
+            raise LangfuseDatabaseConfigError()
+
+        async with await psycopg.AsyncConnection.connect(
+            self._database_url,
+            row_factory=dict_row,
+        ) as connection:
+            async with connection.cursor() as cursor:
+                await self._get_project_for_user(cursor, project_id, user_id)
+                await cursor.execute(
+                    """
+                    UPDATE pa_project_model_definitions
+                    SET model_name = %(model_name)s,
+                        match_pattern = %(match_pattern)s,
+                        unit = %(unit)s,
+                        input_price = %(input_price)s,
+                        output_price = %(output_price)s,
+                        tokenizer_id = %(tokenizer_id)s,
+                        update_by = %(update_by)s,
+                        update_date = NOW()
+                    WHERE project_id = %(project_id)s
+                      AND id = %(model_id)s
+                      AND status = 'ACTIVE'
+                    RETURNING
+                        id,
+                        model_name,
+                        match_pattern,
+                        unit,
+                        input_price,
+                        output_price,
+                        tokenizer_id
+                    """,
+                    {
+                        "project_id": project_id,
+                        "model_id": model_id,
+                        "model_name": payload["modelName"],
+                        "match_pattern": payload.get("matchPattern") or "",
+                        "unit": payload.get("unit") or "TOKENS",
+                        "input_price": payload.get("inputPrice") or "",
+                        "output_price": payload.get("outputPrice") or "",
+                        "tokenizer_id": payload.get("tokenizerId") or "",
+                        "update_by": user_email,
+                    },
+                )
+                row = await cursor.fetchone()
+        if row is None:
+            raise BusinessError(1014, "模型定义不存在或已不可用", 404)
+        return self._to_model_definition_payload(row)
+
+    async def delete_project_model_definition_for_user(
+        self,
+        project_id: str,
+        model_id: str,
+        user_id: str,
+        user_email: str,
+    ) -> dict[str, Any]:
+        if not self._database_url:
+            raise LangfuseDatabaseConfigError()
+
+        async with await psycopg.AsyncConnection.connect(
+            self._database_url,
+            row_factory=dict_row,
+        ) as connection:
+            async with connection.cursor() as cursor:
+                await self._get_project_for_user(cursor, project_id, user_id)
+                await cursor.execute(
+                    """
+                    UPDATE pa_project_model_definitions
+                    SET status = 'ARCHIVED',
+                        update_by = %(update_by)s,
+                        update_date = NOW()
+                    WHERE project_id = %(project_id)s
+                      AND id = %(model_id)s
+                      AND status = 'ACTIVE'
+                    RETURNING id
+                    """,
+                    {
+                        "project_id": project_id,
+                        "model_id": model_id,
+                        "update_by": user_email,
+                    },
+                )
+                row = await cursor.fetchone()
+        if row is None:
+            raise BusinessError(1014, "模型定义不存在或已不可用", 404)
+        return {"id": row["id"]}
+
     async def list_evaluators_for_user(self, user_id: str) -> list[dict[str, Any]]:
         langfuse_evaluators = await self._list_langfuse_evaluators_for_user(user_id)
         pa_evaluators = await self._list_pa_evaluators_for_user(user_id)
@@ -422,6 +1092,53 @@ class LangfuseDatabaseReader:
                 status_code=404,
             )
         return self._to_dataset_payload(rows[0])
+
+    async def patch_trace_for_user(
+        self,
+        project_id: str,
+        trace_id: str,
+        user_id: str,
+        payload: dict[str, Any],
+    ) -> dict[str, Any]:
+        if not self._database_url:
+            raise LangfuseDatabaseConfigError()
+
+        async with await psycopg.AsyncConnection.connect(
+            self._database_url,
+            row_factory=dict_row,
+        ) as connection:
+            async with connection.cursor() as cursor:
+                await self._get_project_for_user(cursor, project_id, user_id)
+                await cursor.execute(
+                    """
+                    UPDATE traces
+                    SET
+                        input = %(input)s,
+                        output = %(output)s,
+                        metadata = %(metadata)s,
+                        updated_at = NOW()
+                    WHERE project_id = %(project_id)s
+                      AND id = %(trace_id)s
+                    RETURNING id, input, output, metadata, updated_at
+                    """,
+                    {
+                        "project_id": project_id,
+                        "trace_id": trace_id,
+                        "input": Jsonb(_decode_jsonish(payload.get("input"))),
+                        "output": Jsonb(_decode_jsonish(payload.get("output"))),
+                        "metadata": Jsonb(payload.get("metadata") or {}),
+                    },
+                )
+                row = await cursor.fetchone()
+        if row is None:
+            raise BusinessError(4004, "Trace 不存在或无访问权限", 404)
+        return {
+            "traceId": row["id"],
+            "input": payload.get("input") or "",
+            "output": payload.get("output") or "",
+            "metadata": row.get("metadata") or {},
+            "updatedAt": _format_datetime(row.get("updated_at")),
+        }
 
     async def create_dataset_for_user(
         self,
@@ -648,6 +1365,205 @@ class LangfuseDatabaseReader:
         )
         return [self._to_dataset_item_payload(row) for row in rows]
 
+    async def create_dataset_item_for_user(
+        self,
+        project_id: str,
+        dataset_id: str,
+        user_id: str,
+        payload: dict[str, Any],
+    ) -> dict[str, Any]:
+        if not self._database_url:
+            raise LangfuseDatabaseConfigError()
+
+        item_id = _new_langfuse_id("datasetitem")
+        async with await psycopg.AsyncConnection.connect(
+            self._database_url,
+            row_factory=dict_row,
+        ) as connection:
+            async with connection.cursor() as cursor:
+                await self._get_project_for_user(cursor, project_id, user_id)
+                await self._ensure_dataset_exists(cursor, project_id, dataset_id)
+                await cursor.execute(
+                    """
+                    INSERT INTO dataset_items (
+                        id,
+                        project_id,
+                        dataset_id,
+                        status,
+                        input,
+                        expected_output,
+                        metadata,
+                        source_trace_id,
+                        source_observation_id,
+                        created_at,
+                        updated_at,
+                        valid_from,
+                        is_deleted
+                    )
+                    VALUES (
+                        %(id)s,
+                        %(project_id)s,
+                        %(dataset_id)s,
+                        'ACTIVE'::"DatasetStatus",
+                        %(input)s,
+                        %(expected_output)s,
+                        %(metadata)s,
+                        '',
+                        '',
+                        NOW(),
+                        NOW(),
+                        NOW(),
+                        FALSE
+                    )
+                    RETURNING
+                        id,
+                        project_id,
+                        dataset_id,
+                        status::text AS status,
+                        input,
+                        expected_output,
+                        metadata,
+                        source_trace_id,
+                        source_observation_id,
+                        is_deleted,
+                        created_at,
+                        updated_at
+                    """,
+                    {
+                        "id": item_id,
+                        "project_id": project_id,
+                        "dataset_id": dataset_id,
+                        "input": Jsonb(payload.get("input")),
+                        "expected_output": Jsonb(payload.get("expectedOutput")),
+                        "metadata": Jsonb(payload.get("metadata") or {}),
+                    },
+                )
+                row = await cursor.fetchone()
+
+        assert row is not None
+        return self._to_dataset_item_payload(row)
+
+    async def update_dataset_item_for_user(
+        self,
+        project_id: str,
+        dataset_id: str,
+        item_id: str,
+        user_id: str,
+        payload: dict[str, Any],
+    ) -> dict[str, Any]:
+        if not self._database_url:
+            raise LangfuseDatabaseConfigError()
+
+        async with await psycopg.AsyncConnection.connect(
+            self._database_url,
+            row_factory=dict_row,
+        ) as connection:
+            async with connection.cursor() as cursor:
+                await self._get_project_for_user(cursor, project_id, user_id)
+                await self._ensure_dataset_exists(cursor, project_id, dataset_id)
+                await cursor.execute(
+                    """
+                    UPDATE dataset_items
+                    SET
+                        input = %(input)s,
+                        expected_output = %(expected_output)s,
+                        metadata = %(metadata)s,
+                        updated_at = NOW()
+                    WHERE project_id = %(project_id)s
+                      AND dataset_id = %(dataset_id)s
+                      AND id = %(id)s
+                      AND valid_to IS NULL
+                    RETURNING
+                        id,
+                        project_id,
+                        dataset_id,
+                        status::text AS status,
+                        input,
+                        expected_output,
+                        metadata,
+                        source_trace_id,
+                        source_observation_id,
+                        is_deleted,
+                        created_at,
+                        updated_at
+                    """,
+                    {
+                        "id": item_id,
+                        "project_id": project_id,
+                        "dataset_id": dataset_id,
+                        "input": Jsonb(payload.get("input")),
+                        "expected_output": Jsonb(payload.get("expectedOutput")),
+                        "metadata": Jsonb(payload.get("metadata") or {}),
+                    },
+                )
+                row = await cursor.fetchone()
+
+        if row is None:
+            raise BusinessError(
+                code=1012,
+                message="数据项不存在或无访问权限",
+                status_code=404,
+            )
+        return self._to_dataset_item_payload(row)
+
+    async def archive_dataset_item_for_user(
+        self,
+        project_id: str,
+        dataset_id: str,
+        item_id: str,
+        user_id: str,
+    ) -> dict[str, Any]:
+        if not self._database_url:
+            raise LangfuseDatabaseConfigError()
+
+        async with await psycopg.AsyncConnection.connect(
+            self._database_url,
+            row_factory=dict_row,
+        ) as connection:
+            async with connection.cursor() as cursor:
+                await self._get_project_for_user(cursor, project_id, user_id)
+                await self._ensure_dataset_exists(cursor, project_id, dataset_id)
+                await cursor.execute(
+                    """
+                    UPDATE dataset_items
+                    SET
+                        status = 'ARCHIVED'::"DatasetStatus",
+                        is_deleted = TRUE,
+                        updated_at = NOW()
+                    WHERE project_id = %(project_id)s
+                      AND dataset_id = %(dataset_id)s
+                      AND id = %(id)s
+                      AND valid_to IS NULL
+                    RETURNING
+                        id,
+                        project_id,
+                        dataset_id,
+                        status::text AS status,
+                        input,
+                        expected_output,
+                        metadata,
+                        source_trace_id,
+                        source_observation_id,
+                        is_deleted,
+                        created_at,
+                        updated_at
+                    """,
+                    {
+                        "id": item_id,
+                        "project_id": project_id,
+                        "dataset_id": dataset_id,
+                    },
+                )
+                row = await cursor.fetchone()
+
+        if row is None:
+            raise BusinessError(
+                code=1012,
+                message="数据项不存在或无访问权限",
+                status_code=404,
+            )
+        return self._to_dataset_item_payload(row)
+
     async def list_score_configs_for_user(
         self,
         project_id: str,
@@ -734,6 +1650,146 @@ class LangfuseDatabaseReader:
             )
         return self._to_score_config_payload(row)
 
+    async def create_score_config_for_user(
+        self,
+        project_id: str,
+        user_id: str,
+        payload: dict[str, Any],
+    ) -> dict[str, Any]:
+        if not self._database_url:
+            raise LangfuseDatabaseConfigError()
+
+        config_id = _new_langfuse_id("scorecfg")
+        async with await psycopg.AsyncConnection.connect(
+            self._database_url,
+            row_factory=dict_row,
+        ) as connection:
+            async with connection.cursor() as cursor:
+                await self._get_project_for_user(cursor, project_id, user_id)
+                await cursor.execute(
+                    """
+                    INSERT INTO score_configs (
+                        id,
+                        project_id,
+                        name,
+                        data_type,
+                        description,
+                        min_value,
+                        max_value,
+                        categories,
+                        is_archived,
+                        created_at,
+                        updated_at
+                    )
+                    VALUES (
+                        %(id)s,
+                        %(project_id)s,
+                        %(name)s,
+                        %(data_type)s::"ScoreConfigDataType",
+                        %(description)s,
+                        %(min_value)s,
+                        %(max_value)s,
+                        %(categories)s,
+                        FALSE,
+                        NOW(),
+                        NOW()
+                    )
+                    """,
+                    {
+                        "id": config_id,
+                        "project_id": project_id,
+                        **_score_config_storage_payload(payload),
+                    },
+                )
+                return await self._get_score_config_payload_cursor(
+                    cursor,
+                    project_id,
+                    config_id,
+                )
+
+    async def update_score_config_for_user(
+        self,
+        project_id: str,
+        config_id: str,
+        user_id: str,
+        payload: dict[str, Any],
+    ) -> dict[str, Any]:
+        if not self._database_url:
+            raise LangfuseDatabaseConfigError()
+
+        async with await psycopg.AsyncConnection.connect(
+            self._database_url,
+            row_factory=dict_row,
+        ) as connection:
+            async with connection.cursor() as cursor:
+                await self._get_project_for_user(cursor, project_id, user_id)
+                await cursor.execute(
+                    """
+                    UPDATE score_configs
+                    SET name = %(name)s,
+                        data_type = %(data_type)s::"ScoreConfigDataType",
+                        description = %(description)s,
+                        min_value = %(min_value)s,
+                        max_value = %(max_value)s,
+                        categories = %(categories)s,
+                        updated_at = NOW()
+                    WHERE project_id = %(project_id)s
+                      AND id = %(config_id)s
+                    RETURNING id
+                    """,
+                    {
+                        "project_id": project_id,
+                        "config_id": config_id,
+                        **_score_config_storage_payload(payload),
+                    },
+                )
+                if await cursor.fetchone() is None:
+                    raise BusinessError(1024, "评分指标不存在或无访问权限", 404)
+                return await self._get_score_config_payload_cursor(
+                    cursor,
+                    project_id,
+                    config_id,
+                )
+
+    async def set_score_config_archived_for_user(
+        self,
+        project_id: str,
+        config_id: str,
+        user_id: str,
+        archived: bool,
+    ) -> dict[str, Any]:
+        if not self._database_url:
+            raise LangfuseDatabaseConfigError()
+
+        async with await psycopg.AsyncConnection.connect(
+            self._database_url,
+            row_factory=dict_row,
+        ) as connection:
+            async with connection.cursor() as cursor:
+                await self._get_project_for_user(cursor, project_id, user_id)
+                await cursor.execute(
+                    """
+                    UPDATE score_configs
+                    SET is_archived = %(archived)s,
+                        updated_at = NOW()
+                    WHERE project_id = %(project_id)s
+                      AND id = %(config_id)s
+                    RETURNING id
+                    """,
+                    {
+                        "project_id": project_id,
+                        "config_id": config_id,
+                        "archived": archived,
+                    },
+                )
+                if await cursor.fetchone() is None:
+                    raise BusinessError(1024, "评分指标不存在或无访问权限", 404)
+                return await self._get_score_config_payload_cursor(
+                    cursor,
+                    project_id,
+                    config_id,
+                )
+
     async def list_project_users_for_user(
         self,
         project_id: str,
@@ -745,12 +1801,26 @@ class LangfuseDatabaseReader:
             SELECT DISTINCT
                 u.id,
                 u.name,
-                u.email
+                u.email,
+                COALESCE(
+                    NULLIF(pm.role::text, 'NONE'),
+                    NULLIF(om.role::text, 'NONE')
+                ) AS role,
+                om.role::text AS organization_role,
+                pm.role::text AS project_role
             FROM projects p
             JOIN organization_memberships om ON om.org_id = p.org_id
+            LEFT JOIN project_memberships pm
+              ON pm.org_membership_id = om.id
+             AND pm.project_id = p.id
+             AND pm.user_id = om.user_id
             JOIN users u ON u.id = om.user_id
             WHERE p.id = %(project_id)s
               AND p.deleted_at IS NULL
+              AND (
+                om.role::text <> 'NONE'
+                OR pm.role::text <> 'NONE'
+              )
             ORDER BY u.name NULLS LAST, u.email NULLS LAST, u.id
             """,
             {"project_id": project_id},
@@ -1632,16 +2702,11 @@ class LangfuseDatabaseReader:
         self, user_id: str
     ) -> list[dict[str, Any]]:
         rows = await self._fetch_all(
-            """
+            f"""
             WITH visible_projects AS (
                 SELECT p.id, p.name
                 FROM projects p
-                WHERE EXISTS (
-                    SELECT 1
-                    FROM organization_memberships om
-                    WHERE om.org_id = p.org_id
-                      AND om.user_id = %(user_id)s
-                )
+                WHERE {PROJECT_ACCESS_EXISTS_SQL}
             ),
             latest_templates AS (
                 SELECT DISTINCT ON (et.project_id, et.name, et.type)
@@ -1704,7 +2769,7 @@ class LangfuseDatabaseReader:
     ) -> list[dict[str, Any]]:
         try:
             rows = await self._fetch_all(
-                """
+                f"""
                 SELECT
                     pe.id,
                     pe.name,
@@ -1719,12 +2784,7 @@ class LangfuseDatabaseReader:
                 FROM pa_evaluators pe
                 JOIN projects p ON p.id = pe.project_id
                 WHERE pe.status = 'ACTIVE'
-                  AND EXISTS (
-                    SELECT 1
-                    FROM organization_memberships om
-                    WHERE om.org_id = p.org_id
-                      AND om.user_id = %(user_id)s
-                )
+                  AND {PROJECT_ACCESS_EXISTS_SQL}
                 ORDER BY pe.update_date DESC, pe.id DESC
                 """,
                 {"user_id": user_id},
@@ -1763,7 +2823,7 @@ class LangfuseDatabaseReader:
     ) -> dict[str, Any] | None:
         try:
             rows = await self._fetch_all(
-                """
+                f"""
                 SELECT
                     pe.id,
                     pe.name,
@@ -1780,12 +2840,7 @@ class LangfuseDatabaseReader:
                 JOIN projects p ON p.id = pe.project_id
                 WHERE pe.id = %(evaluator_id)s
                   AND pe.status = 'ACTIVE'
-                  AND EXISTS (
-                    SELECT 1
-                    FROM organization_memberships om
-                    WHERE om.org_id = p.org_id
-                      AND om.user_id = %(user_id)s
-                  )
+                  AND {PROJECT_ACCESS_EXISTS_SQL}
                 LIMIT 1
                 """,
                 {"evaluator_id": evaluator_id, "user_id": user_id},
@@ -1808,16 +2863,11 @@ class LangfuseDatabaseReader:
         user_id: str,
     ) -> dict[str, Any] | None:
         rows = await self._fetch_all(
-            """
+            f"""
             WITH visible_projects AS (
                 SELECT p.id, p.name
                 FROM projects p
-                WHERE EXISTS (
-                    SELECT 1
-                    FROM organization_memberships om
-                    WHERE om.org_id = p.org_id
-                      AND om.user_id = %(user_id)s
-                )
+                WHERE {PROJECT_ACCESS_EXISTS_SQL}
             )
             SELECT
                 et.id,
@@ -2084,18 +3134,13 @@ class LangfuseDatabaseReader:
         ) as connection:
             async with connection.cursor() as cursor:
                 await cursor.execute(
-                    """
+                    f"""
                     DELETE FROM pa_evaluators pe
                     USING projects p
                     WHERE pe.project_id = p.id
                       AND pe.id = %(evaluator_id)s
                       AND pe.status = 'ACTIVE'
-                      AND EXISTS (
-                        SELECT 1
-                        FROM organization_memberships om
-                        WHERE om.org_id = p.org_id
-                          AND om.user_id = %(user_id)s
-                      )
+                      AND {PROJECT_ACCESS_EXISTS_SQL}
                     RETURNING pe.id
                     """,
                     {"evaluator_id": evaluator_id, "user_id": user_id},
@@ -2156,6 +3201,171 @@ class LangfuseDatabaseReader:
         )
         return [self._to_member_payload(row) for row in rows]
 
+    async def create_organization_member(
+        self,
+        organization_id: str,
+        payload: dict[str, Any],
+    ) -> dict[str, Any]:
+        if not self._database_url:
+            raise LangfuseDatabaseConfigError()
+
+        membership_id = _new_langfuse_id("orgmem")
+        async with await psycopg.AsyncConnection.connect(
+            self._database_url,
+            row_factory=dict_row,
+        ) as connection:
+            async with connection.cursor() as cursor:
+                user = await self._get_user_by_email_cursor(
+                    cursor,
+                    payload["email"],
+                )
+                if user is None:
+                    raise BusinessError(1015, "用户不存在，请先让该用户登录 Langfuse", 404)
+
+                try:
+                    await cursor.execute(
+                        """
+                        INSERT INTO organization_memberships (
+                            id,
+                            org_id,
+                            user_id,
+                            role
+                        )
+                        VALUES (
+                            %(id)s,
+                            %(org_id)s,
+                            %(user_id)s,
+                            %(role)s::"Role"
+                        )
+                        """,
+                        {
+                            "id": membership_id,
+                            "org_id": organization_id,
+                            "user_id": user["id"],
+                            "role": payload["role"],
+                        },
+                    )
+                except psycopg.errors.UniqueViolation as exc:
+                    raise BusinessError(1016, "用户已在该组织中", 409) from exc
+                return await self._get_organization_member_cursor(
+                    cursor,
+                    organization_id,
+                    membership_id,
+                )
+
+    async def update_organization_member(
+        self,
+        organization_id: str,
+        member_id: str,
+        payload: dict[str, Any],
+    ) -> dict[str, Any]:
+        if not self._database_url:
+            raise LangfuseDatabaseConfigError()
+
+        async with await psycopg.AsyncConnection.connect(
+            self._database_url,
+            row_factory=dict_row,
+        ) as connection:
+            async with connection.cursor() as cursor:
+                await cursor.execute(
+                    """
+                    UPDATE organization_memberships
+                    SET role = %(role)s::"Role",
+                        updated_at = NOW()
+                    WHERE org_id = %(organization_id)s
+                      AND id = %(member_id)s
+                    RETURNING id
+                    """,
+                    {
+                        "organization_id": organization_id,
+                        "member_id": member_id,
+                        "role": payload["role"],
+                    },
+                )
+                if await cursor.fetchone() is None:
+                    raise BusinessError(1017, "组织成员不存在", 404)
+                return await self._get_organization_member_cursor(
+                    cursor,
+                    organization_id,
+                    member_id,
+                )
+
+    async def delete_organization_member(
+        self,
+        organization_id: str,
+        member_id: str,
+    ) -> dict[str, Any]:
+        if not self._database_url:
+            raise LangfuseDatabaseConfigError()
+
+        async with await psycopg.AsyncConnection.connect(
+            self._database_url,
+            row_factory=dict_row,
+        ) as connection:
+            async with connection.cursor() as cursor:
+                await cursor.execute(
+                    """
+                    DELETE FROM organization_memberships
+                    WHERE org_id = %(organization_id)s
+                      AND id = %(member_id)s
+                    RETURNING id
+                    """,
+                    {
+                        "organization_id": organization_id,
+                        "member_id": member_id,
+                    },
+                )
+                row = await cursor.fetchone()
+        if row is None:
+            raise BusinessError(1017, "组织成员不存在", 404)
+        return {"id": row["id"]}
+
+    async def _get_user_by_email_cursor(
+        self,
+        cursor: psycopg.AsyncCursor[dict[str, Any]],
+        email: str,
+    ) -> dict[str, Any] | None:
+        await cursor.execute(
+            """
+            SELECT id, name, email
+            FROM users
+            WHERE lower(email) = lower(%(email)s)
+            LIMIT 1
+            """,
+            {"email": email},
+        )
+        return await cursor.fetchone()
+
+    async def _get_organization_member_cursor(
+        self,
+        cursor: psycopg.AsyncCursor[dict[str, Any]],
+        organization_id: str,
+        member_id: str,
+    ) -> dict[str, Any]:
+        await cursor.execute(
+            """
+            SELECT
+                om.id,
+                om.org_id,
+                om.user_id,
+                om.role::text AS role,
+                om.created_at,
+                om.updated_at,
+                u.name,
+                u.email
+            FROM organization_memberships om
+            JOIN users u ON u.id = om.user_id
+            WHERE om.org_id = %(organization_id)s
+              AND om.id = %(member_id)s
+            LIMIT 1
+            """,
+            {"organization_id": organization_id, "member_id": member_id},
+        )
+        row = await cursor.fetchone()
+        if row is None:
+            raise BusinessError(1017, "组织成员不存在", 404)
+        return self._to_member_payload(row)
+
     async def create_organization_with_default_project(
         self,
         payload: dict[str, Any],
@@ -2212,6 +3422,32 @@ class LangfuseDatabaseReader:
                         "name": payload["default_project_name"],
                         "org_id": organization_id,
                         "metadata": Jsonb({"paEval": {"createdBy": owner_email}}),
+                    },
+                )
+                await cursor.execute(
+                    """
+                    INSERT INTO project_memberships (
+                        project_id,
+                        user_id,
+                        org_membership_id,
+                        role,
+                        created_at,
+                        updated_at
+                    )
+                    VALUES (
+                        %(project_id)s,
+                        %(user_id)s,
+                        %(org_membership_id)s,
+                        'OWNER',
+                        NOW(),
+                        NOW()
+                    )
+                    ON CONFLICT (project_id, user_id) DO NOTHING
+                    """,
+                    {
+                        "project_id": project_id,
+                        "user_id": owner_user_id,
+                        "org_membership_id": membership_id,
                     },
                 )
 
@@ -2482,17 +3718,12 @@ class LangfuseDatabaseReader:
 
     async def _ensure_project_visible(self, project_id: str, user_id: str) -> None:
         rows = await self._fetch_all(
-            """
+            f"""
             SELECT p.id
             FROM projects p
             WHERE p.id = %(project_id)s
               AND p.deleted_at IS NULL
-              AND EXISTS (
-                SELECT 1
-                FROM organization_memberships om
-                WHERE om.org_id = p.org_id
-                  AND om.user_id = %(user_id)s
-              )
+              AND {PROJECT_ACCESS_EXISTS_SQL}
             LIMIT 1
             """,
             {"project_id": project_id, "user_id": user_id},
@@ -2505,22 +3736,56 @@ class LangfuseDatabaseReader:
             )
 
     @staticmethod
-    async def _get_project_for_user(
+    async def _get_organization_for_user(
+        cursor: psycopg.AsyncCursor[dict[str, Any]],
+        organization_id: str,
+        user_id: str,
+    ) -> dict[str, Any]:
+        await cursor.execute(
+            """
+            SELECT o.id, o.name
+            FROM organizations o
+            WHERE o.id = %(organization_id)s
+              AND EXISTS (
+                SELECT 1
+                FROM organization_memberships om
+                WHERE om.org_id = o.id
+                  AND om.user_id = %(user_id)s
+              )
+            LIMIT 1
+            """,
+            {"organization_id": organization_id, "user_id": user_id},
+        )
+        organization = await cursor.fetchone()
+        if organization is None:
+            raise BusinessError(
+                code=1004,
+                message="组织不存在或无访问权限",
+                status_code=404,
+            )
+        return organization
+
+    @staticmethod
+    async def _get_project_detail_for_user(
         cursor: psycopg.AsyncCursor[dict[str, Any]],
         project_id: str,
         user_id: str,
     ) -> dict[str, Any]:
         await cursor.execute(
-            """
-            SELECT p.id, p.name
+            f"""
+            SELECT
+                p.id,
+                p.name,
+                p.org_id,
+                o.name AS organization_name,
+                p.created_at,
+                p.updated_at,
+                p.deleted_at,
+                p.metadata
             FROM projects p
+            JOIN organizations o ON o.id = p.org_id
             WHERE p.id = %(project_id)s
-              AND EXISTS (
-                SELECT 1
-                FROM organization_memberships om
-                WHERE om.org_id = p.org_id
-                  AND om.user_id = %(user_id)s
-              )
+              AND {PROJECT_ACCESS_EXISTS_SQL}
             LIMIT 1
             """,
             {"project_id": project_id, "user_id": user_id},
@@ -2533,6 +3798,127 @@ class LangfuseDatabaseReader:
                 status_code=404,
             )
         return project
+
+    async def _set_project_archive_state_for_user(
+        self,
+        project_id: str,
+        user_id: str,
+        user_email: str,
+        archived: bool,
+    ) -> dict[str, Any]:
+        if not self._database_url:
+            raise LangfuseDatabaseConfigError()
+
+        async with await psycopg.AsyncConnection.connect(
+            self._database_url,
+            row_factory=dict_row,
+        ) as connection:
+            async with connection.cursor() as cursor:
+                current = await self._get_project_detail_for_user(
+                    cursor,
+                    project_id,
+                    user_id,
+                )
+                metadata = _merge_pa_eval_metadata(
+                    current.get("metadata"),
+                    {"updatedBy": user_email},
+                )
+                await cursor.execute(
+                    """
+                    UPDATE projects
+                    SET
+                        deleted_at = CASE WHEN %(archived)s THEN NOW() ELSE NULL END,
+                        metadata = %(metadata)s,
+                        updated_at = NOW()
+                    WHERE id = %(project_id)s
+                    RETURNING id, name, org_id, created_at, updated_at, deleted_at, metadata
+                    """,
+                    {
+                        "project_id": project_id,
+                        "archived": archived,
+                        "metadata": Jsonb(metadata),
+                    },
+                )
+                row = await cursor.fetchone()
+
+        assert row is not None
+        return self._to_project_payload(
+            {**row, "organization_name": current["organization_name"]}
+        )
+
+    @staticmethod
+    async def _get_llm_connection_row(
+        cursor: psycopg.AsyncCursor[dict[str, Any]],
+        project_id: str,
+        connection_id: str,
+    ) -> dict[str, Any]:
+        await cursor.execute(
+            """
+            SELECT id, provider, adapter
+            FROM pa_project_llm_connections
+            WHERE project_id = %(project_id)s
+              AND id = %(connection_id)s
+              AND status = 'ACTIVE'
+            LIMIT 1
+            """,
+            {"project_id": project_id, "connection_id": connection_id},
+        )
+        row = await cursor.fetchone()
+        if row is None:
+            raise BusinessError(
+                code=1013,
+                message="LLM 连接不存在或已不可用",
+                status_code=404,
+            )
+        return row
+
+    @staticmethod
+    async def _get_project_for_user(
+        cursor: psycopg.AsyncCursor[dict[str, Any]],
+        project_id: str,
+        user_id: str,
+    ) -> dict[str, Any]:
+        await cursor.execute(
+            f"""
+            SELECT p.id, p.name
+            FROM projects p
+            WHERE p.id = %(project_id)s
+              AND {PROJECT_ACCESS_EXISTS_SQL}
+            LIMIT 1
+            """,
+            {"project_id": project_id, "user_id": user_id},
+        )
+        project = await cursor.fetchone()
+        if project is None:
+            raise BusinessError(
+                code=1005,
+                message="项目不存在或无访问权限",
+                status_code=404,
+            )
+        return project
+
+    @staticmethod
+    async def _ensure_dataset_exists(
+        cursor: psycopg.AsyncCursor[dict[str, Any]],
+        project_id: str,
+        dataset_id: str,
+    ) -> None:
+        await cursor.execute(
+            """
+            SELECT id
+            FROM datasets
+            WHERE project_id = %(project_id)s
+              AND id = %(dataset_id)s
+            LIMIT 1
+            """,
+            {"project_id": project_id, "dataset_id": dataset_id},
+        )
+        if await cursor.fetchone() is None:
+            raise BusinessError(
+                code=1011,
+                message="数据集不存在或无访问权限",
+                status_code=404,
+            )
 
     @staticmethod
     async def _get_latest_evaluator_version(
@@ -2852,6 +4238,38 @@ class LangfuseDatabaseReader:
             )
         return config
 
+    async def _get_score_config_payload_cursor(
+        self,
+        cursor: psycopg.AsyncCursor[dict[str, Any]],
+        project_id: str,
+        config_id: str,
+    ) -> dict[str, Any]:
+        await cursor.execute(
+            """
+            SELECT
+                id,
+                project_id,
+                name,
+                data_type::text AS data_type,
+                description,
+                min_value,
+                max_value,
+                categories,
+                is_archived,
+                created_at,
+                updated_at
+            FROM score_configs
+            WHERE project_id = %(project_id)s
+              AND id = %(config_id)s
+            LIMIT 1
+            """,
+            {"project_id": project_id, "config_id": config_id},
+        )
+        row = await cursor.fetchone()
+        if row is None:
+            raise BusinessError(1024, "评分指标不存在或无访问权限", 404)
+        return self._to_score_config_payload(row)
+
     @staticmethod
     def _normalize_score_value(
         data_type: str,
@@ -2905,6 +4323,57 @@ class LangfuseDatabaseReader:
             "updatedBy": row.get("update_by") or "",
             "createdAt": _format_datetime(row["create_date"]),
             "updatedAt": _format_datetime(row["update_date"]),
+        }
+
+    @staticmethod
+    def _to_llm_connection_payload(row: dict[str, Any]) -> dict[str, Any]:
+        custom_models = row.get("custom_models") or []
+        return {
+            "id": row["id"],
+            "provider": row["provider"],
+            "adapter": row["adapter"],
+            "displaySecretKey": _mask_secret(row.get("secret_key") or ""),
+            "baseUrl": row.get("base_url") or "",
+            "customModels": custom_models if isinstance(custom_models, list) else [],
+            "withDefaultModels": bool(row.get("with_default_models")),
+        }
+
+    @staticmethod
+    def _to_model_definition_payload(row: dict[str, Any]) -> dict[str, Any]:
+        return {
+            "id": row["id"],
+            "modelName": row["model_name"],
+            "matchPattern": row.get("match_pattern") or "",
+            "unit": row.get("unit") or "TOKENS",
+            "inputPrice": row.get("input_price") or "",
+            "outputPrice": row.get("output_price") or "",
+            "tokenizerId": row.get("tokenizer_id") or "",
+        }
+
+    @staticmethod
+    def _to_default_model_payload(
+        row: dict[str, Any] | None,
+        fallback_connection: dict[str, Any] | None,
+        project_id: str,
+    ) -> dict[str, Any]:
+        if row is not None:
+            return {
+                "id": row.get("id") or f"pamodeldefault_{project_id}",
+                "llmConnectionId": row.get("llm_connection_id") or "",
+                "provider": row.get("provider") or "",
+                "adapter": row.get("adapter") or "",
+                "model": row.get("model") or "",
+                "temperature": row.get("temperature") or "0.2",
+            }
+
+        fallback_models = fallback_connection.get("customModels") if fallback_connection else []
+        return {
+            "id": f"pamodeldefault_{project_id}",
+            "llmConnectionId": fallback_connection["id"] if fallback_connection else "",
+            "provider": fallback_connection["provider"] if fallback_connection else "",
+            "adapter": fallback_connection["adapter"] if fallback_connection else "",
+            "model": fallback_models[0] if fallback_models else "",
+            "temperature": "0.2",
         }
 
     @staticmethod
@@ -3025,6 +4494,9 @@ class LangfuseDatabaseReader:
             "id": row["id"],
             "name": row.get("name") or email.split("@")[0] or row["id"],
             "email": email,
+            "role": row.get("role"),
+            "organizationRole": row.get("organization_role"),
+            "projectRole": row.get("project_role"),
         }
 
     @staticmethod
@@ -3200,6 +4672,17 @@ def _decode_jsonish(value: Any) -> Any:
         return stripped
 
 
+def _score_config_storage_payload(payload: dict[str, Any]) -> dict[str, Any]:
+    return {
+        "name": payload["name"],
+        "data_type": payload["dataType"],
+        "description": payload.get("description") or "",
+        "min_value": payload.get("minValue"),
+        "max_value": payload.get("maxValue"),
+        "categories": Jsonb(payload.get("categories") or []),
+    }
+
+
 def _trace_dataset_metadata(trace: dict[str, Any]) -> dict[str, Any]:
     return {
         "source": "trace_log_bulk",
@@ -3214,6 +4697,26 @@ def _trace_dataset_metadata(trace: dict[str, Any]) -> dict[str, Any]:
         "traceMetadata": trace.get("metadata") or {},
         "createdAt": trace.get("createdAt") or "",
     }
+
+
+def _merge_pa_eval_metadata(
+    metadata: dict[str, Any] | None,
+    values: dict[str, Any],
+) -> dict[str, Any]:
+    merged = dict(metadata or {})
+    current_pa_eval = merged.get("paEval")
+    pa_eval = dict(current_pa_eval) if isinstance(current_pa_eval, dict) else {}
+    pa_eval.update({key: value for key, value in values.items() if value is not None})
+    merged["paEval"] = pa_eval
+    return merged
+
+
+def _mask_secret(value: str) -> str:
+    if not value:
+        return ""
+    if len(value) <= 4:
+        return "****"
+    return f"{value[:3]}...{value[-4:]}"
 
 
 def _new_langfuse_id(prefix: str) -> str:

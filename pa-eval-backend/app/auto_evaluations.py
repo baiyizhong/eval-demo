@@ -14,7 +14,7 @@ from pydantic import BaseModel, Field
 from app.auth_context import CurrentUserContext, get_current_user_context
 from app.config import Settings, get_settings
 from app.errors import BusinessError
-from app.langfuse_db import LangfuseDatabaseConfigError
+from app.langfuse_db import LangfuseDatabaseConfigError, PROJECT_ACCESS_EXISTS_SQL
 from app.response import success
 
 router = APIRouter(prefix="/api/projects/{project_id}", tags=["auto-evaluations"])
@@ -101,6 +101,28 @@ class TraceCountPayload(BaseModel):
     trace_filter: dict[str, Any] = Field(default_factory=dict, alias="traceFilter")
 
 
+class EvaluationReportFlowbackTargetPayload(BaseModel):
+    mode: str = Field(pattern="^(EXISTING|CREATE)$")
+    dataset_id: str | None = Field(default=None, alias="datasetId")
+    name: str | None = Field(default=None, max_length=120)
+    description: str = Field(default="", max_length=1000)
+
+
+class EvaluationReportFlowbackPayload(BaseModel):
+    flowback_type: str = Field(
+        alias="flowbackType",
+        pattern="^(BADCASE|EVALUATION_DATA)$",
+    )
+    range: str = Field(pattern="^(ALL|CURRENT_FILTER|BADCASE_ONLY|SELECTED)$")
+    selected_item_ids: list[str] = Field(default_factory=list, alias="selectedItemIds")
+    target_dataset: EvaluationReportFlowbackTargetPayload = Field(alias="targetDataset")
+    dedupe_strategy: str = Field(
+        default="SKIP_DUPLICATE",
+        alias="dedupeStrategy",
+        pattern="^(SKIP_DUPLICATE|CREATE_VERSION)$",
+    )
+
+
 def _new_id(prefix: str) -> str:
     return f"{prefix}_{uuid4().hex}"
 
@@ -127,16 +149,11 @@ async def _ensure_project_access(
     user_id: str,
 ) -> dict[str, Any]:
     await cursor.execute(
-        """
+        f"""
         SELECT p.id, p.name
         FROM projects p
         WHERE p.id = %(project_id)s
-          AND EXISTS (
-            SELECT 1
-            FROM organization_memberships om
-            WHERE om.org_id = p.org_id
-              AND om.user_id = %(user_id)s
-          )
+          AND {PROJECT_ACCESS_EXISTS_SQL}
         LIMIT 1
         """,
         {"project_id": project_id, "user_id": user_id},
@@ -153,19 +170,14 @@ async def _get_pa_evaluator(
     user_id: str,
 ) -> dict[str, Any]:
     await cursor.execute(
-        """
+        f"""
         SELECT pe.id, pe.name, pe.type, pe.provider, pe.version, pe.variables, pe.config
         FROM pa_evaluators pe
         JOIN projects p ON p.id = pe.project_id
         WHERE pe.id = %(evaluator_id)s
           AND pe.status = 'ACTIVE'
           AND p.deleted_at IS NULL
-          AND EXISTS (
-            SELECT 1
-            FROM organization_memberships om
-            WHERE om.org_id = p.org_id
-              AND om.user_id = %(user_id)s
-          )
+          AND {PROJECT_ACCESS_EXISTS_SQL}
         LIMIT 1
         """,
         {"evaluator_id": evaluator_id, "user_id": user_id},
@@ -185,19 +197,14 @@ async def _get_dataset_for_user(
     user_id: str,
 ) -> dict[str, Any]:
     await cursor.execute(
-        """
+        f"""
         SELECT d.id, d.project_id, d.name
         FROM datasets d
         JOIN projects p ON p.id = d.project_id
         WHERE d.id = %(dataset_id)s
           AND d.project_id = %(project_id)s
           AND p.deleted_at IS NULL
-          AND EXISTS (
-            SELECT 1
-            FROM organization_memberships om
-            WHERE om.org_id = p.org_id
-              AND om.user_id = %(user_id)s
-          )
+          AND {PROJECT_ACCESS_EXISTS_SQL}
         LIMIT 1
         """,
         {
@@ -398,6 +405,32 @@ def _sample_dataset_items(
 
     sample_count = max(1, math.ceil(len(items) * sample_rate / 100))
     return items[:sample_count]
+
+
+def _task_compat_fields(
+    data_source: dict[str, Any],
+    *,
+    evaluator_id: str,
+    sample_rate: int,
+    report_template_id: str | None,
+) -> dict[str, Any]:
+    data_source_type = str(data_source.get("type") or "TRACE_FILTER")
+    dataset_id = str(data_source.get("datasetId") or "") if data_source_type == "DATASET" else ""
+    trace_query = (
+        data_source.get("traceFilter")
+        if isinstance(data_source.get("traceFilter"), dict)
+        else data_source
+        if data_source_type == "TRACE_FILTER"
+        else {}
+    )
+    return {
+        "data_source_type": data_source_type,
+        "dataset_id": dataset_id or None,
+        "trace_query": Jsonb(trace_query),
+        "evaluator_ids": Jsonb([evaluator_id]),
+        "run_config": Jsonb({"sampleRate": sample_rate}),
+        "report_config": Jsonb({"reportTemplateId": report_template_id}),
+    }
 
 
 def _stringify_value(value: Any) -> str:
@@ -837,6 +870,16 @@ def _format_report_template(template: str, context: dict[str, str]) -> str:
     return rendered
 
 
+def _report_summary_payload(summary: str) -> dict[str, str]:
+    return {"text": summary}
+
+
+def _report_summary_text(summary: Any) -> str:
+    if isinstance(summary, dict):
+        return str(summary.get("text") or summary.get("summary") or "")
+    return str(summary or "")
+
+
 def _build_report_from_template(
     *,
     task_name: str,
@@ -856,9 +899,12 @@ def _build_report_from_template(
         for result in results
     ]
     badcase_count = item_results.count("badcase")
-    completed_count = sample_count - badcase_count
+    passed_count = sample_count - badcase_count
+    # completedCount 表示工作流已完成执行的样本数；Badcase 是评分结果，
+    # 不应被统计为执行失败，否则任务详情会显示“已完成 0 / 失败 N”。
+    completed_count = sample_count
     average_score = sum(result["score"] for result in results) / sample_count
-    pass_rate = completed_count / sample_count
+    pass_rate = passed_count / sample_count
     badcase_rate = badcase_count / sample_count
     context = {
         "taskName": task_name,
@@ -1470,10 +1516,17 @@ async def _insert_running_auto_evaluation(
         "failed": 0,
         "cancelled": 0,
     }
+    compat_fields = _task_compat_fields(
+        data_source,
+        evaluator_id=evaluator["id"],
+        sample_rate=sample_rate,
+        report_template_id=report_template_id,
+    )
     await cursor.execute(
         """
         INSERT INTO pa_auto_evaluation_tasks (
             id, project_id, name, description, score_name, status,
+            data_source_type, dataset_id, trace_query, evaluator_ids, run_config, report_config,
             evaluator_id, evaluator_name, evaluator_type, evaluator_version,
             data_source, sample_rate, execution_stats, badcase_count,
             latest_report_id, report_template_id, report_template_snapshot,
@@ -1481,6 +1534,7 @@ async def _insert_running_auto_evaluation(
         )
         VALUES (
             %(id)s, %(project_id)s, %(name)s, %(description)s, %(score_name)s, %(status)s,
+            %(data_source_type)s, %(dataset_id)s, %(trace_query)s, %(evaluator_ids)s, %(run_config)s, %(report_config)s,
             %(evaluator_id)s, %(evaluator_name)s, %(evaluator_type)s, %(evaluator_version)s,
             %(data_source)s, %(sample_rate)s, %(execution_stats)s, 0,
             %(latest_report_id)s, %(report_template_id)s, %(report_template_snapshot)s,
@@ -1509,6 +1563,7 @@ async def _insert_running_auto_evaluation(
             "create_date": current_time,
             "update_by": create_by,
             "update_date": current_time,
+            **compat_fields,
         },
     )
     await cursor.execute(
@@ -1536,6 +1591,92 @@ async def _insert_running_auto_evaluation(
             "create_by": create_by,
             "create_date": current_time,
             "update_by": create_by,
+            "update_date": current_time,
+        },
+    )
+
+
+async def _insert_rerun_auto_evaluation(
+    cursor: psycopg.AsyncCursor[dict[str, Any]],
+    *,
+    project_id: str,
+    task_id: str,
+    run_id: str,
+    evaluator_id: str,
+    sample_rate: int,
+    sample_count: int,
+    execution_stats: dict[str, Any],
+    data_source: dict[str, Any],
+    report_template_id: str | None,
+    report_template_snapshot: dict[str, Any],
+    updated_by: str,
+    now: datetime | None,
+) -> None:
+    current_time = now or datetime.now(timezone.utc)
+    compat_fields = _task_compat_fields(
+        data_source,
+        evaluator_id=evaluator_id,
+        sample_rate=sample_rate,
+        report_template_id=report_template_id,
+    )
+    await cursor.execute(
+        """
+        UPDATE pa_auto_evaluation_tasks
+        SET
+            status = 'RUNNING',
+            data_source_type = %(data_source_type)s,
+            dataset_id = %(dataset_id)s,
+            trace_query = %(trace_query)s,
+            evaluator_ids = %(evaluator_ids)s,
+            run_config = %(run_config)s,
+            report_config = %(report_config)s,
+            data_source = %(data_source)s,
+            execution_stats = %(execution_stats)s,
+            badcase_count = 0,
+            latest_report_id = NULL,
+            report_template_id = %(report_template_id)s,
+            report_template_snapshot = %(report_template_snapshot)s,
+            last_run_at = %(last_run_at)s,
+            update_by = %(update_by)s,
+            update_date = %(update_date)s
+        WHERE project_id = %(project_id)s
+          AND id = %(task_id)s
+        """,
+        {
+            "project_id": project_id,
+            "task_id": task_id,
+            "data_source": Jsonb(data_source),
+            "execution_stats": Jsonb(execution_stats),
+            "report_template_id": report_template_id,
+            "report_template_snapshot": Jsonb(report_template_snapshot),
+            "last_run_at": current_time,
+            "update_by": updated_by,
+            "update_date": current_time,
+            **compat_fields,
+        },
+    )
+    await cursor.execute(
+        """
+        INSERT INTO pa_auto_evaluation_runs (
+            id, project_id, task_id, status, sample_count, completed_count,
+            failed_count, badcase_count, started_at, ended_at, duration_text,
+            create_by, create_date, update_by, update_date
+        )
+        VALUES (
+            %(id)s, %(project_id)s, %(task_id)s, 'RUNNING', %(sample_count)s, 0,
+            0, 0, %(started_at)s, NULL, '运行中',
+            %(create_by)s, %(create_date)s, %(update_by)s, %(update_date)s
+        )
+        """,
+        {
+            "id": run_id,
+            "project_id": project_id,
+            "task_id": task_id,
+            "sample_count": sample_count,
+            "started_at": current_time,
+            "create_by": updated_by,
+            "create_date": current_time,
+            "update_by": updated_by,
             "update_date": current_time,
         },
     )
@@ -1612,20 +1753,26 @@ async def _complete_auto_evaluation_success(
 ) -> None:
     await cursor.execute(
         """
-        SELECT create_date, create_by
-        FROM pa_auto_evaluation_tasks
-        WHERE project_id = %(project_id)s
-          AND id = %(task_id)s
+        SELECT
+            t.create_by,
+            COALESCE(r.started_at, t.last_run_at, t.create_date) AS started_at
+        FROM pa_auto_evaluation_tasks t
+        LEFT JOIN pa_auto_evaluation_runs r
+          ON r.project_id = t.project_id
+         AND r.task_id = t.id
+         AND r.id = %(run_id)s
+        WHERE t.project_id = %(project_id)s
+          AND t.id = %(task_id)s
         LIMIT 1
         """,
-        {"project_id": project_id, "task_id": task_id},
+        {"project_id": project_id, "task_id": task_id, "run_id": run_id},
     )
     task_row = await cursor.fetchone()
     if task_row is None:
         return
 
     now = datetime.now(timezone.utc)
-    started_at = task_row.get("create_date") or now
+    started_at = task_row.get("started_at") or now
     create_by = task_row.get("create_by") or updated_by
     report_id = _new_id("pareport")
     input_mapping = _get_effective_input_mapping(
@@ -1650,7 +1797,7 @@ async def _complete_auto_evaluation_success(
         "pending": 0,
         "running": 0,
         "completed": completed_count,
-        "failed": badcase_count,
+        "failed": 0,
         "cancelled": 0,
     }
     report_template_snapshot = report["templateSnapshot"]
@@ -1658,30 +1805,40 @@ async def _complete_auto_evaluation_success(
     await cursor.execute(
         """
         INSERT INTO pa_evaluation_reports (
-            id, project_id, title, source_type, source_task_id, source_task_name,
+            id, project_id, task_id, run_id, name, title,
+            source_type, source_task_id, source_task_name,
             status, sample_count, badcase_count, flowback_count, generated_at,
+            dataset_id, evaluator_ids, generated_by,
             summary, metrics, distribution, group_analysis, recommendations,
             risks, reproduction, report_template_id, report_template_snapshot,
-            create_by, create_date, update_by, update_date
+            created_at, updated_at, create_by, create_date, update_by, update_date
         )
         VALUES (
-            %(id)s, %(project_id)s, %(title)s, 'AUTO_EVAL', %(source_task_id)s, %(source_task_name)s,
+            %(id)s, %(project_id)s, %(task_id)s, %(run_id)s, %(name)s, %(title)s,
+            'AUTO_EVAL', %(source_task_id)s, %(source_task_name)s,
             'READY', %(sample_count)s, %(badcase_count)s, 0, %(generated_at)s,
+            %(dataset_id)s, %(evaluator_ids)s, %(generated_by)s,
             %(summary)s, %(metrics)s, %(distribution)s, %(group_analysis)s, %(recommendations)s,
             %(risks)s, %(reproduction)s, %(report_template_id)s, %(report_template_snapshot)s,
-            %(create_by)s, %(create_date)s, %(update_by)s, %(update_date)s
+            %(created_at)s, %(updated_at)s, %(create_by)s, %(create_date)s, %(update_by)s, %(update_date)s
         )
         """,
         {
             "id": report_id,
             "project_id": project_id,
+            "task_id": task_id,
+            "run_id": run_id,
+            "name": report["title"],
             "title": report["title"],
             "source_task_id": task_id,
             "source_task_name": payload.name,
             "sample_count": sample_count,
             "badcase_count": badcase_count,
             "generated_at": now,
-            "summary": report["summary"],
+            "dataset_id": data_source.get("datasetId") if data_source.get("type") == "DATASET" else None,
+            "evaluator_ids": Jsonb([evaluator["id"]]),
+            "generated_by": create_by,
+            "summary": Jsonb(_report_summary_payload(report["summary"])),
             "metrics": Jsonb(report["metrics"]),
             "distribution": Jsonb(report["distribution"]),
             "group_analysis": Jsonb(report["groupAnalysis"]),
@@ -1690,6 +1847,8 @@ async def _complete_auto_evaluation_success(
             "reproduction": Jsonb(report["reproduction"]),
             "report_template_id": report_template_snapshot["id"],
             "report_template_snapshot": Jsonb(report_template_snapshot),
+            "created_at": now,
+            "updated_at": now,
             "create_by": create_by,
             "create_date": now,
             "update_by": updated_by,
@@ -1702,23 +1861,50 @@ async def _complete_auto_evaluation_success(
         await cursor.execute(
             """
             INSERT INTO pa_evaluation_report_items (
-                id, project_id, report_id, source_id, score_summary, result_type,
+                id, project_id, report_id, source_item_id, trace_id, observation_id,
+                input, output, expected_output, scores, reason, status, error_type,
+                extra, source_id, score_summary, result_type,
                 execution_status, dataset_flowback_status,
-                create_by, create_date, update_by, update_date
+                created_at, updated_at, create_by, create_date, update_by, update_date
             )
             VALUES (
-                %(id)s, %(project_id)s, %(report_id)s, %(source_id)s, %(score_summary)s,
+                %(id)s, %(project_id)s, %(report_id)s, %(source_item_id)s,
+                %(trace_id)s, %(observation_id)s,
+                %(input)s, %(output)s, %(expected_output)s, %(scores)s,
+                %(reason)s, %(status)s, %(error_type)s, %(extra)s,
+                %(source_id)s, %(score_summary)s,
                 %(result_type)s, 'COMPLETED', 'NONE',
-                %(create_by)s, %(create_date)s, %(update_by)s, %(update_date)s
+                %(created_at)s, %(updated_at)s, %(create_by)s, %(create_date)s, %(update_by)s, %(update_date)s
             )
             """,
             {
                 "id": _new_id("paitem"),
                 "project_id": project_id,
                 "report_id": report_id,
+                "source_item_id": sample["id"],
+                "trace_id": sample.get("source_trace_id") or None,
+                "observation_id": sample.get("source_observation_id") or None,
+                "input": Jsonb(sample.get("input") or {}),
+                "output": Jsonb(result["raw"]),
+                "expected_output": Jsonb(sample.get("expected_output") or {}),
+                "scores": Jsonb(
+                    [
+                        {
+                            "name": payload.score_name,
+                            "value": result["score"],
+                            "passed": result["passed"],
+                        }
+                    ]
+                ),
+                "reason": result["reason"],
+                "status": "COMPLETED",
+                "error_type": "",
+                "extra": Jsonb({"resultType": result_type}),
                 "source_id": sample["id"],
                 "score_summary": f"{payload.score_name}: {result['score']:.2f}",
                 "result_type": result_type,
+                "created_at": now,
+                "updated_at": now,
                 "create_by": create_by,
                 "create_date": now,
                 "update_by": updated_by,
@@ -1797,7 +1983,7 @@ async def _complete_auto_evaluation_success(
             "task_id": task_id,
             "run_id": run_id,
             "completed_count": completed_count,
-            "failed_count": badcase_count,
+            "failed_count": 0,
             "badcase_count": badcase_count,
             "ended_at": now,
             "duration_text": _duration_text(started_at, now),
@@ -1967,6 +2153,124 @@ async def get_auto_evaluation_summary(
             "failed": row.get("failed") or 0,
             "notStarted": row.get("not_started") or 0,
             "badcase": row.get("badcase") or 0,
+        }
+    )
+
+
+@router.post("/auto-evaluations/{task_id}/rerun")
+async def rerun_auto_evaluation(
+    project_id: str,
+    task_id: str,
+    background_tasks: BackgroundTasks,
+    current_user: CurrentUserContext = Depends(get_current_user_context),
+    settings: Settings = Depends(get_settings),
+) -> dict[str, Any]:
+    now = datetime.now(timezone.utc)
+    run_id = _new_id("parun")
+
+    async with await _connect(settings) as connection:
+        async with connection.cursor() as cursor:
+            await _ensure_project_access(cursor, project_id, current_user.user_id)
+            await cursor.execute(
+                """
+                SELECT *
+                FROM pa_auto_evaluation_tasks
+                WHERE project_id = %(project_id)s
+                  AND id = %(task_id)s
+                LIMIT 1
+                """,
+                {"project_id": project_id, "task_id": task_id},
+            )
+            task_row = await cursor.fetchone()
+            if task_row is None:
+                raise BusinessError(4005, "自动评测任务不存在", 404)
+            if task_row["status"] == "RUNNING":
+                raise BusinessError(4008, "任务运行中，暂不支持重新运行", 409)
+
+            evaluator = await _get_pa_evaluator(
+                cursor,
+                task_row["evaluator_id"],
+                current_user.user_id,
+            )
+            payload = CreateAutoEvaluationPayload(
+                name=task_row["name"],
+                description=task_row["description"],
+                scoreName=task_row["score_name"],
+                evaluatorId=task_row["evaluator_id"],
+                sampleRate=task_row["sample_rate"],
+                dataSource=task_row.get("data_source") or {"type": "TRACE_FILTER"},
+                variableMapping={},
+                reportTemplateId=task_row.get("report_template_id"),
+                reportTemplateSnapshot=task_row.get("report_template_snapshot") or {},
+            )
+            data_source, samples = await _resolve_auto_evaluation_samples(
+                cursor,
+                project_id,
+                payload,
+                current_user.user_id,
+                settings,
+            )
+            report_template_snapshot = await _resolve_report_template_snapshot(
+                cursor,
+                project_id=project_id,
+                template_id=payload.report_template_id,
+            )
+            payload = payload.model_copy(
+                update={
+                    "report_template_id": report_template_snapshot["id"],
+                    "report_template_snapshot": report_template_snapshot,
+                }
+            )
+            execution_stats = {
+                "pending": len(samples),
+                "running": 0,
+                "completed": 0,
+                "failed": 0,
+                "cancelled": 0,
+            }
+            await _insert_rerun_auto_evaluation(
+                cursor,
+                project_id=project_id,
+                task_id=task_id,
+                run_id=run_id,
+                evaluator_id=task_row["evaluator_id"],
+                sample_rate=task_row["sample_rate"],
+                sample_count=len(samples),
+                execution_stats=execution_stats,
+                data_source=data_source,
+                report_template_id=payload.report_template_id,
+                report_template_snapshot=report_template_snapshot,
+                updated_by=current_user.email,
+                now=now,
+            )
+
+    background_tasks.add_task(
+        _run_auto_evaluation_background,
+        settings,
+        project_id,
+        task_id,
+        run_id,
+        payload,
+        evaluator,
+        samples,
+        data_source,
+        current_user.email,
+    )
+
+    return success(
+        {
+            **_to_task(
+                {
+                    **task_row,
+                    "status": "RUNNING",
+                    "data_source": data_source,
+                    "execution_stats": execution_stats,
+                    "badcase_count": 0,
+                    "last_run_at": now,
+                    "update_date": now,
+                }
+            ),
+            "latestReport": None,
         }
     )
 
@@ -2248,6 +2552,87 @@ async def list_evaluation_report_badcases(
     return success({"total": total, "datas": [_to_report_badcase(row) for row in rows]})
 
 
+@router.get("/evaluation-reports/{report_id}/flowbacks")
+async def list_evaluation_report_flowbacks(
+    project_id: str,
+    report_id: str,
+    current_user: CurrentUserContext = Depends(get_current_user_context),
+    settings: Settings = Depends(get_settings),
+) -> dict[str, Any]:
+    async with await _connect(settings) as connection:
+        async with connection.cursor() as cursor:
+            await _ensure_project_access(cursor, project_id, current_user.user_id)
+            await _ensure_report_exists(cursor, project_id, report_id)
+            await cursor.execute(
+                """
+                SELECT
+                    id,
+                    report_id,
+                    flowback_type,
+                    target_dataset_id,
+                    target_dataset_name,
+                    target_dataset_created,
+                    requested_count,
+                    success_count,
+                    failed_count,
+                    status,
+                    create_by,
+                    create_date,
+                    error_detail
+                FROM pa_evaluation_report_flowbacks
+                WHERE project_id = %(project_id)s
+                  AND report_id = %(report_id)s
+                ORDER BY create_date DESC, id DESC
+                """,
+                {"project_id": project_id, "report_id": report_id},
+            )
+            rows = await cursor.fetchall()
+    return success([_to_report_flowback(row) for row in rows])
+
+
+@router.post("/evaluation-reports/{report_id}/flowbacks/preview")
+async def preview_evaluation_report_flowback(
+    project_id: str,
+    report_id: str,
+    payload: EvaluationReportFlowbackPayload,
+    current_user: CurrentUserContext = Depends(get_current_user_context),
+    settings: Settings = Depends(get_settings),
+) -> dict[str, Any]:
+    async with await _connect(settings) as connection:
+        async with connection.cursor() as cursor:
+            await _ensure_project_access(cursor, project_id, current_user.user_id)
+            await _ensure_report_exists(cursor, project_id, report_id)
+            preview = await _preview_report_flowback(
+                cursor,
+                project_id=project_id,
+                report_id=report_id,
+                payload=payload,
+            )
+    return success(preview)
+
+
+@router.post("/evaluation-reports/{report_id}/flowbacks")
+async def create_evaluation_report_flowback(
+    project_id: str,
+    report_id: str,
+    payload: EvaluationReportFlowbackPayload,
+    current_user: CurrentUserContext = Depends(get_current_user_context),
+    settings: Settings = Depends(get_settings),
+) -> dict[str, Any]:
+    async with await _connect(settings) as connection:
+        async with connection.cursor() as cursor:
+            await _ensure_project_access(cursor, project_id, current_user.user_id)
+            await _ensure_report_exists(cursor, project_id, report_id)
+            flowback = await _create_report_flowback(
+                cursor,
+                project_id=project_id,
+                report_id=report_id,
+                payload=payload,
+                created_by=current_user.email or current_user.user_id,
+            )
+    return success(flowback)
+
+
 def _to_report(row: dict[str, Any]) -> dict[str, Any]:
     return {
         "id": row["id"],
@@ -2261,7 +2646,7 @@ def _to_report(row: dict[str, Any]) -> dict[str, Any]:
         "badcaseCount": row["badcase_count"],
         "flowbackCount": row["flowback_count"],
         "generatedAt": _format_datetime(row["generated_at"]),
-        "summary": row["summary"],
+        "summary": _report_summary_text(row["summary"]),
         "errorMessage": row.get("error_message"),
         "reportTemplateId": row.get("report_template_id"),
     }
@@ -2298,6 +2683,601 @@ async def _ensure_report_exists(
     )
     if await cursor.fetchone() is None:
         raise BusinessError(4004, "评测报告不存在", 404)
+
+
+async def _preview_report_flowback(
+    cursor: psycopg.AsyncCursor[dict[str, Any]],
+    project_id: str,
+    report_id: str,
+    payload: EvaluationReportFlowbackPayload,
+) -> dict[str, Any]:
+    sources = await _list_report_flowback_sources(cursor, project_id, report_id, payload)
+    dataset_name = _default_flowback_dataset_name(payload.flowback_type)
+    duplicate_source_ids: set[str] = set()
+
+    if payload.target_dataset.mode == "EXISTING":
+        dataset = await _get_report_flowback_target_dataset(
+            cursor,
+            project_id,
+            payload.target_dataset.dataset_id,
+        )
+        dataset_name = dataset["name"]
+        duplicate_source_ids = await _find_report_flowback_duplicate_source_ids(
+            cursor,
+            project_id,
+            dataset["id"],
+            report_id,
+            sources,
+        )
+
+    duplicate_count = len(duplicate_source_ids)
+    will_create_count = (
+        len(sources) - duplicate_count
+        if payload.dedupe_strategy == "SKIP_DUPLICATE"
+        else len(sources)
+    )
+    return {
+        "matchedCount": len(sources),
+        "duplicateCount": duplicate_count,
+        "willCreateCount": max(will_create_count, 0),
+        "defaultDatasetName": dataset_name,
+    }
+
+
+async def _create_report_flowback(
+    cursor: psycopg.AsyncCursor[dict[str, Any]],
+    project_id: str,
+    report_id: str,
+    payload: EvaluationReportFlowbackPayload,
+    created_by: str,
+) -> dict[str, Any]:
+    sources = await _list_report_flowback_sources(cursor, project_id, report_id, payload)
+    dataset_created = payload.target_dataset.mode == "CREATE"
+    now = datetime.now(timezone.utc)
+
+    if dataset_created:
+        dataset_id = _new_id("dataset")
+        dataset_name = (payload.target_dataset.name or "").strip()
+        if not dataset_name:
+            raise BusinessError(4010, "数据集名称不能为空")
+        await cursor.execute(
+            """
+            INSERT INTO datasets (
+                id,
+                project_id,
+                name,
+                description,
+                metadata,
+                input_schema,
+                expected_output_schema,
+                created_at,
+                updated_at
+            )
+            VALUES (
+                %(id)s,
+                %(project_id)s,
+                %(name)s,
+                %(description)s,
+                %(metadata)s,
+                '{}'::jsonb,
+                '{}'::jsonb,
+                %(now)s,
+                %(now)s
+            )
+            """,
+            {
+                "id": dataset_id,
+                "project_id": project_id,
+                "name": dataset_name,
+                "description": payload.target_dataset.description,
+                "metadata": Jsonb(
+                    {
+                        "type": "evaluation-flowback",
+                        "paEvaluationReport": {
+                            "reportId": report_id,
+                            "flowbackType": payload.flowback_type,
+                        },
+                    }
+                ),
+                "now": now,
+            },
+        )
+    else:
+        dataset = await _get_report_flowback_target_dataset(
+            cursor,
+            project_id,
+            payload.target_dataset.dataset_id,
+        )
+        dataset_id = dataset["id"]
+        dataset_name = dataset["name"]
+
+    duplicate_source_ids = await _find_report_flowback_duplicate_source_ids(
+        cursor,
+        project_id,
+        dataset_id,
+        report_id,
+        sources,
+    )
+    inserted_source_ids: list[str] = []
+    skipped_count = 0
+    for source in sources:
+        source_item_id = source["source_item_id"]
+        if (
+            payload.dedupe_strategy == "SKIP_DUPLICATE"
+            and source_item_id in duplicate_source_ids
+        ):
+            skipped_count += 1
+            continue
+        await cursor.execute(
+            """
+            INSERT INTO dataset_items (
+                id,
+                project_id,
+                dataset_id,
+                status,
+                input,
+                expected_output,
+                metadata,
+                source_trace_id,
+                source_observation_id,
+                created_at,
+                updated_at,
+                valid_from,
+                is_deleted
+            )
+            VALUES (
+                %(id)s,
+                %(project_id)s,
+                %(dataset_id)s,
+                'ACTIVE'::"DatasetStatus",
+                %(input)s,
+                %(expected_output)s,
+                %(metadata)s,
+                %(source_trace_id)s,
+                %(source_observation_id)s,
+                %(now)s,
+                %(now)s,
+                %(now)s,
+                FALSE
+            )
+            """,
+            {
+                "id": _new_id("datasetitem"),
+                "project_id": project_id,
+                "dataset_id": dataset_id,
+                "input": Jsonb(_source_input(source)),
+                "expected_output": Jsonb(_source_expected_output(source)),
+                "metadata": Jsonb(
+                    _source_flowback_metadata(source, report_id, payload.flowback_type)
+                ),
+                "source_trace_id": source.get("source_trace_id") or "",
+                "source_observation_id": source.get("source_observation_id") or "",
+                "now": now,
+            },
+        )
+        inserted_source_ids.append(source_item_id)
+
+    flowback_id = _new_id("paflowback")
+    success_count = len(inserted_source_ids)
+    failed_count = skipped_count
+    status = "COMPLETED" if failed_count == 0 else "PARTIAL_FAILED"
+    await cursor.execute(
+        """
+        INSERT INTO pa_evaluation_report_flowbacks (
+            id,
+            project_id,
+            report_id,
+            item_id,
+            target_type,
+            target_id,
+            flowback_type,
+            target_dataset_id,
+            target_dataset_name,
+            target_dataset_created,
+            requested_count,
+            success_count,
+            failed_count,
+            status,
+            payload,
+            result,
+            error_detail,
+            created_by,
+            created_at,
+            updated_at,
+            completed_at,
+            create_by,
+            create_date,
+            update_by,
+            update_date
+        )
+        VALUES (
+            %(id)s,
+            %(project_id)s,
+            %(report_id)s,
+            %(item_id)s,
+            %(target_type)s,
+            %(target_id)s,
+            %(flowback_type)s,
+            %(target_dataset_id)s,
+            %(target_dataset_name)s,
+            %(target_dataset_created)s,
+            %(requested_count)s,
+            %(success_count)s,
+            %(failed_count)s,
+            %(status)s,
+            %(payload)s,
+            %(result)s,
+            %(error_detail)s,
+            %(created_by)s,
+            %(created_at)s,
+            %(updated_at)s,
+            %(completed_at)s,
+            %(create_by)s,
+            %(create_date)s,
+            %(update_by)s,
+            %(update_date)s
+        )
+        """,
+        {
+            "id": flowback_id,
+            "project_id": project_id,
+            "report_id": report_id,
+            "item_id": None,
+            "target_type": "DATASET",
+            "target_id": dataset_id,
+            "flowback_type": payload.flowback_type,
+            "target_dataset_id": dataset_id,
+            "target_dataset_name": dataset_name,
+            "target_dataset_created": dataset_created,
+            "requested_count": len(sources),
+            "success_count": success_count,
+            "failed_count": failed_count,
+            "status": status,
+            "payload": Jsonb(payload.model_dump(by_alias=True)),
+            "result": Jsonb(
+                {
+                    "requestedCount": len(sources),
+                    "successCount": success_count,
+                    "failedCount": failed_count,
+                    "skippedCount": skipped_count,
+                }
+            ),
+            "error_detail": Jsonb(
+                [
+                    {"itemId": source_id, "reason": "目标数据集已存在同源样本"}
+                    for source_id in sorted(duplicate_source_ids)
+                    if source_id not in inserted_source_ids
+                ]
+            ),
+            "created_by": created_by,
+            "created_at": now,
+            "updated_at": now,
+            "completed_at": now,
+            "create_by": created_by,
+            "create_date": now,
+            "update_by": created_by,
+            "update_date": now,
+        },
+    )
+    await _mark_report_flowback_sources(
+        cursor,
+        project_id,
+        report_id,
+        payload.flowback_type,
+        inserted_source_ids,
+        created_by,
+        now,
+    )
+    return {
+        "id": flowback_id,
+        "reportId": report_id,
+        "flowbackType": payload.flowback_type,
+        "targetDatasetId": dataset_id,
+        "targetDatasetName": dataset_name,
+        "targetDatasetCreated": dataset_created,
+        "requestedCount": len(sources),
+        "successCount": success_count,
+        "failedCount": failed_count,
+        "status": status,
+        "createdBy": created_by,
+        "createdAt": _format_datetime(now),
+        "errorDetail": [
+            {"itemId": source_id, "reason": "目标数据集已存在同源样本"}
+            for source_id in sorted(duplicate_source_ids)
+            if source_id not in inserted_source_ids
+        ],
+    }
+
+
+async def _list_report_flowback_sources(
+    cursor: psycopg.AsyncCursor[dict[str, Any]],
+    project_id: str,
+    report_id: str,
+    payload: EvaluationReportFlowbackPayload,
+) -> list[dict[str, Any]]:
+    if payload.flowback_type == "BADCASE":
+        await cursor.execute(
+            """
+            SELECT
+                b.id AS source_item_id,
+                b.dataset_item_id AS source_dataset_item_id,
+                b.trace_id AS source_trace_id,
+                b.observation_id AS source_observation_id,
+                di.input,
+                di.expected_output,
+                di.metadata,
+                b.score_value,
+                b.reason,
+                b.comment,
+                COALESCE(ri.score_summary, b.score_name || ': ' || b.score_value::text) AS score_summary,
+                'badcase' AS result_type
+            FROM pa_evaluation_report_badcases b
+            LEFT JOIN dataset_items di
+              ON di.project_id = b.project_id
+             AND di.id = b.dataset_item_id
+             AND di.valid_to IS NULL
+             AND di.is_deleted IS FALSE
+            LEFT JOIN pa_evaluation_report_items ri
+              ON ri.project_id = b.project_id
+             AND ri.report_id = b.report_id
+             AND ri.source_id = b.dataset_item_id
+            WHERE b.project_id = %(project_id)s
+              AND b.report_id = %(report_id)s
+            ORDER BY b.id ASC
+            """,
+            {"project_id": project_id, "report_id": report_id},
+        )
+    else:
+        await cursor.execute(
+            """
+            SELECT
+                ri.id AS source_item_id,
+                ri.source_id AS source_dataset_item_id,
+                COALESCE(di.source_trace_id, '') AS source_trace_id,
+                COALESCE(di.source_observation_id, '') AS source_observation_id,
+                di.input,
+                di.expected_output,
+                di.metadata,
+                NULL::double precision AS score_value,
+                ri.score_summary AS reason,
+                '' AS comment,
+                ri.score_summary,
+                ri.result_type
+            FROM pa_evaluation_report_items ri
+            LEFT JOIN dataset_items di
+              ON di.project_id = ri.project_id
+             AND di.id = ri.source_id
+             AND di.valid_to IS NULL
+             AND di.is_deleted IS FALSE
+            WHERE ri.project_id = %(project_id)s
+              AND ri.report_id = %(report_id)s
+            ORDER BY ri.id ASC
+            """,
+            {"project_id": project_id, "report_id": report_id},
+        )
+    rows = list(await cursor.fetchall())
+    selected_ids = set(payload.selected_item_ids)
+    if payload.range == "SELECTED":
+        rows = [row for row in rows if row["source_item_id"] in selected_ids]
+    elif payload.range == "BADCASE_ONLY":
+        rows = [row for row in rows if row.get("result_type") == "badcase"]
+    return rows
+
+
+async def _get_report_flowback_target_dataset(
+    cursor: psycopg.AsyncCursor[dict[str, Any]],
+    project_id: str,
+    dataset_id: str | None,
+) -> dict[str, Any]:
+    if not dataset_id:
+        raise BusinessError(4011, "请选择目标数据集")
+    await cursor.execute(
+        """
+        SELECT id, name
+        FROM datasets
+        WHERE project_id = %(project_id)s
+          AND id = %(dataset_id)s
+        LIMIT 1
+        """,
+        {"project_id": project_id, "dataset_id": dataset_id},
+    )
+    dataset = await cursor.fetchone()
+    if dataset is None:
+        raise BusinessError(1011, "数据集不存在或无访问权限", 404)
+    return dataset
+
+
+async def _find_report_flowback_duplicate_source_ids(
+    cursor: psycopg.AsyncCursor[dict[str, Any]],
+    project_id: str,
+    dataset_id: str,
+    report_id: str,
+    sources: list[dict[str, Any]],
+) -> set[str]:
+    if not sources:
+        return set()
+    source_item_ids = [source["source_item_id"] for source in sources]
+    source_dataset_item_ids = [
+        source["source_dataset_item_id"]
+        for source in sources
+        if source.get("source_dataset_item_id")
+    ]
+    source_trace_ids = [
+        source["source_trace_id"] for source in sources if source.get("source_trace_id")
+    ]
+    source_observation_ids = [
+        source["source_observation_id"]
+        for source in sources
+        if source.get("source_observation_id")
+    ]
+    await cursor.execute(
+        """
+        SELECT
+            source_trace_id,
+            source_observation_id,
+            metadata
+        FROM dataset_items
+        WHERE project_id = %(project_id)s
+          AND dataset_id = %(dataset_id)s
+          AND valid_to IS NULL
+          AND is_deleted IS FALSE
+          AND (
+            (source_trace_id = ANY(%(source_trace_ids)s) AND source_trace_id <> '')
+            OR (source_observation_id = ANY(%(source_observation_ids)s) AND source_observation_id <> '')
+            OR metadata #>> '{paEvaluationReport,reportId}' = %(report_id)s
+            OR metadata #>> '{paEvaluationReport,sourceItemId}' = ANY(%(source_item_ids)s)
+            OR metadata #>> '{paEvaluationReport,sourceDatasetItemId}' = ANY(%(source_dataset_item_ids)s)
+          )
+        """,
+        {
+            "project_id": project_id,
+            "dataset_id": dataset_id,
+            "report_id": report_id,
+            "source_item_ids": source_item_ids,
+            "source_dataset_item_ids": source_dataset_item_ids,
+            "source_trace_ids": source_trace_ids,
+            "source_observation_ids": source_observation_ids,
+        },
+    )
+    existing_rows = list(await cursor.fetchall())
+    duplicate_source_ids: set[str] = set()
+    for source in sources:
+        source_metadata_keys = {
+            source["source_item_id"],
+            source.get("source_dataset_item_id"),
+        }
+        for row in existing_rows:
+            metadata = row.get("metadata") if isinstance(row.get("metadata"), dict) else {}
+            pa_metadata = metadata.get("paEvaluationReport") or {}
+            if (
+                source.get("source_trace_id")
+                and row.get("source_trace_id") == source.get("source_trace_id")
+            ) or (
+                source.get("source_observation_id")
+                and row.get("source_observation_id")
+                == source.get("source_observation_id")
+            ) or pa_metadata.get("sourceItemId") in source_metadata_keys or pa_metadata.get(
+                "sourceDatasetItemId"
+            ) in source_metadata_keys:
+                duplicate_source_ids.add(source["source_item_id"])
+                break
+    return duplicate_source_ids
+
+
+async def _mark_report_flowback_sources(
+    cursor: psycopg.AsyncCursor[dict[str, Any]],
+    project_id: str,
+    report_id: str,
+    flowback_type: str,
+    source_item_ids: list[str],
+    update_by: str,
+    now: datetime,
+) -> None:
+    if not source_item_ids:
+        return
+    if flowback_type == "BADCASE":
+        await cursor.execute(
+            """
+            UPDATE pa_evaluation_report_badcases
+            SET flowback_status = 'FLOWED_BACK',
+                update_by = %(update_by)s,
+                update_date = %(update_date)s
+            WHERE project_id = %(project_id)s
+              AND report_id = %(report_id)s
+              AND id = ANY(%(source_item_ids)s)
+            """,
+            {
+                "project_id": project_id,
+                "report_id": report_id,
+                "source_item_ids": source_item_ids,
+                "update_by": update_by,
+                "update_date": now,
+            },
+        )
+    else:
+        await cursor.execute(
+            """
+            UPDATE pa_evaluation_report_items
+            SET dataset_flowback_status = 'FLOWED_BACK',
+                update_by = %(update_by)s,
+                update_date = %(update_date)s
+            WHERE project_id = %(project_id)s
+              AND report_id = %(report_id)s
+              AND id = ANY(%(source_item_ids)s)
+            """,
+            {
+                "project_id": project_id,
+                "report_id": report_id,
+                "source_item_ids": source_item_ids,
+                "update_by": update_by,
+                "update_date": now,
+            },
+        )
+    await cursor.execute(
+        """
+        UPDATE pa_evaluation_reports
+        SET flowback_count = flowback_count + %(success_count)s,
+            update_by = %(update_by)s,
+            update_date = %(update_date)s
+        WHERE project_id = %(project_id)s
+          AND id = %(report_id)s
+        """,
+        {
+            "project_id": project_id,
+            "report_id": report_id,
+            "success_count": len(source_item_ids),
+            "update_by": update_by,
+            "update_date": now,
+        },
+    )
+
+
+def _default_flowback_dataset_name(flowback_type: str) -> str:
+    suffix = datetime.now(timezone.utc).strftime("%Y%m%d")
+    if flowback_type == "BADCASE":
+        return f"badcase-自动评测-回流-{suffix}"
+    return f"evaluation-data-自动评测-回流-{suffix}"
+
+
+def _source_input(source: dict[str, Any]) -> Any:
+    if source.get("input") is not None:
+        return source["input"]
+    return {
+        "traceId": source.get("source_trace_id") or "",
+        "observationId": source.get("source_observation_id") or "",
+        "datasetItemId": source.get("source_dataset_item_id") or "",
+        "reason": source.get("reason") or "",
+    }
+
+
+def _source_expected_output(source: dict[str, Any]) -> Any:
+    if source.get("expected_output") is not None:
+        return source["expected_output"]
+    return {
+        "reason": source.get("reason") or "",
+        "comment": source.get("comment") or "",
+        "scoreSummary": source.get("score_summary") or "",
+    }
+
+
+def _source_flowback_metadata(
+    source: dict[str, Any],
+    report_id: str,
+    flowback_type: str,
+) -> dict[str, Any]:
+    metadata = source.get("metadata") if isinstance(source.get("metadata"), dict) else {}
+    return {
+        **metadata,
+        "paEvaluationReport": {
+            "reportId": report_id,
+            "flowbackType": flowback_type,
+            "sourceItemId": source["source_item_id"],
+            "sourceDatasetItemId": source.get("source_dataset_item_id") or "",
+            "scoreValue": source.get("score_value"),
+            "reason": source.get("reason") or "",
+            "comment": source.get("comment") or "",
+        },
+    }
 
 
 async def _delete_auto_evaluation_task(
@@ -2355,6 +3335,24 @@ def _to_report_badcase(row: dict[str, Any]) -> dict[str, Any]:
     }
 
 
+def _to_report_flowback(row: dict[str, Any]) -> dict[str, Any]:
+    return {
+        "id": row["id"],
+        "reportId": row["report_id"],
+        "flowbackType": row["flowback_type"],
+        "targetDatasetId": row["target_dataset_id"],
+        "targetDatasetName": row["target_dataset_name"],
+        "targetDatasetCreated": row["target_dataset_created"],
+        "requestedCount": row["requested_count"],
+        "successCount": row["success_count"],
+        "failedCount": row["failed_count"],
+        "status": row["status"],
+        "createdBy": row["create_by"],
+        "createdAt": _format_datetime(row["create_date"]),
+        "errorDetail": row.get("error_detail") or [],
+    }
+
+
 async def _fetch_task(
     project_id: str,
     task_id: str,
@@ -2399,7 +3397,7 @@ async def _fetch_task(
                         "generatedAt": _format_datetime(report["generated_at"]),
                         "sampleCount": report["sample_count"],
                         "badcaseCount": report["badcase_count"],
-                        "summary": report["summary"],
+                        "summary": _report_summary_text(report["summary"]),
                         "errorMessage": report.get("error_message"),
                     }
             return task

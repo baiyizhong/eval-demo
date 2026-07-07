@@ -24,6 +24,12 @@ class DatasetPayload(BaseModel):
     )
 
 
+class DatasetItemPayload(BaseModel):
+    input: Any = Field(default_factory=dict)
+    expected_output: Any = Field(default_factory=dict, alias="expectedOutput")
+    metadata: dict[str, Any] = Field(default_factory=dict)
+
+
 def _paginate(items: list[dict[str, Any]], page: int, page_size: int) -> dict[str, Any]:
     start = (page - 1) * page_size
     return {"total": len(items), "datas": items[start : start + page_size]}
@@ -71,6 +77,14 @@ def _to_dataset_payload(payload: DatasetPayload) -> dict[str, Any]:
     }
 
 
+def _to_dataset_item_payload(payload: DatasetItemPayload) -> dict[str, Any]:
+    return {
+        "input": payload.input,
+        "expectedOutput": payload.expected_output,
+        "metadata": payload.metadata,
+    }
+
+
 @router.get("")
 async def list_datasets(
     project_id: str,
@@ -88,6 +102,59 @@ async def list_datasets(
         filtered = [item for item in filtered if item["type"] == dataset_type]
 
     return success(_paginate(filtered, page, page_size))
+
+
+@router.post("/{dataset_id}/items")
+async def create_dataset_item(
+    project_id: str,
+    dataset_id: str,
+    payload: DatasetItemPayload,
+    current_user: CurrentUserContext = Depends(get_current_user_context),
+    reader: LangfuseDatabaseReader = Depends(get_langfuse_db_reader),
+) -> dict[str, Any]:
+    item = await reader.create_dataset_item_for_user(
+        project_id,
+        dataset_id,
+        current_user.user_id,
+        _to_dataset_item_payload(payload),
+    )
+    return success(item)
+
+
+@router.patch("/{dataset_id}/items/{item_id}")
+async def update_dataset_item(
+    project_id: str,
+    dataset_id: str,
+    item_id: str,
+    payload: DatasetItemPayload,
+    current_user: CurrentUserContext = Depends(get_current_user_context),
+    reader: LangfuseDatabaseReader = Depends(get_langfuse_db_reader),
+) -> dict[str, Any]:
+    item = await reader.update_dataset_item_for_user(
+        project_id,
+        dataset_id,
+        item_id,
+        current_user.user_id,
+        _to_dataset_item_payload(payload),
+    )
+    return success(item)
+
+
+@router.post("/{dataset_id}/items/{item_id}/archive")
+async def archive_dataset_item(
+    project_id: str,
+    dataset_id: str,
+    item_id: str,
+    current_user: CurrentUserContext = Depends(get_current_user_context),
+    reader: LangfuseDatabaseReader = Depends(get_langfuse_db_reader),
+) -> dict[str, Any]:
+    item = await reader.archive_dataset_item_for_user(
+        project_id,
+        dataset_id,
+        item_id,
+        current_user.user_id,
+    )
+    return success(item)
 
 
 @router.post("")

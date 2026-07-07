@@ -29,6 +29,9 @@ import {
   ClipboardCheck,
   Link2,
 } from 'lucide-react'
+import { cn } from '@/lib/utils'
+import { Badge } from '@/components/ui/badge'
+import { Button } from '@/components/ui/button'
 import {
   DropdownMenu,
   DropdownMenuCheckboxItem,
@@ -37,6 +40,8 @@ import {
   DropdownMenuSeparator,
   DropdownMenuTrigger,
 } from '@/components/ui/dropdown-menu'
+import { Input } from '@/components/ui/input'
+import { Separator } from '@/components/ui/separator'
 
 // ---- Types ----
 type BuiltInNodeType =
@@ -150,78 +155,78 @@ function getAvailableMetadata(nodes: TreeNode[]): MetadataVisibility {
 const DEFAULT_NODE_STYLES: Record<string, NodeStyle> = {
   ingress: {
     icon: <ArrowLeftRight size={10} strokeWidth={2.5} />,
-    textCls: 'text-slate-500',
-    bgCls: 'bg-slate-200',
+    textCls: 'text-muted-foreground',
+    bgCls: 'bg-muted',
   },
   invoke: {
     icon: <ArrowLeftRight size={10} strokeWidth={2.5} />,
-    textCls: 'text-blue-500',
-    bgCls: 'bg-blue-100',
+    textCls: 'text-primary',
+    bgCls: 'bg-primary/10',
   },
   agent: {
     icon: <Bot size={11} strokeWidth={2} />,
-    textCls: 'text-orange-600',
-    bgCls: 'bg-orange-100',
+    textCls: 'text-foreground',
+    bgCls: 'bg-secondary',
   },
   run: {
     icon: <ArrowLeftRight size={10} strokeWidth={2.5} />,
-    textCls: 'text-orange-500',
-    bgCls: 'bg-orange-50 ring-1 ring-orange-200',
+    textCls: 'text-foreground',
+    bgCls: 'bg-muted ring-1 ring-border',
   },
   response: {
     icon: <ArrowUpDown size={10} strokeWidth={2.5} />,
-    textCls: 'text-violet-600',
-    bgCls: 'bg-violet-50 ring-1 ring-violet-200',
+    textCls: 'text-primary',
+    bgCls: 'bg-primary/10 ring-1 ring-primary/20',
   },
   tool: {
     icon: <Flame size={10} strokeWidth={2} />,
-    textCls: 'text-amber-600',
-    bgCls: 'bg-amber-100',
+    textCls: 'text-foreground',
+    bgCls: 'bg-secondary',
   },
   embedding: {
     icon: <Braces size={10} strokeWidth={2.5} />,
-    textCls: 'text-teal-600',
-    bgCls: 'bg-teal-50 ring-1 ring-teal-200',
+    textCls: 'text-primary',
+    bgCls: 'bg-primary/10 ring-1 ring-primary/20',
   },
   retrieval: {
     icon: <Database size={10} strokeWidth={2} />,
-    textCls: 'text-indigo-600',
-    bgCls: 'bg-indigo-50 ring-1 ring-indigo-200',
+    textCls: 'text-foreground',
+    bgCls: 'bg-muted ring-1 ring-border',
   },
   memory: {
     icon: <Brain size={10} strokeWidth={2} />,
-    textCls: 'text-pink-600',
-    bgCls: 'bg-pink-50 ring-1 ring-pink-200',
+    textCls: 'text-muted-foreground',
+    bgCls: 'bg-muted ring-1 ring-border',
   },
   prompt: {
     icon: <FileText size={10} strokeWidth={2} />,
-    textCls: 'text-lime-700',
-    bgCls: 'bg-lime-50 ring-1 ring-lime-200',
+    textCls: 'text-foreground',
+    bgCls: 'bg-secondary ring-1 ring-border',
   },
   router: {
     icon: <Split size={10} strokeWidth={2} />,
-    textCls: 'text-yellow-700',
-    bgCls: 'bg-yellow-50 ring-1 ring-yellow-300',
+    textCls: 'text-foreground',
+    bgCls: 'bg-accent ring-1 ring-border',
   },
   guard: {
     icon: <Shield size={10} strokeWidth={2} />,
-    textCls: 'text-rose-600',
-    bgCls: 'bg-rose-50 ring-1 ring-rose-200',
+    textCls: 'text-destructive',
+    bgCls: 'bg-destructive/10 ring-1 ring-destructive/20',
   },
   eval: {
     icon: <ClipboardCheck size={10} strokeWidth={2} />,
-    textCls: 'text-emerald-600',
-    bgCls: 'bg-emerald-50 ring-1 ring-emerald-200',
+    textCls: 'text-primary',
+    bgCls: 'bg-primary/10 ring-1 ring-primary/20',
   },
   chain: {
     icon: <Link2 size={10} strokeWidth={2.5} />,
-    textCls: 'text-slate-600',
-    bgCls: 'bg-slate-100 ring-1 ring-slate-300',
+    textCls: 'text-muted-foreground',
+    bgCls: 'bg-muted ring-1 ring-border',
   },
   default: {
     icon: <ArrowLeftRight size={10} strokeWidth={2.5} />,
-    textCls: 'text-slate-500',
-    bgCls: 'bg-slate-200',
+    textCls: 'text-muted-foreground',
+    bgCls: 'bg-muted',
   },
 }
 
@@ -299,11 +304,17 @@ function LegendItem({
   return (
     <div className='flex items-center gap-1.5'>
       <span
-        className={`inline-flex h-[15px] w-[15px] items-center justify-center rounded-[2px] ${s.bgCls} ${s.textCls}`}
+        className={cn(
+          'inline-flex size-[15px] items-center justify-center rounded-[2px]',
+          s.bgCls,
+          s.textCls
+        )}
       >
         {s.icon}
       </span>
-      <span className='text-[11px] text-slate-500'>{s.label ?? type}</span>
+      <span className='text-muted-foreground text-[11px]'>
+        {s.label ?? type}
+      </span>
     </div>
   )
 }
@@ -361,9 +372,12 @@ function TreeRow({
     <div>
       {/* Main row */}
       <div
-        className={`group flex cursor-pointer items-center gap-2 py-[6px] pr-3 transition-colors duration-75 select-none ${
-          isDirectMatch ? 'bg-amber-50 hover:bg-amber-100' : 'hover:bg-slate-50'
-        } `}
+        className={cn(
+          'group flex cursor-pointer items-center gap-2 py-[6px] pr-3 transition-colors duration-75 select-none',
+          isDirectMatch
+            ? 'bg-accent text-accent-foreground'
+            : 'hover:bg-muted/60'
+        )}
         style={{ paddingLeft: `${rowPaddingLeft}px` }}
         onClick={(event) => {
           onNodeClick?.(node, {
@@ -389,14 +403,21 @@ function TreeRow({
       >
         {/* Node type icon badge */}
         <span
-          className={`inline-flex h-[18px] w-[18px] shrink-0 items-center justify-center rounded-[3px] ${style.bgCls} ${style.textCls} `}
+          className={cn(
+            'inline-flex size-[18px] shrink-0 items-center justify-center rounded-[3px]',
+            style.bgCls,
+            style.textCls
+          )}
         >
           {style.icon}
         </span>
 
         {/* Title */}
         <span
-          className={`min-w-0 flex-1 truncate text-[13px] leading-snug ${isDirectMatch ? 'font-semibold text-amber-900' : 'font-medium text-slate-800'} `}
+          className={cn(
+            'min-w-0 flex-1 truncate text-[13px] leading-snug',
+            isDirectMatch ? 'font-semibold' : 'text-foreground font-medium'
+          )}
         >
           {node.title}
         </span>
@@ -404,20 +425,21 @@ function TreeRow({
         {/* Right-side metadata */}
         <div className='ml-1 flex shrink-0 items-center gap-3'>
           {metadataVisibility.tokens && node.tokensIn !== undefined && (
-            <span className='font-mono text-[11px] whitespace-nowrap text-violet-500'>
+            <span className='text-muted-foreground font-mono text-[11px] whitespace-nowrap'>
               {node.tokensIn} → {node.tokensOut}&nbsp;(Σ {node.tokensTotal})
             </span>
           )}
           {metadataVisibility.cost && node.cost && (
-            <span className='font-mono text-[11px] whitespace-nowrap text-red-500'>
+            <span className='text-destructive font-mono text-[11px] whitespace-nowrap'>
               Σ {node.cost}
             </span>
           )}
           {metadataVisibility.duration && node.duration && (
             <span
-              className={`font-mono text-[12px] whitespace-nowrap ${
-                durationHigh ? 'text-orange-500' : 'text-slate-400'
-              }`}
+              className={cn(
+                'font-mono text-[12px] whitespace-nowrap',
+                durationHigh ? 'text-foreground' : 'text-muted-foreground'
+              )}
             >
               {node.duration}
             </span>
@@ -425,7 +447,7 @@ function TreeRow({
         </div>
 
         {/* Expand / collapse chevron */}
-        <span className='flex w-[16px] shrink-0 items-center justify-center text-slate-400'>
+        <span className='text-muted-foreground flex w-[16px] shrink-0 items-center justify-center'>
           {hasChildren ? (
             isEffectivelyOpen ? (
               <ChevronDown size={14} strokeWidth={1.5} />
@@ -443,12 +465,13 @@ function TreeRow({
           style={{ paddingLeft: `${rowPaddingLeft + 24}px` }}
         >
           {node.tags.map((tag) => (
-            <span
+            <Badge
               key={tag}
-              className='rounded-[3px] bg-slate-100 px-1.5 py-0.5 font-medium text-slate-500'
+              variant='secondary'
+              className='rounded-[3px] px-1.5 py-0.5 text-[11px]'
             >
               {tag}
-            </span>
+            </Badge>
           ))}
         </div>
       ) : null}
@@ -457,8 +480,9 @@ function TreeRow({
       {hasChildren && isEffectivelyOpen && (
         <div className='relative'>
           {/* Vertical guide line */}
-          <div
-            className='pointer-events-none absolute top-0 bottom-0 w-px bg-slate-200'
+          <Separator
+            orientation='vertical'
+            className='pointer-events-none absolute top-0 bottom-0'
             style={{ left: `${rowPaddingLeft + 8}px` }}
           />
           {visibleChildren.map((child) => (
@@ -565,48 +589,55 @@ export function LLMTraceChain({
 
   return (
     <div
-      className='flex min-h-0 flex-col overflow-hidden rounded-lg border border-border bg-card transition-[width] duration-200'
+      className='border-border bg-card flex min-h-0 flex-col overflow-hidden rounded-lg border transition-[width] duration-200'
       style={containerStyle}
     >
       {/* ---- Header ---- */}
       <div
-        className={`border-border flex items-center gap-2 border-b bg-white py-2.5 ${isCollapsed ? 'px-1.5' : 'px-3'} `}
+        className={cn(
+          'border-border bg-background flex items-center gap-2 border-b py-2.5',
+          isCollapsed ? 'px-1.5' : 'px-3'
+        )}
       >
         {/* Panel toggle */}
-        <button
+        <Button
           type='button'
+          variant='ghost'
+          size='icon'
           onClick={handleCollapsedChange}
           title={isCollapsed ? 'Expand panel' : 'Collapse panel'}
           aria-label={isCollapsed ? 'Expand panel' : 'Collapse panel'}
           aria-expanded={!isCollapsed}
-          className='shrink-0 rounded-md p-1.5 text-slate-400 transition-colors hover:bg-slate-100 hover:text-slate-600'
         >
-          <AlignLeft size={15} strokeWidth={1.75} />
-        </button>
+          <AlignLeft />
+        </Button>
 
         {/* Search */}
         {!isCollapsed && (
-          <div className='flex flex-1 items-center gap-2 rounded-lg border border-transparent bg-slate-100 px-2.5 py-1.5 transition-all focus-within:border-blue-300 focus-within:bg-white'>
+          <div className='relative flex-1'>
             <Search
-              size={13}
-              strokeWidth={2}
-              className='shrink-0 text-slate-400'
+              className='text-muted-foreground pointer-events-none absolute top-1/2 left-2.5 -translate-y-1/2'
+              size={14}
             />
-            <input
+            <Input
               type='text'
               value={searchQuery}
               onChange={(e) => setSearchQuery(e.target.value)}
               placeholder='Search by ID, title, or type…'
-              className='min-w-0 flex-1 bg-transparent text-[13px] text-slate-700 outline-none placeholder:text-slate-400'
+              className='h-8 pr-8 pl-8 text-[13px]'
               style={{ fontFamily: "'Inter', system-ui, sans-serif" }}
             />
             {searchQuery && (
-              <button
+              <Button
+                type='button'
+                variant='ghost'
+                size='icon'
                 onClick={() => setSearchQuery('')}
-                className='text-slate-400 transition-colors hover:text-slate-600'
+                className='absolute top-1/2 right-1 size-6 -translate-y-1/2'
+                aria-label='Clear search'
               >
-                <X size={12} strokeWidth={2} />
-              </button>
+                <X />
+              </Button>
             )}
           </div>
         )}
@@ -616,13 +647,14 @@ export function LLMTraceChain({
           <div className='ml-auto flex shrink-0 items-center gap-0.5'>
             <DropdownMenu>
               <DropdownMenuTrigger asChild>
-                <button
+                <Button
                   type='button'
+                  variant='ghost'
+                  size='icon'
                   title='Filter metadata'
-                  className='rounded-md p-1.5 text-slate-400 transition-colors hover:bg-slate-100 hover:text-slate-600'
                 >
-                  <ListFilter size={14} strokeWidth={1.75} />
-                </button>
+                  <ListFilter />
+                </Button>
               </DropdownMenuTrigger>
               <DropdownMenuContent align='end' className='w-40'>
                 <DropdownMenuLabel>元信息</DropdownMenuLabel>
@@ -668,23 +700,25 @@ export function LLMTraceChain({
                 </DropdownMenuCheckboxItem>
               </DropdownMenuContent>
             </DropdownMenu>
-            <button
+            <Button
               type='button'
+              variant='ghost'
+              size='icon'
               onClick={handleLeafCollapse}
               title='Collapse leaf nodes'
-              className='rounded-md p-1.5 text-slate-400 transition-colors hover:bg-slate-100 hover:text-slate-600'
             >
-              <ListCollapse size={14} strokeWidth={1.75} />
-            </button>
+              <ListCollapse />
+            </Button>
             {onExport && (
-              <button
+              <Button
                 type='button'
+                variant='ghost'
+                size='icon'
                 onClick={handleExport}
                 title='Export'
-                className='rounded-md p-1.5 text-slate-400 transition-colors hover:bg-slate-100 hover:text-slate-700'
               >
-                <Download size={14} strokeWidth={1.75} />
-              </button>
+                <Download />
+              </Button>
             )}
           </div>
         )}
@@ -692,7 +726,7 @@ export function LLMTraceChain({
 
       {/* ---- Legend ---- */}
       {!isCollapsed && (
-        <div className='border-border border-b bg-slate-50/60 px-4 py-2'>
+        <div className='border-border bg-muted/30 border-b px-4 py-2'>
           <div className='flex flex-wrap items-center gap-x-4 gap-y-1'>
             {legendTypes.map((type) => (
               <LegendItem key={type} type={type} nodeStyles={nodeStyles} />
@@ -725,20 +759,22 @@ export function LLMTraceChain({
               <Search
                 size={28}
                 strokeWidth={1.5}
-                className='mb-3 text-slate-300'
+                className='text-muted-foreground mb-3'
               />
-              <p className='text-[13px] font-medium text-slate-500'>
+              <p className='text-muted-foreground text-[13px] font-medium'>
                 No results for "{searchQuery}"
               </p>
-              <p className='mt-1 text-[12px] text-slate-400'>
+              <p className='text-muted-foreground mt-1 text-[12px]'>
                 Try searching by type, title, or ID
               </p>
-              <button
+              <Button
+                type='button'
+                variant='link'
                 onClick={() => setSearchQuery('')}
-                className='mt-3 text-[12px] text-blue-500 underline underline-offset-2 transition-colors hover:text-blue-700'
+                className='mt-3 h-auto p-0 text-[12px]'
               >
                 Clear search
-              </button>
+              </Button>
             </div>
           )}
         </div>
@@ -746,28 +782,28 @@ export function LLMTraceChain({
 
       {/* ---- Footer ---- */}
       {!isCollapsed && (
-        <div className='border-border flex items-center justify-between border-t bg-slate-50/60 px-4 py-2'>
-          <span className='text-[11px] text-slate-400'>
+        <div className='border-border bg-muted/30 flex items-center justify-between border-t px-4 py-2'>
+          <span className='text-muted-foreground text-[11px]'>
             {searchQuery
               ? `Filtering by "${searchQuery}"`
               : `${countNodes(traceData)} nodes total`}
           </span>
-          <div className='flex items-center gap-3 text-[11px] text-slate-400'>
+          <div className='text-muted-foreground flex items-center gap-3 text-[11px]'>
             {effectiveMetadataVisibility.duration && summary?.duration && (
               <span className='flex items-center gap-1'>
-                <span className='inline-block h-2 w-2 rounded-full bg-orange-400' />
+                <span className='bg-foreground inline-block size-2 rounded-full' />
                 Total: {summary.duration}
               </span>
             )}
             {effectiveMetadataVisibility.cost && summary?.cost && (
               <span className='flex items-center gap-1'>
-                <span className='inline-block h-2 w-2 rounded-full bg-red-400' />
+                <span className='bg-destructive inline-block size-2 rounded-full' />
                 Cost: {summary.cost}
               </span>
             )}
             {effectiveMetadataVisibility.tokens && summary?.tokens && (
               <span className='flex items-center gap-1'>
-                <span className='inline-block h-2 w-2 rounded-full bg-violet-400' />
+                <span className='bg-muted-foreground inline-block size-2 rounded-full' />
                 Tokens: {summary.tokens}
               </span>
             )}

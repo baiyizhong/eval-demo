@@ -1,12 +1,12 @@
-import type {
-  DataTableListResponse,
-  DataTableQueryState,
-} from '@/components/common/data-table'
 import { mockAutoEvaluationEvaluators } from '@/modules/app-evaluation/data/mock-auto-evaluations'
 import type {
   AutoEvaluationEvaluatorType,
   MockAutoEvaluationEvaluator,
 } from '@/modules/app-evaluation/types'
+import type {
+  DataTableListResponse,
+  DataTableQueryState,
+} from '@/components/common/data-table'
 
 export type CreateEvaluatorInput = {
   name: string
@@ -31,7 +31,12 @@ export async function listTaskEvaluatorsMock(
   const keyword = query.keyword.trim().toLowerCase()
   const rows = evaluators.filter((evaluator) => {
     if (!keyword) return true
-    return [evaluator.name, evaluator.description, evaluator.type, evaluator.version]
+    return [
+      evaluator.name,
+      evaluator.description,
+      evaluator.type,
+      evaluator.version,
+    ]
       .join(' ')
       .toLowerCase()
       .includes(keyword)
@@ -67,7 +72,10 @@ function paginate<T>(
   query: DataTableQueryState
 ): DataTableListResponse<T> {
   const start = (query.page - 1) * query.pageSize
-  return { total: rows.length, datas: rows.slice(start, start + query.pageSize) }
+  return {
+    total: rows.length,
+    datas: rows.slice(start, start + query.pageSize),
+  }
 }
 
 function clone<T>(value: T): T {

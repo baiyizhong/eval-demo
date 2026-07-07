@@ -1,6 +1,5 @@
 import assert from 'node:assert/strict'
 import { test } from 'node:test'
-
 import { getProjectEntryPath } from '../modules/apps/project-routes.ts'
 
 test('getProjectEntryPath returns the project trace logs entry route', () => {

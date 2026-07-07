@@ -74,7 +74,8 @@ export function getDisplayUserFromAccessToken(
   }
 
   const fallbackName = email.split('@')[0]
-  const name = firstPresentString(payload.name, payload.login, fallbackName) ?? email
+  const name =
+    firstPresentString(payload.name, payload.login, fallbackName) ?? email
 
   return {
     name,

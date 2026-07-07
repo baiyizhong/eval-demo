@@ -1,22 +1,22 @@
-import { ContentSection } from '@/components/common/content-section'
-import { Skeleton } from '@/components/ui/skeleton'
 import { EmptyOrganizationState } from '@/modules/organization-management/components/empty-organization-state'
 import { useOrganizations } from '@/modules/organization-management/hooks/use-organizations'
 import { useOrganizationStore } from '@/stores/organization.store'
+import { Skeleton } from '@/components/ui/skeleton'
+import { ContentSection } from '@/components/common/content-section'
 import { OrganizationInfoForm } from './organization-info-form'
 
 function OrganizationInfoLoading() {
   return (
-    <div className='space-y-6'>
-      <div className='space-y-2'>
+    <div className='flex flex-col gap-6'>
+      <div className='flex flex-col gap-2'>
         <Skeleton className='h-4 w-24' />
         <Skeleton className='h-10 w-full' />
       </div>
-      <div className='space-y-2'>
+      <div className='flex flex-col gap-2'>
         <Skeleton className='h-4 w-24' />
         <Skeleton className='h-10 w-full' />
       </div>
-      <div className='space-y-2'>
+      <div className='flex flex-col gap-2'>
         <Skeleton className='h-4 w-24' />
         <Skeleton className='h-28 w-full' />
       </div>
@@ -25,8 +25,11 @@ function OrganizationInfoLoading() {
 }
 
 export function SettingsOrganizationInfo() {
-  const { organizations: storeOrganizations, data: organizationsData, isPending } =
-    useOrganizations()
+  const {
+    organizations: storeOrganizations,
+    data: organizationsData,
+    isPending,
+  } = useOrganizations()
   const queryOrganizations = organizationsData?.datas
   const currentOrganizationId = useOrganizationStore(
     (state) => state.currentOrganizationId
@@ -37,7 +40,9 @@ export function SettingsOrganizationInfo() {
   const effectiveCurrentOrganization =
     effectiveOrganizations.find(
       (organization) => organization.id === currentOrganizationId
-    ) ?? effectiveOrganizations[0] ?? null
+    ) ??
+    effectiveOrganizations[0] ??
+    null
   const isLoading = isPending || (!isLoaded && !queryOrganizations)
   const isEmpty = !isLoading && effectiveOrganizations.length === 0
 

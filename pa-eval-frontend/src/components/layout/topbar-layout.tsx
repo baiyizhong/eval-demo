@@ -1,8 +1,8 @@
 import type { MouseEvent } from 'react'
 import { Outlet, useLocation, useNavigate } from 'react-router'
-import { SearchProvider } from '@/context/search-provider'
 import { getRouteActiveState } from '@/lib/nav'
 import { cn } from '@/lib/utils'
+import { SearchProvider } from '@/context/search-provider'
 import {
   TopNav,
   type TopNavAction,
@@ -65,7 +65,7 @@ export function TopbarLayout({
     <SearchProvider>
       <div
         className={cn(
-          '@container/content bg-background flex min-h-svh flex-col pt-14',
+          'bg-background @container/content flex min-h-svh flex-col pt-14',
           className
         )}
       >
@@ -77,7 +77,7 @@ export function TopbarLayout({
         <div
           id='content'
           className={cn(
-            'bg-white flex flex-1 flex-col [&>main]:w-full [&>main]:max-w-none [&>main]:px-6 sm:[&>main]:px-8 lg:[&>main]:px-10',
+            'flex flex-1 flex-col bg-white [&>main]:w-full [&>main]:max-w-none [&>main]:px-6 sm:[&>main]:px-8 lg:[&>main]:px-10',
             contentClassName
           )}
         >

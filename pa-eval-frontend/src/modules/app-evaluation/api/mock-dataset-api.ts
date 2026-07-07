@@ -2,7 +2,7 @@ import type {
   DataTableListResponse,
   DataTableQueryState,
 } from '@/components/common/data-table'
-import { mockDatasetItems, mockDatasets } from '../data/mock-datasets'
+import { mockDatasetItems, mockDatasets } from '../data/mock-datasets.ts'
 import type {
   DatasetExportPayload,
   DatasetFormInput,
@@ -200,7 +200,12 @@ export async function listProjectDatasetItemsMock(
   const rows = listDatasetItems(projectId, datasetId).filter((item) => {
     if (statuses?.length && !statuses.includes(item.status)) return false
     if (!keyword) return true
-    return stringifySearch([item.id, item.input, item.expectedOutput, item.metadata])
+    return stringifySearch([
+      item.id,
+      item.input,
+      item.expectedOutput,
+      item.metadata,
+    ])
       .toLowerCase()
       .includes(keyword)
   })
@@ -351,7 +356,10 @@ function touchDataset(projectId: string, datasetId: string) {
   )
 
   if (index >= 0) {
-    datasets[index] = { ...datasets[index], updatedAt: new Date().toISOString() }
+    datasets[index] = {
+      ...datasets[index],
+      updatedAt: new Date().toISOString(),
+    }
   }
 }
 
@@ -376,14 +384,18 @@ function buildSpecificMetrics(
     return [
       {
         label: '期望输出完整率',
-        value: items.length ? `${Math.round((expectedFilled / items.length) * 100)}%` : '-',
+        value: items.length
+          ? `${Math.round((expectedFilled / items.length) * 100)}%`
+          : '-',
       },
       { label: 'Schema 通过率', value: items.length ? '96%' : '-' },
     ]
   }
 
   if (dataset.type === 'badcase') {
-    const high = items.filter((item) => item.metadata.priority === 'high').length
+    const high = items.filter(
+      (item) => item.metadata.priority === 'high'
+    ).length
     return [
       { label: '待处理数量', value: String(items.length) },
       { label: '高优先级数量', value: String(high) },
@@ -411,7 +423,9 @@ function buildSpecificMetrics(
     { label: '异常类型数', value: String(anomalyTypes.size) },
     {
       label: '高优先级数量',
-      value: String(items.filter((item) => item.metadata.priority === 'high').length),
+      value: String(
+        items.filter((item) => item.metadata.priority === 'high').length
+      ),
     },
   ]
 }

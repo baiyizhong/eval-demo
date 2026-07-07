@@ -1,27 +1,7 @@
 import { useMemo, useState } from 'react'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { type ColumnDef } from '@tanstack/react-table'
-import { MoreHorizontal, Plus, Upload } from 'lucide-react'
-import { toast } from 'sonner'
-import { ContentSection } from '@/components/common/content-section'
-import { ConfirmDialog } from '@/components/common/confirm-dialog'
-import {
-  DataTable,
-  type DataTableListResponse,
-  type DataTableQueryState,
-  type DataTableToolbarFilter,
-} from '@/components/common/data-table'
-import { ImportDialog } from '@/components/common/import-dialog'
-import { Badge } from '@/components/ui/badge'
-import { Button } from '@/components/ui/button'
-import {
-  DropdownMenu,
-  DropdownMenuContent,
-  DropdownMenuItem,
-  DropdownMenuTrigger,
-} from '@/components/ui/dropdown-menu'
-import { Skeleton } from '@/components/ui/skeleton'
-import { useAPI } from '@/hooks/use-api'
+import { EmptyOrganizationState } from '@/modules/organization-management/components/empty-organization-state'
 import {
   buildMemberImportResult,
   parseMemberImportCsv,
@@ -37,10 +17,30 @@ import {
   type OrganizationRole,
   type PaginatedResult,
 } from '@/modules/organization-management/data/schema'
-import { useOrganizations } from '@/modules/organization-management/hooks/use-organizations'
 import { useCurrentOrganizationRole } from '@/modules/organization-management/hooks/use-current-organization-role'
-import { EmptyOrganizationState } from '@/modules/organization-management/components/empty-organization-state'
+import { useOrganizations } from '@/modules/organization-management/hooks/use-organizations'
+import { MoreHorizontal, Plus, Upload } from 'lucide-react'
+import { toast } from 'sonner'
 import { useOrganizationStore } from '@/stores/organization.store'
+import { useAPI } from '@/hooks/use-api'
+import { Badge } from '@/components/ui/badge'
+import { Button } from '@/components/ui/button'
+import {
+  DropdownMenu,
+  DropdownMenuContent,
+  DropdownMenuItem,
+  DropdownMenuTrigger,
+} from '@/components/ui/dropdown-menu'
+import { Skeleton } from '@/components/ui/skeleton'
+import { ConfirmDialog } from '@/components/common/confirm-dialog'
+import { ContentSection } from '@/components/common/content-section'
+import {
+  DataTable,
+  type DataTableListResponse,
+  type DataTableQueryState,
+  type DataTableToolbarFilter,
+} from '@/components/common/data-table'
+import { ImportDialog } from '@/components/common/import-dialog'
 import { MemberFormDrawer } from './member-form-drawer'
 import {
   MemberImportResultDialog,
@@ -139,13 +139,13 @@ function getEditBlockedReason(
 
 function OrganizationMembersLoading() {
   return (
-    <div className='space-y-4'>
+    <div className='flex flex-col gap-4'>
       <div className='flex flex-wrap justify-end gap-2'>
         <Skeleton className='h-9 w-24' />
         <Skeleton className='h-9 w-24' />
       </div>
       <div className='rounded-lg border p-4'>
-        <div className='space-y-3'>
+        <div className='flex flex-col gap-3'>
           <Skeleton className='h-8 w-56' />
           <Skeleton className='h-10 w-full' />
           <Skeleton className='h-10 w-full' />
@@ -186,7 +186,9 @@ export function SettingsOrganizationMembers() {
   const effectiveCurrentOrganization =
     effectiveOrganizations.find(
       (organization) => organization.id === currentOrganizationId
-    ) ?? effectiveOrganizations[0] ?? null
+    ) ??
+    effectiveOrganizations[0] ??
+    null
   const organizationId = effectiveCurrentOrganization?.id ?? null
   const isLoading = organizationsPending || (!isLoaded && !queryOrganizations)
   const isEmpty = !isLoading && effectiveOrganizations.length === 0
@@ -284,7 +286,7 @@ export function SettingsOrganizationMembers() {
         accessorKey: 'email',
         header: '邮箱',
         cell: ({ row }) => (
-          <div className='max-w-56 truncate text-muted-foreground'>
+          <div className='text-muted-foreground max-w-56 truncate'>
             {row.original.email}
           </div>
         ),
@@ -340,7 +342,7 @@ export function SettingsOrganizationMembers() {
 
           if (!hasAnyAction) {
             return (
-              <span className='text-xs text-muted-foreground'>
+              <span className='text-muted-foreground text-xs'>
                 {editBlockedReason ?? removeResult.reason ?? '不可操作'}
               </span>
             )
@@ -424,7 +426,9 @@ export function SettingsOrganizationMembers() {
       setImportResult(result)
       setImportResultOpen(true)
       toast.success(
-        result.failures.length > 0 ? '成员导入已完成' : `已导入 ${result.successCount} 位成员`
+        result.failures.length > 0
+          ? '成员导入已完成'
+          : `已导入 ${result.successCount} 位成员`
       )
     } catch {
       // 请求层会统一提示错误，这里不重复 toast
@@ -463,7 +467,7 @@ export function SettingsOrganizationMembers() {
               </Button>
             </div>
 
-            <section className='min-w-0 rounded-lg border bg-card p-4 text-card-foreground'>
+            <section className='bg-card text-card-foreground min-w-0 rounded-lg border p-4'>
               <DataTable<
                 OrganizationMember,
                 DataTableListResponse<OrganizationMember>
@@ -473,7 +477,9 @@ export function SettingsOrganizationMembers() {
                   queryKey: ['organization-members', organizationId, $api],
                   enabled: Boolean(organizationId),
                   queryFn: (state) =>
-                    $api.getOrganizationMembers<DataTableListResponse<OrganizationMember>>({
+                    $api.getOrganizationMembers<
+                      DataTableListResponse<OrganizationMember>
+                    >({
                       path: { organizationId },
                       query: {
                         page: state.page,
@@ -546,9 +552,9 @@ export function SettingsOrganizationMembers() {
           title='删除成员'
           desc={
             deletingMember ? (
-              <div className='space-y-2'>
+              <div className='flex flex-col gap-2'>
                 <p>确定要删除该成员吗？删除后需要重新邀请才能恢复。</p>
-                <div className='rounded-md border bg-muted/20 px-3 py-2 text-sm'>
+                <div className='bg-muted/20 rounded-md border px-3 py-2 text-sm'>
                   <div>{deletingMember.name || '-'}</div>
                   <div className='text-muted-foreground'>
                     {deletingMember.email}

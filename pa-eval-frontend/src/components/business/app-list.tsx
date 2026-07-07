@@ -17,6 +17,13 @@ import {
 } from 'lucide-react'
 import { useSearchParams } from 'react-router'
 import { Button } from '@/components/ui/button'
+import {
+  FormControl,
+  FormField,
+  FormItem,
+  FormLabel,
+  FormMessage,
+} from '@/components/ui/form'
 import { Input } from '@/components/ui/input'
 import {
   Select,
@@ -28,23 +35,16 @@ import {
 } from '@/components/ui/select'
 import { Separator } from '@/components/ui/separator'
 import { Textarea } from '@/components/ui/textarea'
-import { BaseForm } from '@/components/common/base-form'
-import {
-  FormDialog,
-  type FormDialogProps,
-} from '@/components/common/form-dialog'
-import {
-  FormControl,
-  FormField,
-  FormItem,
-  FormLabel,
-  FormMessage,
-} from '@/components/ui/form'
 import {
   AppCardList,
   type AppCardTag,
   type AppCardListItem,
 } from '@/components/business/app-card-list'
+import { BaseForm } from '@/components/common/base-form'
+import {
+  FormDialog,
+  type FormDialogProps,
+} from '@/components/common/form-dialog'
 
 const appListAddFormSchema = z.object({
   name: z.string().min(1, '请输入项目名称'),
@@ -59,8 +59,7 @@ type AppListAddDialogContext = {
 }
 
 type AppListAddDialogContent =
-  | ReactNode
-  | ((context: AppListAddDialogContext) => ReactNode)
+  ReactNode | ((context: AppListAddDialogContext) => ReactNode)
 
 type AppListAddDialogProps = Omit<
   FormDialogProps,

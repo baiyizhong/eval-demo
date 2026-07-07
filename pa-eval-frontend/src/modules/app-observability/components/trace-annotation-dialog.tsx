@@ -1,6 +1,16 @@
 import { useMemo, useState } from 'react'
-import { useQuery } from '@tanstack/react-query'
 import { z } from 'zod'
+import { useQuery } from '@tanstack/react-query'
+import {
+  listProjectAnnotationQueues,
+  listProjectAnnotationUsers,
+  listProjectScoreConfigsForAnnotation,
+} from '@/modules/app-evaluation/api/annotation-api'
+import {
+  scoreDataTypeLabels,
+  type AnnotationQueueFormInput,
+} from '@/modules/app-evaluation/types'
+import { useAPI } from '@/hooks/use-api'
 import { Checkbox } from '@/components/ui/checkbox'
 import {
   FormControl,
@@ -24,16 +34,6 @@ import { Textarea } from '@/components/ui/textarea'
 import { BaseForm } from '@/components/common/base-form'
 import type { DataTableQueryState } from '@/components/common/data-table'
 import { FormDialog } from '@/components/common/form-dialog'
-import { useAPI } from '@/hooks/use-api'
-import {
-  listProjectAnnotationQueues,
-  listProjectAnnotationUsers,
-  listProjectScoreConfigsForAnnotation,
-} from '@/modules/app-evaluation/api/annotation-api'
-import {
-  scoreDataTypeLabels,
-  type AnnotationQueueFormInput,
-} from '@/modules/app-evaluation/types'
 import type { TraceLogRow } from '../types'
 
 type AnnotationMode = 'existing' | 'new'
@@ -80,17 +80,17 @@ export function TraceAnnotationDialog({
   const newFormId = 'trace-new-annotation-form'
 
   const queuesQuery = useQuery({
-    queryKey: ['project-annotation-queues', projectId, 'trace-dialog'],
+    queryKey: ['project-annotation-queues', $api, projectId, 'trace-dialog'],
     queryFn: () => listProjectAnnotationQueues($api, projectId, queueQuery),
     enabled: open,
   })
   const scoreConfigsQuery = useQuery({
-    queryKey: ['project-score-configs', projectId],
+    queryKey: ['project-score-configs', $api, projectId],
     queryFn: () => listProjectScoreConfigsForAnnotation($api, projectId),
     enabled: open,
   })
   const usersQuery = useQuery({
-    queryKey: ['project-annotation-users', projectId],
+    queryKey: ['project-annotation-users', $api, projectId],
     queryFn: () => listProjectAnnotationUsers($api, projectId),
     enabled: open,
   })
@@ -162,7 +162,9 @@ export function TraceAnnotationDialog({
                       </SelectContent>
                     </Select>
                     {queues.length === 0 ? (
-                      <FormDescription>当前项目暂无人工标注队列</FormDescription>
+                      <FormDescription>
+                        当前项目暂无人工标注队列
+                      </FormDescription>
                     ) : null}
                     <FormMessage />
                   </FormItem>
@@ -196,7 +198,10 @@ export function TraceAnnotationDialog({
                     <FormItem>
                       <FormLabel>任务名称</FormLabel>
                       <FormControl>
-                        <Input placeholder='例如：Trace 异常人工标注' {...field} />
+                        <Input
+                          placeholder='例如：Trace 异常人工标注'
+                          {...field}
+                        />
                       </FormControl>
                       <FormMessage />
                     </FormItem>
@@ -209,7 +214,10 @@ export function TraceAnnotationDialog({
                     <FormItem>
                       <FormLabel>任务描述</FormLabel>
                       <FormControl>
-                        <Textarea placeholder='说明任务目标和标注范围' {...field} />
+                        <Textarea
+                          placeholder='说明任务目标和标注范围'
+                          {...field}
+                        />
                       </FormControl>
                       <FormMessage />
                     </FormItem>

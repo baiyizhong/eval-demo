@@ -42,8 +42,12 @@ import { ProjectMembersSettings } from '@/modules/project-settings/views/members
 import { ProjectModelsSettings } from '@/modules/project-settings/views/models'
 import { ProjectScoreConfigsSettings } from '@/modules/project-settings/views/score-configs'
 import { Settings } from '@/modules/settings'
-import { Tasks } from '@/modules/tasks'
-import { TasksAutoEvaluation } from '@/modules/tasks/views/auto-evaluation'
+import {
+  BackendManagement,
+  HelpDocs,
+  OperationAudit,
+  PermissionRequest,
+} from '@/modules/system-pages'
 import { TaskEvaluators } from '@/modules/tasks/views/evaluators'
 import { BookOpen, ShieldCheck } from 'lucide-react'
 import { Navigate } from 'react-router'
@@ -71,7 +75,7 @@ const appsTopbarNavigation: TopNavProps = {
     {
       id: 'audit',
       label: '操作审计',
-      href: '/',
+      href: '/audit',
       activeMatch: 'prefix',
     },
     {
@@ -85,7 +89,7 @@ const appsTopbarNavigation: TopNavProps = {
     {
       id: 'help',
       label: '帮助文档',
-      href: '/dashboard',
+      href: '/help',
       icon: BookOpen,
       title: '帮助文档',
       ariaLabel: '帮助文档',
@@ -93,7 +97,7 @@ const appsTopbarNavigation: TopNavProps = {
     {
       id: 'permissions',
       label: '申请权限',
-      href: '#',
+      href: '/permissions',
       icon: ShieldCheck,
       title: '申请权限',
       ariaLabel: '申请权限',
@@ -142,12 +146,6 @@ export const routes = [
             children: [
               { index: true, element: <Navigate to='/apps' replace /> },
               { path: 'dashboard', element: <Dashboard /> },
-              { path: 'tasks', element: <Tasks /> },
-              { path: 'tasks/evaluators', element: <TaskEvaluators /> },
-              {
-                path: 'tasks/auto-evaluation',
-                element: <TasksAutoEvaluation />,
-              },
               {
                 path: 'projects/:projectId/observability',
                 element: <AppObservability />,
@@ -224,6 +222,10 @@ export const routes = [
             element: <AppsTopbarLayout />,
             children: [
               { path: 'apps', element: <Apps /> },
+              { path: 'audit', element: <OperationAudit /> },
+              { path: 'backend', element: <BackendManagement /> },
+              { path: 'help', element: <HelpDocs /> },
+              { path: 'permissions', element: <PermissionRequest /> },
               {
                 path: 'settings',
                 element: <Settings />,

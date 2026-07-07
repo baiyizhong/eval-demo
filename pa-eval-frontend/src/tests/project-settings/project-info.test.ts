@@ -1,6 +1,5 @@
 import assert from 'node:assert/strict'
 import { test } from 'node:test'
-
 import { toProjectInfo } from '../../modules/project-settings/project-info.ts'
 
 test('toProjectInfo maps current project API data to settings view model', () => {

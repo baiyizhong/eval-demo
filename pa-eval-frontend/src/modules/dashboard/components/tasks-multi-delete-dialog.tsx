@@ -61,17 +61,15 @@ export function TasksMultiDeleteDialog<TData>({
         </span>
       }
       desc={
-        <div className='space-y-4'>
-          <p className='mb-2'>
-            确定要删除选中的任务吗？
-          </p>
+        <div className='flex flex-col gap-4'>
+          <p className='mb-2'>确定要删除选中的任务吗？</p>
 
           <Label className='my-4 flex flex-col items-start gap-1.5'>
             <span className=''>输入“{CONFIRM_WORD}”以确认：</span>
             <Input
               value={value}
               onChange={(e) => setValue(e.target.value)}
-              placeholder=""
+              placeholder=''
             />
           </Label>
 

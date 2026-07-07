@@ -12,6 +12,9 @@ class FakeDatabaseReader:
         self.created = None
         self.updated = None
         self.deleted = None
+        self.created_item = None
+        self.updated_item = None
+        self.archived_item = None
 
     async def list_datasets_for_user(self, project_id: str, user_id: str) -> list[dict]:
         self.project_id = project_id
@@ -167,6 +170,83 @@ class FakeDatabaseReader:
         self.user_id = user_id
         self.deleted = dataset_id
 
+    async def create_dataset_item_for_user(
+        self,
+        project_id: str,
+        dataset_id: str,
+        user_id: str,
+        payload: dict,
+    ) -> dict:
+        self.project_id = project_id
+        self.user_id = user_id
+        self.created_item = {"dataset_id": dataset_id, "payload": payload}
+        return {
+            "id": "item-created",
+            "projectId": project_id,
+            "datasetId": dataset_id,
+            "status": "ACTIVE",
+            "input": payload["input"],
+            "expectedOutput": payload["expectedOutput"],
+            "metadata": payload["metadata"],
+            "sourceTraceId": "",
+            "sourceObservationId": "",
+            "createdAt": "2026-07-02T08:10:00.000Z",
+            "updatedAt": "2026-07-02T08:10:00.000Z",
+        }
+
+    async def update_dataset_item_for_user(
+        self,
+        project_id: str,
+        dataset_id: str,
+        item_id: str,
+        user_id: str,
+        payload: dict,
+    ) -> dict:
+        self.project_id = project_id
+        self.user_id = user_id
+        self.updated_item = {
+            "dataset_id": dataset_id,
+            "item_id": item_id,
+            "payload": payload,
+        }
+        return {
+            "id": item_id,
+            "projectId": project_id,
+            "datasetId": dataset_id,
+            "status": "ACTIVE",
+            "input": payload["input"],
+            "expectedOutput": payload["expectedOutput"],
+            "metadata": payload["metadata"],
+            "sourceTraceId": "",
+            "sourceObservationId": "",
+            "createdAt": "2026-07-02T08:10:00.000Z",
+            "updatedAt": "2026-07-02T09:10:00.000Z",
+        }
+
+    async def archive_dataset_item_for_user(
+        self,
+        project_id: str,
+        dataset_id: str,
+        item_id: str,
+        user_id: str,
+    ) -> dict:
+        self.project_id = project_id
+        self.user_id = user_id
+        self.archived_item = {"dataset_id": dataset_id, "item_id": item_id}
+        return {
+            "id": item_id,
+            "projectId": project_id,
+            "datasetId": dataset_id,
+            "status": "ARCHIVED",
+            "input": {"question": "怎么退款？"},
+            "expectedOutput": {"answer": "在订单详情申请退款"},
+            "metadata": {},
+            "sourceTraceId": "",
+            "sourceObservationId": "",
+            "createdAt": "2026-07-02T08:10:00.000Z",
+            "updatedAt": "2026-07-02T09:10:00.000Z",
+        }
+
 
 def override_reader(fake_reader: FakeDatabaseReader):
     async def _override() -> LangfuseDatabaseReader:
@@ -290,3 +370,48 @@ def test_creates_updates_and_deletes_langfuse_dataset() -> None:
     assert delete_response.status_code == 200
     assert delete_response.json()["data"] == {"id": "dataset-created"}
     assert fake_reader.deleted == "dataset-created"
+
+
+def test_creates_updates_and_archives_langfuse_dataset_items() -> None:
+    fake_reader = FakeDatabaseReader()
+    override_reader(fake_reader)
+    payload = {
+        "input": {"question": "怎么退款？"},
+        "expectedOutput": {"answer": "在订单详情申请退款"},
+        "metadata": {"priority": "high"},
+    }
+
+    try:
+        create_response = TestClient(app).post(
+            "/api/projects/project-1/datasets/dataset-1/items",
+            json=payload,
+        )
+        update_response = TestClient(app).patch(
+            "/api/projects/project-1/datasets/dataset-1/items/item-created",
+            json={**payload, "metadata": {"priority": "medium"}},
+        )
+        archive_response = TestClient(app).post(
+            "/api/projects/project-1/datasets/dataset-1/items/item-created/archive"
+        )
+    finally:
+        clear_overrides()
+
+    assert create_response.status_code == 200
+    assert create_response.json()["data"]["id"] == "item-created"
+    assert fake_reader.created_item == {
+        "dataset_id": "dataset-1",
+        "payload": payload,
+    }
+    assert update_response.status_code == 200
+    assert update_response.json()["data"]["metadata"] == {"priority": "medium"}
+    assert fake_reader.updated_item == {
+        "dataset_id": "dataset-1",
+        "item_id": "item-created",
+        "payload": {**payload, "metadata": {"priority": "medium"}},
+    }
+    assert archive_response.status_code == 200
+    assert archive_response.json()["data"]["status"] == "ARCHIVED"
+    assert fake_reader.archived_item == {
+        "dataset_id": "dataset-1",
+        "item_id": "item-created",
+    }

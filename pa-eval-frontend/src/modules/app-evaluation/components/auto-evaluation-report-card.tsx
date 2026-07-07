@@ -8,12 +8,12 @@ import {
   CardHeader,
   CardTitle,
 } from '@/components/ui/card'
-import { formatDateTime } from './format'
-import { EvaluationReportStatusBadge } from './evaluation-report-status-badge'
 import type {
   AutoEvaluationLatestReportSummary,
   AutoEvaluationTaskRecord,
 } from '../types'
+import { EvaluationReportStatusBadge } from './evaluation-report-status-badge'
+import { formatDateTime } from './format'
 
 export function AutoEvaluationReportCard({
   projectId,
@@ -25,7 +25,12 @@ export function AutoEvaluationReportCard({
   report: AutoEvaluationLatestReportSummary | null
 }) {
   if (task.status === 'RUNNING') {
-    return <StateCard title='报告生成' desc='任务正在运行，完成后可生成并查看评测报告。' />
+    return (
+      <StateCard
+        title='报告生成'
+        desc='任务正在运行，完成后可生成并查看评测报告。'
+      />
+    )
   }
   if (task.status === 'FAILED') {
     return (
@@ -36,7 +41,12 @@ export function AutoEvaluationReportCard({
     )
   }
   if (task.status === 'DRAFT' || task.status === 'READY') {
-    return <StateCard title='报告生成' desc='任务尚未运行，运行完成后将生成评测报告。' />
+    return (
+      <StateCard
+        title='报告生成'
+        desc='任务尚未运行，运行完成后将生成评测报告。'
+      />
+    )
   }
   if (!report) {
     return <StateCard title='报告生成' desc='暂无报告，刷新后查看生成状态。' />

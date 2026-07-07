@@ -1,5 +1,5 @@
-import { describe, it } from 'node:test'
 import assert from 'node:assert/strict'
+import { describe, it } from 'node:test'
 import type { DataTableQueryState } from '@/components/common/data-table'
 import {
   createProjectEvaluationReportFlowbackMock,
@@ -154,6 +154,9 @@ describe('mock evaluation report api', () => {
     )
 
     assert.equal(flowback.status, 'COMPLETED')
-    assert.equal(history.some((item) => item.id === flowback.id), true)
+    assert.equal(
+      history.some((item) => item.id === flowback.id),
+      true
+    )
   })
 })

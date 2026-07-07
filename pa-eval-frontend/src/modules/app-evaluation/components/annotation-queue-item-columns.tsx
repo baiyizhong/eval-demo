@@ -4,10 +4,10 @@ import { Button } from '@/components/ui/button'
 import { Checkbox } from '@/components/ui/checkbox'
 import { DataTableColumnHeader } from '@/components/common/data-table'
 import { LongText } from '@/components/common/long-text'
-import { formatDateTime } from './format'
+import type { AnnotationQueueItemRecord } from '../types'
 import { AnnotationObjectTypeBadge } from './annotation-object-type-badge'
 import { AnnotationStatusBadge } from './annotation-status-badge'
-import type { AnnotationQueueItemRecord } from '../types'
+import { formatDateTime } from './format'
 
 type CreateAnnotationQueueItemColumnsOptions = {
   projectId: string
@@ -101,7 +101,9 @@ export function createAnnotationQueueItemColumns({
         <DataTableColumnHeader column={column} title='完成时间' />
       ),
       cell: ({ row }) =>
-        row.original.completedAt ? formatDateTime(row.original.completedAt) : '-',
+        row.original.completedAt
+          ? formatDateTime(row.original.completedAt)
+          : '-',
     },
     {
       accessorKey: 'completedBy',

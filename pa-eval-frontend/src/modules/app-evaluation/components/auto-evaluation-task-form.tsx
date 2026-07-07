@@ -1,8 +1,9 @@
 import { useEffect, useState } from 'react'
+import { listTaskEvaluators } from '@/modules/tasks/api/evaluator-api'
 import { useNavigate } from 'react-router'
 import { toast } from 'sonner'
-import { useAPI } from '@/hooks/use-api'
 import { confirm } from '@/lib/confirm'
+import { useAPI } from '@/hooks/use-api'
 import { Button } from '@/components/ui/button'
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card'
 import { Input } from '@/components/ui/input'
@@ -24,7 +25,6 @@ import {
 } from '../api/auto-evaluation-api'
 import { listProjectAutoEvaluationDatasets } from '../api/dataset-api'
 import { listProjectEvaluationReportTemplates } from '../api/report-template-api'
-import { listTaskEvaluators } from '@/modules/tasks/api/evaluator-api'
 import type {
   AutoEvaluationTaskFormInput,
   EvaluationReportTemplateRecord,
@@ -77,7 +77,9 @@ export function AutoEvaluationTaskForm({
   const [error, setError] = useState('')
   const [evaluatorKeyword, setEvaluatorKeyword] = useState('')
   const [datasetKeyword, setDatasetKeyword] = useState('')
-  const [evaluators, setEvaluators] = useState<MockAutoEvaluationEvaluator[]>([])
+  const [evaluators, setEvaluators] = useState<MockAutoEvaluationEvaluator[]>(
+    []
+  )
   const [datasets, setDatasets] = useState<MockAutoEvaluationDataset[]>([])
   const [reportTemplates, setReportTemplates] = useState<
     EvaluationReportTemplateRecord[]
@@ -108,18 +110,24 @@ export function AutoEvaluationTaskForm({
   }, [$api, evaluatorKeyword, projectId])
 
   useEffect(() => {
-    void listProjectAutoEvaluationDatasets($api, projectId, datasetKeyword).then(
-      setDatasets
-    )
+    void listProjectAutoEvaluationDatasets(
+      $api,
+      projectId,
+      datasetKeyword
+    ).then(setDatasets)
   }, [$api, datasetKeyword, projectId])
 
   useEffect(() => {
-    void listProjectEvaluationReportTemplates($api, projectId).then((result) => {
-      setReportTemplates(result.datas)
-    })
+    void listProjectEvaluationReportTemplates($api, projectId).then(
+      (result) => {
+        setReportTemplates(result.datas)
+      }
+    )
   }, [$api, projectId])
 
-  const selectedEvaluator = evaluators.find((item) => item.id === form.evaluatorId)
+  const selectedEvaluator = evaluators.find(
+    (item) => item.id === form.evaluatorId
+  )
   let selectedDataset: MockAutoEvaluationDataset | null = null
   if (form.dataSource.type === 'DATASET') {
     const datasetId = form.dataSource.datasetId
@@ -127,9 +135,12 @@ export function AutoEvaluationTaskForm({
   }
   const sourceSampleCount =
     form.dataSource.type === 'DATASET'
-      ? selectedDataset?.itemCount ?? 0
+      ? (selectedDataset?.itemCount ?? 0)
       : form.dataSource.estimatedCount
-  const estimatedRunCount = getEstimatedRunCount(sourceSampleCount, form.sampleRate)
+  const estimatedRunCount = getEstimatedRunCount(
+    sourceSampleCount,
+    form.sampleRate
+  )
 
   const updateForm = (next: AutoEvaluationTaskFormInput) => {
     setForm(next)
@@ -147,7 +158,8 @@ export function AutoEvaluationTaskForm({
   const handleBack = async () => {
     if (!dirty) {
       onCancel?.()
-      if (!onCancel) navigate(`/projects/${projectId}/evaluation/auto-evaluations`)
+      if (!onCancel)
+        navigate(`/projects/${projectId}/evaluation/auto-evaluations`)
       return
     }
     const confirmed = await confirm({
@@ -158,7 +170,8 @@ export function AutoEvaluationTaskForm({
     if (confirmed) {
       onDirtyChange?.(false)
       onCancel?.()
-      if (!onCancel) navigate(`/projects/${projectId}/evaluation/auto-evaluations`)
+      if (!onCancel)
+        navigate(`/projects/${projectId}/evaluation/auto-evaluations`)
     }
   }
 
@@ -287,7 +300,9 @@ export function AutoEvaluationTaskForm({
                 <Button
                   key={evaluator.id}
                   type='button'
-                  variant={form.evaluatorId === evaluator.id ? 'default' : 'outline'}
+                  variant={
+                    form.evaluatorId === evaluator.id ? 'default' : 'outline'
+                  }
                   className='h-auto justify-start px-4 py-3'
                   onClick={() =>
                     updateForm({
@@ -329,10 +344,10 @@ export function AutoEvaluationTaskForm({
                         <SelectContent>
                           <SelectGroup>
                             {sampleFieldOptions.map((field) => (
-                                <SelectItem key={field} value={field}>
-                                  {field}
-                                </SelectItem>
-                              ))}
+                              <SelectItem key={field} value={field}>
+                                {field}
+                              </SelectItem>
+                            ))}
                           </SelectGroup>
                         </SelectContent>
                       </Select>
@@ -370,7 +385,10 @@ export function AutoEvaluationTaskForm({
                 <TabsTrigger value='DATASET'>数据集</TabsTrigger>
                 <TabsTrigger value='TRACE_FILTER'>Trace 过滤</TabsTrigger>
               </TabsList>
-              <TabsContent value='DATASET' className='grid gap-4 md:grid-cols-2'>
+              <TabsContent
+                value='DATASET'
+                className='grid gap-4 md:grid-cols-2'
+              >
                 <Field label='搜索数据集'>
                   <Input
                     value={datasetKeyword}
@@ -404,7 +422,9 @@ export function AutoEvaluationTaskForm({
                         {datasets.map((dataset) => (
                           <SelectItem key={dataset.id} value={dataset.id}>
                             {dataset.name} · {dataset.itemCount} 条
-                            {dataset.projectName ? ` · ${dataset.projectName}` : ''}
+                            {dataset.projectName
+                              ? ` · ${dataset.projectName}`
+                              : ''}
                           </SelectItem>
                         ))}
                       </SelectGroup>
@@ -412,7 +432,10 @@ export function AutoEvaluationTaskForm({
                   </Select>
                 </Field>
               </TabsContent>
-              <TabsContent value='TRACE_FILTER' className='grid gap-4 md:grid-cols-3'>
+              <TabsContent
+                value='TRACE_FILTER'
+                className='grid gap-4 md:grid-cols-3'
+              >
                 <Field label='时间范围'>
                   <Input
                     value={
@@ -454,7 +477,11 @@ export function AutoEvaluationTaskForm({
                   />
                 </Field>
                 <Field label='预估命中'>
-                  <Button type='button' variant='outline' onClick={() => void estimateTrace()}>
+                  <Button
+                    type='button'
+                    variant='outline'
+                    onClick={() => void estimateTrace()}
+                  >
                     {form.dataSource.type === 'TRACE_FILTER'
                       ? `${form.dataSource.estimatedCount} 条`
                       : '开始预估'}
@@ -536,7 +563,11 @@ export function AutoEvaluationTaskForm({
           </div>
         ) : null}
         <div className='flex flex-wrap justify-between gap-2'>
-          <Button type='button' variant='outline' onClick={() => void handleBack()}>
+          <Button
+            type='button'
+            variant='outline'
+            onClick={() => void handleBack()}
+          >
             取消
           </Button>
           <div className='flex gap-2'>
@@ -610,7 +641,9 @@ function getStepError(
   if (step === 1) {
     if (!form.evaluatorId) return '请选择评估器'
     if (
-      evaluator?.variables.some((variable) => !form.variableMapping[variable]) ??
+      evaluator?.variables.some(
+        (variable) => !form.variableMapping[variable]
+      ) ??
       true
     ) {
       return '请完成评估器变量映射'

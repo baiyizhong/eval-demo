@@ -102,9 +102,7 @@ test('buildSidebarDataFromProjects keeps project scoped entries on the current p
 
   const items = sidebar.menuGroups[0]?.items ?? []
   const scopedLinks = items
-    .filter((item) =>
-      ['应用评测', '应用观测', '项目设置'].includes(item.title)
-    )
+    .filter((item) => ['应用评测', '应用观测', '项目设置'].includes(item.title))
     .map((item) => ('url' in item ? item.url : ''))
 
   assert.deepEqual(scopedLinks, [
@@ -120,15 +118,16 @@ test('buildSidebarDataFromProjects keeps platform management entries outside pro
 
   assert.deepEqual(
     items
-      .filter((item) =>
-        ['项目管理', '组织管理', '评测管理'].includes(item.title)
-      )
+      .filter((item) => ['项目管理', '组织管理'].includes(item.title))
       .map((item) => ('url' in item ? [item.title, item.url] : [])),
     [
       ['项目管理', '/apps'],
       ['组织管理', '/settings/info'],
-      ['评测管理', '/tasks'],
     ]
+  )
+  assert.equal(
+    items.some((item) => item.title === '评测管理'),
+    false
   )
 })
 

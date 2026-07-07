@@ -4,9 +4,9 @@ import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
 import { DataTableColumnHeader } from '@/components/common/data-table'
 import { LongText } from '@/components/common/long-text'
-import { formatDateTime } from './format'
-import { AnnotationQueueRowActions } from './annotation-queue-row-actions'
 import { scoreDataTypeLabels, type AnnotationQueueRecord } from '../types'
+import { AnnotationQueueRowActions } from './annotation-queue-row-actions'
+import { formatDateTime } from './format'
 
 type CreateAnnotationQueueColumnsOptions = {
   projectId: string

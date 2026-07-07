@@ -102,6 +102,9 @@ export type ProjectUserRecord = {
   id: string
   name: string
   email: string
+  role?: 'OWNER' | 'ADMIN' | 'MEMBER' | 'VIEWER' | null
+  organizationRole?: 'OWNER' | 'ADMIN' | 'MEMBER' | 'VIEWER' | 'NONE' | null
+  projectRole?: 'OWNER' | 'ADMIN' | 'MEMBER' | 'VIEWER' | 'NONE' | null
 }
 
 export type ScoreConfigRecord = {

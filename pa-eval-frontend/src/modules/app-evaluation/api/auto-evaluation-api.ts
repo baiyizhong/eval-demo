@@ -17,6 +17,7 @@ type AutoEvaluationApiClient = {
   getAutoEvaluationSummary: ApiMethod
   getAutoEvaluationTask: ApiMethod
   deleteAutoEvaluationTask: ApiMethod
+  rerunAutoEvaluationTask: ApiMethod
   getAutoEvaluationLatestReport: ApiMethod
   getAutoEvaluationRuns: ApiMethod
 }
@@ -114,14 +115,26 @@ export function deleteProjectAutoEvaluationTask(
   })
 }
 
+export function rerunProjectAutoEvaluationTask(
+  api: AutoEvaluationApiClient,
+  projectId: string,
+  taskId: string
+) {
+  return api.rerunAutoEvaluationTask<AutoEvaluationTaskRecord>({
+    path: { projectId, taskId },
+  })
+}
+
 export function getProjectAutoEvaluationLatestReport(
   api: AutoEvaluationApiClient,
   projectId: string,
   taskId: string
 ) {
-  return api.getAutoEvaluationLatestReport<AutoEvaluationLatestReportSummary | null>({
-    path: { projectId, taskId },
-  })
+  return api.getAutoEvaluationLatestReport<AutoEvaluationLatestReportSummary | null>(
+    {
+      path: { projectId, taskId },
+    }
+  )
 }
 
 export function listProjectAutoEvaluationRuns(

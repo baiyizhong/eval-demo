@@ -3,8 +3,15 @@ import { z } from 'zod'
 import { useForm } from 'react-hook-form'
 import { zodResolver } from '@hookform/resolvers/zod'
 import { useMutation, useQueryClient } from '@tanstack/react-query'
+import {
+  type Organization,
+  type UpdateOrganizationPayload,
+} from '@/modules/organization-management/data/schema'
+import { organizationsQueryKey } from '@/modules/organization-management/hooks/use-organizations'
 import { Save } from 'lucide-react'
 import { toast } from 'sonner'
+import { useOrganizationStore } from '@/stores/organization.store'
+import { useAPI } from '@/hooks/use-api'
 import { Button } from '@/components/ui/button'
 import {
   Form,
@@ -16,13 +23,6 @@ import {
 } from '@/components/ui/form'
 import { Input } from '@/components/ui/input'
 import { Textarea } from '@/components/ui/textarea'
-import { useAPI } from '@/hooks/use-api'
-import { organizationsQueryKey } from '@/modules/organization-management/hooks/use-organizations'
-import {
-  type Organization,
-  type UpdateOrganizationPayload,
-} from '@/modules/organization-management/data/schema'
-import { useOrganizationStore } from '@/stores/organization.store'
 
 const organizationInfoFormSchema = z.object({
   name: z.string().trim().min(2, '请输入至少 2 个字符的组织名称'),
@@ -36,7 +36,9 @@ type OrganizationInfoFormProps = {
   organization: Organization
 }
 
-export function OrganizationInfoForm({ organization }: OrganizationInfoFormProps) {
+export function OrganizationInfoForm({
+  organization,
+}: OrganizationInfoFormProps) {
   const $api = useAPI()
   const queryClient = useQueryClient()
   const upsertOrganization = useOrganizationStore(
@@ -88,7 +90,10 @@ export function OrganizationInfoForm({ organization }: OrganizationInfoFormProps
 
   return (
     <Form {...form}>
-      <form onSubmit={form.handleSubmit(onSubmit)} className='flex flex-col gap-6'>
+      <form
+        onSubmit={form.handleSubmit(onSubmit)}
+        className='flex flex-col gap-6'
+      >
         <FormField
           control={form.control}
           name='name'

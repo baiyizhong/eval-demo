@@ -96,6 +96,67 @@ class FakeAnnotationDatabaseReader:
             "archived": False,
         }
 
+    async def create_score_config_for_user(
+        self,
+        project_id: str,
+        user_id: str,
+        payload: dict,
+    ) -> dict:
+        self.calls.append(("create_score_config", (project_id, user_id, payload)))
+        return {
+            "id": "score-created",
+            "projectId": project_id,
+            "name": payload["name"],
+            "dataType": payload["dataType"],
+            "description": payload["description"],
+            "minValue": payload["minValue"],
+            "maxValue": payload["maxValue"],
+            "categories": payload["categories"],
+            "archived": False,
+        }
+
+    async def update_score_config_for_user(
+        self,
+        project_id: str,
+        config_id: str,
+        user_id: str,
+        payload: dict,
+    ) -> dict:
+        self.calls.append(("update_score_config", (project_id, config_id, user_id, payload)))
+        return {
+            "id": config_id,
+            "projectId": project_id,
+            "name": payload["name"],
+            "dataType": payload["dataType"],
+            "description": payload["description"],
+            "minValue": payload["minValue"],
+            "maxValue": payload["maxValue"],
+            "categories": payload["categories"],
+            "archived": False,
+        }
+
+    async def set_score_config_archived_for_user(
+        self,
+        project_id: str,
+        config_id: str,
+        user_id: str,
+        archived: bool,
+    ) -> dict:
+        self.calls.append(
+            ("set_score_config_archived", (project_id, config_id, user_id, archived))
+        )
+        return {
+            "id": config_id,
+            "projectId": project_id,
+            "name": "准确性",
+            "dataType": "NUMERIC",
+            "description": "",
+            "minValue": 1,
+            "maxValue": 5,
+            "categories": [],
+            "archived": archived,
+        }
+
     async def add_traces_to_dataset_for_user(
         self,
         project_id: str,
@@ -347,6 +408,57 @@ def test_ensures_default_score_config_for_manual_annotation_queue() -> None:
         "ensure_default_score_config",
         ("project-1", "user-1"),
     )
+
+
+def test_creates_updates_and_archives_score_configs() -> None:
+    fake_reader = FakeAnnotationDatabaseReader()
+    override_reader(fake_reader)
+
+    payload = {
+        "name": "准确性",
+        "dataType": "NUMERIC",
+        "description": "答案是否准确",
+        "minValue": 1,
+        "maxValue": 5,
+        "categories": [],
+    }
+    try:
+        client = TestClient(app)
+        create_response = client.post(
+            "/api/projects/project-1/score-configs",
+            json=payload,
+        )
+        update_response = client.patch(
+            "/api/projects/project-1/score-configs/score-created",
+            json={**payload, "description": "更新说明"},
+        )
+        archive_response = client.post(
+            "/api/projects/project-1/score-configs/score-created/archive"
+        )
+        restore_response = client.post(
+            "/api/projects/project-1/score-configs/score-created/restore"
+        )
+    finally:
+        clear_overrides()
+
+    assert create_response.status_code == 200
+    assert update_response.status_code == 200
+    assert archive_response.status_code == 200
+    assert restore_response.status_code == 200
+    assert fake_reader.calls == [
+        ("create_score_config", ("project-1", "user-1", payload)),
+        (
+            "update_score_config",
+            (
+                "project-1",
+                "score-created",
+                "user-1",
+                {**payload, "description": "更新说明"},
+            ),
+        ),
+        ("set_score_config_archived", ("project-1", "score-created", "user-1", True)),
+        ("set_score_config_archived", ("project-1", "score-created", "user-1", False)),
+    ]
 
 
 def test_adds_selected_traces_to_dataset_with_trace_details() -> None:

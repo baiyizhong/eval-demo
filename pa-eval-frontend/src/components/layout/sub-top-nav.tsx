@@ -85,7 +85,7 @@ export function TopNav({
       <nav
         className={cn(
           'hidden items-center lg:flex',
-          variant === 'default' && 'space-x-4 lg:space-x-4 xl:space-x-6',
+          variant === 'default' && 'gap-4 lg:gap-4 xl:gap-6',
           variant === 'underline' && 'gap-8',
           className
         )}

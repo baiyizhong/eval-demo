@@ -1,5 +1,6 @@
 import { useEffect, useMemo, useState } from 'react'
 import { toast } from 'sonner'
+import { useAPI } from '@/hooks/use-api'
 import { Button } from '@/components/ui/button'
 import {
   Dialog,
@@ -19,12 +20,12 @@ import {
   SelectTrigger,
   SelectValue,
 } from '@/components/ui/select'
-import {
-  createProjectEvaluationReportFlowbackMock,
-  previewProjectEvaluationReportFlowbackMock,
-} from '../api/mock-evaluation-report-api'
-import { useAPI } from '@/hooks/use-api'
 import { listProjectAutoEvaluationDatasets } from '../api/dataset-api'
+import {
+  createProjectEvaluationReportFlowback,
+  previewProjectEvaluationReportFlowback,
+  type EvaluationReportFlowbackPreview,
+} from '../api/evaluation-report-api'
 import type {
   EvaluationReportFlowbackInput,
   EvaluationReportFlowbackType,
@@ -58,15 +59,13 @@ export function EvaluationReportFlowbackDialog({
     useState<EvaluationReportFlowbackInput['range']>(defaultRange)
   const [mode, setMode] = useState<'EXISTING' | 'CREATE'>('CREATE')
   const [datasetId, setDatasetId] = useState('')
-  const [name, setName] = useState('badcase-自动评测-回流-20260703')
+  const [name, setName] = useState('')
   const [dedupeStrategy, setDedupeStrategy] =
     useState<EvaluationReportFlowbackInput['dedupeStrategy']>('SKIP_DUPLICATE')
-  const [preview, setPreview] = useState<{
-    matchedCount: number
-    duplicateCount: number
-    willCreateCount: number
-    defaultDatasetName: string
-  } | null>(null)
+  const [preview, setPreview] =
+    useState<EvaluationReportFlowbackPreview | null>(null)
+  const [previewing, setPreviewing] = useState(false)
+  const [submitting, setSubmitting] = useState(false)
 
   useEffect(() => {
     if (open) {
@@ -85,28 +84,54 @@ export function EvaluationReportFlowbackDialog({
           : { mode: 'CREATE', name, description: '来自评测报告的回流数据' },
       dedupeStrategy,
     }),
-    [datasetId, dedupeStrategy, flowbackType, mode, name, range, selectedItemIds]
+    [
+      datasetId,
+      dedupeStrategy,
+      flowbackType,
+      mode,
+      name,
+      range,
+      selectedItemIds,
+    ]
   )
 
   const handlePreview = async () => {
-    const result = await previewProjectEvaluationReportFlowbackMock(
-      projectId,
-      reportId,
-      input
-    )
-    setPreview(result)
-    if (mode === 'CREATE') setName(result.defaultDatasetName)
+    if (mode === 'EXISTING' && !datasetId) {
+      toast.error('请选择目标数据集')
+      return
+    }
+    setPreviewing(true)
+    try {
+      const result = await previewProjectEvaluationReportFlowback(
+        $api,
+        projectId,
+        reportId,
+        input
+      )
+      setPreview(result)
+      if (mode === 'CREATE' && name.trim() === '') {
+        setName(result.defaultDatasetName)
+      }
+    } finally {
+      setPreviewing(false)
+    }
   }
 
   const handleConfirm = async () => {
-    const flowback = await createProjectEvaluationReportFlowbackMock(
-      projectId,
-      reportId,
-      input
-    )
-    toast.success(`已回流 ${flowback.successCount} 条数据`)
-    await onCompleted()
-    onOpenChange(false)
+    setSubmitting(true)
+    try {
+      const flowback = await createProjectEvaluationReportFlowback(
+        $api,
+        projectId,
+        reportId,
+        input
+      )
+      toast.success(`已回流 ${flowback.successCount} 条数据`)
+      await onCompleted()
+      onOpenChange(false)
+    } finally {
+      setSubmitting(false)
+    }
   }
 
   return (
@@ -216,24 +241,38 @@ export function EvaluationReportFlowbackDialog({
           </Field>
         </div>
         {preview ? (
-          <div className='rounded-lg border bg-card p-3 text-sm'>
-            匹配 {preview.matchedCount} 条，重复 {preview.duplicateCount} 条，将回流{' '}
-            {preview.willCreateCount} 条。
+          <div className='bg-card rounded-lg border p-3 text-sm'>
+            匹配 {preview.matchedCount} 条，重复 {preview.duplicateCount}{' '}
+            条，将回流 {preview.willCreateCount} 条。
           </div>
         ) : null}
         <DialogFooter>
-          <Button type='button' variant='outline' onClick={() => onOpenChange(false)}>
+          <Button
+            type='button'
+            variant='outline'
+            onClick={() => onOpenChange(false)}
+          >
             取消
-          </Button>
-          <Button type='button' variant='outline' onClick={() => void handlePreview()}>
-            预览
           </Button>
           <Button
             type='button'
-            disabled={!preview || preview.willCreateCount <= 0}
+            variant='outline'
+            disabled={previewing || submitting}
+            onClick={() => void handlePreview()}
+          >
+            {previewing ? '预览中...' : '预览'}
+          </Button>
+          <Button
+            type='button'
+            disabled={
+              submitting ||
+              !preview ||
+              preview.willCreateCount <= 0 ||
+              (mode === 'EXISTING' && !datasetId)
+            }
             onClick={() => void handleConfirm()}
           >
-            确认回流
+            {submitting ? '回流中...' : '确认回流'}
           </Button>
         </DialogFooter>
       </DialogContent>
@@ -241,7 +280,13 @@ export function EvaluationReportFlowbackDialog({
   )
 }
 
-function Field({ label, children }: { label: string; children: React.ReactNode }) {
+function Field({
+  label,
+  children,
+}: {
+  label: string
+  children: React.ReactNode
+}) {
   return (
     <div className='flex flex-col gap-2'>
       <Label>{label}</Label>

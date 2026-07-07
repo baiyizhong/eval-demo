@@ -29,14 +29,20 @@ export function AutoEvaluationRowActions({
   return (
     <DropdownMenu>
       <DropdownMenuTrigger asChild>
-        <Button variant='ghost' size='icon' aria-label='打开自动评测任务操作菜单'>
+        <Button
+          variant='ghost'
+          size='icon'
+          aria-label='打开自动评测任务操作菜单'
+        >
           <MoreHorizontal />
         </Button>
       </DropdownMenuTrigger>
       <DropdownMenuContent align='end'>
         <DropdownMenuGroup>
           <DropdownMenuItem asChild>
-            <Link to={`/projects/${projectId}/evaluation/auto-evaluations/${task.id}`}>
+            <Link
+              to={`/projects/${projectId}/evaluation/auto-evaluations/${task.id}`}
+            >
               <Eye data-icon='inline-start' />
               查看详情
             </Link>

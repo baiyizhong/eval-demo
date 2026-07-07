@@ -1,9 +1,9 @@
 import { useState } from 'react'
 import { useQuery } from '@tanstack/react-query'
 import { useNavigate, useParams } from 'react-router'
+import { useAPI } from '@/hooks/use-api'
 import { Loading } from '@/components/common/loading'
 import { Page } from '@/components/common/page'
-import { useAPI } from '@/hooks/use-api'
 import { ObservabilityPageNav } from '../components/observability-page-nav'
 import { SlowTraceRanking } from '../components/slow-trace-ranking'
 import { TraceDashboardCards } from '../components/trace-dashboard-cards'
@@ -57,9 +57,7 @@ export function TraceDashboard() {
             <TraceDashboardCards summary={metrics.summary} />
             <div className='grid gap-4 xl:grid-cols-[2fr_1fr]'>
               <TraceTrendChart data={metrics.traceTrend} />
-              <TraceEnvironmentChart
-                data={metrics.environmentDistribution}
-              />
+              <TraceEnvironmentChart data={metrics.environmentDistribution} />
             </div>
             <div className='grid gap-4 xl:grid-cols-[2fr_1fr]'>
               <TraceLatencyChart data={metrics.latencyTrend} />

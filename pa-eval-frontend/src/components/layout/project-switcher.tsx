@@ -1,5 +1,7 @@
+import { buildProjectSwitchPath } from '@/modules/project-context/project-context-utils'
 import { Check, ChevronsUpDown } from 'lucide-react'
 import { useLocation, useNavigate, useParams } from 'react-router'
+import { cn } from '@/lib/utils'
 import {
   DropdownMenu,
   DropdownMenuContent,
@@ -13,8 +15,6 @@ import {
   SidebarMenuItem,
   useSidebar,
 } from '@/components/ui/sidebar'
-import { cn } from '@/lib/utils'
-import { buildProjectSwitchPath } from '@/modules/project-context/project-context-utils'
 import { resolveIcon } from './icon-map'
 
 type ProjectSwitcherProps = {

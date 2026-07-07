@@ -1,21 +1,26 @@
-import type { Table } from '@tanstack/react-table'
-import { useQueryClient } from '@tanstack/react-query'
-import { Database, Download, Tags } from 'lucide-react'
 import { useState } from 'react'
+import { useQueryClient } from '@tanstack/react-query'
+import type { Table } from '@tanstack/react-table'
+import {
+  createProjectAnnotationQueue,
+  createTraceAnnotationTask,
+} from '@/modules/app-evaluation/api/annotation-api'
+import type { AnnotationQueueFormInput } from '@/modules/app-evaluation/types'
+import { Database, Download, Tags } from 'lucide-react'
 import { toast } from 'sonner'
 import { useAPI } from '@/hooks/use-api'
 import { Button } from '@/components/ui/button'
 import { DataTableBulkActions } from '@/components/common/data-table'
 import {
-  addProjectTracesToDataset,
-  createProjectAnnotationQueue,
-  createTraceAnnotationTask,
-} from '@/modules/app-evaluation/api/annotation-api'
-import type { AnnotationQueueFormInput } from '@/modules/app-evaluation/types'
-import { exportProjectTracesMock } from '../api/mock-trace-api'
-import { TraceAnnotationDialog } from './trace-annotation-dialog'
-import { TraceDatasetDialog } from './trace-dataset-dialog'
+  addProjectTracesToDatasetTarget,
+  type TraceDatasetTargetInput,
+} from '../api/trace-dataset-api'
 import type { TraceLogRow } from '../types'
+import { TraceAnnotationDialog } from './trace-annotation-dialog'
+import {
+  TraceDatasetDialog,
+  type TraceDatasetSubmitValues,
+} from './trace-dataset-dialog'
 
 type TraceLogBulkActionsProps = {
   table: Table<TraceLogRow>
@@ -35,7 +40,7 @@ export function TraceLogBulkActions({
   const traceIds = selectedRows.map((row) => row.original.traceId)
 
   const handleExport = async () => {
-    const traces = await exportProjectTracesMock(projectId, traceIds)
+    const traces = selectedTraces
     const blob = new Blob([JSON.stringify(traces, null, 2)], {
       type: 'application/json',
     })
@@ -50,9 +55,14 @@ export function TraceLogBulkActions({
 
   const handleCreateAnnotationTask = async (queueId: string) => {
     try {
-      const result = await createTraceAnnotationTask($api, projectId, traceIds, {
-        queueId,
-      })
+      const result = await createTraceAnnotationTask(
+        $api,
+        projectId,
+        traceIds,
+        {
+          queueId,
+        }
+      )
       await queryClient.invalidateQueries({
         queryKey: ['project-annotation-queues', projectId],
       })
@@ -72,9 +82,14 @@ export function TraceLogBulkActions({
   ) => {
     try {
       const queue = await createProjectAnnotationQueue($api, projectId, input)
-      const result = await createTraceAnnotationTask($api, projectId, traceIds, {
-        queueId: queue.id,
-      })
+      const result = await createTraceAnnotationTask(
+        $api,
+        projectId,
+        traceIds,
+        {
+          queueId: queue.id,
+        }
+      )
       await queryClient.invalidateQueries({
         queryKey: ['project-annotation-queues', projectId],
       })
@@ -90,19 +105,41 @@ export function TraceLogBulkActions({
     }
   }
 
-  const handleAddToDataset = async ({ datasetId }: { datasetId: string }) => {
+  const handleAddToDataset = async (values: TraceDatasetSubmitValues) => {
     try {
-      const result = await addProjectTracesToDataset($api, projectId, {
-        datasetId,
-        traceIds,
-      })
+      const input: TraceDatasetTargetInput =
+        values.mode === 'existing'
+          ? {
+              mode: 'existing',
+              datasetId: values.datasetId,
+              traceIds,
+            }
+          : {
+              mode: 'create',
+              name: values.name,
+              description: values.description,
+              datasetType: values.datasetType,
+              traceIds,
+            }
+      const result = await addProjectTracesToDatasetTarget(
+        $api,
+        projectId,
+        input
+      )
       await queryClient.invalidateQueries({
         queryKey: ['project-datasets', projectId],
       })
+      await queryClient.invalidateQueries({
+        queryKey: ['project-datasets'],
+      })
+      const successMessage =
+        values.mode === 'create'
+          ? `已创建评测集并加入 ${result.successCount} 条 Trace`
+          : `已加入 ${result.successCount} 条 Trace`
       toast.success(
         result.failureCount
-          ? `已加入 ${result.successCount} 条 Trace，失败 ${result.failureCount} 条`
-          : `已加入 ${result.successCount} 条 Trace`
+          ? `${successMessage}，失败 ${result.failureCount} 条`
+          : successMessage
       )
       table.resetRowSelection()
     } catch (error) {

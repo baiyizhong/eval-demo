@@ -18,10 +18,31 @@ class FakeDatabaseReader:
     def __init__(self) -> None:
         self.project_id = None
         self.user_id = None
+        self.patched_trace_payload = None
 
     async def ensure_project_visible(self, project_id: str, user_id: str) -> None:
         self.project_id = project_id
         self.user_id = user_id
+
+    async def patch_trace_for_user(
+        self,
+        project_id: str,
+        trace_id: str,
+        user_id: str,
+        payload: dict,
+    ) -> dict:
+        self.patched_trace_payload = {
+            "project_id": project_id,
+            "trace_id": trace_id,
+            "user_id": user_id,
+            "payload": payload,
+        }
+        return {
+            "traceId": trace_id,
+            "input": payload["input"],
+            "output": payload["output"],
+            "metadata": payload["metadata"],
+        }
 
 
 class FakeTraceReader:
@@ -161,6 +182,45 @@ def test_gets_project_trace_metrics_and_detail() -> None:
     assert metrics_response.json()["data"]["summary"]["total"] == 1
     assert detail_response.status_code == 200
     assert detail_response.json()["data"]["traceId"] == "trace-1"
+
+
+def test_patches_project_trace_and_returns_merged_detail() -> None:
+    fake_db = FakeDatabaseReader()
+    fake_trace = FakeTraceReader()
+    override_readers(fake_db, fake_trace)
+
+    try:
+        response = TestClient(app).patch(
+            "/api/projects/project-1/traces/trace-1",
+            json={
+                "input": "{\"question\":\"如何退款\"}",
+                "output": "{\"answer\":\"走订单详情\"}",
+                "metadata": {"app_id": "app-1", "reviewed": True},
+            },
+        )
+    finally:
+        clear_overrides()
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["code"] == 0
+    assert body["data"]["traceId"] == "trace-1"
+    assert body["data"]["input"] == "{\"question\":\"如何退款\"}"
+    assert body["data"]["output"] == "{\"answer\":\"走订单详情\"}"
+    assert body["data"]["metadata"]["reviewed"] is True
+    assert body["data"]["callChain"] == []
+    assert fake_db.project_id == "project-1"
+    assert fake_db.user_id == "user-1"
+    assert fake_db.patched_trace_payload == {
+        "project_id": "project-1",
+        "trace_id": "trace-1",
+        "user_id": "user-1",
+        "payload": {
+            "input": "{\"question\":\"如何退款\"}",
+            "output": "{\"answer\":\"走订单详情\"}",
+            "metadata": {"app_id": "app-1", "reviewed": True},
+        },
+    }
 
 
 def test_forwards_trace_dashboard_filters_to_trace_reader() -> None:

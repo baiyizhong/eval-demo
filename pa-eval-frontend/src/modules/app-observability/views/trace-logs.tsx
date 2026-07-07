@@ -1,9 +1,9 @@
 import { useCallback, useMemo, useState } from 'react'
 import { useParams, useSearchParams } from 'react-router'
-import { Page } from '@/components/common/page'
+import { useAPI } from '@/hooks/use-api'
 import { DataTable } from '@/components/common/data-table'
 import { Loading } from '@/components/common/loading'
-import { useAPI } from '@/hooks/use-api'
+import { Page } from '@/components/common/page'
 import { ObservabilityPageNav } from '../components/observability-page-nav'
 import { TraceDetailDrawer } from '../components/trace-detail-drawer'
 import { TraceLogBulkActions } from '../components/trace-log-bulk-actions'
@@ -50,7 +50,7 @@ export function TraceLogs() {
     <Page fluid className='flex min-h-[calc(100svh-3.5rem)] flex-col'>
       <div className='flex min-h-0 flex-1 flex-col gap-4'>
         <ObservabilityPageNav />
-        <section className='flex min-h-0 min-w-0 flex-1 flex-col rounded-lg border bg-card p-4 text-card-foreground'>
+        <section className='bg-card text-card-foreground flex min-h-0 min-w-0 flex-1 flex-col rounded-lg border p-4'>
           <DataTable<TraceLogRow>
             className='min-h-0 flex-1'
             columns={columns}

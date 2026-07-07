@@ -7,7 +7,7 @@ import {
   mockEvaluationReportFlowbacks,
   mockEvaluationReportItems,
   mockEvaluationReports,
-} from '../data/mock-evaluation-reports'
+} from '../data/mock-evaluation-reports.ts'
 import type {
   EvaluationReportBadcaseRecord,
   EvaluationReportDetailRecord,
@@ -50,7 +50,8 @@ export async function listProjectEvaluationReportsMock(
         .includes(keyword)
     })
     .filter(
-      (report) => !sourceTypes?.length || sourceTypes.includes(report.sourceType)
+      (report) =>
+        !sourceTypes?.length || sourceTypes.includes(report.sourceType)
     )
     .filter((report) => !statuses?.length || statuses.includes(report.status))
     .filter(
@@ -159,7 +160,10 @@ export async function listProjectEvaluationReportItemsMock(
     .filter((item) => item.reportId === reportId)
     .filter((item) => {
       if (!keyword) return true
-      return [item.sourceId, item.scoreSummary].join(' ').toLowerCase().includes(keyword)
+      return [item.sourceId, item.scoreSummary]
+        .join(' ')
+        .toLowerCase()
+        .includes(keyword)
     })
   return paginate(rows, query)
 }
@@ -177,7 +181,9 @@ export async function previewProjectEvaluationReportFlowbackMock(
   await delay()
   const report = assertReport(projectId, reportId)
   const matchedCount =
-    input.range === 'SELECTED' ? input.selectedItemIds.length : report.badcaseCount
+    input.range === 'SELECTED'
+      ? input.selectedItemIds.length
+      : report.badcaseCount
   const duplicateCount = Math.min(2, Math.floor(matchedCount / 4))
   return {
     matchedCount,
@@ -195,7 +201,9 @@ export async function createProjectEvaluationReportFlowbackMock(
   await delay()
   const report = assertReport(projectId, reportId)
   const matchedCount =
-    input.range === 'SELECTED' ? input.selectedItemIds.length : report.badcaseCount
+    input.range === 'SELECTED'
+      ? input.selectedItemIds.length
+      : report.badcaseCount
   const duplicateCount = Math.min(2, Math.floor(matchedCount / 4))
   const successCount = Math.max(0, matchedCount - duplicateCount)
   const flowback: EvaluationReportFlowbackRecord = {
@@ -290,9 +298,7 @@ function createFallbackReport(projectId: string, reportId: string) {
       { label: '0.6-0.8', count: 12 },
       { label: '0.8-1.0', count: 30 },
     ],
-    groupAnalysis: [
-      { group: '默认分组', sampleCount: 48, averageScore: 0.8 },
-    ],
+    groupAnalysis: [{ group: '默认分组', sampleCount: 48, averageScore: 0.8 }],
     recommendations: ['复核低分样本，并将稳定 badcase 回流到评测集。'],
     risks: ['该报告由前端 mock 生成，仅用于交互演示。'],
     reproduction: {
@@ -306,9 +312,15 @@ function createFallbackReport(projectId: string, reportId: string) {
   return report
 }
 
-function paginate<T>(rows: T[], query: DataTableQueryState): DataTableListResponse<T> {
+function paginate<T>(
+  rows: T[],
+  query: DataTableQueryState
+): DataTableListResponse<T> {
   const start = (query.page - 1) * query.pageSize
-  return { total: rows.length, datas: rows.slice(start, start + query.pageSize) }
+  return {
+    total: rows.length,
+    datas: rows.slice(start, start + query.pageSize),
+  }
 }
 
 function clone<T>(value: T): T {

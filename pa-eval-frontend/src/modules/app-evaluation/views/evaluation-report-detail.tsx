@@ -1,21 +1,19 @@
 import { useState } from 'react'
-import { Download, RefreshCw, Send } from 'lucide-react'
 import { useQuery, useQueryClient } from '@tanstack/react-query'
+import { Download, RefreshCw, Send } from 'lucide-react'
 import { useNavigate, useParams, useSearchParams } from 'react-router'
 import { toast } from 'sonner'
-import { useAPI } from '@/hooks/use-api'
 import { confirm } from '@/lib/confirm'
+import { useAPI } from '@/hooks/use-api'
+import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs'
+import { Loading } from '@/components/common/loading'
 import { Page } from '@/components/common/page'
 import { PageAction } from '@/components/common/page-action'
-import { Loading } from '@/components/common/loading'
-import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs'
 import {
   exportProjectEvaluationReport,
   getProjectEvaluationReport,
+  listProjectEvaluationReportFlowbacks,
 } from '../api/evaluation-report-api'
-import {
-  listProjectEvaluationReportFlowbacksMock,
-} from '../api/mock-evaluation-report-api'
 import { EvaluationReportAnalysis } from '../components/evaluation-report-analysis'
 import { EvaluationReportBadcaseTable } from '../components/evaluation-report-badcase-table'
 import { EvaluationReportFlowbackDialog } from '../components/evaluation-report-flowback-dialog'
@@ -48,8 +46,14 @@ export function ProjectEvaluationReportDetail() {
     enabled: Boolean(reportId),
   })
   const flowbacksQuery = useQuery({
-    queryKey: ['project-evaluation-report-flowbacks', projectId, reportId],
-    queryFn: () => listProjectEvaluationReportFlowbacksMock(projectId, reportId),
+    queryKey: [
+      'project-evaluation-report-flowbacks',
+      $api,
+      projectId,
+      reportId,
+    ],
+    queryFn: () =>
+      listProjectEvaluationReportFlowbacks($api, projectId, reportId),
     enabled: Boolean(reportId),
   })
 
@@ -110,7 +114,7 @@ export function ProjectEvaluationReportDetail() {
     if (!report) return
     const confirmed = await confirm({
       title: '重新生成评测报告',
-      desc: `将基于 mock 报告数据重新生成「${report.title}」。确定继续吗？`,
+      desc: `将刷新「${report.title}」的报告数据。确定继续吗？`,
       confirmText: '重新生成',
     })
     if (!confirmed) return
@@ -172,15 +176,15 @@ export function ProjectEvaluationReportDetail() {
           <Loading text='加载评测报告中...' full />
         ) : report ? (
           <>
-            <section className='rounded-lg border bg-card p-4 text-card-foreground'>
+            <section className='bg-card text-card-foreground rounded-lg border p-4'>
               <div className='flex flex-wrap items-center gap-3'>
                 <h1 className='text-xl font-semibold'>{report.title}</h1>
                 <EvaluationReportSourceBadge sourceType={report.sourceType} />
                 <EvaluationReportStatusBadge status={report.status} />
               </div>
-              <p className='mt-2 text-sm text-muted-foreground'>
-                来源任务：{report.sourceTaskName} · 样本 {report.sampleCount} · Badcase{' '}
-                {report.badcaseCount}
+              <p className='text-muted-foreground mt-2 text-sm'>
+                来源任务：{report.sourceTaskName} · 样本 {report.sampleCount} ·
+                Badcase {report.badcaseCount}
               </p>
             </section>
             <Tabs
@@ -194,7 +198,9 @@ export function ProjectEvaluationReportDetail() {
                 {showBadcases ? (
                   <TabsTrigger value='badcases'>Badcase</TabsTrigger>
                 ) : null}
-                {showItems ? <TabsTrigger value='items'>评测数据</TabsTrigger> : null}
+                {showItems ? (
+                  <TabsTrigger value='items'>评测数据</TabsTrigger>
+                ) : null}
                 <TabsTrigger value='flowbacks'>回流历史</TabsTrigger>
               </TabsList>
               <TabsContent value='overview'>
@@ -207,18 +213,32 @@ export function ProjectEvaluationReportDetail() {
                 <EvaluationReportBadcaseTable
                   projectId={projectId}
                   reportId={reportId}
-                  onFlowback={(ids) => openFlowback('BADCASE', ids.length ? 'SELECTED' : 'BADCASE_ONLY', ids)}
+                  onFlowback={(ids) =>
+                    openFlowback(
+                      'BADCASE',
+                      ids.length ? 'SELECTED' : 'BADCASE_ONLY',
+                      ids
+                    )
+                  }
                 />
               </TabsContent>
               <TabsContent value='items' className='min-h-0'>
                 <EvaluationReportItemTable
                   projectId={projectId}
                   reportId={reportId}
-                  onFlowback={(ids) => openFlowback('EVALUATION_DATA', ids.length ? 'SELECTED' : 'ALL', ids)}
+                  onFlowback={(ids) =>
+                    openFlowback(
+                      'EVALUATION_DATA',
+                      ids.length ? 'SELECTED' : 'ALL',
+                      ids
+                    )
+                  }
                 />
               </TabsContent>
               <TabsContent value='flowbacks'>
-                <EvaluationReportFlowbackHistory records={flowbacksQuery.data ?? []} />
+                <EvaluationReportFlowbackHistory
+                  records={flowbacksQuery.data ?? []}
+                />
               </TabsContent>
             </Tabs>
             <EvaluationReportFlowbackDialog
@@ -234,7 +254,7 @@ export function ProjectEvaluationReportDetail() {
             />
           </>
         ) : (
-          <section className='rounded-lg border bg-card p-4 text-card-foreground'>
+          <section className='bg-card text-card-foreground rounded-lg border p-4'>
             评测报告不存在
           </section>
         )}

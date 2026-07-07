@@ -1,8 +1,5 @@
 import { Badge } from '@/components/ui/badge'
-import {
-  annotationObjectTypeLabels,
-  type AnnotationObjectType,
-} from '../types'
+import { annotationObjectTypeLabels, type AnnotationObjectType } from '../types'
 
 type AnnotationObjectTypeBadgeProps = {
   objectType: AnnotationObjectType
@@ -11,5 +8,7 @@ type AnnotationObjectTypeBadgeProps = {
 export function AnnotationObjectTypeBadge({
   objectType,
 }: AnnotationObjectTypeBadgeProps) {
-  return <Badge variant='outline'>{annotationObjectTypeLabels[objectType]}</Badge>
+  return (
+    <Badge variant='outline'>{annotationObjectTypeLabels[objectType]}</Badge>
+  )
 }

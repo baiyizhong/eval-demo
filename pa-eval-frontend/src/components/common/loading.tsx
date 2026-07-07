@@ -37,9 +37,9 @@ export function Loading({
     >
       <LoaderCircle
         aria-hidden='true'
-        className='size-5 animate-spin text-muted-foreground'
+        className='text-muted-foreground size-5 animate-spin'
       />
-      <span className='text-sm text-muted-foreground'>{text}</span>
+      <span className='text-muted-foreground text-sm'>{text}</span>
     </div>
   )
 }

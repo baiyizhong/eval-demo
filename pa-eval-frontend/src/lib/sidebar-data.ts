@@ -56,7 +56,9 @@ function buildProjectSwitcherItems(
   projects: SidebarProject[],
   currentProjectId: string
 ): SidebarData['teams'] {
-  const activeProjects = projects.filter((project) => project.status === 'active')
+  const activeProjects = projects.filter(
+    (project) => project.status === 'active'
+  )
   const sortedProjects = activeProjects.length > 0 ? activeProjects : projects
   const currentProject = sortedProjects.find(
     (project) => project.id === currentProjectId
@@ -90,11 +92,6 @@ function buildProjectSwitcherItems(
 function buildPlatformNavItems(): NavItem[] {
   return [
     {
-      title: '数字面板',
-      url: '/dashboard',
-      icon: 'LayoutDashboard',
-    },
-    {
       title: '项目管理',
       url: '/apps',
       icon: 'Package',
@@ -104,12 +101,6 @@ function buildPlatformNavItems(): NavItem[] {
       title: '组织管理',
       url: '/settings/info',
       icon: 'Users',
-      activeMatch: 'prefix',
-    },
-    {
-      title: '评测管理',
-      url: '/tasks',
-      icon: 'ListTodo',
       activeMatch: 'prefix',
     },
   ]

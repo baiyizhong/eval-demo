@@ -1,12 +1,12 @@
 import { useCallback, useMemo, useState } from 'react'
-import { ArrowLeft, ArrowRight } from 'lucide-react'
 import { useQuery, useQueryClient } from '@tanstack/react-query'
+import { ArrowLeft, ArrowRight } from 'lucide-react'
 import { useNavigate, useParams, useSearchParams } from 'react-router'
 import { toast } from 'sonner'
 import { useAPI } from '@/hooks/use-api'
+import { Loading } from '@/components/common/loading'
 import { Page } from '@/components/common/page'
 import { PageAction } from '@/components/common/page-action'
-import { Loading } from '@/components/common/loading'
 import {
   addProjectAnnotationItemToDataset,
   getProjectAnnotationNavigation,
@@ -49,7 +49,7 @@ export function ProjectAnnotationItemAnnotate() {
   )
 
   const queueQuery = useQuery({
-    queryKey: ['project-annotation-queue', projectId, queueId],
+    queryKey: ['project-annotation-queue', $api, projectId, queueId],
     queryFn: () => getProjectAnnotationQueue($api, projectId, queueId),
     enabled: Boolean(queueId),
   })
@@ -57,13 +57,20 @@ export function ProjectAnnotationItemAnnotate() {
   const navigationQuery = useQuery({
     queryKey: [
       'project-annotation-navigation',
+      $api,
       projectId,
       queueId,
       itemId,
       queryState,
     ],
     queryFn: () =>
-      getProjectAnnotationNavigation($api, projectId, queueId, itemId, queryState),
+      getProjectAnnotationNavigation(
+        $api,
+        projectId,
+        queueId,
+        itemId,
+        queryState
+      ),
     enabled: Boolean(queueId && itemId),
   })
 
@@ -144,7 +151,9 @@ export function ProjectAnnotationItemAnnotate() {
         <PageAction
           showBackButton
           onBack={() =>
-            navigate(`/projects/${projectId}/evaluation/annotation-queues/${queueId}`)
+            navigate(
+              `/projects/${projectId}/evaluation/annotation-queues/${queueId}`
+            )
           }
           buttonGroups={{
             buttons: [
@@ -193,9 +202,11 @@ export function ProjectAnnotationItemAnnotate() {
         {item && queue ? (
           <section className='grid min-h-0 flex-1 grid-cols-1 gap-4 xl:grid-cols-[minmax(0,1.15fr)_minmax(380px,.85fr)]'>
             <AnnotationSourcePanel item={item} />
-            <div className='flex min-h-0 flex-col overflow-hidden rounded-lg border bg-card text-card-foreground'>
+            <div className='bg-card text-card-foreground flex min-h-0 flex-col overflow-hidden rounded-lg border'>
               <div className='shrink-0 border-b p-4'>
-                <div className='text-muted-foreground text-xs'>人工标注表单</div>
+                <div className='text-muted-foreground text-xs'>
+                  人工标注表单
+                </div>
                 <h2 className='text-base font-semibold'>评分指标</h2>
               </div>
               <AnnotationScoreForm

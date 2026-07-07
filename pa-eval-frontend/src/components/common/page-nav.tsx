@@ -54,7 +54,7 @@ export function PageNav({
   return (
     <div
       className={cn(
-        'bg-card border-border flex flex-wrap items-center gap-2 border rounded-lg px-4 py-3',
+        'bg-card border-border flex flex-wrap items-center gap-2 rounded-lg border px-4 py-3',
         className
       )}
       {...props}
@@ -87,7 +87,11 @@ export function PageNav({
       {buttonGroups?.buttons?.length ? (
         <ButtonGroups
           {...buttonGroups}
-          className={cn(!trailing && 'ml-auto', 'shrink-0', buttonGroups.className)}
+          className={cn(
+            !trailing && 'ml-auto',
+            'shrink-0',
+            buttonGroups.className
+          )}
         />
       ) : null}
     </div>

@@ -3,6 +3,7 @@ import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { Copy, KeyRound, Pencil, Plus, Trash2 } from 'lucide-react'
 import { useParams } from 'react-router'
 import { toast } from 'sonner'
+import { useAPI } from '@/hooks/use-api'
 import {
   AlertDialog,
   AlertDialogAction,
@@ -34,7 +35,6 @@ import {
   TableRow,
 } from '@/components/ui/table'
 import { ContentSection } from '@/components/common/content-section'
-import { useAPI } from '@/hooks/use-api'
 import {
   createProjectApiKey,
   deleteProjectApiKey,
@@ -106,8 +106,13 @@ export function ProjectApiKeysSettings() {
   })
 
   const updateMutation = useMutation({
-    mutationFn: ({ keyId, input }: { keyId: string; input: { note: string } }) =>
-      updateProjectApiKey($api, projectId, keyId, input),
+    mutationFn: ({
+      keyId,
+      input,
+    }: {
+      keyId: string
+      input: { note: string }
+    }) => updateProjectApiKey($api, projectId, keyId, input),
     onSuccess: async () => {
       setDialogOpen(false)
       await invalidate()
@@ -168,10 +173,11 @@ export function ProjectApiKeysSettings() {
       <div className='flex flex-col gap-4'>
         <div className='border-border bg-muted/40 flex items-start gap-3 rounded-md border p-3 text-sm'>
           <KeyRound className='mt-0.5 size-4 shrink-0' />
-          <div className='space-y-1'>
+          <div className='flex flex-col gap-1'>
             <div className='font-medium'>Secret Key 当前支持重复查看</div>
             <p className='text-muted-foreground'>
-              请只在 Dify、n8n、本地调试或可信服务中使用，不要写入前端代码、文档或日志。
+              请只在
+              Dify、n8n、本地调试或可信服务中使用，不要写入前端代码、文档或日志。
             </p>
           </div>
         </div>
@@ -182,8 +188,14 @@ export function ProjectApiKeysSettings() {
               <KeyRound className='size-4' />
               新创建的 Langfuse 密钥
             </div>
-            <KeyValueRow label='LANGFUSE_PUBLIC_KEY' value={createdKey.publicKey} />
-            <KeyValueRow label='LANGFUSE_SECRET_KEY' value={createdKey.secretKey} />
+            <KeyValueRow
+              label='LANGFUSE_PUBLIC_KEY'
+              value={createdKey.publicKey}
+            />
+            <KeyValueRow
+              label='LANGFUSE_SECRET_KEY'
+              value={createdKey.secretKey}
+            />
             <div>
               <Button
                 type='button'
@@ -219,14 +231,20 @@ export function ProjectApiKeysSettings() {
             <TableBody>
               {apiKeysQuery.isLoading ? (
                 <TableRow>
-                  <TableCell colSpan={6} className='text-muted-foreground h-24 text-center'>
+                  <TableCell
+                    colSpan={6}
+                    className='text-muted-foreground h-24 text-center'
+                  >
                     正在加载项目 API Keys
                   </TableCell>
                 </TableRow>
               ) : null}
               {!apiKeysQuery.isLoading && apiKeys.length === 0 ? (
                 <TableRow>
-                  <TableCell colSpan={6} className='text-muted-foreground h-24 text-center'>
+                  <TableCell
+                    colSpan={6}
+                    className='text-muted-foreground h-24 text-center'
+                  >
                     当前项目暂无 API Keys
                   </TableCell>
                 </TableRow>
@@ -240,10 +258,16 @@ export function ProjectApiKeysSettings() {
                     </div>
                   </TableCell>
                   <TableCell>
-                    <KeyCell label='LANGFUSE_PUBLIC_KEY' value={apiKey.publicKey} />
+                    <KeyCell
+                      label='LANGFUSE_PUBLIC_KEY'
+                      value={apiKey.publicKey}
+                    />
                   </TableCell>
                   <TableCell>
-                    <KeyCell label='LANGFUSE_SECRET_KEY' value={apiKey.secretKey} />
+                    <KeyCell
+                      label='LANGFUSE_SECRET_KEY'
+                      value={apiKey.secretKey}
+                    />
                   </TableCell>
                   <TableCell>{apiKey.updatedBy || '-'}</TableCell>
                   <TableCell>{formatDateTime(apiKey.updatedAt)}</TableCell>
@@ -306,7 +330,9 @@ export function ProjectApiKeysSettings() {
                 </Button>
                 <Button
                   type='submit'
-                  disabled={createMutation.isPending || updateMutation.isPending}
+                  disabled={
+                    createMutation.isPending || updateMutation.isPending
+                  }
                 >
                   {editingKey ? '保存' : '创建'}
                 </Button>
@@ -348,7 +374,7 @@ function KeyValueRow({ label, value }: { label: string; value: string }) {
     <div className='grid gap-1'>
       <Label>{label}</Label>
       <div className='bg-muted flex items-center justify-between gap-2 rounded-md p-3'>
-        <code className='min-w-0 break-all text-xs'>{value}</code>
+        <code className='min-w-0 text-xs break-all'>{value}</code>
         <Button
           type='button'
           variant='outline'

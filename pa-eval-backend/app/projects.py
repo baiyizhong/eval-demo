@@ -10,8 +10,41 @@ from app.response import success
 router = APIRouter(prefix="/api/projects", tags=["projects"])
 
 
+class ProjectPayload(BaseModel):
+    name: str = Field(min_length=1, max_length=120)
+    description: str | None = Field(default=None, max_length=1000)
+
+
+class CreateProjectPayload(ProjectPayload):
+    organization_id: str = Field(alias="organizationId", min_length=1)
+
+
 class ProjectApiKeyPayload(BaseModel):
     note: str = Field(default="", max_length=200)
+
+
+class DefaultModelPayload(BaseModel):
+    llm_connection_id: str = Field(alias="llmConnectionId", min_length=1)
+    model: str = Field(min_length=1, max_length=120)
+    temperature: str = Field(default="0.2", max_length=20)
+
+
+class LlmConnectionPayload(BaseModel):
+    provider: str = Field(min_length=1, max_length=120)
+    adapter: str = Field(min_length=1, max_length=120)
+    secret_key: str | None = Field(default=None, alias="secretKey", max_length=4000)
+    base_url: str = Field(default="", alias="baseUrl", max_length=1000)
+    custom_models: list[str] = Field(default_factory=list, alias="customModels")
+    with_default_models: bool = Field(default=True, alias="withDefaultModels")
+
+
+class ModelDefinitionPayload(BaseModel):
+    model_name: str = Field(alias="modelName", min_length=1, max_length=120)
+    match_pattern: str = Field(default="", alias="matchPattern", max_length=200)
+    unit: str = Field(default="TOKENS", max_length=60)
+    input_price: str = Field(default="", alias="inputPrice", max_length=60)
+    output_price: str = Field(default="", alias="outputPrice", max_length=60)
+    tokenizer_id: str = Field(default="", alias="tokenizerId", max_length=120)
 
 
 def _paginate(items: list[dict[str, Any]], page: int, page_size: int) -> dict[str, Any]:
@@ -54,6 +87,245 @@ async def list_projects(
         filtered = [item for item in filtered if item["status"] == status]
 
     return success(_paginate(filtered, page, page_size))
+
+
+@router.post("")
+async def create_project(
+    payload: CreateProjectPayload,
+    current_user: CurrentUserContext = Depends(get_current_user_context),
+    reader: LangfuseDatabaseReader = Depends(get_langfuse_db_reader),
+) -> dict[str, Any]:
+    project = await reader.create_project_for_user(
+        organization_id=payload.organization_id,
+        user_id=current_user.user_id,
+        user_email=current_user.email,
+        payload={
+            "name": payload.name.strip(),
+            "description": (payload.description or "").strip(),
+        },
+    )
+    return success(project)
+
+
+@router.patch("/{project_id}")
+async def update_project(
+    project_id: str,
+    payload: ProjectPayload,
+    current_user: CurrentUserContext = Depends(get_current_user_context),
+    reader: LangfuseDatabaseReader = Depends(get_langfuse_db_reader),
+) -> dict[str, Any]:
+    project = await reader.update_project_for_user(
+        project_id=project_id,
+        user_id=current_user.user_id,
+        user_email=current_user.email,
+        payload={
+            "name": payload.name.strip(),
+            "description": (payload.description or "").strip(),
+        },
+    )
+    return success(project)
+
+
+@router.post("/{project_id}/archive")
+async def archive_project(
+    project_id: str,
+    current_user: CurrentUserContext = Depends(get_current_user_context),
+    reader: LangfuseDatabaseReader = Depends(get_langfuse_db_reader),
+) -> dict[str, Any]:
+    project = await reader.archive_project_for_user(
+        project_id=project_id,
+        user_id=current_user.user_id,
+        user_email=current_user.email,
+    )
+    return success(project)
+
+
+@router.post("/{project_id}/restore")
+async def restore_project(
+    project_id: str,
+    current_user: CurrentUserContext = Depends(get_current_user_context),
+    reader: LangfuseDatabaseReader = Depends(get_langfuse_db_reader),
+) -> dict[str, Any]:
+    project = await reader.restore_project_for_user(
+        project_id=project_id,
+        user_id=current_user.user_id,
+        user_email=current_user.email,
+    )
+    return success(project)
+
+
+@router.get("/{project_id}/settings/models")
+async def get_project_model_settings(
+    project_id: str,
+    current_user: CurrentUserContext = Depends(get_current_user_context),
+    reader: LangfuseDatabaseReader = Depends(get_langfuse_db_reader),
+) -> dict[str, Any]:
+    settings = await reader.get_project_model_settings_for_user(
+        project_id,
+        current_user.user_id,
+    )
+    return success(settings)
+
+
+@router.get("/{project_id}/settings/members")
+async def get_project_members(
+    project_id: str,
+    current_user: CurrentUserContext = Depends(get_current_user_context),
+    reader: LangfuseDatabaseReader = Depends(get_langfuse_db_reader),
+) -> dict[str, Any]:
+    members = await reader.list_project_users_for_user(
+        project_id,
+        current_user.user_id,
+    )
+    return success(members)
+
+
+@router.patch("/{project_id}/settings/models/default")
+async def update_project_default_model(
+    project_id: str,
+    payload: DefaultModelPayload,
+    current_user: CurrentUserContext = Depends(get_current_user_context),
+    reader: LangfuseDatabaseReader = Depends(get_langfuse_db_reader),
+) -> dict[str, Any]:
+    default_model = await reader.update_project_default_model_for_user(
+        project_id=project_id,
+        user_id=current_user.user_id,
+        user_email=current_user.email,
+        payload={
+            "llmConnectionId": payload.llm_connection_id,
+            "model": payload.model,
+            "temperature": payload.temperature,
+        },
+    )
+    return success(default_model)
+
+
+@router.post("/{project_id}/settings/models/llm-connections")
+async def create_project_llm_connection(
+    project_id: str,
+    payload: LlmConnectionPayload,
+    current_user: CurrentUserContext = Depends(get_current_user_context),
+    reader: LangfuseDatabaseReader = Depends(get_langfuse_db_reader),
+) -> dict[str, Any]:
+    connection = await reader.create_project_llm_connection_for_user(
+        project_id=project_id,
+        user_id=current_user.user_id,
+        user_email=current_user.email,
+        payload={
+            "provider": payload.provider,
+            "adapter": payload.adapter,
+            "secretKey": payload.secret_key,
+            "baseUrl": payload.base_url,
+            "customModels": payload.custom_models,
+            "withDefaultModels": payload.with_default_models,
+        },
+    )
+    return success(connection)
+
+
+@router.patch("/{project_id}/settings/models/llm-connections/{connection_id}")
+async def update_project_llm_connection(
+    project_id: str,
+    connection_id: str,
+    payload: LlmConnectionPayload,
+    current_user: CurrentUserContext = Depends(get_current_user_context),
+    reader: LangfuseDatabaseReader = Depends(get_langfuse_db_reader),
+) -> dict[str, Any]:
+    connection = await reader.update_project_llm_connection_for_user(
+        project_id=project_id,
+        connection_id=connection_id,
+        user_id=current_user.user_id,
+        user_email=current_user.email,
+        payload={
+            "provider": payload.provider,
+            "adapter": payload.adapter,
+            "secretKey": payload.secret_key,
+            "baseUrl": payload.base_url,
+            "customModels": payload.custom_models,
+            "withDefaultModels": payload.with_default_models,
+        },
+    )
+    return success(connection)
+
+
+@router.delete("/{project_id}/settings/models/llm-connections/{connection_id}")
+async def delete_project_llm_connection(
+    project_id: str,
+    connection_id: str,
+    current_user: CurrentUserContext = Depends(get_current_user_context),
+    reader: LangfuseDatabaseReader = Depends(get_langfuse_db_reader),
+) -> dict[str, Any]:
+    deleted = await reader.delete_project_llm_connection_for_user(
+        project_id=project_id,
+        connection_id=connection_id,
+        user_id=current_user.user_id,
+        user_email=current_user.email,
+    )
+    return success(deleted)
+
+
+@router.post("/{project_id}/settings/models/definitions")
+async def create_project_model_definition(
+    project_id: str,
+    payload: ModelDefinitionPayload,
+    current_user: CurrentUserContext = Depends(get_current_user_context),
+    reader: LangfuseDatabaseReader = Depends(get_langfuse_db_reader),
+) -> dict[str, Any]:
+    model_definition = await reader.create_project_model_definition_for_user(
+        project_id=project_id,
+        user_id=current_user.user_id,
+        user_email=current_user.email,
+        payload={
+            "modelName": payload.model_name,
+            "matchPattern": payload.match_pattern,
+            "unit": payload.unit,
+            "inputPrice": payload.input_price,
+            "outputPrice": payload.output_price,
+            "tokenizerId": payload.tokenizer_id,
+        },
+    )
+    return success(model_definition)
+
+
+@router.patch("/{project_id}/settings/models/definitions/{model_id}")
+async def update_project_model_definition(
+    project_id: str,
+    model_id: str,
+    payload: ModelDefinitionPayload,
+    current_user: CurrentUserContext = Depends(get_current_user_context),
+    reader: LangfuseDatabaseReader = Depends(get_langfuse_db_reader),
+) -> dict[str, Any]:
+    model_definition = await reader.update_project_model_definition_for_user(
+        project_id=project_id,
+        model_id=model_id,
+        user_id=current_user.user_id,
+        user_email=current_user.email,
+        payload={
+            "modelName": payload.model_name,
+            "matchPattern": payload.match_pattern,
+            "unit": payload.unit,
+            "inputPrice": payload.input_price,
+            "outputPrice": payload.output_price,
+            "tokenizerId": payload.tokenizer_id,
+        },
+    )
+    return success(model_definition)
+
+
+@router.delete("/{project_id}/settings/models/definitions/{model_id}")
+async def delete_project_model_definition(
+    project_id: str,
+    model_id: str,
+    current_user: CurrentUserContext = Depends(get_current_user_context),
+    reader: LangfuseDatabaseReader = Depends(get_langfuse_db_reader),
+) -> dict[str, Any]:
+    deleted = await reader.delete_project_model_definition_for_user(
+        project_id=project_id,
+        model_id=model_id,
+        user_id=current_user.user_id,
+        user_email=current_user.email,
+    )
+    return success(deleted)
 
 
 @router.get("/{project_id}/settings/api-keys")

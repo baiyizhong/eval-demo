@@ -33,7 +33,7 @@ export function ChartAvatarItem({
         <AvatarFallback>{avatarFallback}</AvatarFallback>
       </Avatar>
       <div className='flex flex-1 flex-wrap items-center justify-between'>
-        <div className='space-y-1'>
+        <div className='flex flex-col gap-1'>
           <p className='text-sm leading-none font-medium'>{title}</p>
           {description ? (
             <p className='text-muted-foreground text-sm'>{description}</p>

@@ -1,7 +1,12 @@
 import { z } from 'zod'
-import { toast } from 'sonner'
 import type { JsonData } from 'json-edit-react'
-import { FormField, FormItem, FormLabel, FormMessage } from '@/components/ui/form'
+import { toast } from 'sonner'
+import {
+  FormField,
+  FormItem,
+  FormLabel,
+  FormMessage,
+} from '@/components/ui/form'
 import { BaseForm } from '@/components/common/base-form'
 import { Drawer } from '@/components/common/drawer'
 import { JsonEditorPanel } from '@/components/common/json-editor'
@@ -128,7 +133,9 @@ export function DatasetItemFormDrawer({
   )
 }
 
-function getDefaultValues(item?: DatasetItemRecord | null): DatasetItemFormValues {
+function getDefaultValues(
+  item?: DatasetItemRecord | null
+): DatasetItemFormValues {
   return {
     input: item?.input ?? {},
     expectedOutput: item?.expectedOutput ?? {},

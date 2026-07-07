@@ -1,9 +1,15 @@
 import { useId } from 'react'
-import { useMutation, useQueryClient } from '@tanstack/react-query'
 import { z } from 'zod'
+import { useMutation, useQueryClient } from '@tanstack/react-query'
+import {
+  createOrganizationPayloadSchema,
+  type CreateOrganizationPayload,
+  type Organization,
+} from '@/modules/organization-management/data/schema'
+import { organizationsQueryKey } from '@/modules/organization-management/hooks/use-organizations'
 import { toast } from 'sonner'
-import { BaseForm } from '@/components/common/base-form'
-import { Drawer } from '@/components/common/drawer'
+import { useOrganizationStore } from '@/stores/organization.store'
+import { useAPI } from '@/hooks/use-api'
 import {
   FormControl,
   FormField,
@@ -13,14 +19,8 @@ import {
 } from '@/components/ui/form'
 import { Input } from '@/components/ui/input'
 import { Textarea } from '@/components/ui/textarea'
-import { useAPI } from '@/hooks/use-api'
-import { organizationsQueryKey } from '@/modules/organization-management/hooks/use-organizations'
-import {
-  createOrganizationPayloadSchema,
-  type CreateOrganizationPayload,
-  type Organization,
-} from '@/modules/organization-management/data/schema'
-import { useOrganizationStore } from '@/stores/organization.store'
+import { BaseForm } from '@/components/common/base-form'
+import { Drawer } from '@/components/common/drawer'
 
 const createOrganizationFormSchema = createOrganizationPayloadSchema.extend({
   name: z.string().trim().min(1, '请输入组织名称'),

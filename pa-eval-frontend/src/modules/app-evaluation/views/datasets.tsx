@@ -1,17 +1,17 @@
 import { useCallback, useMemo, useState } from 'react'
-import { Plus, RefreshCw } from 'lucide-react'
 import { useMutation, useQueryClient } from '@tanstack/react-query'
+import { Plus, RefreshCw } from 'lucide-react'
 import { useParams } from 'react-router'
 import { toast } from 'sonner'
 import { useAPI } from '@/hooks/use-api'
-import { Page } from '@/components/common/page'
+import { Tabs, TabsList, TabsTrigger } from '@/components/ui/tabs'
+import { ConfirmDialog } from '@/components/common/confirm-dialog'
 import {
   DataTable,
   type DataTableQueryState,
 } from '@/components/common/data-table'
 import { Loading } from '@/components/common/loading'
-import { ConfirmDialog } from '@/components/common/confirm-dialog'
-import { Tabs, TabsList, TabsTrigger } from '@/components/ui/tabs'
+import { Page } from '@/components/common/page'
 import {
   createProjectDataset,
   deleteProjectDataset,
@@ -160,7 +160,7 @@ export function ProjectDatasets() {
               </TabsTrigger>
             ))}
           </TabsList>
-          <section className='flex min-h-0 min-w-0 flex-1 flex-col rounded-lg border bg-card p-4 text-card-foreground'>
+          <section className='bg-card text-card-foreground flex min-h-0 min-w-0 flex-1 flex-col rounded-lg border p-4'>
             <DataTable<DatasetRecord>
               className='min-h-0 flex-1'
               columns={columns}

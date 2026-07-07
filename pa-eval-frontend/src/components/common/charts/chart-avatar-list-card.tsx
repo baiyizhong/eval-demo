@@ -47,7 +47,7 @@ export function ChartAvatarListCard({
         {description ? <CardDescription>{description}</CardDescription> : null}
       </CardHeader>
       <CardContent className={contentClassName}>
-        <div className={cn('space-y-8', listClassName)}>
+        <div className={cn('flex flex-col gap-8', listClassName)}>
           {items.map((item, index) => (
             <ChartAvatarItem
               key={item.id ?? index}

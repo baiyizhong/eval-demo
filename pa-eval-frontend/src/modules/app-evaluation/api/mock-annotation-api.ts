@@ -7,7 +7,7 @@ import {
   mockAnnotationQueues,
   mockAnnotationUsers,
   mockScoreConfigs,
-} from '../data/mock-annotations'
+} from '../data/mock-annotations.ts'
 import type {
   AddAnnotationItemToDatasetInput,
   AnnotationNavigationResult,
@@ -19,7 +19,7 @@ import type {
   AnnotationScoreFormInput,
   AnnotationScoreRecord,
 } from '../types'
-import { createProjectDatasetItemMock } from './mock-dataset-api'
+import { createProjectDatasetItemMock } from './mock-dataset-api.ts'
 
 let queues = clone(mockAnnotationQueues)
 let items = clone(mockAnnotationQueueItems)

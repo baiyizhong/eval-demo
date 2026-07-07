@@ -18,10 +18,7 @@ import type {
 } from '../types'
 
 type AutoEvaluationStatusFilter =
-  | 'all'
-  | AutoEvaluationTaskRecord['status']
-  | 'NOT_STARTED'
-  | 'HAS_BADCASE'
+  'all' | AutoEvaluationTaskRecord['status'] | 'NOT_STARTED' | 'HAS_BADCASE'
 
 let tasks = clone(mockAutoEvaluationTasks)
 let runs = clone(mockAutoEvaluationRuns)
@@ -44,7 +41,10 @@ export async function listProjectAutoEvaluationTasksMock(
     .filter((task) => task.projectId === projectId)
     .filter((task) => {
       if (!keyword) return true
-      return [task.name, task.description].join(' ').toLowerCase().includes(keyword)
+      return [task.name, task.description]
+        .join(' ')
+        .toLowerCase()
+        .includes(keyword)
     })
     .filter((task) => {
       if (statusFilter === 'all') return true
@@ -58,7 +58,9 @@ export async function listProjectAutoEvaluationTasksMock(
   return paginate(rows, query)
 }
 
-export async function getProjectAutoEvaluationTaskSummaryMock(projectId: string) {
+export async function getProjectAutoEvaluationTaskSummaryMock(
+  projectId: string
+) {
   await delay()
   const rows = tasks.filter((task) => task.projectId === projectId)
   return {
@@ -94,7 +96,9 @@ export async function listProjectAutoEvaluationRunsMock(
   taskId: string
 ): Promise<AutoEvaluationRunRecord[]> {
   await delay()
-  return runs.filter((run) => run.projectId === projectId && run.taskId === taskId)
+  return runs.filter(
+    (run) => run.projectId === projectId && run.taskId === taskId
+  )
 }
 
 export async function listProjectAutoEvaluationEvaluatorsMock(
@@ -132,7 +136,11 @@ export async function createProjectAutoEvaluationTaskMock(
   mode: 'create' | 'run'
 ): Promise<AutoEvaluationTaskRecord> {
   await delay()
-  if (tasks.some((task) => task.projectId === projectId && task.name === input.name)) {
+  if (
+    tasks.some(
+      (task) => task.projectId === projectId && task.name === input.name
+    )
+  ) {
     throw new Error('任务名称已存在')
   }
   const now = new Date().toISOString()
@@ -168,7 +176,10 @@ export async function createProjectAutoEvaluationTaskMock(
     },
     dataSource: {
       type: input.dataSource.type,
-      name: input.dataSource.type === 'DATASET' ? source?.name ?? '数据集' : 'Trace 过滤',
+      name:
+        input.dataSource.type === 'DATASET'
+          ? (source?.name ?? '数据集')
+          : 'Trace 过滤',
       sampleCount: estimatedCount,
     },
     sampleRate: input.sampleRate,
@@ -214,8 +225,12 @@ export async function deleteProjectAutoEvaluationTaskMock(
   await delay()
   const task = findTask(projectId, taskId)
   if (task.status === 'RUNNING') throw new Error('任务运行中，暂不支持删除')
-  tasks = tasks.filter((item) => item.projectId !== projectId || item.id !== taskId)
-  runs = runs.filter((run) => run.projectId !== projectId || run.taskId !== taskId)
+  tasks = tasks.filter(
+    (item) => item.projectId !== projectId || item.id !== taskId
+  )
+  runs = runs.filter(
+    (run) => run.projectId !== projectId || run.taskId !== taskId
+  )
 }
 
 export async function rerunProjectAutoEvaluationTaskMock(
@@ -301,7 +316,9 @@ export async function refreshProjectAutoEvaluationTaskMock(
     updatedAt: now,
   }
   runs = runs.map((run) =>
-    run.projectId === projectId && run.taskId === taskId && run.status === 'RUNNING'
+    run.projectId === projectId &&
+    run.taskId === taskId &&
+    run.status === 'RUNNING'
       ? {
           ...run,
           status: 'COMPLETED',
@@ -320,20 +337,29 @@ export async function refreshProjectAutoEvaluationTasksMock(projectId: string) {
   const running = tasks.find(
     (task) => task.projectId === projectId && task.status === 'RUNNING'
   )
-  if (running) return refreshProjectAutoEvaluationTaskMock(projectId, running.id)
+  if (running)
+    return refreshProjectAutoEvaluationTaskMock(projectId, running.id)
   await delay()
   return null
 }
 
 function findTask(projectId: string, taskId: string) {
-  const task = tasks.find((item) => item.projectId === projectId && item.id === taskId)
+  const task = tasks.find(
+    (item) => item.projectId === projectId && item.id === taskId
+  )
   if (!task) throw new Error('自动评测任务不存在')
   return task
 }
 
-function paginate<T>(rows: T[], query: DataTableQueryState): DataTableListResponse<T> {
+function paginate<T>(
+  rows: T[],
+  query: DataTableQueryState
+): DataTableListResponse<T> {
   const start = (query.page - 1) * query.pageSize
-  return { total: rows.length, datas: rows.slice(start, start + query.pageSize) }
+  return {
+    total: rows.length,
+    datas: rows.slice(start, start + query.pageSize),
+  }
 }
 
 function clone<T>(value: T): T {

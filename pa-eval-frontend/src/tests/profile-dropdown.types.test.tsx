@@ -1,6 +1,8 @@
-import type { MouseEvent } from 'react'
+import React, { type MouseEvent } from 'react'
 import { LogOut } from 'lucide-react'
 import { ProfileDropdown } from '@/components/common/profile-dropdown'
+
+void React
 
 export const profileDropdownWithInjectedUser = (
   <ProfileDropdown
@@ -16,6 +18,9 @@ export const profileDropdownWithInjectedUser = (
         icon: LogOut,
       },
     ]}
-    onAction={(_action, _event: MouseEvent<HTMLAnchorElement | HTMLButtonElement>) => {}}
+    onAction={(
+      _action,
+      _event: MouseEvent<HTMLAnchorElement | HTMLButtonElement>
+    ) => {}}
   />
 )

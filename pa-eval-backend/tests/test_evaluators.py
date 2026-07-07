@@ -399,6 +399,7 @@ def test_rejects_deleting_langfuse_evaluator() -> None:
     finally:
         clear_overrides()
 
-    assert response.status_code == 501
-    assert response.json()["code"] == 2003
+    assert response.status_code == 409
+    assert response.json()["code"] == 4018
+    assert response.json()["message"] == "Langfuse 原生评估器由 Langfuse 管理，请在 Langfuse 中删除"
     assert fake_reader.deleted_pa_evaluator is None

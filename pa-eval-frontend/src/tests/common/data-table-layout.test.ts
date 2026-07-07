@@ -21,4 +21,3 @@ test('data table keeps default gap when the advanced filter panel is expanded', 
     true
   )
 })
-

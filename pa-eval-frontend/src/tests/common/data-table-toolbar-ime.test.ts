@@ -1,6 +1,5 @@
 import assert from 'node:assert/strict'
 import { test } from 'node:test'
-
 import { getSearchInputCommitValue } from '../../components/common/data-table/ime.ts'
 
 test('data table search input does not commit intermediate IME composition text', () => {

@@ -1,6 +1,5 @@
 import assert from 'node:assert/strict'
 import { test } from 'node:test'
-
 import type { DataTableQueryState } from '../../components/common/data-table/index.ts'
 import {
   archiveProjectDatasetItemMock,
@@ -50,7 +49,9 @@ test('listProjectDatasetsMock 按项目、名称和类型过滤数据集', async
 
   assert.equal(all.total > 0, true)
   assert.equal(
-    all.datas.every((dataset) => dataset.projectId === 'project_customer_agent'),
+    all.datas.every(
+      (dataset) => dataset.projectId === 'project_customer_agent'
+    ),
     true
   )
   assert.equal(
@@ -59,8 +60,14 @@ test('listProjectDatasetsMock 按项目、名称和类型过滤数据集', async
     ),
     true
   )
-  assert.equal(keyword.datas.every((dataset) => dataset.name.includes('客服')), true)
-  assert.equal(golden.datas.every((dataset) => dataset.type === 'golden'), true)
+  assert.equal(
+    keyword.datas.every((dataset) => dataset.name.includes('客服')),
+    true
+  )
+  assert.equal(
+    golden.datas.every((dataset) => dataset.type === 'golden'),
+    true
+  )
 })
 
 test('数据集新建、编辑、删除会更新 mock 状态并清理关联数据项', async () => {
@@ -114,7 +121,10 @@ test('数据集新建、编辑、删除会更新 mock 状态并清理关联数�
     baseQuery
   )
 
-  assert.equal(datasets.datas.some((dataset) => dataset.id === created.id), false)
+  assert.equal(
+    datasets.datas.some((dataset) => dataset.id === created.id),
+    false
+  )
   assert.equal(items.total, 0)
 })
 

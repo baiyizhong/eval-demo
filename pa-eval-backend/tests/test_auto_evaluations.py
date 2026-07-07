@@ -6,6 +6,7 @@ from app.auto_evaluations import (
     _build_workflow_inputs,
     _build_workflow_headers,
     _complete_auto_evaluation_success,
+    _create_report_flowback,
     _ensure_report_exists,
     _get_path_value,
     _get_pa_evaluator,
@@ -14,11 +15,13 @@ from app.auto_evaluations import (
     _normalize_dataset_item_sample,
     _to_trace_generation_sample,
     _parse_workflow_result,
+    _preview_report_flowback,
     _resolve_mapping_template,
     _mark_auto_evaluation_failed,
     _sample_dataset_items,
     _delete_auto_evaluation_task,
     CreateAutoEvaluationPayload,
+    EvaluationReportFlowbackPayload,
 )
 from app.errors import BusinessError
 
@@ -41,6 +44,26 @@ class FakeCursor:
 
     async def fetchall(self):
         return self.rows
+
+
+class SequentialCursor:
+    def __init__(self, rows_by_fetchall=None, rows_by_fetchone=None):
+        self.rows_by_fetchall = list(rows_by_fetchall or [])
+        self.rows_by_fetchone = list(rows_by_fetchone or [])
+        self.executions = []
+
+    async def execute(self, sql, params):
+        self.executions.append((sql, params))
+
+    async def fetchone(self):
+        if self.rows_by_fetchone:
+            return self.rows_by_fetchone.pop(0)
+        return None
+
+    async def fetchall(self):
+        if self.rows_by_fetchall:
+            return self.rows_by_fetchall.pop(0)
+        return []
 
 
 def _jsonb_value(value):
@@ -110,6 +133,9 @@ async def test_get_pa_evaluator_uses_visible_project_membership() -> None:
         "user_id": "user-1",
     }
     assert "organization_memberships" in cursor.sql
+    assert "project_memberships pm" in cursor.sql
+    assert "om.role::text <> 'NONE'" in cursor.sql
+    assert "pm.role::text <> 'NONE'" in cursor.sql
     assert "pe.project_id = %(project_id)s" not in cursor.sql
 
 
@@ -497,6 +523,142 @@ async def test_complete_auto_evaluation_success_persists_report_template_snapsho
     assert _jsonb_value(report_params["recommendations"]) == []
     assert "INSERT INTO pa_evaluation_report_badcases" in badcase_sql
     assert badcase_params["score_value"] == 0.5
+
+
+@pytest.mark.anyio
+async def test_preview_report_flowback_counts_duplicates_for_existing_dataset() -> None:
+    cursor = SequentialCursor(
+        rows_by_fetchall=[
+            [
+                {
+                    "source_item_id": "badcase-1",
+                    "source_dataset_item_id": "dataset-item-1",
+                    "source_trace_id": "trace-1",
+                    "source_observation_id": "obs-1",
+                    "input": {"question": "如何退款"},
+                    "expected_output": {"answer": "退款路径"},
+                    "metadata": {"origin": "dataset"},
+                    "score_value": 0.42,
+                    "reason": "答案不完整",
+                    "comment": "缺少入口说明",
+                    "score_summary": "quality: 0.42",
+                    "result_type": "badcase",
+                },
+                {
+                    "source_item_id": "badcase-2",
+                    "source_dataset_item_id": "dataset-item-2",
+                    "source_trace_id": "trace-2",
+                    "source_observation_id": "",
+                    "input": {"question": "怎么改地址"},
+                    "expected_output": None,
+                    "metadata": {},
+                    "score_value": 0.3,
+                    "reason": "无效回复",
+                    "comment": "",
+                    "score_summary": "quality: 0.30",
+                    "result_type": "badcase",
+                },
+            ],
+            [
+                {
+                    "source_trace_id": "trace-1",
+                    "source_observation_id": "",
+                    "metadata": {},
+                }
+            ],
+        ],
+        rows_by_fetchone=[{"id": "dataset-1", "name": "生产 Badcase 集"}],
+    )
+    payload = EvaluationReportFlowbackPayload.model_validate(
+        {
+            "flowbackType": "BADCASE",
+            "range": "BADCASE_ONLY",
+            "selectedItemIds": [],
+            "targetDataset": {"mode": "EXISTING", "datasetId": "dataset-1"},
+            "dedupeStrategy": "SKIP_DUPLICATE",
+        }
+    )
+
+    result = await _preview_report_flowback(
+        cursor,  # type: ignore[arg-type]
+        project_id="project-1",
+        report_id="report-1",
+        payload=payload,
+    )
+
+    assert result == {
+        "matchedCount": 2,
+        "duplicateCount": 1,
+        "willCreateCount": 1,
+        "defaultDatasetName": "生产 Badcase 集",
+    }
+    duplicate_sql, duplicate_params = cursor.executions[-1]
+    assert "dataset_items" in duplicate_sql
+    assert duplicate_params["dataset_id"] == "dataset-1"
+
+
+@pytest.mark.anyio
+async def test_create_report_flowback_creates_dataset_items_and_updates_statuses() -> None:
+    cursor = SequentialCursor(
+        rows_by_fetchall=[
+            [
+                {
+                    "source_item_id": "badcase-1",
+                    "source_dataset_item_id": "dataset-item-1",
+                    "source_trace_id": "trace-1",
+                    "source_observation_id": "obs-1",
+                    "input": {"question": "如何退款"},
+                    "expected_output": {"answer": "退款路径"},
+                    "metadata": {"origin": "dataset"},
+                    "score_value": 0.42,
+                    "reason": "答案不完整",
+                    "comment": "缺少入口说明",
+                    "score_summary": "quality: 0.42",
+                    "result_type": "badcase",
+                }
+            ],
+            [],
+        ],
+        rows_by_fetchone=[],
+    )
+    payload = EvaluationReportFlowbackPayload.model_validate(
+        {
+            "flowbackType": "BADCASE",
+            "range": "SELECTED",
+            "selectedItemIds": ["badcase-1"],
+            "targetDataset": {
+                "mode": "CREATE",
+                "name": "回流 Badcase 集",
+                "description": "来自报告",
+            },
+            "dedupeStrategy": "SKIP_DUPLICATE",
+        }
+    )
+
+    record = await _create_report_flowback(
+        cursor,  # type: ignore[arg-type]
+        project_id="project-1",
+        report_id="report-1",
+        payload=payload,
+        created_by="admin@example.com",
+    )
+
+    sql_text = "\n".join(sql for sql, _ in cursor.executions)
+    assert "INSERT INTO datasets" in sql_text
+    assert "INSERT INTO dataset_items" in sql_text
+    assert "INSERT INTO pa_evaluation_report_flowbacks" in sql_text
+    assert "UPDATE pa_evaluation_report_badcases" in sql_text
+    assert "UPDATE pa_evaluation_reports" in sql_text
+    assert record["successCount"] == 1
+    assert record["requestedCount"] == 1
+    assert record["targetDatasetName"] == "回流 Badcase 集"
+    dataset_item_params = next(
+        params for sql, params in cursor.executions if "INSERT INTO dataset_items" in sql
+    )
+    metadata = _jsonb_value(dataset_item_params["metadata"])
+    assert metadata["paEvaluationReport"]["reportId"] == "report-1"
+    assert metadata["paEvaluationReport"]["sourceItemId"] == "badcase-1"
+    assert dataset_item_params["source_trace_id"] == "trace-1"
 
 
 @pytest.mark.anyio

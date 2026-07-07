@@ -51,7 +51,9 @@ export function createDatasetItemColumns({
       header: ({ column }) => (
         <DataTableColumnHeader column={column} title='Item ID' />
       ),
-      cell: ({ row }) => <span className='font-mono text-xs'>{row.original.id}</span>,
+      cell: ({ row }) => (
+        <span className='font-mono text-xs'>{row.original.id}</span>
+      ),
       enableHiding: false,
     },
     {
@@ -60,7 +62,9 @@ export function createDatasetItemColumns({
         <DataTableColumnHeader column={column} title='状态' />
       ),
       cell: ({ row }) => (
-        <Badge variant={row.original.status === 'ACTIVE' ? 'default' : 'secondary'}>
+        <Badge
+          variant={row.original.status === 'ACTIVE' ? 'default' : 'secondary'}
+        >
           {row.original.status}
         </Badge>
       ),

@@ -1,11 +1,13 @@
-import { layoutApi } from '@/modules/layout/api'
 import { observabilityApi } from '@/modules/app-observability/api'
+import { layoutApi } from '@/modules/layout/api'
 import { organizationApi } from '@/modules/organization-management/api'
+import { systemManagementApi } from '@/modules/system-pages/api'
 
 export const apiRegistry = {
   ...layoutApi,
   ...observabilityApi,
   ...organizationApi,
+  ...systemManagementApi,
   getPermissions: {
     method: 'GET',
     url: '/permissions',
@@ -14,9 +16,29 @@ export const apiRegistry = {
     method: 'GET',
     url: '/projects',
   },
+  createProject: {
+    method: 'POST',
+    url: '/projects',
+  },
+  updateProject: {
+    method: 'PATCH',
+    url: '/projects/:projectId',
+  },
+  archiveProject: {
+    method: 'POST',
+    url: '/projects/:projectId/archive',
+  },
+  restoreProject: {
+    method: 'POST',
+    url: '/projects/:projectId/restore',
+  },
   getProjectApiKeys: {
     method: 'GET',
     url: '/projects/:projectId/settings/api-keys',
+  },
+  getProjectMembers: {
+    method: 'GET',
+    url: '/projects/:projectId/settings/members',
   },
   createProjectApiKey: {
     method: 'POST',
@@ -29,6 +51,38 @@ export const apiRegistry = {
   deleteProjectApiKey: {
     method: 'DELETE',
     url: '/projects/:projectId/settings/api-keys/:keyId',
+  },
+  getProjectModelSettings: {
+    method: 'GET',
+    url: '/projects/:projectId/settings/models',
+  },
+  updateProjectDefaultModel: {
+    method: 'PATCH',
+    url: '/projects/:projectId/settings/models/default',
+  },
+  createProjectLlmConnection: {
+    method: 'POST',
+    url: '/projects/:projectId/settings/models/llm-connections',
+  },
+  updateProjectLlmConnection: {
+    method: 'PATCH',
+    url: '/projects/:projectId/settings/models/llm-connections/:connectionId',
+  },
+  deleteProjectLlmConnection: {
+    method: 'DELETE',
+    url: '/projects/:projectId/settings/models/llm-connections/:connectionId',
+  },
+  createProjectModelDefinition: {
+    method: 'POST',
+    url: '/projects/:projectId/settings/models/definitions',
+  },
+  updateProjectModelDefinition: {
+    method: 'PATCH',
+    url: '/projects/:projectId/settings/models/definitions/:modelId',
+  },
+  deleteProjectModelDefinition: {
+    method: 'DELETE',
+    url: '/projects/:projectId/settings/models/definitions/:modelId',
   },
   getEvaluators: {
     method: 'GET',
@@ -94,6 +148,18 @@ export const apiRegistry = {
     method: 'GET',
     url: '/projects/:projectId/datasets/:datasetId/items',
   },
+  createProjectDatasetItem: {
+    method: 'POST',
+    url: '/projects/:projectId/datasets/:datasetId/items',
+  },
+  updateProjectDatasetItem: {
+    method: 'PATCH',
+    url: '/projects/:projectId/datasets/:datasetId/items/:itemId',
+  },
+  archiveProjectDatasetItem: {
+    method: 'POST',
+    url: '/projects/:projectId/datasets/:datasetId/items/:itemId/archive',
+  },
   getProjectScoreConfigs: {
     method: 'GET',
     url: '/projects/:projectId/score-configs',
@@ -101,6 +167,22 @@ export const apiRegistry = {
   ensureDefaultProjectScoreConfig: {
     method: 'POST',
     url: '/projects/:projectId/score-configs/default',
+  },
+  createProjectScoreConfig: {
+    method: 'POST',
+    url: '/projects/:projectId/score-configs',
+  },
+  updateProjectScoreConfig: {
+    method: 'PATCH',
+    url: '/projects/:projectId/score-configs/:configId',
+  },
+  archiveProjectScoreConfig: {
+    method: 'POST',
+    url: '/projects/:projectId/score-configs/:configId/archive',
+  },
+  restoreProjectScoreConfig: {
+    method: 'POST',
+    url: '/projects/:projectId/score-configs/:configId/restore',
   },
   getProjectAnnotationUsers: {
     method: 'GET',
@@ -178,6 +260,18 @@ export const apiRegistry = {
     method: 'GET',
     url: '/projects/:projectId/evaluation-reports/:reportId/badcases',
   },
+  getEvaluationReportFlowbacks: {
+    method: 'GET',
+    url: '/projects/:projectId/evaluation-reports/:reportId/flowbacks',
+  },
+  previewEvaluationReportFlowback: {
+    method: 'POST',
+    url: '/projects/:projectId/evaluation-reports/:reportId/flowbacks/preview',
+  },
+  createEvaluationReportFlowback: {
+    method: 'POST',
+    url: '/projects/:projectId/evaluation-reports/:reportId/flowbacks',
+  },
   getAutoEvaluationTasks: {
     method: 'GET',
     url: '/projects/:projectId/auto-evaluations',
@@ -201,6 +295,10 @@ export const apiRegistry = {
   deleteAutoEvaluationTask: {
     method: 'DELETE',
     url: '/projects/:projectId/auto-evaluations/:taskId',
+  },
+  rerunAutoEvaluationTask: {
+    method: 'POST',
+    url: '/projects/:projectId/auto-evaluations/:taskId/rerun',
   },
   getAutoEvaluationLatestReport: {
     method: 'GET',

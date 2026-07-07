@@ -1,5 +1,13 @@
 import type { Row } from '@tanstack/react-table'
-import { Download, Eye, MoreHorizontal, RefreshCw, RotateCcw, Send, Trash2 } from 'lucide-react'
+import {
+  Download,
+  Eye,
+  MoreHorizontal,
+  RefreshCw,
+  RotateCcw,
+  Send,
+  Trash2,
+} from 'lucide-react'
 import { Link } from 'react-router'
 import { Button } from '@/components/ui/button'
 import {
@@ -45,7 +53,9 @@ export function EvaluationReportRowActions({
         <DropdownMenuGroup>
           {ready ? (
             <DropdownMenuItem asChild>
-              <Link to={`/projects/${projectId}/evaluation/reports/${report.id}`}>
+              <Link
+                to={`/projects/${projectId}/evaluation/reports/${report.id}`}
+              >
                 <Eye data-icon='inline-start' />
                 查看报告
               </Link>
@@ -64,12 +74,18 @@ export function EvaluationReportRowActions({
             <RotateCcw data-icon='inline-start' />
             重新生成
           </DropdownMenuItem>
-          <DropdownMenuItem disabled={!ready} onSelect={() => onFlowback(report)}>
+          <DropdownMenuItem
+            disabled={!ready}
+            onSelect={() => onFlowback(report)}
+          >
             <Send data-icon='inline-start' />
             回流数据
           </DropdownMenuItem>
           <DropdownMenuSeparator />
-          <DropdownMenuItem variant='destructive' onSelect={() => onDelete(report)}>
+          <DropdownMenuItem
+            variant='destructive'
+            onSelect={() => onDelete(report)}
+          >
             <Trash2 data-icon='inline-start' />
             删除
           </DropdownMenuItem>

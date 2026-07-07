@@ -57,18 +57,18 @@ export function ProjectAnnotationQueueDetail() {
   )
 
   const queueQuery = useQuery({
-    queryKey: ['project-annotation-queue', projectId, queueId],
+    queryKey: ['project-annotation-queue', $api, projectId, queueId],
     queryFn: () => getProjectAnnotationQueue($api, projectId, queueId),
     enabled: Boolean(queueId),
   })
   const metricQuery = useQuery({
-    queryKey: ['project-annotation-queue-metrics', projectId, queueId],
+    queryKey: ['project-annotation-queue-metrics', $api, projectId, queueId],
     queryFn: () =>
       getProjectAnnotationQueueMetricSummary($api, projectId, queueId),
     enabled: Boolean(queueId),
   })
   const usersQuery = useQuery({
-    queryKey: ['project-annotation-users', projectId],
+    queryKey: ['project-annotation-users', $api, projectId],
     queryFn: () => listProjectAnnotationUsers($api, projectId),
   })
 
@@ -97,7 +97,13 @@ export function ProjectAnnotationQueueDetail() {
         projectId,
         queueId,
         onDelete: (item) => {
-          void handleDeleteItem($api, projectId, queueId, item, invalidateDetail)
+          void handleDeleteItem(
+            $api,
+            projectId,
+            queueId,
+            item,
+            invalidateDetail
+          )
         },
       }),
     [$api, invalidateDetail, projectId, queueId]
@@ -171,12 +177,18 @@ export function ProjectAnnotationQueueDetail() {
             request={{
               queryKey: (state) => [
                 'project-annotation-queue-items',
+                $api,
                 projectId,
                 queueId,
                 state,
               ],
               queryFn: (state) =>
-                listProjectAnnotationQueueItems($api, projectId, queueId, state),
+                listProjectAnnotationQueueItems(
+                  $api,
+                  projectId,
+                  queueId,
+                  state
+                ),
               enabled: Boolean(queueId),
             }}
             urlState={{

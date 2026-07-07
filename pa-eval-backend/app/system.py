@@ -52,15 +52,9 @@ async def get_sidebar() -> dict[str, Any]:
                         },
                         {
                             "title": "组织管理",
-                            "url": "/settings/organization",
+                            "url": "/settings/info",
                             "activeMatch": "prefix",
                             "icon": "Building2",
-                        },
-                        {
-                            "title": "评测管理",
-                            "url": "/tasks",
-                            "activeMatch": "prefix",
-                            "icon": "ListTodo",
                         },
                     ],
                 }

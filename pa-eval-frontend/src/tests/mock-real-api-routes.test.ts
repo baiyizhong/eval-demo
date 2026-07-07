@@ -4,7 +4,11 @@ import { join } from 'node:path'
 import { test } from 'node:test'
 
 const mockRoot = new URL('../../mock', import.meta.url)
-const realApiRoutePatterns = ['/api/organizations', '/api/projects', '/api/sidebar']
+const realApiRoutePatterns = [
+  '/api/organizations',
+  '/api/projects',
+  '/api/sidebar',
+]
 
 test('mock mode does not intercept real organization project and sidebar APIs', () => {
   const offenders: string[] = []

@@ -1,11 +1,11 @@
 import { useEffect, useMemo } from 'react'
 import { useQuery } from '@tanstack/react-query'
-import { useAPI } from '@/hooks/use-api'
 import {
   type Organization,
   type PaginatedResult,
 } from '@/modules/organization-management/data/schema'
 import { useOrganizationStore } from '@/stores/organization.store'
+import { useAPI } from '@/hooks/use-api'
 
 export const organizationsQueryKey = ['organizations'] as const
 
@@ -16,7 +16,9 @@ export function useOrganizations() {
     (state) => state.currentOrganizationId
   )
   const isLoaded = useOrganizationStore((state) => state.isLoaded)
-  const setOrganizations = useOrganizationStore((state) => state.setOrganizations)
+  const setOrganizations = useOrganizationStore(
+    (state) => state.setOrganizations
+  )
 
   const query = useQuery({
     queryKey: [...organizationsQueryKey, $api] as const,

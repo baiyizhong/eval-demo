@@ -18,7 +18,9 @@ const PAGE_GUIDE_DEFAULT_CONTENT: PageGuideContent = {
   description: ['该页面尚未创建。', '敬请期待！'],
 }
 
-function getPageGuideContent(content?: PageGuideContentConfig): PageGuideContent {
+function getPageGuideContent(
+  content?: PageGuideContentConfig
+): PageGuideContent {
   return {
     ...PAGE_GUIDE_DEFAULT_CONTENT,
     ...content,

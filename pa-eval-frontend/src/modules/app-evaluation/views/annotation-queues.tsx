@@ -20,7 +20,10 @@ import { createAnnotationQueueColumns } from '../components/annotation-queue-col
 import { AnnotationQueueFormDrawer } from '../components/annotation-queue-form-drawer'
 import { EvaluationPageNav } from '../components/evaluation-page-nav'
 import type { AnnotationQueueFormInput, AnnotationQueueRecord } from '../types'
-import { queueToolbarFilters, queueUrlFilters } from './annotation-queue-filters'
+import {
+  queueToolbarFilters,
+  queueUrlFilters,
+} from './annotation-queue-filters'
 
 export function ProjectAnnotationQueues() {
   const { projectId = 'project_customer_agent' } = useParams()
@@ -54,19 +57,24 @@ export function ProjectAnnotationQueues() {
   )
 
   const scoreConfigsQuery = useQuery({
-    queryKey: ['project-score-configs', projectId],
+    queryKey: ['project-score-configs', $api, projectId],
     queryFn: () => listProjectScoreConfigsForAnnotation($api, projectId),
     enabled: formOpen,
   })
   const usersQuery = useQuery({
-    queryKey: ['project-annotation-users', projectId],
+    queryKey: ['project-annotation-users', $api, projectId],
     queryFn: () => listProjectAnnotationUsers($api, projectId),
     enabled: formOpen,
   })
 
   const handleSubmitQueue = async (input: AnnotationQueueFormInput) => {
     if (editingQueue) {
-      await updateProjectAnnotationQueue($api, projectId, editingQueue.id, input)
+      await updateProjectAnnotationQueue(
+        $api,
+        projectId,
+        editingQueue.id,
+        input
+      )
       toast.success('人工标注任务已更新')
     } else {
       await createProjectAnnotationQueue($api, projectId, input)
@@ -102,6 +110,7 @@ export function ProjectAnnotationQueues() {
             request={{
               queryKey: (state) => [
                 'project-annotation-queues',
+                $api,
                 projectId,
                 state,
               ],

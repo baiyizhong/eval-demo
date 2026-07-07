@@ -6,11 +6,7 @@ import type {
 import type { AutoEvaluationEvaluatorType } from '../../app-evaluation/types'
 
 export type TaskEvaluatorProvider =
-  | 'LANGFUSE'
-  | 'DIFY'
-  | 'HIAGENT'
-  | 'N8N'
-  | 'OPENJUDGE'
+  'LANGFUSE' | 'DIFY' | 'HIAGENT' | 'N8N' | 'OPENJUDGE'
 
 export type TaskEvaluatorType = AutoEvaluationEvaluatorType | 'WORKFLOW' | 'SDK'
 
@@ -144,7 +140,9 @@ export function buildCreateEvaluatorPayload(
       ...base,
       endpointUrl: values.endpointUrl.trim(),
       authType: values.authType,
-      ...(values.authToken.trim() ? { authToken: values.authToken.trim() } : {}),
+      ...(values.authToken.trim()
+        ? { authToken: values.authToken.trim() }
+        : {}),
       inputMapping: parseJsonObject(values.inputMapping, '输入映射'),
       outputMapping: parseJsonObject(values.outputMapping, '输出映射'),
     }

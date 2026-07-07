@@ -6,6 +6,14 @@ import { useEnvironmentStore } from '@/stores/environment-store'
 import { useOrganizationStore } from '@/stores/organization.store'
 import { cn } from '@/lib/utils'
 import { Button } from '@/components/ui/button'
+import {
+  Card,
+  CardContent,
+  CardDescription,
+  CardFooter,
+  CardHeader,
+  CardTitle,
+} from '@/components/ui/card'
 import { environmentOptions } from './environment-options'
 import { getEnvironmentPageRedirectPath } from './environment-routing'
 
@@ -36,7 +44,7 @@ export function EnvironmentSelect() {
   return (
     <main className='bg-background text-foreground min-h-svh'>
       <div className='mx-auto flex min-h-svh w-full max-w-6xl flex-col justify-center gap-8 px-4 py-8 md:px-8 lg:px-10'>
-        <section className='max-w-3xl space-y-4'>
+        <section className='flex max-w-3xl flex-col gap-4'>
           <div className='flex items-center gap-3'>
             <div className='bg-primary text-primary-foreground flex size-10 items-center justify-center rounded-md text-sm font-semibold'>
               A
@@ -48,7 +56,7 @@ export function EnvironmentSelect() {
               </div>
             </div>
           </div>
-          <div className='space-y-3'>
+          <div className='flex flex-col gap-3'>
             <h1 className='text-3xl font-semibold tracking-normal md:text-4xl'>
               选择工作环境
             </h1>
@@ -64,38 +72,44 @@ export function EnvironmentSelect() {
             const selected = option.code === environmentCode
 
             return (
-              <button
+              <Card
                 key={option.code}
-                type='button'
                 className={cn(
-                  'group bg-card hover:border-primary/60 hover:bg-muted/20 focus-visible:ring-ring flex min-h-56 flex-col justify-between rounded-lg border p-5 text-left shadow-sm transition-colors focus-visible:ring-2 focus-visible:outline-none',
-                  selected ? 'border-primary bg-primary/5' : 'border-border'
+                  'group hover:border-primary/60 hover:bg-muted/20 min-h-56 transition-colors',
+                  selected && 'border-primary bg-primary/5'
                 )}
-                onClick={() => handleSelect(option.code)}
               >
-                <div className='space-y-4'>
-                  <div className='flex items-center justify-between gap-3'>
-                    <div className='bg-background text-primary flex size-11 items-center justify-center rounded-md border'>
-                      <Icon className='size-5' />
-                    </div>
-                    {selected ? (
-                      <CheckCircle2 className='text-primary size-5' />
-                    ) : null}
+                <CardHeader className='flex flex-row items-start justify-between gap-3'>
+                  <div className='bg-background text-primary flex size-11 items-center justify-center rounded-md border'>
+                    <Icon className='size-5' />
                   </div>
-                  <div className='space-y-2'>
-                    <h2 className='text-lg font-semibold tracking-normal'>
-                      {option.name}
-                    </h2>
-                    <p className='text-muted-foreground text-sm leading-6'>
+                  {selected ? (
+                    <CheckCircle2 className='text-primary size-5' />
+                  ) : null}
+                </CardHeader>
+                <CardContent className='flex flex-1 flex-col gap-4'>
+                  <div className='flex flex-col gap-2'>
+                    <CardTitle className='text-lg'>{option.name}</CardTitle>
+                    <CardDescription className='text-sm leading-6'>
                       {option.description}
-                    </p>
+                    </CardDescription>
                   </div>
-                </div>
-                <div className='text-primary mt-6 flex items-center text-sm font-medium'>
-                  进入环境
-                  <ArrowRight className='ml-2 size-4 transition-transform group-hover:translate-x-0.5' />
-                </div>
-              </button>
+                </CardContent>
+                <CardFooter>
+                  <Button
+                    type='button'
+                    variant='ghost'
+                    className='text-primary w-full justify-start px-0 hover:px-2'
+                    onClick={() => handleSelect(option.code)}
+                  >
+                    进入环境
+                    <ArrowRight
+                      data-icon='inline-end'
+                      className='transition-transform group-hover:translate-x-0.5'
+                    />
+                  </Button>
+                </CardFooter>
+              </Card>
             )
           })}
         </section>

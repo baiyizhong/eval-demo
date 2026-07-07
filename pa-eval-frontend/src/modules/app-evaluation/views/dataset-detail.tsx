@@ -1,30 +1,33 @@
-import { useMemo } from 'react'
-import { useQuery } from '@tanstack/react-query'
+import { useCallback, useMemo, useState } from 'react'
+import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
+import { Plus } from 'lucide-react'
 import { useNavigate, useParams } from 'react-router'
+import { toast } from 'sonner'
+import { confirm } from '@/lib/confirm'
 import { useAPI } from '@/hooks/use-api'
-import {
-  Card,
-  CardContent,
-  CardHeader,
-  CardTitle,
-} from '@/components/ui/card'
-import { PageAction } from '@/components/common/page-action'
-import { Page } from '@/components/common/page'
+import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card'
 import {
   DataTable,
   type DataTableFilterBinding,
   type DataTableToolbarFilter,
 } from '@/components/common/data-table'
 import { Loading } from '@/components/common/loading'
+import { Page } from '@/components/common/page'
+import { PageAction } from '@/components/common/page-action'
 import {
+  archiveProjectDatasetItem,
+  createProjectDatasetItem,
   getProjectDataset,
   getProjectDatasetMetricSummary,
   listProjectDatasetItems,
+  updateProjectDatasetItem,
 } from '../api/dataset-api'
+import { DatasetItemBulkActions } from '../components/dataset-item-bulk-actions'
 import { createDatasetItemColumns } from '../components/dataset-item-columns'
+import { DatasetItemFormDrawer } from '../components/dataset-item-form-drawer'
 import { DatasetTypeBadge } from '../components/dataset-type-badge'
 import { formatDateTime } from '../components/format'
-import type { DatasetItemRecord } from '../types'
+import type { DatasetItemFormInput, DatasetItemRecord } from '../types'
 
 const itemUrlFilters: DataTableFilterBinding[] = [
   { fieldId: 'status', type: 'array' },
@@ -44,10 +47,10 @@ const itemToolbarFilters: DataTableToolbarFilter[] = [
 export function ProjectDatasetDetail() {
   const navigate = useNavigate()
   const $api = useAPI()
-  const {
-    projectId = 'project_customer_agent',
-    datasetId = '',
-  } = useParams()
+  const queryClient = useQueryClient()
+  const { projectId = 'project_customer_agent', datasetId = '' } = useParams()
+  const [itemDrawerOpen, setItemDrawerOpen] = useState(false)
+  const [editingItem, setEditingItem] = useState<DatasetItemRecord | null>(null)
 
   const datasetQuery = useQuery({
     queryKey: ['project-dataset', $api, projectId, datasetId],
@@ -60,12 +63,88 @@ export function ProjectDatasetDetail() {
     enabled: Boolean(datasetId),
   })
 
+  const invalidateDetail = useCallback(
+    () =>
+      Promise.all([
+        queryClient.invalidateQueries({
+          queryKey: ['project-dataset', projectId, datasetId],
+        }),
+        queryClient.invalidateQueries({
+          queryKey: ['project-dataset-metrics', projectId, datasetId],
+        }),
+        queryClient.invalidateQueries({
+          queryKey: ['project-dataset-items', projectId, datasetId],
+        }),
+        queryClient.invalidateQueries({
+          queryKey: ['project-datasets', projectId],
+        }),
+      ]),
+    [datasetId, projectId, queryClient]
+  )
+
+  const saveItemMutation = useMutation({
+    mutationFn: (input: DatasetItemFormInput) =>
+      editingItem
+        ? updateProjectDatasetItem(
+            $api,
+            projectId,
+            datasetId,
+            editingItem.id,
+            input
+          )
+        : createProjectDatasetItem($api, projectId, datasetId, input),
+    onSuccess: async () => {
+      await invalidateDetail()
+      setEditingItem(null)
+      toast.success(editingItem ? '数据项已更新' : '数据项已新增')
+    },
+  })
+
+  const archiveItemMutation = useMutation({
+    mutationFn: (item: DatasetItemRecord) =>
+      archiveProjectDatasetItem($api, projectId, datasetId, item.id),
+    onSuccess: async () => {
+      await invalidateDetail()
+      toast.success('数据项已归档')
+    },
+  })
+  const archiveItem = archiveItemMutation.mutateAsync
+
+  const handleCreateItem = useCallback(() => {
+    setEditingItem(null)
+    setItemDrawerOpen(true)
+  }, [])
+
+  const handleEditItem = useCallback((item: DatasetItemRecord) => {
+    setEditingItem(item)
+    setItemDrawerOpen(true)
+  }, [])
+
+  const handleArchiveItem = useCallback(
+    async (item: DatasetItemRecord) => {
+      if (
+        await confirm({
+          title: '归档数据项',
+          desc: `确定归档数据项「${item.id}」吗？归档后仍可通过状态筛选查看。`,
+          confirmText: '归档',
+          destructive: true,
+        })
+      ) {
+        await archiveItem(item)
+      }
+    },
+    [archiveItem]
+  )
+
   const columns = useMemo(
     () =>
       createDatasetItemColumns({
-        readOnly: true,
+        onEdit: handleEditItem,
+        onArchive: (item) => {
+          void handleArchiveItem(item)
+        },
       }),
-    []
+    [handleArchiveItem, handleEditItem]
   )
 
   const dataset = datasetQuery.data
@@ -77,10 +156,24 @@ export function ProjectDatasetDetail() {
         <PageAction
           showBackButton
           onBack={() => navigate(`/projects/${projectId}/evaluation/datasets`)}
+          buttonGroups={{
+            buttons: [
+              {
+                id: 'create-dataset-item',
+                label: '新增数据项',
+                icon: Plus,
+                iconPosition: 'start',
+                size: 'sm',
+                onClick: handleCreateItem,
+              },
+            ],
+          }}
         >
           {dataset ? (
             <div className='flex min-w-0 flex-wrap items-center gap-2'>
-              <span className='truncate text-sm font-medium'>{dataset.name}</span>
+              <span className='truncate text-sm font-medium'>
+                {dataset.name}
+              </span>
               <DatasetTypeBadge type={dataset.type} />
             </div>
           ) : null}
@@ -104,10 +197,14 @@ export function ProjectDatasetDetail() {
                 value={formatDateTime(metrics.updatedAt)}
               />
             </section>
-            <section className='rounded-lg border bg-card p-4 text-card-foreground'>
+            <section className='bg-card text-card-foreground rounded-lg border p-4'>
               <div className='flex flex-wrap items-center gap-x-8 gap-y-3 text-sm'>
                 <InfoItem label='名称' value={dataset.name} />
-                <InfoItem label='描述' value={dataset.description || '-'} wide />
+                <InfoItem
+                  label='描述'
+                  value={dataset.description || '-'}
+                  wide
+                />
                 <InfoItem
                   label='类型'
                   value={<DatasetTypeBadge type={dataset.type} />}
@@ -122,7 +219,7 @@ export function ProjectDatasetDetail() {
           </>
         ) : null}
 
-        <section className='flex min-h-0 min-w-0 flex-1 flex-col rounded-lg border bg-card p-4 text-card-foreground'>
+        <section className='bg-card text-card-foreground flex min-h-0 min-w-0 flex-1 flex-col rounded-lg border p-4'>
           <DataTable<DatasetItemRecord>
             className='min-h-0 flex-1'
             columns={columns}
@@ -156,7 +253,13 @@ export function ProjectDatasetDetail() {
                 createdAt: '创建时间',
               },
             }}
-            enableRowSelection={false}
+            bulkActions={(table) => (
+              <DatasetItemBulkActions
+                table={table}
+                projectId={projectId}
+                datasetId={datasetId}
+              />
+            )}
             loadingText={
               <Loading
                 text='加载数据项中...'
@@ -168,17 +271,24 @@ export function ProjectDatasetDetail() {
           />
         </section>
       </div>
+      <DatasetItemFormDrawer
+        open={itemDrawerOpen}
+        item={editingItem}
+        onOpenChange={(open) => {
+          setItemDrawerOpen(open)
+          if (!open) {
+            setEditingItem(null)
+          }
+        }}
+        onSubmit={async (input) => {
+          await saveItemMutation.mutateAsync(input)
+        }}
+      />
     </Page>
   )
 }
 
-function MetricCard({
-  title,
-  value,
-}: {
-  title: string
-  value: string
-}) {
+function MetricCard({ title, value }: { title: string; value: string }) {
   return (
     <Card>
       <CardHeader>
@@ -203,7 +313,13 @@ function InfoItem({
   wide?: boolean
 }) {
   return (
-    <div className={wide ? 'flex min-w-64 max-w-xl items-center gap-2' : 'flex items-center gap-2'}>
+    <div
+      className={
+        wide
+          ? 'flex max-w-xl min-w-64 items-center gap-2'
+          : 'flex items-center gap-2'
+      }
+    >
       <span className='text-muted-foreground shrink-0'>{label}</span>
       <span className='min-w-0 truncate font-medium'>{value}</span>
     </div>
