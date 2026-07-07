@@ -78,6 +78,15 @@ export type TraceListQuery = {
   businessId?: string
   metadataKey?: string
   metadataValue?: string
+  metadataFilters?: TraceMetadataFilter[]
+}
+
+export type TraceMetadataFilterOperator = 'equals' | 'contains' | 'exists'
+
+export type TraceMetadataFilter = {
+  key: string
+  operator: TraceMetadataFilterOperator
+  value?: string
 }
 
 export type TraceListResponse = {

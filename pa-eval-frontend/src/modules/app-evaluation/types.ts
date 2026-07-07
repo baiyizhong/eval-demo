@@ -117,6 +117,8 @@ export type ScoreConfigRecord = {
   maxValue?: number
   categories?: string[]
   archived?: boolean
+  createdAt?: string
+  updatedAt?: string
 }
 
 export type AnnotationQueueRecord = {

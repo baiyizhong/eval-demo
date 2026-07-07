@@ -13,6 +13,9 @@ class FakeDatabaseReader:
         self.updated_project_payload = None
         self.archived_project_payload = None
         self.restored_project_payload = None
+        self.created_project_member_payload = None
+        self.updated_project_member_payload = None
+        self.deleted_project_member_payload = None
 
     async def list_projects(self) -> list[dict]:
         return await self.list_projects_for_user("user-1")
@@ -153,6 +156,61 @@ class FakeDatabaseReader:
                 "projectRole": None,
             }
         ]
+
+    async def create_project_member_for_user(
+        self,
+        project_id: str,
+        user_id: str,
+        payload: dict,
+    ) -> dict:
+        self.created_project_member_payload = {
+            "project_id": project_id,
+            "user_id": user_id,
+            "payload": payload,
+        }
+        return {
+            "id": "user-2",
+            "name": "项目成员",
+            "email": payload["email"],
+            "role": payload["role"],
+            "organizationRole": "NONE",
+            "projectRole": payload["role"],
+        }
+
+    async def update_project_member_for_user(
+        self,
+        project_id: str,
+        member_id: str,
+        user_id: str,
+        payload: dict,
+    ) -> dict:
+        self.updated_project_member_payload = {
+            "project_id": project_id,
+            "member_id": member_id,
+            "user_id": user_id,
+            "payload": payload,
+        }
+        return {
+            "id": member_id,
+            "name": "项目成员",
+            "email": "member@example.com",
+            "role": payload["role"],
+            "organizationRole": "NONE",
+            "projectRole": payload["role"],
+        }
+
+    async def delete_project_member_for_user(
+        self,
+        project_id: str,
+        member_id: str,
+        user_id: str,
+    ) -> dict:
+        self.deleted_project_member_payload = {
+            "project_id": project_id,
+            "member_id": member_id,
+            "user_id": user_id,
+        }
+        return {"id": member_id}
 
 
 def override_reader(fake_reader: FakeDatabaseReader):
@@ -314,6 +372,69 @@ def test_lists_project_settings_members() -> None:
     ]
     assert fake_reader.project_members_payload == {
         "project_id": "project-1",
+        "user_id": "user-1",
+    }
+
+
+def test_creates_project_settings_member() -> None:
+    fake_reader = FakeDatabaseReader()
+    override_reader(fake_reader)
+
+    try:
+        response = TestClient(app).post(
+            "/api/projects/project-1/settings/members",
+            json={"email": "member@example.com", "role": "MEMBER"},
+        )
+    finally:
+        clear_overrides()
+
+    assert response.status_code == 200
+    assert response.json()["data"]["projectRole"] == "MEMBER"
+    assert fake_reader.created_project_member_payload == {
+        "project_id": "project-1",
+        "user_id": "user-1",
+        "payload": {"email": "member@example.com", "role": "MEMBER"},
+    }
+
+
+def test_updates_project_settings_member_role() -> None:
+    fake_reader = FakeDatabaseReader()
+    override_reader(fake_reader)
+
+    try:
+        response = TestClient(app).patch(
+            "/api/projects/project-1/settings/members/user-2",
+            json={"role": "VIEWER"},
+        )
+    finally:
+        clear_overrides()
+
+    assert response.status_code == 200
+    assert response.json()["data"]["projectRole"] == "VIEWER"
+    assert fake_reader.updated_project_member_payload == {
+        "project_id": "project-1",
+        "member_id": "user-2",
+        "user_id": "user-1",
+        "payload": {"role": "VIEWER"},
+    }
+
+
+def test_deletes_project_settings_member() -> None:
+    fake_reader = FakeDatabaseReader()
+    override_reader(fake_reader)
+
+    try:
+        response = TestClient(app).delete(
+            "/api/projects/project-1/settings/members/user-2",
+        )
+    finally:
+        clear_overrides()
+
+    assert response.status_code == 200
+    assert response.json()["data"] == {"id": "user-2"}
+    assert fake_reader.deleted_project_member_payload == {
+        "project_id": "project-1",
+        "member_id": "user-2",
         "user_id": "user-1",
     }
 

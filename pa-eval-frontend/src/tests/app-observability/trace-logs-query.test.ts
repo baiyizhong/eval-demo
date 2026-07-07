@@ -35,3 +35,23 @@ test('trace logs query keeps an explicit createdAtRange instead of defaulting to
   ])
   assert.equal(query.timeRange, undefined)
 })
+
+test('trace logs query serializes multiple metadata filters', () => {
+  const query = buildTraceListQuery(
+    {
+      ...baseState,
+      filters: {
+        metadataFilters: [
+          { key: 'businessId', operator: 'contains', value: 'ticket' },
+          { key: 'priority', operator: 'equals', value: 'high' },
+        ],
+      },
+    },
+    'project-1'
+  )
+
+  assert.deepEqual(query.metadataFilters, [
+    { key: 'businessId', operator: 'contains', value: 'ticket' },
+    { key: 'priority', operator: 'equals', value: 'high' },
+  ])
+})

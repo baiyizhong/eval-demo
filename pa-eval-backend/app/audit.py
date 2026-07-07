@@ -76,6 +76,8 @@ class AdminAuditService:
         actor_email: str | None,
         organization_id: str | None,
         project_id: str | None,
+        created_from: str | None,
+        created_to: str | None,
     ) -> dict[str, Any]:
         if not self._database_url:
             raise LangfuseDatabaseConfigError()
@@ -118,6 +120,12 @@ class AdminAuditService:
         if project_id:
             filters.append("project_id = %(project_id)s")
             params["project_id"] = project_id
+        if created_from:
+            filters.append("create_date >= %(created_from)s")
+            params["created_from"] = _parse_datetime_filter(created_from)
+        if created_to:
+            filters.append("create_date <= %(created_to)s")
+            params["created_to"] = _parse_datetime_filter(created_to)
 
         where_sql = "WHERE " + " AND ".join(filters) if filters else ""
         async with await self._connect() as connection:
@@ -391,6 +399,8 @@ async def list_audit_logs(
     actor_email: str | None = Query(default=None, alias="actorEmail"),
     organization_id: str | None = Query(default=None, alias="organizationId"),
     project_id: str | None = Query(default=None, alias="projectId"),
+    created_from: str | None = Query(default=None, alias="createdFrom"),
+    created_to: str | None = Query(default=None, alias="createdTo"),
     current_user: CurrentUserContext = Depends(get_current_user_context),
     service: AdminAuditService = Depends(get_admin_audit_service),
 ) -> dict[str, Any]:
@@ -406,6 +416,8 @@ async def list_audit_logs(
             actor_email=actor_email,
             organization_id=organization_id,
             project_id=project_id,
+            created_from=created_from,
+            created_to=created_to,
         )
     )
 
@@ -507,3 +519,8 @@ def _format_datetime(value: Any) -> str:
         formatted = value.isoformat(timespec="milliseconds")
         return formatted.replace("+00:00", "Z")
     return str(value or "")
+
+
+def _parse_datetime_filter(value: str) -> datetime:
+    normalized = value.strip().replace("T", " ").replace("Z", "")
+    return datetime.fromisoformat(normalized)

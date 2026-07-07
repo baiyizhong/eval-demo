@@ -45,10 +45,10 @@ import { Loading } from '@/components/common/loading'
 import type { ScoreConfig, ScoreConfigDataType } from '../types'
 
 const DATA_TYPE_LABELS: Record<ScoreConfigDataType, string> = {
-  NUMERIC: 'Numeric',
-  CATEGORICAL: 'Categorical',
-  BOOLEAN: 'Boolean',
-  TEXT: 'Text',
+  NUMERIC: '数值',
+  CATEGORICAL: '分类',
+  BOOLEAN: '布尔',
+  TEXT: '文本',
 }
 
 function formatDateTime(value: string) {
@@ -68,7 +68,12 @@ function getConfigRange(config: ScoreConfig) {
     return `${config.minValue ?? '-'} 到 ${config.maxValue ?? '-'}`
   }
   if (config.dataType === 'CATEGORICAL') {
-    return config.categories?.join(', ') || '-'
+    return config.categories?.map(formatScoreOption).join(', ') || '-'
+  }
+  if (config.dataType === 'BOOLEAN') {
+    return (config.categories?.length ? config.categories : ['1|是', '0|否'])
+      .map(formatScoreOption)
+      .join(', ')
   }
   return '-'
 }
@@ -93,7 +98,8 @@ export function ProjectScoreConfigsSettings() {
         maxValue: record.maxValue,
         categories: record.categories,
         isArchived: Boolean(record.archived),
-        updatedAt: '',
+        createdAt: record.createdAt,
+        updatedAt: record.updatedAt || record.createdAt || '',
       }))
     },
   })
@@ -162,7 +168,7 @@ export function ProjectScoreConfigsSettings() {
             onClick={() => ensureDefaultMutation.mutate()}
             disabled={ensureDefaultMutation.isPending}
           >
-            确保默认指标
+            准备推荐指标
           </Button>
           <Button onClick={openCreate}>
             <Plus data-icon='inline-start' />
@@ -292,8 +298,8 @@ function ScoreConfigDialog({
   const [maxValue, setMaxValue] = useState(
     config?.maxValue == null ? '5' : String(config.maxValue)
   )
-  const [categories, setCategories] = useState(
-    config?.categories?.join(', ') ?? ''
+  const [categoryRows, setCategoryRows] = useState<ScoreOptionRow[]>(
+    getInitialScoreOptionRows(config)
   )
 
   const submit = () => {
@@ -302,10 +308,13 @@ function ScoreConfigDialog({
       toast.error('请输入指标名称')
       return
     }
-    const categoryValues = categories
-      .split(',')
-      .map((item) => item.trim())
-      .filter(Boolean)
+    const categoryValues = categoryRows
+      .map((item) => ({
+        value: item.value.trim(),
+        label: item.label.trim(),
+      }))
+      .filter((item) => item.value)
+      .map((item) => encodeScoreOption(item))
     onSubmit({
       name: trimmedName,
       dataType,
@@ -314,7 +323,10 @@ function ScoreConfigDialog({
         dataType === 'NUMERIC' && minValue !== '' ? Number(minValue) : null,
       maxValue:
         dataType === 'NUMERIC' && maxValue !== '' ? Number(maxValue) : null,
-      categories: dataType === 'CATEGORICAL' ? categoryValues : [],
+      categories:
+        dataType === 'CATEGORICAL' || dataType === 'BOOLEAN'
+          ? categoryValues
+          : [],
     })
   }
 
@@ -375,13 +387,18 @@ function ScoreConfigDialog({
             </div>
           ) : null}
           {dataType === 'CATEGORICAL' ? (
-            <Field label='分类选项'>
-              <Input
-                value={categories}
-                onChange={(event) => setCategories(event.target.value)}
-                placeholder='good, bad'
-              />
-            </Field>
+            <ScoreOptionRows
+              rows={categoryRows}
+              onChange={setCategoryRows}
+              addLabel='新增分类'
+            />
+          ) : null}
+          {dataType === 'BOOLEAN' ? (
+            <ScoreOptionRows
+              rows={categoryRows}
+              onChange={setCategoryRows}
+              addLabel='新增布尔值'
+            />
           ) : null}
         </div>
         <DialogFooter>
@@ -399,6 +416,100 @@ function ScoreConfigDialog({
       </DialogContent>
     </Dialog>
   )
+}
+
+type ScoreOptionRow = {
+  value: string
+  label: string
+}
+
+function ScoreOptionRows({
+  rows,
+  onChange,
+  addLabel,
+}: {
+  rows: ScoreOptionRow[]
+  onChange: (rows: ScoreOptionRow[]) => void
+  addLabel: string
+}) {
+  const updateRow = (index: number, patch: Partial<ScoreOptionRow>) => {
+    onChange(
+      rows.map((row, currentIndex) =>
+        currentIndex === index ? { ...row, ...patch } : row
+      )
+    )
+  }
+
+  return (
+    <div className='flex flex-col gap-2'>
+      <Label>选项配置</Label>
+      <div className='grid gap-2'>
+        {rows.map((row, index) => (
+          <div key={index} className='grid grid-cols-[1fr_1fr_auto] gap-2'>
+            <Input
+              value={row.value}
+              onChange={(event) => updateRow(index, { value: event.target.value })}
+              placeholder='值，例如 1'
+            />
+            <Input
+              value={row.label}
+              onChange={(event) => updateRow(index, { label: event.target.value })}
+              placeholder='显示标签，例如 是'
+            />
+            <Button
+              type='button'
+              variant='outline'
+              onClick={() =>
+                onChange(rows.filter((_, currentIndex) => currentIndex !== index))
+              }
+            >
+              删除
+            </Button>
+          </div>
+        ))}
+      </div>
+      <Button
+        type='button'
+        variant='outline'
+        onClick={() => onChange([...rows, { value: '', label: '' }])}
+      >
+        {addLabel}
+      </Button>
+    </div>
+  )
+}
+
+function getInitialScoreOptionRows(config: ScoreConfig | null): ScoreOptionRow[] {
+  if (config?.categories?.length) {
+    return config.categories.map(parseScoreOption)
+  }
+  if (config?.dataType === 'BOOLEAN') {
+    return [
+      { value: '1', label: '是' },
+      { value: '0', label: '否' },
+    ]
+  }
+  return [
+    { value: 'good', label: '好' },
+    { value: 'bad', label: '差' },
+  ]
+}
+
+function encodeScoreOption(option: ScoreOptionRow) {
+  return `${option.value}|${option.label || option.value}`
+}
+
+function parseScoreOption(value: string): ScoreOptionRow {
+  const [rawValue, rawLabel] = value.split('|')
+  return {
+    value: rawValue || value,
+    label: rawLabel || rawValue || value,
+  }
+}
+
+function formatScoreOption(value: string) {
+  const option = parseScoreOption(value)
+  return `${option.value}（${option.label}）`
 }
 
 function Field({ label, children }: { label: string; children: ReactNode }) {

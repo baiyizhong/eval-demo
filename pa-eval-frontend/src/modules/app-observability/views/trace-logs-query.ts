@@ -1,5 +1,5 @@
 import type { DataTableQueryState } from '@/components/common/data-table'
-import type { TraceListQuery } from '../types'
+import type { TraceListQuery, TraceMetadataFilter } from '../types'
 
 function optionalString(value: unknown): string | undefined {
   const text = String(value ?? '').trim()
@@ -11,6 +11,9 @@ export function buildTraceListQuery(
   projectId: string
 ): TraceListQuery {
   const createdAtRange = state.filters.createdAtRange as string[] | undefined
+  const metadataFilters = normalizeMetadataFilters(
+    state.filters.metadataFilters
+  )
   return {
     projectId,
     page: state.page,
@@ -28,5 +31,36 @@ export function buildTraceListQuery(
     businessId: optionalString(state.filters.businessId),
     metadataKey: optionalString(state.filters.metadataKey),
     metadataValue: optionalString(state.filters.metadataValue),
+    metadataFilters: metadataFilters.length ? metadataFilters : undefined,
   }
+}
+
+function normalizeMetadataFilters(value: unknown): TraceMetadataFilter[] {
+  if (!Array.isArray(value)) {
+    return []
+  }
+
+  const filters: TraceMetadataFilter[] = []
+  value.forEach((item) => {
+      if (!item || typeof item !== 'object') {
+        return
+      }
+      const candidate = item as Record<string, unknown>
+      const key = optionalString(candidate.key)
+      if (!key) {
+        return
+      }
+      const operator =
+        candidate.operator === 'equals' ||
+        candidate.operator === 'exists' ||
+        candidate.operator === 'contains'
+          ? candidate.operator
+          : 'contains'
+      filters.push({
+        key,
+        operator,
+        value: optionalString(candidate.value),
+      })
+    })
+  return filters
 }

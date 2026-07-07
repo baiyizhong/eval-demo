@@ -3,6 +3,7 @@ import { useQuery } from '@tanstack/react-query'
 import {
   Database,
   FileClock,
+  Filter,
   HelpCircle,
   RefreshCw,
   ShieldCheck,
@@ -11,6 +12,11 @@ import {
 import { useAPI } from '@/hooks/use-api'
 import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
+import {
+  Collapsible,
+  CollapsibleContent,
+  CollapsibleTrigger,
+} from '@/components/ui/collapsible'
 import {
   Card,
   CardContent,
@@ -137,14 +143,22 @@ function SystemPageShell({
   title,
   description,
   icon: Icon,
+  fullWidth = false,
   children,
 }: PropsWithChildren<{
   title: string
   description: string
   icon: LucideIcon
+  fullWidth?: boolean
 }>) {
   return (
-    <div className='mx-auto flex w-full max-w-7xl flex-col gap-4 px-6 py-6'>
+    <div
+      className={
+        fullWidth
+          ? 'flex w-full flex-col gap-4 px-6 py-6'
+          : 'mx-auto flex w-full max-w-7xl flex-col gap-4 px-6 py-6'
+      }
+    >
       <div className='flex items-start justify-between gap-4'>
         <div className='flex items-start gap-3'>
           <div className='border-border bg-muted flex size-10 shrink-0 items-center justify-center rounded-md border'>
@@ -293,6 +307,9 @@ export function OperationAudit() {
   const [keyword, setKeyword] = useState('')
   const [status, setStatus] = useState('ALL')
   const [action, setAction] = useState('ALL')
+  const [filtersOpen, setFiltersOpen] = useState(true)
+  const [createdFrom, setCreatedFrom] = useState('')
+  const [createdTo, setCreatedTo] = useState('')
   const pageSize = 10
   const query = useMemo(
     () => ({
@@ -301,8 +318,10 @@ export function OperationAudit() {
       keyword: keyword.trim() || undefined,
       status: status === 'ALL' ? undefined : status,
       action: action === 'ALL' ? undefined : action,
+      createdFrom: toIsoDateTime(createdFrom),
+      createdTo: toIsoDateTime(createdTo),
     }),
-    [action, keyword, page, status]
+    [action, createdFrom, createdTo, keyword, page, status]
   )
   const auditQuery = useQuery({
     queryKey: ['audit-logs', $api, query],
@@ -319,13 +338,26 @@ export function OperationAudit() {
       title='操作审计'
       description='集中查看 PA Eval 的关键写操作、执行结果、资源路径和问题定位 txId。'
       icon={FileClock}
+      fullWidth
     >
-      <Card className='rounded-md'>
-        <CardHeader>
-          <CardTitle className='text-base'>筛选</CardTitle>
-          <CardDescription>支持按关键字、动作和执行状态查询。</CardDescription>
-        </CardHeader>
-        <CardContent className='flex flex-col gap-3 md:flex-row'>
+      <Collapsible open={filtersOpen} onOpenChange={setFiltersOpen}>
+        <Card className='rounded-md'>
+          <CardHeader className='flex flex-row items-center justify-between gap-4'>
+            <div>
+              <CardTitle className='text-base'>筛选</CardTitle>
+              <CardDescription>
+                支持按关键字、动作、执行状态和操作时间查询。
+              </CardDescription>
+            </div>
+            <CollapsibleTrigger asChild>
+              <Button type='button' variant='outline' size='sm'>
+                <Filter data-icon='inline-start' />
+                {filtersOpen ? '收起筛选' : '展开筛选'}
+              </Button>
+            </CollapsibleTrigger>
+          </CardHeader>
+          <CollapsibleContent>
+            <CardContent className='grid gap-3 md:grid-cols-2 xl:grid-cols-6'>
           <Input
             value={keyword}
             onChange={(event) => {
@@ -333,7 +365,6 @@ export function OperationAudit() {
               setPage(1)
             }}
             placeholder='搜索操作者、资源、路径或 txId'
-            className='md:max-w-sm'
           />
           <Select
             value={action}
@@ -353,6 +384,12 @@ export function OperationAudit() {
               <SelectItem value='ARCHIVE'>归档</SelectItem>
               <SelectItem value='RESTORE'>恢复</SelectItem>
               <SelectItem value='RERUN'>重跑</SelectItem>
+              <SelectItem value='SAVE_SCORES'>保存评分</SelectItem>
+              <SelectItem value='ADD_TO_DATASET'>加入数据集</SelectItem>
+              <SelectItem value='CREATE_ANNOTATION_TASK'>
+                创建标注任务
+              </SelectItem>
+              <SelectItem value='FLOWBACK'>数据回流</SelectItem>
               <SelectItem value='DEMO_SEED'>演示数据初始化</SelectItem>
             </SelectContent>
           </Select>
@@ -372,6 +409,24 @@ export function OperationAudit() {
               <SelectItem value='FAILED'>失败</SelectItem>
             </SelectContent>
           </Select>
+          <Input
+            type='datetime-local'
+            value={createdFrom}
+            onChange={(event) => {
+              setCreatedFrom(event.target.value)
+              setPage(1)
+            }}
+            aria-label='开始时间'
+          />
+          <Input
+            type='datetime-local'
+            value={createdTo}
+            onChange={(event) => {
+              setCreatedTo(event.target.value)
+              setPage(1)
+            }}
+            aria-label='结束时间'
+          />
           <Button
             type='button'
             variant='outline'
@@ -380,8 +435,10 @@ export function OperationAudit() {
             <RefreshCw data-icon='inline-start' />
             刷新
           </Button>
-        </CardContent>
-      </Card>
+            </CardContent>
+          </CollapsibleContent>
+        </Card>
+      </Collapsible>
 
       {auditQuery.isLoading ? (
         <Loading text='加载操作审计中...' className='min-h-64' />
@@ -425,6 +482,13 @@ export function OperationAudit() {
       ) : null}
     </SystemPageShell>
   )
+}
+
+function toIsoDateTime(value: string) {
+  if (!value) return undefined
+  const date = new Date(value)
+  if (Number.isNaN(date.getTime())) return undefined
+  return date.toISOString()
 }
 
 export function BackendManagement() {

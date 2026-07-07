@@ -4,7 +4,6 @@ import {
   archiveProject,
   createProject,
   restoreProject,
-  updateProject,
   type ProjectPayload,
 } from '@/modules/apps/api/project-api'
 import { ProjectFormDrawer } from '@/modules/apps/components/project-form-drawer'
@@ -74,11 +73,7 @@ export function Apps() {
   const $api = useAPI()
   const navigate = useNavigate()
   const queryClient = useQueryClient()
-  const [formMode, setFormMode] = useState<'create' | 'edit'>('create')
   const [formOpen, setFormOpen] = useState(false)
-  const [editingProject, setEditingProject] = useState<ProjectCardItem | null>(
-    null
-  )
   const { currentOrganization, isPending: organizationsPending } =
     useOrganizations()
   const currentOrganizationId = currentOrganization?.id ?? null
@@ -108,13 +103,6 @@ export function Apps() {
       toast.error('请先选择组织')
       return
     }
-    setEditingProject(null)
-    setFormMode('create')
-    setFormOpen(true)
-  }
-  const openEditProject = (project: AppCardListItem) => {
-    setEditingProject(project as ProjectCardItem)
-    setFormMode('edit')
     setFormOpen(true)
   }
   const openProjectSettings = (project: AppCardListItem) => {
@@ -138,20 +126,6 @@ export function Apps() {
       setFormOpen(false)
     },
   })
-  const updateMutation = useMutation({
-    mutationFn: (input: ProjectPayload) => {
-      if (!editingProject) {
-        throw new Error('请选择要编辑的项目')
-      }
-      return updateProject($api, editingProject.id, input)
-    },
-    onSuccess: async () => {
-      await invalidateProjects()
-      toast.success('项目已更新')
-      setFormOpen(false)
-      setEditingProject(null)
-    },
-  })
   const archiveMutation = useMutation({
     mutationFn: (project: ProjectCardItem) =>
       project.status === 'archived'
@@ -164,11 +138,7 @@ export function Apps() {
   })
 
   const handleSubmitProject = async (values: ProjectPayload) => {
-    if (formMode === 'create') {
-      await createMutation.mutateAsync(values)
-      return
-    }
-    await updateMutation.mutateAsync(values)
+    await createMutation.mutateAsync(values)
   }
   const handleArchiveProject = async (project: AppCardListItem) => {
     const projectCard = project as ProjectCardItem
@@ -216,29 +186,16 @@ export function Apps() {
             onActionClick={openProject}
             onCardClick={openProject}
             onAddClick={openCreateProject}
-            onEditClick={openEditProject}
+            onEditClick={undefined}
             onDeleteClick={(project) => void handleArchiveProject(project)}
             onSettingsClick={openProjectSettings}
           />
         ) : null}
         <ProjectFormDrawer
           open={formOpen}
-          mode={formMode}
-          initialValues={
-            editingProject
-              ? {
-                  name: editingProject.name,
-                  description: editingProject.desc,
-                }
-              : undefined
-          }
-          submitting={createMutation.isPending || updateMutation.isPending}
-          onOpenChange={(open) => {
-            setFormOpen(open)
-            if (!open) {
-              setEditingProject(null)
-            }
-          }}
+          mode='create'
+          submitting={createMutation.isPending}
+          onOpenChange={setFormOpen}
           onSubmit={handleSubmitProject}
         />
       </Main>

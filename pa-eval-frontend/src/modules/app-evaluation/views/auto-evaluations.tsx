@@ -5,6 +5,7 @@ import { useNavigate, useParams } from 'react-router'
 import { toast } from 'sonner'
 import { confirm } from '@/lib/confirm'
 import { useAPI } from '@/hooks/use-api'
+import { Drawer } from '@/components/common/drawer'
 import { DataTable } from '@/components/common/data-table'
 import { Loading } from '@/components/common/loading'
 import { Page } from '@/components/common/page'
@@ -20,6 +21,7 @@ import {
   type AutoEvaluationSummaryFilter,
 } from '../components/auto-evaluation-summary-cards'
 import { EvaluationPageNav } from '../components/evaluation-page-nav'
+import { AutoEvaluationTaskForm } from '../components/auto-evaluation-task-form'
 import type { AutoEvaluationTaskRecord } from '../types'
 
 export function ProjectAutoEvaluations() {
@@ -29,6 +31,7 @@ export function ProjectAutoEvaluations() {
   const queryClient = useQueryClient()
   const [activeFilter, setActiveFilter] =
     useState<AutoEvaluationSummaryFilter>('all')
+  const [createOpen, setCreateOpen] = useState(false)
 
   const invalidateTasks = useCallback(async () => {
     await queryClient.invalidateQueries({
@@ -88,10 +91,7 @@ export function ProjectAutoEvaluations() {
                 icon: Plus,
                 iconPosition: 'start',
                 size: 'sm',
-                onClick: () =>
-                  navigate(
-                    `/projects/${projectId}/evaluation/auto-evaluations/new`
-                  ),
+                onClick: () => setCreateOpen(true),
               },
             ],
           }}
@@ -154,6 +154,31 @@ export function ProjectAutoEvaluations() {
           />
         </section>
       </div>
+      <Drawer
+        open={createOpen}
+        onOpenChange={setCreateOpen}
+        mode='enhanced'
+        title='新建自动评测'
+        showConfirm={false}
+        cancelText='关闭'
+        contentProps={{ className: 'overflow-y-auto' }}
+      >
+        <div className='p-4'>
+          <AutoEvaluationTaskForm
+            projectId={projectId}
+            onCancel={() => setCreateOpen(false)}
+            onCompleted={(taskId, mode) => {
+              setCreateOpen(false)
+              void invalidateTasks()
+              if (mode === 'run') {
+                navigate(
+                  `/projects/${projectId}/evaluation/auto-evaluations/${taskId}`
+                )
+              }
+            }}
+          />
+        </div>
+      </Drawer>
     </Page>
   )
 }

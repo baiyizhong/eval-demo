@@ -168,7 +168,7 @@ export function ProjectApiKeysSettings() {
   return (
     <ContentSection
       title='Project API Keys'
-      desc='管理当前项目的 Langfuse 访问密钥。Public Key 和 Secret Key 会保存在 PA 扩展表中，可重复查看和复制。'
+      desc='管理当前项目的访问密钥。Public Key 和 Secret Key 会保存在 PA 扩展表中，可重复查看和复制。'
     >
       <div className='flex flex-col gap-4'>
         <div className='border-border bg-muted/40 flex items-start gap-3 rounded-md border p-3 text-sm'>
@@ -186,7 +186,7 @@ export function ProjectApiKeysSettings() {
           <div className='flex flex-col gap-3 rounded-md border p-4'>
             <div className='flex items-center gap-2 font-medium'>
               <KeyRound className='size-4' />
-              新创建的 Langfuse 密钥
+              新创建的项目密钥
             </div>
             <KeyValueRow
               label='LANGFUSE_PUBLIC_KEY'
@@ -220,7 +220,7 @@ export function ProjectApiKeysSettings() {
           <Table>
             <TableHeader>
               <TableRow>
-                <TableHead>备注</TableHead>
+                <TableHead>秘钥描述</TableHead>
                 <TableHead>LANGFUSE_PUBLIC_KEY</TableHead>
                 <TableHead>LANGFUSE_SECRET_KEY</TableHead>
                 <TableHead>更新人</TableHead>
@@ -280,7 +280,7 @@ export function ProjectApiKeysSettings() {
                         onClick={() => openEditDialog(apiKey)}
                       >
                         <Pencil data-icon='inline-start' />
-                        备注
+                        描述
                       </Button>
                       <Button
                         type='button'
@@ -303,16 +303,15 @@ export function ProjectApiKeysSettings() {
           <DialogContent>
             <DialogHeader>
               <DialogTitle>
-                {editingKey ? '编辑 Key 备注' : '新增项目 Key'}
+                {editingKey ? '编辑秘钥描述' : '新增项目 Key'}
               </DialogTitle>
               <DialogDescription>
-                创建后会生成一组可重复查看的 LANGFUSE_PUBLIC_KEY 和
-                LANGFUSE_SECRET_KEY。
+                创建后会生成一组可重复查看的 Public Key 和 Secret Key。
               </DialogDescription>
             </DialogHeader>
             <form className='flex flex-col gap-4' onSubmit={handleSubmit}>
               <div className='flex flex-col gap-2'>
-                <Label htmlFor='api-key-note'>备注</Label>
+                <Label htmlFor='api-key-note'>秘钥描述</Label>
                 <Input
                   id='api-key-note'
                   value={note}

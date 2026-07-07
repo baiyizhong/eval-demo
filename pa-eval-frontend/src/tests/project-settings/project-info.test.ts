@@ -19,7 +19,7 @@ test('toProjectInfo maps current project API data to settings view model', () =>
     organizationName: 'pakj',
     name: 'baiyizhong',
     description: '所属组织：pakj',
-    retentionDays: 90,
+    retentionDays: 30,
     createdAt: '2026-06-21T23:15:53.591Z',
     updatedAt: '2026-06-22T02:16:48.169Z',
   })

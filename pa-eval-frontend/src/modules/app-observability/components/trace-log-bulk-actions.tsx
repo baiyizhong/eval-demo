@@ -38,6 +38,7 @@ export function TraceLogBulkActions({
   const selectedRows = table.getFilteredSelectedRowModel().rows
   const selectedTraces = selectedRows.map((row) => row.original)
   const traceIds = selectedRows.map((row) => row.original.traceId)
+  const projectName = selectedTraces[0]?.projectName || projectId
 
   const handleExport = async () => {
     const traces = selectedTraces
@@ -183,6 +184,7 @@ export function TraceLogBulkActions({
       <TraceDatasetDialog
         open={datasetDialogOpen}
         projectId={projectId}
+        projectName={projectName}
         traces={selectedTraces}
         onOpenChange={setDatasetDialogOpen}
         onSubmit={handleAddToDataset}
@@ -190,6 +192,7 @@ export function TraceLogBulkActions({
       <TraceAnnotationDialog
         open={annotationDialogOpen}
         projectId={projectId}
+        projectName={projectName}
         traces={selectedTraces}
         onOpenChange={setAnnotationDialogOpen}
         onSubmitExisting={handleCreateAnnotationTask}

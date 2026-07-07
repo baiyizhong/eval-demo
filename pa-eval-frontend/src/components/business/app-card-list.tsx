@@ -50,6 +50,10 @@ export function AppCardList({
   getCreatedAt,
   onCardClick,
 }: AppCardListProps) {
+  const renderableIconActions = iconActions.filter((action) =>
+    Boolean(action.onClick)
+  )
+
   return (
     <ul className='no-scrollbar grid gap-4 overflow-auto pt-4 pb-16 md:grid-cols-2 lg:grid-cols-3'>
       {apps.map((app) => {
@@ -68,7 +72,7 @@ export function AppCardList({
                 <p className='text-muted-foreground line-clamp-2'>{app.desc}</p>
               </div>
               <div className='flex shrink-0 items-center gap-1'>
-                {iconActions.map((action, index) => (
+                {renderableIconActions.map((action, index) => (
                   <Button
                     key={index}
                     type='button'

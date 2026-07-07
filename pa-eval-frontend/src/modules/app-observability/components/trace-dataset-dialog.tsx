@@ -38,8 +38,9 @@ const existingDatasetSchema = z.object({
 })
 
 const createDatasetSchema = z.object({
-  name: z.string().trim().min(1, '请输入评测集名称'),
+  name: z.string().trim().min(1, '请输入数据集名称'),
   description: z.string().trim(),
+  datasetType: z.enum(['evaluation', 'badcase', 'golden', 'anomaly']),
 })
 
 type ExistingDatasetFormValues = z.infer<typeof existingDatasetSchema>
@@ -58,6 +59,7 @@ type TraceDatasetDialogProps = {
   open: boolean
   projectId: string
   traces: TraceLogRow[]
+  projectName?: string
   onOpenChange: (open: boolean) => void
   onSubmit: (values: TraceDatasetSubmitValues) => Promise<void> | void
 }
@@ -74,6 +76,7 @@ export function TraceDatasetDialog({
   open,
   projectId,
   traces,
+  projectName,
   onOpenChange,
   onSubmit,
 }: TraceDatasetDialogProps) {
@@ -164,13 +167,13 @@ export function TraceDatasetDialog({
             id={createFormId}
             schema={createDatasetSchema}
             defaultValues={{
-              name: '',
+              name: buildDefaultTraceDatasetName('badcase', projectName || projectId),
               description: '',
+              datasetType: 'badcase',
             }}
             onSubmit={async (values: CreateDatasetFormValues) => {
               await onSubmit({
                 mode: 'create',
-                datasetType: 'evaluation',
                 ...values,
               })
               onOpenChange(false)
@@ -179,18 +182,51 @@ export function TraceDatasetDialog({
           >
             {(form) => (
               <>
-                <FormItem>
-                  <FormLabel>数据集类型</FormLabel>
-                  <FormControl>
-                    <Input value={datasetTypeLabels.evaluation} readOnly />
-                  </FormControl>
-                </FormItem>
+                <FormField
+                  control={form.control}
+                  name='datasetType'
+                  render={({ field }) => (
+                    <FormItem>
+                      <FormLabel>数据集类型</FormLabel>
+                      <Select
+                        value={field.value}
+                        onValueChange={(value) => {
+                          field.onChange(value)
+                          const type = value as DatasetType
+                          form.setValue(
+                            'name',
+                            buildDefaultTraceDatasetName(
+                              type,
+                              projectName || projectId
+                            )
+                          )
+                        }}
+                      >
+                        <FormControl>
+                          <SelectTrigger className='w-full'>
+                            <SelectValue placeholder='选择数据集类型' />
+                          </SelectTrigger>
+                        </FormControl>
+                        <SelectContent>
+                          {Object.entries(datasetTypeLabels).map(
+                            ([value, label]) => (
+                              <SelectItem key={value} value={value}>
+                                {label}
+                              </SelectItem>
+                            )
+                          )}
+                        </SelectContent>
+                      </Select>
+                      <FormMessage />
+                    </FormItem>
+                  )}
+                />
                 <FormField
                   control={form.control}
                   name='name'
                   render={({ field }) => (
                     <FormItem>
-                      <FormLabel>评测集名称</FormLabel>
+                      <FormLabel>数据集名称</FormLabel>
                       <FormControl>
                         <Input
                           placeholder='例如：AIOps Trace 评测集'
@@ -224,4 +260,19 @@ export function TraceDatasetDialog({
       </div>
     </FormDialog>
   )
+}
+
+export function buildDefaultTraceDatasetName(
+  datasetType: DatasetType,
+  projectName: string,
+  date = new Date()
+) {
+  const stamp = date
+    .toLocaleDateString('zh-CN', {
+      year: 'numeric',
+      month: '2-digit',
+      day: '2-digit',
+    })
+    .replace(/\//g, '')
+  return `${datasetTypeLabels[datasetType]}-${projectName}${stamp}`
 }

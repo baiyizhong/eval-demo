@@ -21,6 +21,7 @@ export type ScoreConfig = {
   maxValue?: number
   categories?: string[]
   isArchived: boolean
+  createdAt?: string
   updatedAt: string
 }
 

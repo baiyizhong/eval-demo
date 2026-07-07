@@ -3,6 +3,7 @@ import type { ApiMethod } from '@/api/types'
 export type ProjectPayload = {
   name: string
   description: string
+  retentionDays?: number
 }
 
 export type CreateProjectPayload = ProjectPayload & {

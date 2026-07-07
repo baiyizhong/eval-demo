@@ -52,6 +52,8 @@ class FakeAdminAuditService:
         actor_email: str | None,
         organization_id: str | None,
         project_id: str | None,
+        created_from: str | None,
+        created_to: str | None,
     ) -> dict:
         self.list_params = {
             "page": page,
@@ -63,6 +65,8 @@ class FakeAdminAuditService:
             "actor_email": actor_email,
             "organization_id": organization_id,
             "project_id": project_id,
+            "created_from": created_from,
+            "created_to": created_to,
         }
         return {
             "total": 1,
@@ -129,6 +133,8 @@ def test_list_audit_logs_passes_filters_and_returns_paginated_result() -> None:
                 "actorEmail": "admin@example.com",
                 "organizationId": "org-1",
                 "projectId": "project-1",
+                "createdFrom": "2026-07-01T00:00:00.000Z",
+                "createdTo": "2026-07-07T23:59:59.999Z",
             },
         )
     finally:
@@ -148,6 +154,8 @@ def test_list_audit_logs_passes_filters_and_returns_paginated_result() -> None:
         "actor_email": "admin@example.com",
         "organization_id": "org-1",
         "project_id": "project-1",
+        "created_from": "2026-07-01T00:00:00.000Z",
+        "created_to": "2026-07-07T23:59:59.999Z",
     }
 
 

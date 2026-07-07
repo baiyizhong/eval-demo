@@ -5,7 +5,7 @@ import { SidebarNav } from '@/components/common/sidebar-nav'
 import {
   getProjectSettingsBasePath,
   getProjectSettingsNavigationItems,
-  projectSettingsPageLinks,
+  getProjectSettingsPageLinks,
 } from './nav'
 
 const DEFAULT_PROJECT_ID = 'project_customer_agent'
@@ -13,9 +13,10 @@ const DEFAULT_PROJECT_ID = 'project_customer_agent'
 export function ProjectSettings() {
   const { projectId = DEFAULT_PROJECT_ID } = useParams()
   const navigationItems = getProjectSettingsNavigationItems(projectId)
+  const pageLinks = getProjectSettingsPageLinks(projectId)
 
   return (
-    <Page links={projectSettingsPageLinks} fixed>
+    <Page links={pageLinks} fixed>
       <div className='flex flex-col gap-1'>
         <h1 className='text-2xl font-bold tracking-tight md:text-3xl'>
           项目设置

@@ -53,6 +53,7 @@ type TraceAnnotationDialogProps = {
   open: boolean
   projectId: string
   traces: TraceLogRow[]
+  projectName?: string
   onOpenChange: (open: boolean) => void
   onSubmitExisting: (queueId: string) => Promise<void> | void
   onSubmitNew: (input: AnnotationQueueFormInput) => Promise<void> | void
@@ -70,6 +71,7 @@ export function TraceAnnotationDialog({
   open,
   projectId,
   traces,
+  projectName,
   onOpenChange,
   onSubmitExisting,
   onSubmitNew,
@@ -122,7 +124,7 @@ export function TraceAnnotationDialog({
         >
           <TabsList>
             <TabsTrigger value='existing'>选择已有队列</TabsTrigger>
-            <TabsTrigger value='new'>新建人工标注</TabsTrigger>
+            <TabsTrigger value='new'>新建标注任务</TabsTrigger>
           </TabsList>
         </Tabs>
 
@@ -178,7 +180,7 @@ export function TraceAnnotationDialog({
             id={newFormId}
             schema={newQueueSchema}
             defaultValues={{
-              name: '',
+              name: buildDefaultAnnotationTaskName(projectName || projectId),
               description: '',
               scoreConfigIds: [],
               assigneeIds: [],
@@ -321,4 +323,18 @@ export function TraceAnnotationDialog({
       </div>
     </FormDialog>
   )
+}
+
+export function buildDefaultAnnotationTaskName(
+  projectName: string,
+  date = new Date()
+) {
+  const stamp = date
+    .toLocaleDateString('zh-CN', {
+      year: 'numeric',
+      month: '2-digit',
+      day: '2-digit',
+    })
+    .replace(/\//g, '')
+  return `人工标注-${projectName}${stamp}`
 }

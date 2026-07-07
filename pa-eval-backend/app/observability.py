@@ -1,3 +1,4 @@
+import json
 import logging
 from typing import Any
 
@@ -64,13 +65,14 @@ async def list_traces(
     latency_max: int | None = Query(default=None, alias="latencyMax"),
     metadata_key: str | None = Query(default=None, alias="metadataKey"),
     metadata_value: str | None = Query(default=None, alias="metadataValue"),
+    metadata_filters: str | None = Query(default=None, alias="metadataFilters"),
     created_at_range: list[str] | None = Query(default=None, alias="createdAtRange"),
     time_range: str | None = Query(default=None, alias="timeRange", pattern="^(24h|7d|30d)$"),
     current_user: CurrentUserContext = Depends(get_current_user_context),
     db_reader: LangfuseDatabaseReader = Depends(get_langfuse_db_reader),
     trace_reader: LangfuseClickHouseReader = Depends(get_langfuse_clickhouse_reader),
 ) -> dict[str, Any]:
-    await db_reader.ensure_project_visible(project_id, current_user.user_id)
+    project = await db_reader.get_project_for_user(project_id, current_user.user_id)
     try:
         traces = await trace_reader.list_traces(
             project_id,
@@ -85,13 +87,14 @@ async def list_traces(
             latency_max=latency_max,
             metadata_key=metadata_key,
             metadata_value=metadata_value,
+            metadata_filters=_parse_metadata_filters(metadata_filters),
             created_at_range=created_at_range,
             time_range=time_range,
         )
     except LangfuseUpstreamError:
         logger.warning("Trace list unavailable; returning empty payload", exc_info=True)
         traces = _empty_trace_list()
-    return success(traces)
+    return success(_trace_list_with_project_name(traces, project["name"]))
 
 
 @router.get("/traces/{trace_id}")
@@ -102,8 +105,9 @@ async def get_trace(
     db_reader: LangfuseDatabaseReader = Depends(get_langfuse_db_reader),
     trace_reader: LangfuseClickHouseReader = Depends(get_langfuse_clickhouse_reader),
 ) -> dict[str, Any]:
-    await db_reader.ensure_project_visible(project_id, current_user.user_id)
-    return success(await trace_reader.get_trace(project_id, trace_id))
+    project = await db_reader.get_project_for_user(project_id, current_user.user_id)
+    trace = await trace_reader.get_trace(project_id, trace_id)
+    return success(_with_project_name(trace, project["name"]))
 
 
 @router.patch("/traces/{trace_id}")
@@ -148,8 +152,58 @@ def _empty_trace_list() -> dict[str, Any]:
     return {"total": 0, "datas": []}
 
 
+def _with_project_name(payload: dict[str, Any], project_name: str) -> dict[str, Any]:
+    return {
+        **payload,
+        "projectName": payload.get("projectName") or project_name,
+    }
+
+
+def _trace_list_with_project_name(
+    traces: dict[str, Any],
+    project_name: str,
+) -> dict[str, Any]:
+    return {
+        **traces,
+        "datas": [
+            _with_project_name(item, project_name)
+            for item in traces.get("datas", [])
+            if isinstance(item, dict)
+        ],
+    }
+
+
 def _first_non_empty_list(
     primary: list[str] | None,
     fallback: list[str] | None,
 ) -> list[str] | None:
     return primary if primary else fallback
+
+
+def _parse_metadata_filters(value: str | None) -> list[dict[str, Any]] | None:
+    if not value:
+        return None
+    try:
+        parsed = json.loads(value)
+    except json.JSONDecodeError:
+        return None
+    if not isinstance(parsed, list):
+        return None
+    filters: list[dict[str, Any]] = []
+    for item in parsed:
+        if not isinstance(item, dict):
+            continue
+        key = str(item.get("key") or "").strip()
+        if not key:
+            continue
+        operator = str(item.get("operator") or "contains").strip()
+        if operator not in {"contains", "equals", "exists"}:
+            operator = "contains"
+        filters.append(
+            {
+                "key": key,
+                "operator": operator,
+                "value": str(item.get("value") or ""),
+            }
+        )
+    return filters or None

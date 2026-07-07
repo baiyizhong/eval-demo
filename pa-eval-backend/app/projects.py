@@ -13,6 +13,7 @@ router = APIRouter(prefix="/api/projects", tags=["projects"])
 class ProjectPayload(BaseModel):
     name: str = Field(min_length=1, max_length=120)
     description: str | None = Field(default=None, max_length=1000)
+    retention_days: int | None = Field(default=None, ge=1, le=30, alias="retentionDays")
 
 
 class CreateProjectPayload(ProjectPayload):
@@ -21,6 +22,15 @@ class CreateProjectPayload(ProjectPayload):
 
 class ProjectApiKeyPayload(BaseModel):
     note: str = Field(default="", max_length=200)
+
+
+class ProjectMemberPayload(BaseModel):
+    email: str = Field(pattern=r"^[^@\s]+@[^@\s]+\.[^@\s]+$")
+    role: str = Field(pattern="^(OWNER|ADMIN|MEMBER|VIEWER)$")
+
+
+class UpdateProjectMemberPayload(BaseModel):
+    role: str = Field(pattern="^(OWNER|ADMIN|MEMBER|VIEWER|NONE)$")
 
 
 class DefaultModelPayload(BaseModel):
@@ -65,6 +75,16 @@ def _matches_keyword(item: dict[str, Any], keyword: str | None) -> bool:
     return any(isinstance(field, str) and needle in field.lower() for field in fields)
 
 
+def _project_payload(payload: ProjectPayload) -> dict[str, Any]:
+    data: dict[str, Any] = {
+        "name": payload.name.strip(),
+        "description": (payload.description or "").strip(),
+    }
+    if payload.retention_days is not None:
+        data["retentionDays"] = payload.retention_days
+    return data
+
+
 @router.get("")
 async def list_projects(
     page: int = Query(default=1, ge=1),
@@ -99,10 +119,7 @@ async def create_project(
         organization_id=payload.organization_id,
         user_id=current_user.user_id,
         user_email=current_user.email,
-        payload={
-            "name": payload.name.strip(),
-            "description": (payload.description or "").strip(),
-        },
+        payload=_project_payload(payload),
     )
     return success(project)
 
@@ -118,10 +135,7 @@ async def update_project(
         project_id=project_id,
         user_id=current_user.user_id,
         user_email=current_user.email,
-        payload={
-            "name": payload.name.strip(),
-            "description": (payload.description or "").strip(),
-        },
+        payload=_project_payload(payload),
     )
     return success(project)
 
@@ -178,6 +192,53 @@ async def get_project_members(
         current_user.user_id,
     )
     return success(members)
+
+
+@router.post("/{project_id}/settings/members")
+async def create_project_member(
+    project_id: str,
+    payload: ProjectMemberPayload,
+    current_user: CurrentUserContext = Depends(get_current_user_context),
+    reader: LangfuseDatabaseReader = Depends(get_langfuse_db_reader),
+) -> dict[str, Any]:
+    member = await reader.create_project_member_for_user(
+        project_id,
+        current_user.user_id,
+        payload.model_dump(),
+    )
+    return success(member)
+
+
+@router.patch("/{project_id}/settings/members/{member_id}")
+async def update_project_member(
+    project_id: str,
+    member_id: str,
+    payload: UpdateProjectMemberPayload,
+    current_user: CurrentUserContext = Depends(get_current_user_context),
+    reader: LangfuseDatabaseReader = Depends(get_langfuse_db_reader),
+) -> dict[str, Any]:
+    member = await reader.update_project_member_for_user(
+        project_id,
+        member_id,
+        current_user.user_id,
+        payload.model_dump(),
+    )
+    return success(member)
+
+
+@router.delete("/{project_id}/settings/members/{member_id}")
+async def delete_project_member(
+    project_id: str,
+    member_id: str,
+    current_user: CurrentUserContext = Depends(get_current_user_context),
+    reader: LangfuseDatabaseReader = Depends(get_langfuse_db_reader),
+) -> dict[str, Any]:
+    deleted = await reader.delete_project_member_for_user(
+        project_id,
+        member_id,
+        current_user.user_id,
+    )
+    return success(deleted)
 
 
 @router.patch("/{project_id}/settings/models/default")

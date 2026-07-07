@@ -24,6 +24,21 @@ class FakeDatabaseReader:
         self.project_id = project_id
         self.user_id = user_id
 
+    async def get_project_for_user(self, project_id: str, user_id: str) -> dict:
+        self.project_id = project_id
+        self.user_id = user_id
+        return {
+            "id": project_id,
+            "name": "演示组织 默认项目",
+            "organizationId": "org-1",
+            "organizationName": "演示组织",
+            "description": "",
+            "retentionDays": 30,
+            "status": "active",
+            "createdAt": "2026-07-01T00:00:00.000Z",
+            "updatedAt": "2026-07-01T00:00:00.000Z",
+        }
+
     async def patch_trace_for_user(
         self,
         project_id: str,
@@ -163,6 +178,33 @@ def test_lists_project_traces_after_project_visibility_check() -> None:
     assert body["code"] == 0
     assert fake_db.project_id == "project-1"
     assert fake_db.user_id == "user-1"
+    assert body["data"]["datas"][0]["projectName"] == "演示组织 默认项目"
+
+
+def test_lists_project_traces_passes_multiple_metadata_filters() -> None:
+    fake_db = FakeDatabaseReader()
+    fake_trace = FakeTraceReader()
+    override_readers(fake_db, fake_trace)
+
+    try:
+        response = TestClient(app).get(
+            "/api/projects/project-1/traces",
+            params={
+                "metadataFilters": (
+                    '[{"key":"businessId","operator":"contains","value":"ticket"},'
+                    '{"key":"priority","operator":"equals","value":"high"}]'
+                )
+            },
+        )
+    finally:
+        clear_overrides()
+
+    assert response.status_code == 200
+    body = response.json()
+    assert fake_trace.list_kwargs["metadata_filters"] == [
+        {"key": "businessId", "operator": "contains", "value": "ticket"},
+        {"key": "priority", "operator": "equals", "value": "high"},
+    ]
     assert fake_trace.project_id == "project-1"
     assert body["data"]["datas"][0]["traceId"] == "trace-1"
 
@@ -182,6 +224,7 @@ def test_gets_project_trace_metrics_and_detail() -> None:
     assert metrics_response.json()["data"]["summary"]["total"] == 1
     assert detail_response.status_code == 200
     assert detail_response.json()["data"]["traceId"] == "trace-1"
+    assert detail_response.json()["data"]["projectName"] == "演示组织 默认项目"
 
 
 def test_patches_project_trace_and_returns_merged_detail() -> None:

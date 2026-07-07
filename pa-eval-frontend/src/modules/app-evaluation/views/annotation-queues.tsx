@@ -21,6 +21,7 @@ import { AnnotationQueueFormDrawer } from '../components/annotation-queue-form-d
 import { EvaluationPageNav } from '../components/evaluation-page-nav'
 import type { AnnotationQueueFormInput, AnnotationQueueRecord } from '../types'
 import {
+  buildQueueToolbarFilters,
   queueToolbarFilters,
   queueUrlFilters,
 } from './annotation-queue-filters'
@@ -64,8 +65,11 @@ export function ProjectAnnotationQueues() {
   const usersQuery = useQuery({
     queryKey: ['project-annotation-users', $api, projectId],
     queryFn: () => listProjectAnnotationUsers($api, projectId),
-    enabled: formOpen,
   })
+  const toolbarFilters = useMemo(
+    () => buildQueueToolbarFilters(usersQuery.data ?? []),
+    [usersQuery.data]
+  )
 
   const handleSubmitQueue = async (input: AnnotationQueueFormInput) => {
     if (editingQueue) {
@@ -124,7 +128,7 @@ export function ProjectAnnotationQueues() {
             }}
             toolbar={{
               searchPlaceholder: '按任务名称或描述搜索',
-              filters: queueToolbarFilters,
+              filters: toolbarFilters.length ? toolbarFilters : queueToolbarFilters,
               columnLabels: {
                 name: '任务名称',
                 description: '任务描述',

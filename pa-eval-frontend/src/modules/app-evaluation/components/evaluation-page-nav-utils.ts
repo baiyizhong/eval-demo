@@ -27,6 +27,24 @@ export function buildEvaluationTopNavLinks({
 
   return [
     {
+      title: '评测报告',
+      href: `${basePath}/reports`,
+      icon: BarChart3,
+      isActive: pathname.startsWith(`${basePath}/reports`),
+    },
+    {
+      title: '自动评测',
+      href: `${basePath}/auto-evaluations`,
+      icon: Bot,
+      isActive: pathname.startsWith(`${basePath}/auto-evaluations`),
+    },
+    {
+      title: '人工标注',
+      href: `${basePath}/annotation-queues`,
+      icon: ClipboardCheck,
+      isActive: pathname.startsWith(`${basePath}/annotation-queues`),
+    },
+    {
       title: '数据集',
       href: `${basePath}/datasets`,
       icon: Database,
@@ -37,24 +55,6 @@ export function buildEvaluationTopNavLinks({
       href: `${basePath}/evaluators`,
       icon: SlidersHorizontal,
       isActive: pathname.startsWith(`${basePath}/evaluators`),
-    },
-    {
-      title: '人工标注',
-      href: `${basePath}/annotation-queues`,
-      icon: ClipboardCheck,
-      isActive: pathname.startsWith(`${basePath}/annotation-queues`),
-    },
-    {
-      title: '自动评测',
-      href: `${basePath}/auto-evaluations`,
-      icon: Bot,
-      isActive: pathname.startsWith(`${basePath}/auto-evaluations`),
-    },
-    {
-      title: '评测报告',
-      href: `${basePath}/reports`,
-      icon: BarChart3,
-      isActive: pathname.startsWith(`${basePath}/reports`),
     },
   ]
 }

@@ -155,6 +155,10 @@ function ScoreValueField({
   }
 
   if (config.dataType === 'BOOLEAN') {
+    const options = getScoreOptions(config, [
+      { value: '1', label: '是' },
+      { value: '0', label: '否' },
+    ])
     return (
       <FormField
         control={form.control}
@@ -166,25 +170,23 @@ function ScoreValueField({
               <RadioGroup
                 value={
                   field.value === true
-                    ? 'true'
+                    ? '1'
                     : field.value === false
-                      ? 'false'
+                      ? '0'
                       : ''
                 }
-                onValueChange={(value) => field.onChange(value === 'true')}
+                onValueChange={(value) =>
+                  field.onChange(value === '1' || value === 'true')
+                }
               >
-                <FormItem className='flex items-center gap-2'>
-                  <FormControl>
-                    <RadioGroupItem value='true' />
-                  </FormControl>
-                  <FormLabel className='font-normal'>是</FormLabel>
-                </FormItem>
-                <FormItem className='flex items-center gap-2'>
-                  <FormControl>
-                    <RadioGroupItem value='false' />
-                  </FormControl>
-                  <FormLabel className='font-normal'>否</FormLabel>
-                </FormItem>
+                {options.map((option) => (
+                  <FormItem key={option.value} className='flex items-center gap-2'>
+                    <FormControl>
+                      <RadioGroupItem value={option.value} />
+                    </FormControl>
+                    <FormLabel className='font-normal'>{option.label}</FormLabel>
+                  </FormItem>
+                ))}
               </RadioGroup>
             </FormControl>
             <FormMessage />
@@ -206,12 +208,12 @@ function ScoreValueField({
               <Textarea placeholder='填写文本评分' {...field} />
             ) : (
               <RadioGroup value={field.value} onValueChange={field.onChange}>
-                {(config.categories ?? []).map((category) => (
-                  <FormItem key={category} className='flex items-center gap-2'>
+                {getScoreOptions(config).map((option) => (
+                  <FormItem key={option.value} className='flex items-center gap-2'>
                     <FormControl>
-                      <RadioGroupItem value={category} />
+                      <RadioGroupItem value={option.value} />
                     </FormControl>
-                    <FormLabel className='font-normal'>{category}</FormLabel>
+                    <FormLabel className='font-normal'>{option.label}</FormLabel>
                   </FormItem>
                 ))}
               </RadioGroup>
@@ -222,6 +224,23 @@ function ScoreValueField({
       )}
     />
   )
+}
+
+function getScoreOptions(
+  config: ScoreConfigRecord,
+  fallback: { value: string; label: string }[] = []
+) {
+  const categories = config.categories ?? []
+  if (!categories.length) return fallback
+  return categories.map(parseScoreOption)
+}
+
+function parseScoreOption(value: string) {
+  const [rawValue, rawLabel] = value.split('|')
+  return {
+    value: rawValue || value,
+    label: rawLabel || rawValue || value,
+  }
 }
 
 function getDefaultValues(

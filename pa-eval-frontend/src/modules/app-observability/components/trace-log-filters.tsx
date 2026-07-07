@@ -1,9 +1,19 @@
-import { Circle, CircleCheck, CircleHelp, CircleX, Tags } from 'lucide-react'
+import { Circle, CircleCheck, CircleHelp, CircleX, Plus, Tags, Trash2 } from 'lucide-react'
+import { Button } from '@/components/ui/button'
+import { Input } from '@/components/ui/input'
+import {
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from '@/components/ui/select'
 import type {
   DataTableFilterBinding,
   DataTableToolbarFilter,
 } from '@/components/common/data-table'
 import type { FilterGroup } from '@/components/common/filter-panel'
+import type { TraceMetadataFilter } from '../types'
 
 export const traceLogUrlFilters: DataTableFilterBinding[] = [
   { fieldId: 'createdAtRange', type: 'array' },
@@ -17,6 +27,7 @@ export const traceLogUrlFilters: DataTableFilterBinding[] = [
   { fieldId: 'businessId', type: 'string' },
   { fieldId: 'metadataKey', type: 'string' },
   { fieldId: 'metadataValue', type: 'string' },
+  { fieldId: 'metadataFilters', type: 'json' },
 ]
 
 export const traceLogToolbarFilters: DataTableToolbarFilter[] = [
@@ -93,17 +104,102 @@ export const traceLogFilterGroups: FilterGroup[] = [
         placeholder: '输入 businessId',
       },
       {
-        id: 'metadataKey',
-        type: 'input',
-        label: 'metadata key',
-        placeholder: '例如 businessId',
-      },
-      {
-        id: 'metadataValue',
-        type: 'input',
-        label: 'metadata value',
-        placeholder: '可为空',
+        id: 'metadataFilters',
+        type: 'custom',
+        label: 'Metadata',
+        render: ({ value, setValue }) => (
+          <MetadataFilterEditor
+            value={value}
+            onChange={(nextValue) => setValue(nextValue, 'metadataFilters')}
+          />
+        ),
       },
     ],
   },
 ]
+
+function MetadataFilterEditor({
+  value,
+  onChange,
+}: {
+  value: unknown
+  onChange: (nextValue: TraceMetadataFilter[]) => void
+}) {
+  const filters = Array.isArray(value)
+    ? (value as TraceMetadataFilter[])
+    : []
+  const updateFilter = (
+    index: number,
+    patch: Partial<TraceMetadataFilter>
+  ) => {
+    onChange(
+      filters.map((filter, currentIndex) =>
+        currentIndex === index ? { ...filter, ...patch } : filter
+      )
+    )
+  }
+
+  return (
+    <div className='flex flex-col gap-2'>
+      {filters.map((filter, index) => (
+        <div key={index} className='grid grid-cols-[1fr_120px_1fr_auto] gap-2'>
+          <Input
+            value={filter.key}
+            onChange={(event) => updateFilter(index, { key: event.target.value })}
+            placeholder='key'
+          />
+          <Select
+            value={filter.operator}
+            onValueChange={(operator) =>
+              updateFilter(index, {
+                operator: operator as TraceMetadataFilter['operator'],
+              })
+            }
+          >
+            <SelectTrigger>
+              <SelectValue />
+            </SelectTrigger>
+            <SelectContent>
+              <SelectItem value='contains'>包含</SelectItem>
+              <SelectItem value='equals'>等于</SelectItem>
+              <SelectItem value='exists'>存在</SelectItem>
+            </SelectContent>
+          </Select>
+          <Input
+            value={filter.value ?? ''}
+            disabled={filter.operator === 'exists'}
+            onChange={(event) =>
+              updateFilter(index, { value: event.target.value })
+            }
+            placeholder='value'
+          />
+          <Button
+            type='button'
+            variant='ghost'
+            size='icon'
+            onClick={() =>
+              onChange(filters.filter((_, currentIndex) => currentIndex !== index))
+            }
+          >
+            <Trash2 className='size-4' />
+            <span className='sr-only'>删除 Metadata 条件</span>
+          </Button>
+        </div>
+      ))}
+      <Button
+        type='button'
+        variant='outline'
+        size='sm'
+        onClick={() =>
+          onChange([
+            ...filters,
+            { key: '', operator: 'contains', value: '' },
+          ])
+        }
+      >
+        <Plus data-icon='inline-start' />
+        添加 Metadata 条件
+      </Button>
+    </div>
+  )
+}

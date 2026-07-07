@@ -151,6 +151,38 @@ class LangfuseDatabaseReader:
         )
         return [self._to_project_payload(row) for row in rows]
 
+    async def get_project_for_user(
+        self,
+        project_id: str,
+        user_id: str,
+    ) -> dict[str, Any]:
+        rows = await self._fetch_all(
+            f"""
+            SELECT
+                p.id,
+                p.name,
+                p.org_id,
+                o.name AS organization_name,
+                p.created_at,
+                p.updated_at,
+                p.deleted_at,
+                p.metadata
+            FROM projects p
+            JOIN organizations o ON o.id = p.org_id
+            WHERE p.id = %(project_id)s
+              AND {PROJECT_ACCESS_EXISTS_SQL}
+            LIMIT 1
+            """,
+            {"project_id": project_id, "user_id": user_id},
+        )
+        if not rows:
+            raise BusinessError(
+                code=1005,
+                message="项目不存在或无访问权限",
+                status_code=404,
+            )
+        return self._to_project_payload(rows[0])
+
     async def create_project_for_user(
         self,
         organization_id: str,
@@ -176,6 +208,7 @@ class LangfuseDatabaseReader:
                     None,
                     {
                         "description": payload.get("description") or "",
+                        "retentionDays": payload.get("retentionDays"),
                         "createdBy": user_email,
                         "updatedBy": user_email,
                     },
@@ -259,6 +292,7 @@ class LangfuseDatabaseReader:
                     current.get("metadata"),
                     {
                         "description": payload.get("description") or "",
+                        "retentionDays": payload.get("retentionDays"),
                         "updatedBy": user_email,
                     },
                 )
@@ -1826,6 +1860,213 @@ class LangfuseDatabaseReader:
             {"project_id": project_id},
         )
         return [self._to_project_user_payload(row) for row in rows]
+
+    async def create_project_member_for_user(
+        self,
+        project_id: str,
+        user_id: str,
+        payload: dict[str, Any],
+    ) -> dict[str, Any]:
+        if not self._database_url:
+            raise LangfuseDatabaseConfigError()
+
+        async with await psycopg.AsyncConnection.connect(
+            self._database_url,
+            row_factory=dict_row,
+        ) as connection:
+            async with connection.cursor() as cursor:
+                project = await self._get_project_detail_for_user(
+                    cursor,
+                    project_id,
+                    user_id,
+                )
+                member = await self._get_user_by_email_cursor(cursor, payload["email"])
+                if member is None:
+                    raise BusinessError(1015, "用户不存在，请先让该用户登录 Langfuse", 404)
+                org_membership = await self._ensure_project_org_membership(
+                    cursor,
+                    project["org_id"],
+                    member["id"],
+                )
+                await cursor.execute(
+                    """
+                    INSERT INTO project_memberships (
+                        project_id,
+                        user_id,
+                        org_membership_id,
+                        role,
+                        created_at,
+                        updated_at
+                    )
+                    VALUES (
+                        %(project_id)s,
+                        %(user_id)s,
+                        %(org_membership_id)s,
+                        %(role)s::"Role",
+                        NOW(),
+                        NOW()
+                    )
+                    ON CONFLICT (project_id, user_id) DO UPDATE
+                    SET role = EXCLUDED.role,
+                        org_membership_id = EXCLUDED.org_membership_id,
+                        updated_at = NOW()
+                    """,
+                    {
+                        "project_id": project_id,
+                        "user_id": member["id"],
+                        "org_membership_id": org_membership["id"],
+                        "role": payload["role"],
+                    },
+                )
+        return await self._get_project_user_for_user(project_id, member["id"], user_id)
+
+    async def update_project_member_for_user(
+        self,
+        project_id: str,
+        member_id: str,
+        user_id: str,
+        payload: dict[str, Any],
+    ) -> dict[str, Any]:
+        if not self._database_url:
+            raise LangfuseDatabaseConfigError()
+
+        async with await psycopg.AsyncConnection.connect(
+            self._database_url,
+            row_factory=dict_row,
+        ) as connection:
+            async with connection.cursor() as cursor:
+                await self._get_project_for_user(cursor, project_id, user_id)
+                await cursor.execute(
+                    """
+                    UPDATE project_memberships
+                    SET role = %(role)s::"Role",
+                        updated_at = NOW()
+                    WHERE project_id = %(project_id)s
+                      AND user_id = %(member_id)s
+                    RETURNING user_id
+                    """,
+                    {
+                        "project_id": project_id,
+                        "member_id": member_id,
+                        "role": payload["role"],
+                    },
+                )
+                if await cursor.fetchone() is None:
+                    raise BusinessError(1025, "项目成员不存在", 404)
+        return await self._get_project_user_for_user(project_id, member_id, user_id)
+
+    async def delete_project_member_for_user(
+        self,
+        project_id: str,
+        member_id: str,
+        user_id: str,
+    ) -> dict[str, Any]:
+        if not self._database_url:
+            raise LangfuseDatabaseConfigError()
+
+        async with await psycopg.AsyncConnection.connect(
+            self._database_url,
+            row_factory=dict_row,
+        ) as connection:
+            async with connection.cursor() as cursor:
+                await self._get_project_for_user(cursor, project_id, user_id)
+                await cursor.execute(
+                    """
+                    DELETE FROM project_memberships
+                    WHERE project_id = %(project_id)s
+                      AND user_id = %(member_id)s
+                    RETURNING user_id
+                    """,
+                    {"project_id": project_id, "member_id": member_id},
+                )
+                deleted = await cursor.fetchone()
+        if deleted is None:
+            raise BusinessError(1025, "项目成员不存在", 404)
+        return {"id": deleted["user_id"]}
+
+    async def _get_project_user_for_user(
+        self,
+        project_id: str,
+        member_id: str,
+        user_id: str,
+    ) -> dict[str, Any]:
+        await self._ensure_project_visible(project_id, user_id)
+        rows = await self._fetch_all(
+            """
+            SELECT DISTINCT
+                u.id,
+                u.name,
+                u.email,
+                COALESCE(
+                    NULLIF(pm.role::text, 'NONE'),
+                    NULLIF(om.role::text, 'NONE')
+                ) AS role,
+                om.role::text AS organization_role,
+                pm.role::text AS project_role
+            FROM projects p
+            JOIN organization_memberships om ON om.org_id = p.org_id
+            LEFT JOIN project_memberships pm
+              ON pm.org_membership_id = om.id
+             AND pm.project_id = p.id
+             AND pm.user_id = om.user_id
+            JOIN users u ON u.id = om.user_id
+            WHERE p.id = %(project_id)s
+              AND u.id = %(member_id)s
+              AND p.deleted_at IS NULL
+            LIMIT 1
+            """,
+            {"project_id": project_id, "member_id": member_id},
+        )
+        if not rows:
+            raise BusinessError(1025, "项目成员不存在", 404)
+        return self._to_project_user_payload(rows[0])
+
+    async def _ensure_project_org_membership(
+        self,
+        cursor: psycopg.AsyncCursor[dict[str, Any]],
+        organization_id: str,
+        member_id: str,
+    ) -> dict[str, Any]:
+        await cursor.execute(
+            """
+            SELECT id, role::text AS role
+            FROM organization_memberships
+            WHERE org_id = %(organization_id)s
+              AND user_id = %(member_id)s
+            LIMIT 1
+            """,
+            {"organization_id": organization_id, "member_id": member_id},
+        )
+        existing = await cursor.fetchone()
+        if existing is not None:
+            return existing
+
+        membership_id = _new_langfuse_id("orgmem")
+        await cursor.execute(
+            """
+            INSERT INTO organization_memberships (
+                id,
+                org_id,
+                user_id,
+                role
+            )
+            VALUES (
+                %(id)s,
+                %(organization_id)s,
+                %(member_id)s,
+                'NONE'::"Role"
+            )
+            RETURNING id, role::text AS role
+            """,
+            {
+                "id": membership_id,
+                "organization_id": organization_id,
+                "member_id": member_id,
+            },
+        )
+        created = await cursor.fetchone()
+        assert created is not None
+        return created
 
     async def list_annotation_queues_for_user(
         self,
@@ -4299,6 +4540,7 @@ class LangfuseDatabaseReader:
         metadata = row.get("metadata") or {}
         pa_eval = metadata.get("paEval") if isinstance(metadata, dict) else None
         description = pa_eval.get("description") if isinstance(pa_eval, dict) else None
+        retention_days = pa_eval.get("retentionDays") if isinstance(pa_eval, dict) else None
         organization_name = row["organization_name"]
 
         return {
@@ -4307,6 +4549,7 @@ class LangfuseDatabaseReader:
             "organizationId": row["org_id"],
             "organizationName": organization_name,
             "description": description or f"所属组织：{organization_name}",
+            "retentionDays": retention_days or 30,
             "status": "archived" if row.get("deleted_at") else "active",
             "createdAt": _format_datetime(row["created_at"]),
             "updatedAt": _format_datetime(row["updated_at"]),
@@ -4485,6 +4728,8 @@ class LangfuseDatabaseReader:
             "maxValue": _to_float_or_none(row.get("max_value")),
             "categories": _normalize_score_categories(row.get("categories")),
             "archived": bool(row.get("is_archived")),
+            "createdAt": _format_datetime(row["created_at"]),
+            "updatedAt": _format_datetime(row["updated_at"]),
         }
 
     @staticmethod

@@ -31,6 +31,7 @@ class LangfuseClickHouseReader:
         latency_max: int | None = None,
         metadata_key: str | None = None,
         metadata_value: str | None = None,
+        metadata_filters: list[dict[str, Any]] | None = None,
         created_at_range: list[str] | None = None,
         time_range: str | None = None,
     ) -> dict[str, Any]:
@@ -58,6 +59,7 @@ class LangfuseClickHouseReader:
                 latency_max=latency_max,
                 metadata_key=metadata_key,
                 metadata_value=metadata_value,
+                metadata_filters=metadata_filters,
             )
         ]
         start = (page - 1) * page_size
@@ -313,6 +315,7 @@ def _matches_trace(
     latency_max: int | None,
     metadata_key: str | None,
     metadata_value: str | None,
+    metadata_filters: list[dict[str, Any]] | None = None,
 ) -> bool:
     metadata = row.get("metadata") or {}
     needle = (keyword or "").strip().lower()
@@ -335,6 +338,17 @@ def _matches_trace(
         if not isinstance(metadata, dict) or metadata_key not in metadata:
             return False
         if metadata_value and metadata_value not in str(metadata.get(metadata_key) or ""):
+            return False
+    for metadata_filter in metadata_filters or []:
+        key = str(metadata_filter.get("key") or "")
+        operator = str(metadata_filter.get("operator") or "contains")
+        value = str(metadata_filter.get("value") or "")
+        if not isinstance(metadata, dict) or key not in metadata:
+            return False
+        actual = str(metadata.get(key) or "")
+        if operator == "equals" and actual != value:
+            return False
+        if operator == "contains" and value not in actual:
             return False
     return True
 

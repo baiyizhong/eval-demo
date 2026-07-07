@@ -5,7 +5,6 @@ import { toast } from 'sonner'
 import { confirm } from '@/lib/confirm'
 import { useAPI } from '@/hooks/use-api'
 import { Button } from '@/components/ui/button'
-import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card'
 import { Input } from '@/components/ui/input'
 import { Label } from '@/components/ui/label'
 import {
@@ -31,6 +30,7 @@ import type {
   MockAutoEvaluationDataset,
   MockAutoEvaluationEvaluator,
 } from '../types'
+import { autoEvaluationStepLabels } from './auto-evaluation-steps'
 
 const initialForm: AutoEvaluationTaskFormInput = {
   name: '',
@@ -64,10 +64,12 @@ export function AutoEvaluationTaskForm({
   projectId,
   onDirtyChange,
   onCancel,
+  onCompleted,
 }: {
   projectId: string
   onDirtyChange?: (dirty: boolean) => void
   onCancel?: () => void
+  onCompleted?: (taskId: string, mode: 'create' | 'run') => void
 }) {
   const $api = useAPI()
   const navigate = useNavigate()
@@ -198,6 +200,10 @@ export function AutoEvaluationTaskForm({
     })
     onDirtyChange?.(false)
     toast.success('自动评测任务已创建并开始运行')
+    if (onCompleted) {
+      onCompleted(task.id, mode)
+      return
+    }
     navigate(
       mode === 'run'
         ? `/projects/${projectId}/evaluation/auto-evaluations/${task.id}`
@@ -236,13 +242,15 @@ export function AutoEvaluationTaskForm({
   }
 
   return (
-    <Card>
-      <CardHeader>
-        <CardTitle>新建自动评测</CardTitle>
-      </CardHeader>
-      <CardContent className='flex flex-col gap-5'>
+    <div className='flex flex-col gap-5'>
+      <div className='flex flex-col gap-1'>
+        <h2 className='text-base font-semibold'>新建自动评测</h2>
+        <p className='text-muted-foreground text-sm'>
+          按步骤配置基础信息、评估器和评测数据来源。
+        </p>
+      </div>
         <div className='flex flex-wrap gap-2'>
-          {['基础信息', '评估器', '数据源与运行'].map((label, index) => (
+          {autoEvaluationStepLabels.map((label, index) => (
             <Button
               key={label}
               type='button'
@@ -604,8 +612,7 @@ export function AutoEvaluationTaskForm({
             )}
           </div>
         </div>
-      </CardContent>
-    </Card>
+    </div>
   )
 }
 

@@ -9,6 +9,7 @@ export type ProjectListItem = {
   status: 'active' | 'archived'
   createdAt: string
   updatedAt: string
+  retentionDays?: number
 }
 
 export type ProjectListResponse = {
@@ -22,7 +23,7 @@ export function toProjectInfo(project: ProjectListItem): ProjectInfo {
     organizationName: project.organizationName,
     name: project.name,
     description: project.description ?? '',
-    retentionDays: 90,
+    retentionDays: project.retentionDays ?? 30,
     createdAt: project.createdAt,
     updatedAt: project.updatedAt,
   }

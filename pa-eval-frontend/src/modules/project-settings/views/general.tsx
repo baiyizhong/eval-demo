@@ -48,7 +48,11 @@ export function ProjectGeneralSettings() {
   })
   const currentProject = useMemo(() => projectQuery.data, [projectQuery.data])
   const updateMutation = useMutation({
-    mutationFn: (input: { name: string; description: string }) =>
+    mutationFn: (input: {
+      name: string
+      description: string
+      retentionDays: number
+    }) =>
       updateProject($api, projectId, input),
     onSuccess: async () => {
       await Promise.all([
@@ -93,17 +97,25 @@ function ProjectGeneralSettingsForm({
 }: {
   initialProject: ProjectInfo
   submitting: boolean
-  onSubmit: (input: { name: string; description: string }) => Promise<unknown>
+  onSubmit: (input: {
+    name: string
+    description: string
+    retentionDays: number
+  }) => Promise<unknown>
 }) {
   const [project, setProject] = useState(initialProject)
   const [name, setName] = useState(project.name)
   const [description, setDescription] = useState(project.description)
+  const [retentionDays, setRetentionDays] = useState(
+    String(project.retentionDays)
+  )
 
   const handleSubmit = async (event: FormEvent<HTMLFormElement>) => {
     event.preventDefault()
     const nextProject = {
       name: name.trim() || project.name,
       description: description.trim(),
+      retentionDays: clampRetentionDays(retentionDays),
     }
     await onSubmit(nextProject)
     setProject((current) => ({
@@ -135,13 +147,13 @@ function ProjectGeneralSettingsForm({
         />
       </div>
       <dl className='grid gap-4 rounded-lg border p-4 text-sm sm:grid-cols-2'>
-        <div className='flex flex-col gap-1'>
+        <div className='flex min-w-0 flex-col gap-1'>
           <dt className='text-muted-foreground'>项目 ID</dt>
-          <dd className='font-mono text-xs'>{project.id}</dd>
+          <dd className='font-mono text-xs break-all'>{project.id}</dd>
         </div>
-        <div className='flex flex-col gap-1'>
+        <div className='flex min-w-0 flex-col gap-1'>
           <dt className='text-muted-foreground'>所属组织</dt>
-          <dd>{project.organizationName}</dd>
+          <dd className='break-words'>{project.organizationName}</dd>
         </div>
         <div className='flex flex-col gap-1'>
           <dt className='text-muted-foreground'>数据保留</dt>
@@ -158,6 +170,21 @@ function ProjectGeneralSettingsForm({
           <dd>{formatDateTime(project.updatedAt)}</dd>
         </div>
       </dl>
+      <div className='flex max-w-xs flex-col gap-2'>
+        <Label htmlFor='project-retention-days'>项目数据保留天数</Label>
+        <Input
+          id='project-retention-days'
+          type='number'
+          min={1}
+          max={30}
+          value={retentionDays}
+          onChange={(event) => setRetentionDays(event.target.value)}
+          placeholder='1-30'
+        />
+        <p className='text-muted-foreground text-xs'>
+          支持自定义 1-30 天，超出范围会自动按边界值保存。
+        </p>
+      </div>
       <div>
         <Button type='submit' disabled={submitting}>
           <Save data-icon='inline-start' />
@@ -166,4 +193,10 @@ function ProjectGeneralSettingsForm({
       </div>
     </form>
   )
+}
+
+function clampRetentionDays(value: string) {
+  const parsed = Number(value)
+  if (!Number.isFinite(parsed)) return 30
+  return Math.min(30, Math.max(1, Math.round(parsed)))
 }

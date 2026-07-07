@@ -2,9 +2,9 @@ import { createElement } from 'react'
 import {
   ActivitySquare,
   Bot,
+  Home,
   KeyRound,
   Settings,
-  ShieldCheck,
   Users,
 } from 'lucide-react'
 
@@ -44,16 +44,24 @@ export function getProjectSettingsNavigationItems(projectId: string) {
   ]
 }
 
+export function getProjectSettingsPageLinks(projectId: string) {
+  void projectId
+
+  return [
+    {
+      title: '应用管理',
+      href: '/apps',
+      isActive: true,
+      disabled: false,
+      icon: Home,
+    },
+  ]
+}
+
 export const projectSettingsNavigationItems = getProjectSettingsNavigationItems(
   'project_customer_agent'
 )
 
-export const projectSettingsPageLinks = [
-  {
-    title: '项目设置',
-    href: '/projects/project_customer_agent/settings/general',
-    isActive: true,
-    disabled: false,
-    icon: ShieldCheck,
-  },
-]
+export const projectSettingsPageLinks = getProjectSettingsPageLinks(
+  'project_customer_agent'
+)

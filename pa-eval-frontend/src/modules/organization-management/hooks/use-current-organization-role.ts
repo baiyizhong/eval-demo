@@ -4,9 +4,10 @@ import {
   type OrganizationRole,
   type PaginatedResult,
 } from '@/modules/organization-management/data/schema'
+import { resolveCurrentOrganizationRole } from '@/modules/organization-management/data/current-organization-role'
+import { useAuthStore } from '@/stores/auth-store'
 import { useAPI } from '@/hooks/use-api'
-
-const MOCK_CURRENT_MEMBER_USER_ID = 'user-current'
+import { parseAuthTokenPayload } from '@/lib/auth-token'
 
 type UseCurrentOrganizationRoleResult = {
   actorRole: OrganizationRole | null
@@ -17,15 +18,16 @@ export function useCurrentOrganizationRole(
   organizationId: string | null
 ): UseCurrentOrganizationRoleResult {
   const $api = useAPI()
+  const accessToken = useAuthStore((state) => state.auth.accessToken)
+  const currentUser = parseAuthTokenPayload(accessToken)
   const actorMembersQuery = useQuery({
-    queryKey: ['organization-members-actor', organizationId, $api],
+    queryKey: ['organization-members-actor', organizationId, currentUser?.langfuseUserId, currentUser?.email, $api],
     enabled: Boolean(organizationId),
     queryFn: () => {
       if (!organizationId) {
         throw new Error('缺少组织 ID')
       }
 
-      // mock 模式下缺少独立的“当前成员/组织权限”接口；真实后端应替换为专用权限上下文接口。
       return $api.getOrganizationMembers<PaginatedResult<OrganizationMember>>({
         path: { organizationId },
         query: {
@@ -37,13 +39,13 @@ export function useCurrentOrganizationRole(
     },
   })
 
-  const actorMember =
-    actorMembersQuery.data?.datas.find(
-      (member) => member.userId === MOCK_CURRENT_MEMBER_USER_ID
-    ) ?? null
+  const actorRole = resolveCurrentOrganizationRole(
+    actorMembersQuery.data?.datas ?? [],
+    currentUser
+  )
 
   return {
-    actorRole: actorMember?.role ?? null,
+    actorRole,
     isPending: actorMembersQuery.isPending,
   }
 }

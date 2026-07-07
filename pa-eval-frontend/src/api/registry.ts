@@ -40,6 +40,18 @@ export const apiRegistry = {
     method: 'GET',
     url: '/projects/:projectId/settings/members',
   },
+  createProjectMember: {
+    method: 'POST',
+    url: '/projects/:projectId/settings/members',
+  },
+  updateProjectMember: {
+    method: 'PATCH',
+    url: '/projects/:projectId/settings/members/:memberId',
+  },
+  deleteProjectMember: {
+    method: 'DELETE',
+    url: '/projects/:projectId/settings/members/:memberId',
+  },
   createProjectApiKey: {
     method: 'POST',
     url: '/projects/:projectId/settings/api-keys',

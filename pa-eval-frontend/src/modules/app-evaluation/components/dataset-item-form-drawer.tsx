@@ -62,9 +62,11 @@ export function DatasetItemFormDrawer({
     <Drawer
       open={open}
       onOpenChange={onOpenChange}
+      mode='enhanced'
       title={item ? '查看/编辑数据项' : '新增数据项'}
       confirmText={item ? '保存' : '创建'}
       confirmProps={{ type: 'submit', form: formId }}
+      contentProps={{ className: 'overflow-y-auto' }}
     >
       <BaseForm
         key={item?.id ?? 'create'}

@@ -1,4 +1,4 @@
-import { useMemo, useState, type ReactNode } from 'react'
+import { useEffect, useMemo, useState, type ReactNode } from 'react'
 import { keepPreviousData, useQuery } from '@tanstack/react-query'
 import {
   flexRender,
@@ -53,7 +53,7 @@ export type DataTableFilterBinding = {
   fieldId: string
   queryKey?: string
   columnId?: string
-  type: 'string' | 'array'
+  type: 'string' | 'array' | 'json'
 }
 
 export type DataTableToolbarFilter = {
@@ -248,6 +248,10 @@ function DataTableContent<
     placeholderData: keepPreviousData,
   })
 
+  useEffect(() => {
+    setRowSelection({})
+  }, [page, pageSize])
+
   const rows = useMemo(
     () => selectResponseRows(query.data, request.selectRows),
     [query.data, request.selectRows]
@@ -291,6 +295,10 @@ function DataTableContent<
           updateListParam(nextParams, queryKey, filter?.value)
           return
         }
+        if (binding.type === 'json') {
+          updateJsonParam(nextParams, queryKey, filter?.value)
+          return
+        }
 
         updateStringParam(nextParams, queryKey, filter?.value)
       })
@@ -329,6 +337,10 @@ function DataTableContent<
 
         if (binding.type === 'array') {
           updateListParam(nextParams, queryKey, value)
+          return
+        }
+        if (binding.type === 'json') {
+          updateJsonParam(nextParams, queryKey, value)
           return
         }
 
@@ -525,10 +537,15 @@ function readFiltersFromSearchParams(
 ) {
   return bindings.reduce<Record<string, unknown>>((filters, binding) => {
     const queryKey = binding.queryKey ?? binding.fieldId
-    filters[binding.fieldId] =
-      binding.type === 'array'
-        ? searchParams.getAll(queryKey)
-        : (searchParams.get(queryKey) ?? '')
+    if (binding.type === 'array') {
+      filters[binding.fieldId] = searchParams.getAll(queryKey)
+      return filters
+    }
+    if (binding.type === 'json') {
+      filters[binding.fieldId] = parseJsonFilterParam(searchParams.get(queryKey))
+      return filters
+    }
+    filters[binding.fieldId] = searchParams.get(queryKey) ?? ''
     return filters
   }, {})
 }
@@ -585,6 +602,35 @@ function updateListParam(
   value
     .filter((item): item is string => typeof item === 'string' && item !== '')
     .forEach((item) => searchParams.append(key, item))
+}
+
+function updateJsonParam(
+  searchParams: URLSearchParams,
+  key: string,
+  value: unknown
+) {
+  if (value === undefined || value === null || value === '') {
+    searchParams.delete(key)
+    return
+  }
+
+  if (Array.isArray(value) && value.length === 0) {
+    searchParams.delete(key)
+    return
+  }
+
+  searchParams.set(key, JSON.stringify(value))
+}
+
+function parseJsonFilterParam(value: string | null) {
+  if (!value) {
+    return []
+  }
+  try {
+    return JSON.parse(value)
+  } catch {
+    return []
+  }
 }
 
 function updateNumberParam(

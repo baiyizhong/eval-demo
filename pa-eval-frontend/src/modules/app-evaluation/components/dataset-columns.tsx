@@ -89,6 +89,7 @@ export function createDatasetColumns({
   if (!readOnly && (onEdit || onImport || onExport || onDelete)) {
     columns.push({
       id: 'actions',
+      header: () => <div className='text-right'>操作</div>,
       enableHiding: false,
       cell: ({ row }) => (
         <DatasetRowActions
@@ -99,6 +100,9 @@ export function createDatasetColumns({
           onDelete={onDelete}
         />
       ),
+      meta: {
+        className: 'w-[220px]',
+      },
     })
   }
 
