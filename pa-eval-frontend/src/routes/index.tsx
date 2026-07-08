@@ -179,6 +179,10 @@ export const routes = [
                     element: <ProjectAnnotationQueueDetail />,
                   },
                   {
+                    path: 'annotation-queues/:queueId/batch-annotate',
+                    element: <ProjectAnnotationBatch />,
+                  },
+                  {
                     path: 'annotation-queues/:queueId/items/:itemId/annotate',
                     element: <ProjectAnnotationItemAnnotate />,
                   },

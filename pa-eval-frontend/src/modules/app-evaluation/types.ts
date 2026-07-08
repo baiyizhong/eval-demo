@@ -253,6 +253,16 @@ export type AnnotationBatchFiltersInput = {
     operator: 'contains' | 'equals' | 'exists'
     value?: string
   }[]
+  inputFilters?: {
+    key: string
+    operator: 'contains' | 'equals' | 'exists'
+    value?: string
+  }[]
+  outputFilters?: {
+    key: string
+    operator: 'contains' | 'equals' | 'exists'
+    value?: string
+  }[]
   itemIds?: string[]
 }
 

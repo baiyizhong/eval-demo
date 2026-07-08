@@ -1,6 +1,6 @@
 import { useCallback, useMemo } from 'react'
 import { useQuery, useQueryClient } from '@tanstack/react-query'
-import { Download } from 'lucide-react'
+import { Download, ListChecks } from 'lucide-react'
 import { useNavigate, useParams, useSearchParams } from 'react-router'
 import { toast } from 'sonner'
 import { confirm } from '@/lib/confirm'
@@ -126,6 +126,18 @@ export function ProjectAnnotationQueueDetail() {
           }
           buttonGroups={{
             buttons: [
+              {
+                id: 'batch-annotate',
+                label: '批量标注',
+                icon: ListChecks,
+                iconPosition: 'start',
+                size: 'sm',
+                onClick: () => {
+                  navigate(
+                    `/projects/${projectId}/evaluation/annotation-queues/${queueId}/batch-annotate`
+                  )
+                },
+              },
               {
                 id: 'export',
                 label: '全量导出',

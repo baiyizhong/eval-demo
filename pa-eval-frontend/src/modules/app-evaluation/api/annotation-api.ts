@@ -230,6 +230,12 @@ export function listProjectAnnotationQueueItems(
   const metadataFilters = query.filters.metadataFilters as
     | AnnotationBatchFiltersInput['metadataFilters']
     | undefined
+  const inputFilters = query.filters.inputFilters as
+    | AnnotationBatchFiltersInput['inputFilters']
+    | undefined
+  const outputFilters = query.filters.outputFilters as
+    | AnnotationBatchFiltersInput['outputFilters']
+    | undefined
   const itemIds = query.filters.itemIds as string[] | undefined
 
   return api.getProjectAnnotationQueueItems<
@@ -253,6 +259,12 @@ export function listProjectAnnotationQueueItems(
       ...(metadataValue ? { metadataValue } : {}),
       ...(metadataFilters?.length
         ? { metadataFilters: JSON.stringify(metadataFilters) }
+        : {}),
+      ...(inputFilters?.length
+        ? { inputFilters: JSON.stringify(inputFilters) }
+        : {}),
+      ...(outputFilters?.length
+        ? { outputFilters: JSON.stringify(outputFilters) }
         : {}),
       ...(itemIds?.length ? { itemIds } : {}),
     },
@@ -303,7 +315,7 @@ export function saveProjectAnnotationScores(
   })
 }
 
-export function previewProjectAnnotationBatch(
+export async function previewProjectAnnotationBatch(
   api: AnnotationApiClient,
   projectId: string,
   queueId: string,
@@ -311,14 +323,14 @@ export function previewProjectAnnotationBatch(
     filters: AnnotationBatchFiltersInput
     limit?: number
   }
-) {
+): Promise<AnnotationBatchPreviewResult> {
   return api.previewProjectAnnotationBatch<AnnotationBatchPreviewResult>({
     path: { projectId, queueId },
     body: input,
   })
 }
 
-export function saveProjectAnnotationBatchScores(
+export async function saveProjectAnnotationBatchScores(
   api: AnnotationApiClient,
   projectId: string,
   queueId: string,
@@ -328,7 +340,7 @@ export function saveProjectAnnotationBatchScores(
     expectedPendingCount: number
     confirmLargeBatch?: boolean
   }
-) {
+): Promise<AnnotationBatchSaveResult> {
   return api.saveProjectAnnotationBatchScores<AnnotationBatchSaveResult>({
     path: { projectId, queueId },
     body: input,
@@ -354,6 +366,12 @@ export function buildAnnotationBatchFilters(
   const metadataValue = query.filters.metadataValue as string | undefined
   const metadataFilters = query.filters.metadataFilters as
     | AnnotationBatchFiltersInput['metadataFilters']
+    | undefined
+  const inputFilters = query.filters.inputFilters as
+    | AnnotationBatchFiltersInput['inputFilters']
+    | undefined
+  const outputFilters = query.filters.outputFilters as
+    | AnnotationBatchFiltersInput['outputFilters']
     | undefined
   const itemIds = query.filters.itemIds as string[] | undefined
 
@@ -381,6 +399,8 @@ export function buildAnnotationBatchFilters(
         }
       : {}),
     ...(metadataFilters?.length ? { metadataFilters } : {}),
+    ...(inputFilters?.length ? { inputFilters } : {}),
+    ...(outputFilters?.length ? { outputFilters } : {}),
     ...(itemIds?.length ? { itemIds } : {}),
   }
 }

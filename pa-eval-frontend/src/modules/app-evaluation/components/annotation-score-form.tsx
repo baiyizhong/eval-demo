@@ -52,6 +52,11 @@ type AnnotationScoreFormProps = {
   item: AnnotationQueueItemRecord
   scoreConfigs: ScoreConfigRecord[]
   onAddToDataset: () => void
+  showAddToDataset?: boolean
+  saveLabel?: string
+  saveNextLabel?: string
+  showSaveNext?: boolean
+  submitHint?: string
   onSubmit: (
     input: AnnotationScoreFormInput,
     mode: 'save' | 'saveNext'
@@ -62,6 +67,11 @@ export function AnnotationScoreForm({
   item,
   scoreConfigs,
   onAddToDataset,
+  showAddToDataset = true,
+  saveLabel = '保存',
+  saveNextLabel = '保存并下一条',
+  showSaveNext = true,
+  submitHint = '',
   onSubmit,
 }: AnnotationScoreFormProps) {
   const formId = `annotation-score-form-${item.id}`
@@ -137,32 +147,41 @@ export function AnnotationScoreForm({
               ))}
             </div>
           </div>
-          <div className='flex shrink-0 justify-end gap-2 border-t p-3'>
-            <Button
-              type='button'
-              variant='outline'
-              size='sm'
-              onClick={onAddToDataset}
-            >
-              加入数据集
-            </Button>
-            <Button type='submit' variant='outline' size='sm'>
-              保存
-            </Button>
-            <Button
-              type='button'
-              size='sm'
-              onClick={() => {
-                void form.handleSubmit((values) =>
-                  onSubmit(
-                    normalizeAnnotationScoreFormInput(values, scoreConfigs),
-                    'saveNext'
-                  )
-                )()
-              }}
-            >
-              保存并下一条
-            </Button>
+          <div className='flex shrink-0 flex-wrap items-center justify-between gap-2 border-t p-3'>
+            <div className='text-muted-foreground min-w-0 text-xs'>
+              {submitHint}
+            </div>
+            <div className='flex shrink-0 justify-end gap-2'>
+              {showAddToDataset ? (
+                <Button
+                  type='button'
+                  variant='outline'
+                  size='sm'
+                  onClick={onAddToDataset}
+                >
+                  加入数据集
+                </Button>
+              ) : null}
+              <Button type='submit' variant='outline' size='sm'>
+                {saveLabel}
+              </Button>
+              {showSaveNext ? (
+                <Button
+                  type='button'
+                  size='sm'
+                  onClick={() => {
+                    void form.handleSubmit((values) =>
+                      onSubmit(
+                        normalizeAnnotationScoreFormInput(values, scoreConfigs),
+                        'saveNext'
+                      )
+                    )()
+                  }}
+                >
+                  {saveNextLabel}
+                </Button>
+              ) : null}
+            </div>
           </div>
         </>
       )}

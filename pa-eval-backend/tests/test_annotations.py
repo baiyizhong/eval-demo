@@ -778,6 +778,50 @@ def test_lists_annotation_items_with_multiple_metadata_filters() -> None:
     assert [item["id"] for item in body["datas"]] == ["item-2"]
 
 
+def test_lists_annotation_items_with_input_and_output_filters() -> None:
+    fake_reader = FakeAnnotationDatabaseReader()
+    override_reader(fake_reader)
+
+    try:
+        response = TestClient(app).get(
+            "/api/projects/project-1/annotation-queues/queue-1/items",
+            params={
+                "status": "PENDING",
+                "inputFilters": '[{"key":"question","operator":"contains","value":"发票"}]',
+                "outputFilters": '[{"key":"answer","operator":"contains","value":"订单详情"}]',
+            },
+        )
+    finally:
+        clear_overrides()
+
+    assert response.status_code == 200
+    body = response.json()["data"]
+    assert body["total"] == 1
+    assert [item["id"] for item in body["datas"]] == ["item-2"]
+
+
+def test_lists_annotation_items_enriches_empty_trace_source() -> None:
+    fake_reader = FakeAnnotationDatabaseReader()
+    override_reader(fake_reader)
+
+    try:
+        response = TestClient(app).get(
+            "/api/projects/project-1/annotation-queues/queue-1/items",
+            params={"status": "PENDING"},
+        )
+    finally:
+        clear_overrides()
+
+    assert response.status_code == 200
+    body = response.json()["data"]
+    item = next(row for row in body["datas"] if row["id"] == "item-1")
+    assert item["source"]["input"] == '{"question":"退款多久到账"}'
+    assert item["source"]["output"] == '{"answer":"通常 1-3 个工作日到账"}'
+    assert item["source"]["metadata"] == {"app_id": "app-1"}
+    assert item["source"]["sessionId"] == "session-1"
+    assert item["source"]["userId"] == "user-1"
+
+
 def test_bulk_saves_annotation_scores_only_for_pending_filtered_items() -> None:
     fake_reader = FakeAnnotationDatabaseReader()
     override_reader(fake_reader)
@@ -818,6 +862,49 @@ def test_bulk_saves_annotation_scores_only_for_pending_filtered_items() -> None:
     assert fake_reader.calls == [
         ("list_items", ("project-1", "queue-1", "user-1")),
         ("save_scores", ("project-1", "queue-1", "item-1", "user-1", {"scores": scores})),
+        ("save_scores", ("project-1", "queue-1", "item-2", "user-1", {"scores": scores})),
+    ]
+
+
+def test_bulk_saves_annotation_scores_with_input_output_filters() -> None:
+    fake_reader = FakeAnnotationDatabaseReader()
+    override_reader(fake_reader)
+
+    scores = [
+        {
+            "configId": "score-1",
+            "value": 5,
+            "stringValue": "",
+            "comment": "发票回答准确",
+        }
+    ]
+    payload = {
+        "filters": {
+            "status": ["PENDING"],
+            "inputFilters": [
+                {"key": "question", "operator": "contains", "value": "发票"}
+            ],
+            "outputFilters": [
+                {"key": "answer", "operator": "contains", "value": "订单详情"}
+            ],
+        },
+        "scores": scores,
+        "expectedPendingCount": 1,
+    }
+    try:
+        response = TestClient(app).post(
+            "/api/projects/project-1/annotation-queues/queue-1/batch-scores",
+            json=payload,
+        )
+    finally:
+        clear_overrides()
+
+    assert response.status_code == 200
+    body = response.json()["data"]
+    assert body["successCount"] == 1
+    assert body["successItemIds"] == ["item-2"]
+    assert fake_reader.calls == [
+        ("list_items", ("project-1", "queue-1", "user-1")),
         ("save_scores", ("project-1", "queue-1", "item-2", "user-1", {"scores": scores})),
     ]
 
