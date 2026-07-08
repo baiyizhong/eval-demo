@@ -28,7 +28,7 @@ import {
 } from './trace-dataset-dialog'
 import { TRACE_METADATA_JSON_EDITOR_CONFIG } from './trace-detail-drawer-config'
 
-const TRACE_CHAIN_DRAWER_WIDTH = 400
+const TRACE_CHAIN_DRAWER_WIDTH = 500
 const TRACE_CHAIN_COLLAPSED_WIDTH = 40
 
 type TraceDetailDrawerProps = {
@@ -47,6 +47,9 @@ export function TraceDetailDrawer({
   const $api = useAPI()
   const queryClient = useQueryClient()
   const [traceChainCollapsed, setTraceChainCollapsed] = useState(false)
+  const [traceChainWidth, setTraceChainWidth] = useState(
+    TRACE_CHAIN_DRAWER_WIDTH
+  )
   const [datasetDialogOpen, setDatasetDialogOpen] = useState(false)
   const [annotationDialogOpen, setAnnotationDialogOpen] = useState(false)
   const queryKey = ['trace-detail', $api, projectId, traceId]
@@ -175,20 +178,21 @@ export function TraceDetailDrawer({
               {
                 '--trace-chain-current-column-width': traceChainCollapsed
                   ? `${TRACE_CHAIN_COLLAPSED_WIDTH}px`
-                  : `${TRACE_CHAIN_DRAWER_WIDTH}px`,
+                  : `${traceChainWidth}px`,
               } as CSSProperties
             }
           >
             <LLMTraceChain
               data={detail.callChain}
-              width={TRACE_CHAIN_DRAWER_WIDTH}
+              width={traceChainWidth}
               collapsedWidth={TRACE_CHAIN_COLLAPSED_WIDTH}
               height='100%'
               isCollapsed={traceChainCollapsed}
               onCollapsedChange={setTraceChainCollapsed}
+              onWidthChange={setTraceChainWidth}
               summary={{ duration: formatLatency(detail.latency) }}
             />
-            <div className='flex h-full flex-col gap-3'>
+            <div className='min-w-0 flex h-full flex-col gap-3'>
               <MarkdownEditorPanel
                 title='Input'
                 value={detail.input}

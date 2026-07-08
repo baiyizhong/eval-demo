@@ -34,6 +34,7 @@ const ROLE_LABELS: Record<OrganizationRole, string> = {
   ADMIN: 'Admin',
   MEMBER: 'Member',
   VIEWER: 'Viewer',
+  NONE: 'None',
 }
 
 const memberFormSchema = z.object({
@@ -105,7 +106,7 @@ export function MemberFormDrawer({
         },
       })
     },
-    onSuccess: async () => {
+    onSuccess: async (memberResult) => {
       await Promise.all([
         queryClient.invalidateQueries({
           queryKey: ['organization-members', organizationId],
@@ -114,7 +115,13 @@ export function MemberFormDrawer({
           queryKey: ['organization-members-actor', organizationId],
         }),
       ])
-      toast.success(isEditMode ? '成员角色已更新' : '成员已添加')
+      toast.success(
+        isEditMode
+          ? '成员角色已更新'
+          : memberResult.status === 'INVITED'
+            ? '成员邀请已创建'
+            : '成员已添加'
+      )
       onOpenChange(false)
     },
   })

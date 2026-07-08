@@ -1,6 +1,8 @@
 from fastapi.testclient import TestClient
+import pytest
 
 from app.auth_context import CurrentUserContext, get_current_user_context
+from app.errors import BusinessError
 from app.langfuse_db import LangfuseDatabaseReader, get_langfuse_db_reader
 from app.main import app
 
@@ -79,6 +81,7 @@ class FakeDatabaseReader:
     async def create_organization_member(
         self,
         organization_id: str,
+        actor_user_id: str,
         payload: dict,
     ) -> dict:
         if payload["email"] == "missing@example.com":
@@ -87,6 +90,7 @@ class FakeDatabaseReader:
             raise BusinessError(1015, "用户不存在，请先让该用户登录 Langfuse", 404)
         self.created_member_payload = {
             "organization_id": organization_id,
+            "actor_user_id": actor_user_id,
             "payload": payload,
         }
         return {
@@ -106,11 +110,13 @@ class FakeDatabaseReader:
         self,
         organization_id: str,
         member_id: str,
+        actor_user_id: str,
         payload: dict,
     ) -> dict:
         self.updated_member_payload = {
             "organization_id": organization_id,
             "member_id": member_id,
+            "actor_user_id": actor_user_id,
             "payload": payload,
         }
         return {
@@ -130,10 +136,12 @@ class FakeDatabaseReader:
         self,
         organization_id: str,
         member_id: str,
+        actor_user_id: str,
     ) -> dict:
         self.deleted_member_payload = {
             "organization_id": organization_id,
             "member_id": member_id,
+            "actor_user_id": actor_user_id,
         }
         return {"id": member_id}
 
@@ -185,6 +193,23 @@ def override_reader(fake_reader: FakeDatabaseReader):
 
 def clear_overrides() -> None:
     app.dependency_overrides.clear()
+
+
+class RecordingOrganizationReader(LangfuseDatabaseReader):
+    def __init__(
+        self,
+        member_rows: list[dict] | None = None,
+        invitation_rows: list[dict] | None = None,
+    ) -> None:
+        self.queries: list[tuple[str, dict]] = []
+        self.member_rows = member_rows or []
+        self.invitation_rows = invitation_rows or []
+
+    async def _fetch_all(self, sql: str, params: dict | None = None) -> list[dict]:
+        self.queries.append((sql, params or {}))
+        if "membership_invitations" in sql:
+            return self.invitation_rows
+        return self.member_rows
 
 
 def test_lists_organizations_with_pa_pagination_and_metadata_mapping() -> None:
@@ -317,6 +342,7 @@ def test_creates_organization_member_through_database_reader() -> None:
     assert response.status_code == 200
     assert fake_reader.created_member_payload == {
         "organization_id": "org-1",
+        "actor_user_id": "user-1",
         "payload": {
             "email": "new@example.com",
             "name": "New Member",
@@ -324,6 +350,35 @@ def test_creates_organization_member_through_database_reader() -> None:
         },
     }
     assert response.json()["data"]["id"] == "mem-created"
+
+
+def test_creates_organization_member_with_none_role_for_project_only_access() -> None:
+    fake_reader = FakeDatabaseReader()
+    override_reader(fake_reader)
+
+    try:
+        response = TestClient(app).post(
+            "/api/organizations/org-1/members",
+            json={
+                "email": "project-only@example.com",
+                "name": "Project Only",
+                "role": "NONE",
+            },
+        )
+    finally:
+        clear_overrides()
+
+    assert response.status_code == 200
+    assert fake_reader.created_member_payload == {
+        "organization_id": "org-1",
+        "actor_user_id": "user-1",
+        "payload": {
+            "email": "project-only@example.com",
+            "name": "Project Only",
+            "role": "NONE",
+        },
+    }
+    assert response.json()["data"]["role"] == "NONE"
 
 
 def test_updates_organization_member_role_through_database_reader() -> None:
@@ -342,6 +397,7 @@ def test_updates_organization_member_role_through_database_reader() -> None:
     assert fake_reader.updated_member_payload == {
         "organization_id": "org-1",
         "member_id": "mem-2",
+        "actor_user_id": "user-1",
         "payload": {"role": "ADMIN"},
     }
     assert response.json()["data"]["role"] == "ADMIN"
@@ -360,6 +416,7 @@ def test_deletes_organization_member_through_database_reader() -> None:
     assert fake_reader.deleted_member_payload == {
         "organization_id": "org-1",
         "member_id": "mem-2",
+        "actor_user_id": "user-1",
     }
     assert response.json()["data"] == {"id": "mem-2"}
 
@@ -401,6 +458,71 @@ def test_imports_organization_members_with_partial_failures() -> None:
     ]
 
 
+@pytest.mark.anyio
+async def test_organization_members_include_pending_membership_invitations() -> None:
+    reader = RecordingOrganizationReader(
+        member_rows=[
+            {
+                "id": "mem-1",
+                "org_id": "org-1",
+                "user_id": "user-1",
+                "name": "Owner",
+                "email": "owner@example.com",
+                "role": "OWNER",
+                "created_at": "2026-07-08T08:00:00.000Z",
+                "updated_at": "2026-07-08T08:00:00.000Z",
+            }
+        ],
+        invitation_rows=[
+            {
+                "id": "invite-1",
+                "org_id": "org-1",
+                "email": "pending@example.com",
+                "org_role": "MEMBER",
+                "project_id": None,
+                "project_role": None,
+                "created_at": "2026-07-08T09:00:00.000Z",
+                "updated_at": "2026-07-08T09:00:00.000Z",
+                "invited_by_name": "Owner",
+                "invited_by_email": "owner@example.com",
+            }
+        ],
+    )
+
+    members = await reader.list_organization_members("org-1")
+
+    invite_sql, invite_params = reader.queries[1]
+    assert invite_params == {"organization_id": "org-1"}
+    assert "membership_invitations" in invite_sql
+    assert members[-1] == {
+        "id": "invite-1",
+        "organizationId": "org-1",
+        "userId": "",
+        "name": "pending",
+        "email": "pending@example.com",
+        "role": "MEMBER",
+        "status": "INVITED",
+        "joinedAt": "",
+        "createdAt": "2026-07-08T09:00:00.000Z",
+        "updatedAt": "2026-07-08T09:00:00.000Z",
+        "invitedBy": {
+            "name": "Owner",
+            "email": "owner@example.com",
+        },
+        "projectId": None,
+        "projectRole": None,
+    }
+
+
+def test_organization_invitation_duplicate_returns_conflict() -> None:
+    with pytest.raises(BusinessError) as exc_info:
+        LangfuseDatabaseReader._raise_duplicate_organization_invitation()
+
+    assert exc_info.value.code == 1030
+    assert exc_info.value.status_code == 409
+    assert exc_info.value.message == "该邮箱已有待处理邀请，请先处理现有邀请"
+
+
 def test_creates_langfuse_organization_with_pa_eval_metadata() -> None:
     fake_reader = FakeDatabaseReader()
     override_reader(fake_reader)
@@ -430,7 +552,7 @@ def test_creates_langfuse_organization_with_pa_eval_metadata() -> None:
                     "subsystem": "model-eval",
                     "createdBy": "admin@163.com",
                 }
-            }
+            },
         },
     }
     assert response.json()["data"]["id"] == "org-created"
@@ -462,9 +584,10 @@ def test_creates_organization_with_logged_in_email_as_owner() -> None:
     assert response.status_code == 200
     assert fake_reader.created_payload["owner_user_id"] == "user-octocat"
     assert fake_reader.created_payload["owner_email"] == "octocat@example.com"
-    assert fake_reader.created_payload["payload"]["metadata"]["paEval"][
-        "createdBy"
-    ] == "octocat@example.com"
+    assert (
+        fake_reader.created_payload["payload"]["metadata"]["paEval"]["createdBy"]
+        == "octocat@example.com"
+    )
 
 
 def test_updates_organization_through_database_and_preserves_metadata() -> None:

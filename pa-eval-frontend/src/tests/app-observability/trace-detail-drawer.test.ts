@@ -26,3 +26,21 @@ test('trace detail drawer uses join annotation task wording and removes editing 
   assert.doesNotMatch(source, /defaultMode='edit'/)
   assert.doesNotMatch(source, /当前 Trace 编辑内容/)
 })
+
+test('trace detail drawer keeps the right column adaptive after resizing trace chain', () => {
+  const source = readFileSync(
+    resolve(
+      process.cwd(),
+      'src/modules/app-observability/components/trace-detail-drawer.tsx'
+    ),
+    'utf8'
+  )
+
+  assert.match(source, /traceChainWidth/)
+  assert.match(
+    source,
+    /'--trace-chain-current-column-width':[\s\S]+traceChainWidth/
+  )
+  assert.match(source, /onWidthChange=\{setTraceChainWidth\}/)
+  assert.match(source, /className='min-w-0 flex h-full flex-col gap-3'/)
+})

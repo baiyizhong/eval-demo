@@ -48,3 +48,26 @@ test('falls back to email when an older token does not contain Langfuse user id'
 
   assert.equal(role, 'ADMIN')
 })
+
+test('ignores pending organization invitations when resolving current role', () => {
+  const role = resolveCurrentOrganizationRole(
+    [
+      {
+        id: 'invite-1',
+        organizationId: 'org-1',
+        userId: '',
+        name: 'Pending',
+        email: 'admin@example.com',
+        role: 'ADMIN',
+        status: 'INVITED',
+        createdAt: '2026-07-01T00:00:00.000Z',
+        updatedAt: '2026-07-01T00:00:00.000Z',
+      },
+    ],
+    {
+      email: 'admin@example.com',
+    }
+  )
+
+  assert.equal(role, null)
+})

@@ -52,6 +52,7 @@ const ROLE_LABELS: Record<OrganizationRole, string> = {
   ADMIN: 'Admin',
   MEMBER: 'Member',
   VIEWER: 'Viewer',
+  NONE: 'None',
 }
 
 const ROLE_BADGE_VARIANTS: Record<
@@ -62,6 +63,7 @@ const ROLE_BADGE_VARIANTS: Record<
   ADMIN: 'secondary',
   MEMBER: 'outline',
   VIEWER: 'outline',
+  NONE: 'outline',
 }
 
 const STATUS_LABELS: Record<string, string> = {
@@ -122,6 +124,10 @@ function getEditBlockedReason(
   member: OrganizationMember,
   ownerCount: number
 ) {
+  if (member.status === 'INVITED') {
+    return '等待接受邀请'
+  }
+
   if (!actorRole || !canManageMembers(actorRole)) {
     return '当前角色不能管理成员'
   }
@@ -215,8 +221,9 @@ export function SettingsOrganizationMembers() {
     },
   })
   const ownerCount =
-    actorMembersQuery.data?.datas.filter((member) => member.role === 'OWNER')
-      .length ?? 0
+    actorMembersQuery.data?.datas.filter(
+      (member) => member.status !== 'INVITED' && member.role === 'OWNER'
+    ).length ?? 0
   const canManage = actorRole ? canManageMembers(actorRole) : false
 
   const deleteMutation = useMutation({
@@ -327,6 +334,14 @@ export function SettingsOrganizationMembers() {
         header: '操作',
         cell: ({ row }) => {
           const member = row.original
+          if (member.status === 'INVITED') {
+            return (
+              <span className='text-muted-foreground text-xs'>
+                等待接受邀请
+              </span>
+            )
+          }
+
           const editBlockedReason = getEditBlockedReason(
             actorRole,
             member,

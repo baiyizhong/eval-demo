@@ -19,11 +19,11 @@ router = APIRouter(prefix="/api/organizations", tags=["organizations"])
 class OrganizationMemberPayload(BaseModel):
     email: str = Field(pattern=r"^[^@\s]+@[^@\s]+\.[^@\s]+$")
     name: str | None = Field(default=None, max_length=120)
-    role: str = Field(pattern="^(OWNER|ADMIN|MEMBER|VIEWER)$")
+    role: str = Field(pattern="^(OWNER|ADMIN|MEMBER|VIEWER|NONE)$")
 
 
 class UpdateOrganizationMemberPayload(BaseModel):
-    role: str = Field(pattern="^(OWNER|ADMIN|MEMBER|VIEWER)$")
+    role: str = Field(pattern="^(OWNER|ADMIN|MEMBER|VIEWER|NONE)$")
 
 
 class ImportOrganizationMembersPayload(BaseModel):
@@ -206,10 +206,12 @@ async def list_organization_members(
 async def create_organization_member(
     organization_id: str,
     payload: OrganizationMemberPayload,
+    current_user: CurrentUserContext = Depends(get_current_user_context),
     reader: LangfuseDatabaseReader = Depends(get_langfuse_db_reader),
 ) -> dict[str, Any]:
     member = await reader.create_organization_member(
         organization_id,
+        current_user.user_id,
         payload.model_dump(),
     )
     return success(member)
@@ -219,6 +221,7 @@ async def create_organization_member(
 async def import_organization_members(
     organization_id: str,
     payload: ImportOrganizationMembersPayload,
+    current_user: CurrentUserContext = Depends(get_current_user_context),
     reader: LangfuseDatabaseReader = Depends(get_langfuse_db_reader),
 ) -> dict[str, Any]:
     members: list[dict[str, Any]] = []
@@ -227,7 +230,11 @@ async def import_organization_members(
         member_data = member_payload.model_dump()
         try:
             members.append(
-                await reader.create_organization_member(organization_id, member_data)
+                await reader.create_organization_member(
+                    organization_id,
+                    current_user.user_id,
+                    member_data,
+                )
             )
         except BusinessError as exc:
             failures.append(
@@ -245,11 +252,13 @@ async def update_organization_member(
     organization_id: str,
     member_id: str,
     payload: UpdateOrganizationMemberPayload,
+    current_user: CurrentUserContext = Depends(get_current_user_context),
     reader: LangfuseDatabaseReader = Depends(get_langfuse_db_reader),
 ) -> dict[str, Any]:
     member = await reader.update_organization_member(
         organization_id,
         member_id,
+        current_user.user_id,
         payload.model_dump(),
     )
     return success(member)
@@ -259,7 +268,12 @@ async def update_organization_member(
 async def delete_organization_member(
     organization_id: str,
     member_id: str,
+    current_user: CurrentUserContext = Depends(get_current_user_context),
     reader: LangfuseDatabaseReader = Depends(get_langfuse_db_reader),
 ) -> dict[str, Any]:
-    deleted = await reader.delete_organization_member(organization_id, member_id)
+    deleted = await reader.delete_organization_member(
+        organization_id,
+        member_id,
+        current_user.user_id,
+    )
     return success(deleted)

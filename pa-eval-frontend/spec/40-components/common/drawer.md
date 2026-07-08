@@ -50,6 +50,8 @@ type DrawerProps = React.ComponentProps<typeof Sheet> & {
   children?: React.ReactNode;
   mode?: DrawerMode;
   width?: number | string;
+  resizable?: boolean;
+  showOverlay?: boolean;
   actions?: React.ReactNode | null;
   showCancel?: boolean;
   showConfirm?: boolean;
@@ -71,6 +73,8 @@ type DrawerProps = React.ComponentProps<typeof Sheet> & {
 - `children`：抽屉主体内容。
 - `mode`：抽屉宽度模式，默认 `default`。
 - `width`：自定义抽屉宽度，支持数字或 CSS 宽度字符串。
+- `resizable`：是否允许从抽屉左侧边缘拖拽调整宽度；`enhanced` 模式默认开启，其他模式默认关闭，传 `false` 可强制关闭。
+- `showOverlay`：是否显示遮罩层；默认模式默认显示，`enhanced` 模式默认关闭，传入布尔值可强制覆盖；关闭遮罩层时默认同步使用非 modal 模式，让抽屉下方内容可直接点击。
 - `actions`：自定义标题右侧操作区；传 `null` 可隐藏默认按钮。
 - `showCancel`：是否显示默认取消按钮，默认 `true`。
 - `showConfirm`：是否显示默认确认按钮，默认 `true`。
@@ -88,6 +92,10 @@ type DrawerProps = React.ComponentProps<typeof Sheet> & {
 - `mode="enhanced"`：默认宽度 `70vw`。
 - 传入 `width` 时优先使用 `width`，数字会转换为 `px`。
 - 抽屉最大宽度限制为 `100vw`，避免移动端溢出。
+- `resizable` 开启时，用户可拖拽抽屉左侧边缘调整宽度；开始拖拽后宽度会切换为像素值，最小宽度为 `360px`，小屏下不超过当前视口宽度。
+- 拖拽后的宽度会在关闭动画期间保持，避免关闭时抽屉跳回默认宽度造成抖动。
+- `showOverlay={false}` 时不会渲染遮罩层，并默认禁用 Radix Dialog 的 modal 行为，抽屉下方页面内容可直接点击；`enhanced` 模式默认采用该行为。
+- `resizable` 开启时，点击遮罩层不会关闭抽屉；需要通过取消按钮、业务操作或外部受控状态关闭。
 
 ```tsx
 <Drawer open={open} onOpenChange={setOpen} title="编辑配置" width={520}>
@@ -96,6 +104,16 @@ type DrawerProps = React.ComponentProps<typeof Sheet> & {
 
 <Drawer open={open} onOpenChange={setOpen} title="详情" mode="enhanced">
   {/* content */}
+</Drawer>
+
+<Drawer
+  open={open}
+  onOpenChange={setOpen}
+  title="详情"
+  mode="enhanced"
+  resizable={false}
+>
+  {/* enhanced 宽度但禁用拖拽 */}
 </Drawer>
 ```
 
@@ -107,6 +125,10 @@ type DrawerProps = React.ComponentProps<typeof Sheet> & {
 2. 取消按钮
 
 两个默认按钮都使用 `size="sm"`。抽屉不会显示底层 `SheetContent` 自带的右上角关闭按钮。
+
+## 内容滚动
+
+`Drawer` 的标题区固定在顶部，主体内容区独立滚动。调用方传入的 `children` 会渲染在内部滚动容器中；当内容高度超过视口时，只滚动主体内容，不滚动 `SheetHeader`。
 
 ```tsx
 <Drawer
