@@ -271,9 +271,7 @@ async def _list_trace_generation_samples(
             "o.is_deleted = 0",
             "o.type = 'GENERATION'",
         ]
-        time_condition = _trace_time_range_condition(
-            data_source_payload.get("timeRange")
-        )
+        time_condition = _trace_time_condition(data_source_payload)
         if trace_name:
             conditions.append(
                 f"positionCaseInsensitive(t.name, {_clickhouse_quote(trace_name)}) > 0"
@@ -358,6 +356,14 @@ async def _list_trace_generation_samples(
               AND (%(user_id)s = '' OR t.user_id ILIKE %(user_id_like)s)
               AND (%(session_id)s = '' OR t.session_id ILIKE %(session_id_like)s)
               AND (
+                %(created_at_from)s = ''
+                OR t.timestamp >= %(created_at_from)s::timestamptz
+              )
+              AND (
+                %(created_at_to)s = ''
+                OR t.timestamp <= %(created_at_to)s::timestamptz
+              )
+              AND (
                 cardinality(%(tags)s::text[]) = 0
                 OR COALESCE(t.tags, ARRAY[]::text[]) @> %(tags)s::text[]
               )
@@ -381,6 +387,14 @@ async def _list_trace_generation_samples(
             "session_id": session_id,
             "session_id_like": f"%{session_id}%",
             "tags": tag_values,
+            "created_at_from": _created_at_range_value(
+                data_source_payload.get("createdAtRange"),
+                0,
+            ),
+            "created_at_to": _created_at_range_value(
+                data_source_payload.get("createdAtRange"),
+                1,
+            ),
         },
     )
     return [_to_trace_generation_sample(row) for row in await cursor.fetchall()]
@@ -480,6 +494,32 @@ def _trace_time_range_condition(time_range: Any) -> str:
     }
     days = day_ranges.get(normalized, 1)
     return f"AND t.timestamp >= now() - INTERVAL {days} DAY"
+
+
+def _trace_time_condition(data_source_payload: dict[str, Any]) -> str:
+    created_at_from = _created_at_range_value(
+        data_source_payload.get("createdAtRange"),
+        0,
+    )
+    created_at_to = _created_at_range_value(
+        data_source_payload.get("createdAtRange"),
+        1,
+    )
+    if created_at_from and created_at_to:
+        return (
+            "AND t.timestamp >= parseDateTimeBestEffort("
+            f"{_clickhouse_quote(created_at_from)}) "
+            "AND t.timestamp <= parseDateTimeBestEffort("
+            f"{_clickhouse_quote(created_at_to)})"
+        )
+    return _trace_time_range_condition(data_source_payload.get("timeRange"))
+
+
+def _created_at_range_value(value: Any, index: int) -> str:
+    if not isinstance(value, list) or len(value) <= index:
+        return ""
+    item = value[index]
+    return item.strip() if isinstance(item, str) else ""
 
 
 async def _query_clickhouse_json_each_row(
@@ -1458,6 +1498,7 @@ async def _resolve_auto_evaluation_samples(
             ),
             "traceFilter": {
                 "timeRange": data_source_payload.get("timeRange"),
+                "createdAtRange": data_source_payload.get("createdAtRange") or [],
                 "traceName": data_source_payload.get("traceName"),
                 "userId": data_source_payload.get("userId"),
                 "sessionId": data_source_payload.get("sessionId"),

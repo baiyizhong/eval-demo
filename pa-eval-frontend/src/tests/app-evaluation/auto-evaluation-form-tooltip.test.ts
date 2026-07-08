@@ -36,3 +36,8 @@ test('Badcase 说明通过 Tooltip 图标展示', () => {
 test('新建自动评测抽屉显示 overlay', () => {
   assert.match(autoEvaluationsSource, /showOverlay=\{true\}/)
 })
+
+test('新建自动评测表单不重复展示抽屉标题和说明', () => {
+  assert.doesNotMatch(formSource, /<h2[^>]*>\s*新建自动评测\s*<\/h2>/)
+  assert.doesNotMatch(formSource, /按步骤配置基础信息、评估器和评测数据来源。/)
+})

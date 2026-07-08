@@ -72,9 +72,9 @@ test('countProjectAutoEvaluationTraces sends trace filter body', async () => {
     'project-1',
     {
       type: 'TRACE_FILTER',
-      timeRange: '24h',
+      timeRange: '3d',
+      createdAtRange: ['2026-07-05T00:00', '2026-07-08T00:00'],
       environments: ['production'],
-      traceName: 'refund',
       userId: '',
       sessionId: '',
       tags: ['refund'],
@@ -86,9 +86,9 @@ test('countProjectAutoEvaluationTraces sends trace filter body', async () => {
   assert.deepEqual(captured.requestBody, {
     traceFilter: {
       type: 'TRACE_FILTER',
-      timeRange: '24h',
+      timeRange: '3d',
+      createdAtRange: ['2026-07-05T00:00', '2026-07-08T00:00'],
       environments: ['production'],
-      traceName: 'refund',
       userId: '',
       sessionId: '',
       tags: ['refund'],
@@ -109,8 +109,8 @@ test('listProjectAutoEvaluationTracePreview maps trace filter to trace list quer
   await listProjectAutoEvaluationTracePreview(api as never, 'project-1', {
     type: 'TRACE_FILTER',
     timeRange: '3d',
+    createdAtRange: ['2026-07-05T00:00', '2026-07-08T00:00'],
     environments: [],
-    traceName: 'refund',
     userId: 'user-1',
     sessionId: 'session-1',
     tags: ['vip'],
@@ -122,8 +122,7 @@ test('listProjectAutoEvaluationTracePreview maps trace filter to trace list quer
     query: {
       page: 1,
       pageSize: 100,
-      timeRange: '3d',
-      keyword: 'refund',
+      createdAtRange: ['2026-07-05T00:00', '2026-07-08T00:00'],
       userId: 'user-1',
       sessionId: 'session-1',
       tags: ['vip'],

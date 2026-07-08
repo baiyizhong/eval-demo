@@ -470,9 +470,9 @@ export type AutoEvaluationTaskFormInput = {
     | { type: 'DATASET'; datasetId: string; projectId?: string }
     | {
         type: 'TRACE_FILTER'
-        timeRange: string
+        timeRange: '' | '1d' | '3d' | '7d'
+        createdAtRange: string[]
         environments: string[]
-        traceName: string
         userId: string
         sessionId: string
         tags: string[]

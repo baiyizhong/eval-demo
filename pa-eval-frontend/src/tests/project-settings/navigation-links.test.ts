@@ -21,7 +21,7 @@ test('project settings page uses dynamic project id for sidebar links', () => {
   )
 })
 
-test('project settings uses app management for top nav and project settings for page title', () => {
+test('project settings uses project management for top nav and project settings for page title', () => {
   const navSource = readFileSync(
     'src/modules/project-settings/nav.tsx',
     'utf8'
@@ -31,12 +31,12 @@ test('project settings uses app management for top nav and project settings for 
     'utf8'
   )
 
-  assert.match(navSource, /title:\s*'应用管理'/)
+  assert.match(navSource, /title:\s*'项目管理'/)
   assert.match(navSource, /href:\s*'\/apps'/)
   assert.match(navSource, /icon:\s*Home/)
   assert.match(pageSource, />\s*项目设置\s*</)
-  assert.doesNotMatch(navSource, /反馈应用管理/)
-  assert.doesNotMatch(pageSource, /反馈应用管理/)
+  assert.doesNotMatch(navSource, /应用管理/)
+  assert.doesNotMatch(pageSource, /应用管理/)
 })
 
 test('project settings nav module keeps static fallback out of page links', () => {

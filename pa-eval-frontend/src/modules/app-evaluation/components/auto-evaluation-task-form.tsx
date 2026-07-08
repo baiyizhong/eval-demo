@@ -1,5 +1,4 @@
 import { useEffect, useState } from 'react'
-import { TRACE_QUICK_TIME_RANGE_OPTIONS } from '@/modules/app-observability/trace-time-ranges'
 import { listTaskEvaluators } from '@/modules/tasks/api/evaluator-api'
 import { Info } from 'lucide-react'
 import { useNavigate } from 'react-router'
@@ -40,6 +39,7 @@ import {
   TooltipContent,
   TooltipTrigger,
 } from '@/components/ui/tooltip'
+import { ToggleGroup, ToggleGroupItem } from '@/components/ui/toggle-group'
 import { Stepper } from '@/components/common/stepper'
 import {
   createProjectAutoEvaluationTask,
@@ -56,7 +56,12 @@ import type {
 } from '../types'
 import { autoEvaluationStepLabels } from './auto-evaluation-steps'
 
-const AUTO_EVALUATION_DEFAULT_TRACE_TIME_RANGE = '3d'
+const AUTO_EVALUATION_DEFAULT_TRACE_TIME_RANGE = '1d'
+const AUTO_EVALUATION_TRACE_QUICK_TIME_RANGE_OPTIONS = [
+  { label: '1d', value: '1d' },
+  { label: '3d', value: '3d' },
+  { label: '7d', value: '7d' },
+] as const
 const TRACE_PREVIEW_PAGE_SIZE = 100
 const AUTO_EVALUATION_SUPPORTED_WORKFLOW_PROVIDERS: readonly string[] = [
   'DIFY',
@@ -70,7 +75,7 @@ const initialForm: AutoEvaluationTaskFormInput = {
   evaluatorId: '',
   variableMapping: {},
   reportTemplateId: 'default',
-  dataSource: { type: 'DATASET', datasetId: '' },
+  dataSource: createDefaultTraceFilter(),
   sampleRate: 100,
   badcase: {
     enabled: true,
@@ -399,13 +404,6 @@ export function AutoEvaluationTaskForm({
 
   return (
     <div className='flex flex-col gap-5'>
-      <div className='flex flex-col gap-1'>
-        <h2 className='text-base font-semibold'>新建自动评测</h2>
-        <p className='text-muted-foreground text-sm'>
-          按步骤配置基础信息、评估器和评测数据来源。
-        </p>
-      </div>
-
       <Stepper
         items={autoEvaluationStepItems}
         currentStep={step}
@@ -623,128 +621,104 @@ export function AutoEvaluationTaskForm({
               }
             >
               <TabsList className='mb-4'>
-                <TabsTrigger value='DATASET'>数据集</TabsTrigger>
                 <TabsTrigger value='TRACE_FILTER'>Trace 过滤</TabsTrigger>
+                <TabsTrigger value='DATASET'>数据集</TabsTrigger>
               </TabsList>
-              <TabsContent
-                value='DATASET'
-                className='grid gap-4 md:grid-cols-[minmax(0,1fr)_minmax(260px,320px)]'
-              >
-                <div className='grid gap-4 md:grid-cols-2'>
-                  <Field label='搜索数据集'>
-                    <Input
-                      placeholder='搜索数据集名称'
-                      value={datasetKeyword}
-                      onChange={(event) =>
-                        setDatasetKeyword(event.target.value)
-                      }
-                    />
-                  </Field>
-                  <Field label='选择数据集'>
-                    <Select
-                      value={
-                        form.dataSource.type === 'DATASET'
-                          ? form.dataSource.datasetId
-                          : ''
-                      }
-                      onValueChange={(value) => {
-                        const dataset = datasets.find(
-                          (item) => item.id === value
-                        )
-                        updateForm({
-                          ...form,
-                          dataSource: {
-                            type: 'DATASET',
-                            datasetId: value,
-                            projectId: dataset?.projectId,
-                          },
-                        })
-                      }}
-                    >
-                      <SelectTrigger className='w-full'>
-                        <SelectValue placeholder='选择数据集' />
-                      </SelectTrigger>
-                      <SelectContent>
-                        <SelectGroup>
-                          {datasets.map((dataset) => (
-                            <SelectItem key={dataset.id} value={dataset.id}>
-                              {dataset.name} · {dataset.itemCount} 条
-                              {dataset.projectName
-                                ? ` · ${dataset.projectName}`
-                                : ''}
-                            </SelectItem>
-                          ))}
-                        </SelectGroup>
-                      </SelectContent>
-                    </Select>
-                  </Field>
-                </div>
-                <SummaryPanel
-                  title='数据集摘要'
-                  items={[
-                    ['样本数', `${selectedDataset?.itemCount ?? 0} 条`],
-                    ['所属项目', selectedDataset?.projectName ?? '当前项目'],
-                    ['预计运行', `${estimatedRunCount} 条`],
-                  ]}
-                />
-              </TabsContent>
               <TabsContent
                 value='TRACE_FILTER'
                 className='grid gap-4 md:grid-cols-[minmax(0,1fr)_minmax(220px,280px)]'
               >
                 <div className='grid gap-4 md:grid-cols-2'>
-                  <Field label='时间范围'>
-                    <Select
-                      value={
-                        form.dataSource.type === 'TRACE_FILTER'
-                          ? form.dataSource.timeRange
-                          : AUTO_EVALUATION_DEFAULT_TRACE_TIME_RANGE
-                      }
-                      onValueChange={(value) => {
-                        if (form.dataSource.type !== 'TRACE_FILTER') return
-                        updateForm({
-                          ...form,
-                          dataSource: {
-                            ...form.dataSource,
-                            timeRange: value,
-                          },
-                        })
-                      }}
-                    >
-                      <SelectTrigger className='w-full'>
-                        <SelectValue placeholder='选择时间范围' />
-                      </SelectTrigger>
-                      <SelectContent>
-                        <SelectGroup>
-                          {TRACE_QUICK_TIME_RANGE_OPTIONS.map((option) => (
-                            <SelectItem key={option.value} value={option.value}>
-                              {option.label}
-                            </SelectItem>
-                          ))}
-                        </SelectGroup>
-                      </SelectContent>
-                    </Select>
-                  </Field>
-                  <Field label='Trace Name'>
-                    <Input
-                      placeholder='可选，按 Trace 名称过滤'
-                      value={
-                        form.dataSource.type === 'TRACE_FILTER'
-                          ? form.dataSource.traceName
-                          : ''
-                      }
-                      onChange={(event) =>
-                        form.dataSource.type === 'TRACE_FILTER'
-                          ? updateForm({
+                  <Field label='时间范围' className='md:col-span-2'>
+                    <div className='grid gap-3 lg:grid-cols-[minmax(0,1fr)_auto] lg:items-end'>
+                      <div className='grid gap-3 sm:grid-cols-2'>
+                        <Input
+                          type='datetime-local'
+                          aria-label='开始时间'
+                          value={
+                            form.dataSource.type === 'TRACE_FILTER'
+                              ? (form.dataSource.createdAtRange[0] ?? '')
+                              : ''
+                          }
+                          onChange={(event) => {
+                            if (form.dataSource.type !== 'TRACE_FILTER') return
+                            updateForm({
                               ...form,
                               dataSource: {
                                 ...form.dataSource,
-                                traceName: event.target.value,
+                                timeRange: '',
+                                createdAtRange: [
+                                  event.target.value,
+                                  form.dataSource.createdAtRange[1] ?? '',
+                                ],
                               },
                             })
-                          : undefined
-                      }
-                    />
+                          }}
+                        />
+                        <Input
+                          type='datetime-local'
+                          aria-label='结束时间'
+                          value={
+                            form.dataSource.type === 'TRACE_FILTER'
+                              ? (form.dataSource.createdAtRange[1] ?? '')
+                              : ''
+                          }
+                          onChange={(event) => {
+                            if (form.dataSource.type !== 'TRACE_FILTER') return
+                            updateForm({
+                              ...form,
+                              dataSource: {
+                                ...form.dataSource,
+                                timeRange: '',
+                                createdAtRange: [
+                                  form.dataSource.createdAtRange[0] ?? '',
+                                  event.target.value,
+                                ],
+                              },
+                            })
+                          }}
+                        />
+                      </div>
+                      <ToggleGroup
+                        type='single'
+                        variant='outline'
+                        size='default'
+                        value={
+                          form.dataSource.type === 'TRACE_FILTER'
+                            ? form.dataSource.timeRange
+                            : AUTO_EVALUATION_DEFAULT_TRACE_TIME_RANGE
+                        }
+                        onValueChange={(value) => {
+                          if (form.dataSource.type !== 'TRACE_FILTER' || !value)
+                            return
+                          const timeRange =
+                            value as (typeof AUTO_EVALUATION_TRACE_QUICK_TIME_RANGE_OPTIONS)[number]['value']
+                          updateForm({
+                            ...form,
+                            dataSource: {
+                              ...form.dataSource,
+                              timeRange,
+                              createdAtRange:
+                                createTraceDateTimeRange(timeRange),
+                            },
+                          })
+                        }}
+                        aria-label='快捷时间范围'
+                        className='w-fit'
+                      >
+                        {AUTO_EVALUATION_TRACE_QUICK_TIME_RANGE_OPTIONS.map(
+                          (option) => (
+                            <ToggleGroupItem
+                              key={option.value}
+                              value={option.value}
+                              aria-label={`最近 ${option.label}`}
+                            >
+                              {option.label}
+                            </ToggleGroupItem>
+                          )
+                        )}
+                      </ToggleGroup>
+                    </div>
                   </Field>
                   <Field label='User ID'>
                     <Input
@@ -846,6 +820,68 @@ export function AutoEvaluationTaskForm({
                     </Button>
                   </div>
                 </div>
+              </TabsContent>
+              <TabsContent
+                value='DATASET'
+                className='grid gap-4 md:grid-cols-[minmax(0,1fr)_minmax(260px,320px)]'
+              >
+                <div className='grid gap-4 md:grid-cols-2'>
+                  <Field label='搜索数据集'>
+                    <Input
+                      placeholder='搜索数据集名称'
+                      value={datasetKeyword}
+                      onChange={(event) =>
+                        setDatasetKeyword(event.target.value)
+                      }
+                    />
+                  </Field>
+                  <Field label='选择数据集'>
+                    <Select
+                      value={
+                        form.dataSource.type === 'DATASET'
+                          ? form.dataSource.datasetId
+                          : ''
+                      }
+                      onValueChange={(value) => {
+                        const dataset = datasets.find(
+                          (item) => item.id === value
+                        )
+                        updateForm({
+                          ...form,
+                          dataSource: {
+                            type: 'DATASET',
+                            datasetId: value,
+                            projectId: dataset?.projectId,
+                          },
+                        })
+                      }}
+                    >
+                      <SelectTrigger className='w-full'>
+                        <SelectValue placeholder='选择数据集' />
+                      </SelectTrigger>
+                      <SelectContent>
+                        <SelectGroup>
+                          {datasets.map((dataset) => (
+                            <SelectItem key={dataset.id} value={dataset.id}>
+                              {dataset.name} · {dataset.itemCount} 条
+                              {dataset.projectName
+                                ? ` · ${dataset.projectName}`
+                                : ''}
+                            </SelectItem>
+                          ))}
+                        </SelectGroup>
+                      </SelectContent>
+                    </Select>
+                  </Field>
+                </div>
+                <SummaryPanel
+                  title='数据集摘要'
+                  items={[
+                    ['样本数', `${selectedDataset?.itemCount ?? 0} 条`],
+                    ['所属项目', selectedDataset?.projectName ?? '当前项目'],
+                    ['预计运行', `${estimatedRunCount} 条`],
+                  ]}
+                />
               </TabsContent>
             </Tabs>
           </div>
@@ -1198,8 +1234,10 @@ function createDefaultTraceFilter(): Extract<
   return {
     type: 'TRACE_FILTER',
     timeRange: AUTO_EVALUATION_DEFAULT_TRACE_TIME_RANGE,
+    createdAtRange: createTraceDateTimeRange(
+      AUTO_EVALUATION_DEFAULT_TRACE_TIME_RANGE
+    ),
     environments: [],
-    traceName: '',
     userId: '',
     sessionId: '',
     tags: [],
@@ -1216,8 +1254,8 @@ function getTraceFilterKey(
   return JSON.stringify({
     type: 'TRACE_FILTER',
     timeRange: traceFilter.timeRange,
+    createdAtRange: traceFilter.createdAtRange,
     environments: traceFilter.environments,
-    traceName: traceFilter.traceName,
     userId: traceFilter.userId,
     sessionId: traceFilter.sessionId,
     tags: traceFilter.tags,
@@ -1242,6 +1280,22 @@ function parseTraceFilterKey(
     ...parsed,
     estimatedCount: 0,
   }
+}
+
+function createTraceDateTimeRange(
+  timeRange: (typeof AUTO_EVALUATION_TRACE_QUICK_TIME_RANGE_OPTIONS)[number]['value']
+) {
+  const days = Number(timeRange.replace('d', ''))
+  const end = new Date()
+  const start = new Date(end)
+  start.setDate(end.getDate() - days)
+  return [toDateTimeLocalValue(start), toDateTimeLocalValue(end)]
+}
+
+function toDateTimeLocalValue(date: Date) {
+  const offset = date.getTimezoneOffset()
+  const localDate = new Date(date.getTime() - offset * 60_000)
+  return localDate.toISOString().slice(0, 16)
 }
 
 function parseCommaSeparatedValues(value: string) {

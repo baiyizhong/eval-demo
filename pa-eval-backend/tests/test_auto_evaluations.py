@@ -449,6 +449,27 @@ async def test_list_trace_generation_samples_queries_last_generation_with_filter
     assert cursor.params["tags"] == ["refund"]
 
 
+@pytest.mark.anyio
+async def test_list_trace_generation_samples_queries_custom_created_at_range() -> (
+    None
+):
+    cursor = FakeCursor(rows=[{"trace_id": "trace-1", "observation_id": "obs-1"}])
+
+    await _list_trace_generation_samples(
+        cursor,  # type: ignore[arg-type]
+        project_id="project-1",
+        data_source_payload={
+            "timeRange": "",
+            "createdAtRange": ["2026-07-05T00:00", "2026-07-08T00:00"],
+        },
+    )
+
+    assert "t.timestamp >= %(created_at_from)s::timestamptz" in cursor.sql
+    assert "t.timestamp <= %(created_at_to)s::timestamptz" in cursor.sql
+    assert cursor.params["created_at_from"] == "2026-07-05T00:00"
+    assert cursor.params["created_at_to"] == "2026-07-08T00:00"
+
+
 def test_parse_workflow_result_supports_n8n_direct_response() -> None:
     result = _parse_workflow_result(
         {"provider": "N8N"},

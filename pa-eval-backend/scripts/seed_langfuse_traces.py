@@ -598,16 +598,16 @@ def evaluator_reasons_for(
     return reasons
 
 
-def build_events(count: int) -> list[dict[str, Any]]:
-    now = datetime.now(UTC)
+def build_events(count: int, now: datetime | None = None) -> list[dict[str, Any]]:
+    now = now or datetime.now(UTC)
+    today_start = now.replace(hour=0, minute=0, second=0, microsecond=0)
+    latest_start = max(today_start, now - timedelta(minutes=2))
+    spread_seconds = max((latest_start - today_start).total_seconds(), 0)
     events: list[dict[str, Any]] = []
     for index in range(count):
         scenario = SCENARIOS[index % len(SCENARIOS)]
-        if index < max(8, count // 2):
-            age = timedelta(minutes=8 + index * 17)
-        else:
-            age = timedelta(hours=8 + index * 3)
-        base_time = now - age
+        offset_ratio = index / max(count - 1, 1)
+        base_time = latest_start - timedelta(seconds=spread_seconds * offset_ratio)
         events.extend(build_trace_events(index + 1, scenario, base_time))
     events.sort(key=lambda event: event["timestamp"])
     return events

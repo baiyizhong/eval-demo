@@ -52,11 +52,6 @@ export function EvaluationReportBadcaseTable({
 
   return (
     <section className='bg-card text-card-foreground flex min-h-0 min-w-0 flex-1 flex-col gap-3 rounded-lg border p-4'>
-      <div className='flex justify-end'>
-        <Button type='button' size='sm' onClick={() => onFlowback([])}>
-          回流 Badcase
-        </Button>
-      </div>
       <DataTable<EvaluationReportBadcaseRecord>
         className='min-h-0 flex-1'
         columns={columns}

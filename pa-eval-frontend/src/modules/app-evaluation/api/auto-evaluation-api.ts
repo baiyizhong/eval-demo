@@ -89,15 +89,18 @@ function buildAutoEvaluationTraceListQuery(
   >,
   options: { page?: number; pageSize?: number }
 ) {
-  const traceName = traceFilter.traceName.trim()
   const userId = traceFilter.userId.trim()
   const sessionId = traceFilter.sessionId.trim()
+  const createdAtRange = traceFilter.createdAtRange
+    .map((value) => value.trim())
+    .filter(Boolean)
 
   return {
     page: options.page ?? 1,
     pageSize: options.pageSize ?? 100,
-    timeRange: traceFilter.timeRange,
-    ...(traceName ? { keyword: traceName } : {}),
+    ...(createdAtRange.length === 2
+      ? { createdAtRange }
+      : { timeRange: traceFilter.timeRange || '3d' }),
     ...(traceFilter.environments.length
       ? { environments: traceFilter.environments }
       : {}),
