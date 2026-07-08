@@ -37,6 +37,8 @@ def test_pa_schema_migrations_are_defined_in_order() -> None:
         "20260707_0005_normalize_pa_audit_actions.py",
         "20260707_0006_create_pa_dataset_export_jobs.py",
         "20260707_0007_normalize_langfuse_score_config_categories.py",
+        "20260708_0008_align_auto_eval_compat_columns.py",
+        "20260708_0009_add_report_flowback_compat_columns.py",
     ]
 
 
