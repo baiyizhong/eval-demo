@@ -34,6 +34,15 @@ LANGFUSE_BOOLEAN_SCORE_CATEGORIES = [
     {"label": "False", "value": 0},
 ]
 TEXT_SCORE_MAX_LENGTH = 500
+ROLE_LEVELS = {
+    "NONE": 0,
+    None: 0,
+    "VIEWER": 1,
+    "MEMBER": 2,
+    "ADMIN": 3,
+    "OWNER": 4,
+}
+MANAGER_ROLE_LEVEL = ROLE_LEVELS["ADMIN"]
 
 
 class LangfuseDatabaseConfigError(BusinessError):
@@ -1990,7 +1999,7 @@ class LangfuseDatabaseReader:
         user_id: str,
     ) -> list[dict[str, Any]]:
         await self._ensure_project_visible(project_id, user_id)
-        rows = await self._fetch_all(
+        member_rows = await self._fetch_all(
             """
             SELECT DISTINCT
                 u.id,
@@ -2019,7 +2028,29 @@ class LangfuseDatabaseReader:
             """,
             {"project_id": project_id},
         )
-        return [self._to_project_user_payload(row) for row in rows]
+        invitation_rows = await self._fetch_all(
+            """
+            SELECT
+                mi.id,
+                mi.email,
+                mi.org_role::text AS org_role,
+                mi.project_role::text AS project_role,
+                mi.created_at,
+                u.name AS invited_by_name,
+                u.email AS invited_by_email
+            FROM membership_invitations mi
+            LEFT JOIN users u ON u.id = mi.invited_by_user_id
+            WHERE mi.project_id = %(project_id)s
+              AND mi.project_role IS NOT NULL
+              AND mi.project_role::text <> 'NONE'
+            ORDER BY mi.created_at DESC, mi.email
+            """,
+            {"project_id": project_id},
+        )
+        return [
+            *[self._to_project_user_payload(row) for row in member_rows],
+            *[self._to_project_invitation_payload(row) for row in invitation_rows],
+        ]
 
     async def create_project_member_for_user(
         self,
@@ -2040,13 +2071,81 @@ class LangfuseDatabaseReader:
                     project_id,
                     user_id,
                 )
+                actor_role = await self._get_actor_project_role_cursor(
+                    cursor,
+                    project_id,
+                    project["org_id"],
+                    user_id,
+                )
+                self._ensure_manager_role(actor_role, "当前角色不能管理项目成员")
+                self._ensure_role_not_higher(
+                    actor_role,
+                    payload["role"],
+                    "不能授予高于当前角色的项目角色",
+                )
                 member = await self._get_user_by_email_cursor(cursor, payload["email"])
                 if member is None:
-                    raise BusinessError(1015, "用户不存在，请先让该用户登录 Langfuse", 404)
+                    await self._ensure_project_invitation_can_be_created(
+                        cursor,
+                        project["org_id"],
+                        payload["email"],
+                    )
+                    invitation_id = _new_langfuse_id("invite")
+                    await cursor.execute(
+                        """
+                        INSERT INTO membership_invitations (
+                            id,
+                            email,
+                            org_id,
+                            org_role,
+                            project_id,
+                            project_role,
+                            invited_by_user_id,
+                            created_at,
+                            updated_at
+                        )
+                        VALUES (
+                            %(id)s,
+                            %(email)s,
+                            %(org_id)s,
+                            'NONE'::"Role",
+                            %(project_id)s,
+                            %(project_role)s::"Role",
+                            %(invited_by_user_id)s,
+                            NOW(),
+                            NOW()
+                        )
+                        """,
+                        {
+                            "id": invitation_id,
+                            "email": payload["email"].strip().lower(),
+                            "org_id": project["org_id"],
+                            "project_id": project_id,
+                            "project_role": payload["role"],
+                            "invited_by_user_id": user_id,
+                        },
+                    )
+                    return await self._get_project_invitation_cursor(
+                        cursor,
+                        project_id,
+                        invitation_id,
+                    )
                 org_membership = await self._ensure_project_org_membership(
                     cursor,
                     project["org_id"],
                     member["id"],
+                )
+                target_context = await self._get_project_member_context_cursor(
+                    cursor,
+                    project_id,
+                    project["org_id"],
+                    member["id"],
+                )
+                self._ensure_project_member_can_be_created(target_context)
+                self._ensure_role_not_higher(
+                    actor_role,
+                    target_context["effective_role"],
+                    "不能操作高于当前角色的项目成员",
                 )
                 await cursor.execute(
                     """
@@ -2095,19 +2194,77 @@ class LangfuseDatabaseReader:
             row_factory=dict_row,
         ) as connection:
             async with connection.cursor() as cursor:
-                await self._get_project_for_user(cursor, project_id, user_id)
+                project = await self._get_project_detail_for_user(
+                    cursor,
+                    project_id,
+                    user_id,
+                )
+                actor_role = await self._get_actor_project_role_cursor(
+                    cursor,
+                    project_id,
+                    project["org_id"],
+                    user_id,
+                )
+                self._ensure_manager_role(actor_role, "当前角色不能管理项目成员")
+                target_context = await self._get_project_member_context_cursor(
+                    cursor,
+                    project_id,
+                    project["org_id"],
+                    member_id,
+                )
+                self._ensure_role_not_higher(
+                    actor_role,
+                    target_context["effective_role"],
+                    "不能操作高于当前角色的项目成员",
+                )
+                if payload["role"] == "NONE":
+                    await cursor.execute(
+                        """
+                        DELETE FROM project_memberships
+                        WHERE project_id = %(project_id)s
+                          AND user_id = %(member_id)s
+                        """,
+                        {"project_id": project_id, "member_id": member_id},
+                    )
+                    return await self._get_project_user_cursor(
+                        cursor,
+                        project_id,
+                        member_id,
+                    )
+
+                self._ensure_role_not_higher(
+                    actor_role,
+                    payload["role"],
+                    "不能授予高于当前角色的项目角色",
+                )
                 await cursor.execute(
                     """
-                    UPDATE project_memberships
-                    SET role = %(role)s::"Role",
+                    INSERT INTO project_memberships (
+                        project_id,
+                        user_id,
+                        org_membership_id,
+                        role,
+                        created_at,
+                        updated_at
+                    )
+                    VALUES (
+                        %(project_id)s,
+                        %(member_id)s,
+                        %(org_membership_id)s,
+                        %(role)s::"Role",
+                        NOW(),
+                        NOW()
+                    )
+                    ON CONFLICT (project_id, user_id) DO UPDATE
+                    SET role = EXCLUDED.role,
+                        org_membership_id = EXCLUDED.org_membership_id,
                         updated_at = NOW()
-                    WHERE project_id = %(project_id)s
-                      AND user_id = %(member_id)s
                     RETURNING user_id
                     """,
                     {
                         "project_id": project_id,
                         "member_id": member_id,
+                        "org_membership_id": target_context["org_membership_id"],
                         "role": payload["role"],
                     },
                 )
@@ -2129,7 +2286,29 @@ class LangfuseDatabaseReader:
             row_factory=dict_row,
         ) as connection:
             async with connection.cursor() as cursor:
-                await self._get_project_for_user(cursor, project_id, user_id)
+                project = await self._get_project_detail_for_user(
+                    cursor,
+                    project_id,
+                    user_id,
+                )
+                actor_role = await self._get_actor_project_role_cursor(
+                    cursor,
+                    project_id,
+                    project["org_id"],
+                    user_id,
+                )
+                self._ensure_manager_role(actor_role, "当前角色不能管理项目成员")
+                target_context = await self._get_project_member_context_cursor(
+                    cursor,
+                    project_id,
+                    project["org_id"],
+                    member_id,
+                )
+                self._ensure_role_not_higher(
+                    actor_role,
+                    target_context["effective_role"],
+                    "不能操作高于当前角色的项目成员",
+                )
                 await cursor.execute(
                     """
                     DELETE FROM project_memberships
@@ -2151,7 +2330,27 @@ class LangfuseDatabaseReader:
         user_id: str,
     ) -> dict[str, Any]:
         await self._ensure_project_visible(project_id, user_id)
-        rows = await self._fetch_all(
+        if not self._database_url:
+            raise LangfuseDatabaseConfigError()
+
+        async with await psycopg.AsyncConnection.connect(
+            self._database_url,
+            row_factory=dict_row,
+        ) as connection:
+            async with connection.cursor() as cursor:
+                return await self._get_project_user_cursor(
+                    cursor,
+                    project_id,
+                    member_id,
+                )
+
+    async def _get_project_user_cursor(
+        self,
+        cursor: psycopg.AsyncCursor[dict[str, Any]],
+        project_id: str,
+        member_id: str,
+    ) -> dict[str, Any]:
+        await cursor.execute(
             """
             SELECT DISTINCT
                 u.id,
@@ -2177,9 +2376,100 @@ class LangfuseDatabaseReader:
             """,
             {"project_id": project_id, "member_id": member_id},
         )
-        if not rows:
+        row = await cursor.fetchone()
+        if row is None:
             raise BusinessError(1025, "项目成员不存在", 404)
-        return self._to_project_user_payload(rows[0])
+        return self._to_project_user_payload(row)
+
+    @staticmethod
+    def _role_level(role: str | None) -> int:
+        return ROLE_LEVELS.get(role, 0)
+
+    @classmethod
+    def _max_role(cls, *roles: str | None) -> str:
+        return max(roles, key=cls._role_level) or "NONE"
+
+    @classmethod
+    def _ensure_manager_role(cls, actor_role: str | None, message: str) -> None:
+        if cls._role_level(actor_role) < MANAGER_ROLE_LEVEL:
+            raise BusinessError(1026, message, 403)
+
+    @classmethod
+    def _ensure_role_not_higher(
+        cls,
+        actor_role: str | None,
+        target_role: str | None,
+        message: str,
+    ) -> None:
+        if cls._role_level(target_role) > cls._role_level(actor_role):
+            raise BusinessError(1027, message, 403)
+
+    @classmethod
+    def _ensure_project_member_can_be_created(
+        cls,
+        target_context: dict[str, Any],
+    ) -> None:
+        if cls._role_level(target_context.get("effective_role")) > ROLE_LEVELS["NONE"]:
+            raise BusinessError(
+                1029,
+                "用户已在该项目中，请使用设置项目角色调整权限",
+                409,
+            )
+
+    async def _get_actor_project_role_cursor(
+        self,
+        cursor: psycopg.AsyncCursor[dict[str, Any]],
+        project_id: str,
+        organization_id: str,
+        actor_user_id: str,
+    ) -> str:
+        context = await self._get_project_member_context_cursor(
+            cursor,
+            project_id,
+            organization_id,
+            actor_user_id,
+        )
+        return context["effective_role"]
+
+    async def _get_project_member_context_cursor(
+        self,
+        cursor: psycopg.AsyncCursor[dict[str, Any]],
+        project_id: str,
+        organization_id: str,
+        member_id: str,
+    ) -> dict[str, Any]:
+        await cursor.execute(
+            """
+            SELECT
+                om.id AS org_membership_id,
+                om.user_id,
+                om.role::text AS organization_role,
+                pm.role::text AS project_role
+            FROM organization_memberships om
+            LEFT JOIN project_memberships pm
+              ON pm.org_membership_id = om.id
+             AND pm.project_id = %(project_id)s
+             AND pm.user_id = om.user_id
+            WHERE om.org_id = %(organization_id)s
+              AND om.user_id = %(member_id)s
+            LIMIT 1
+            """,
+            {
+                "project_id": project_id,
+                "organization_id": organization_id,
+                "member_id": member_id,
+            },
+        )
+        context = await cursor.fetchone()
+        if context is None:
+            raise BusinessError(1025, "项目成员不存在", 404)
+
+        organization_role = context.get("organization_role")
+        project_role = context.get("project_role")
+        return {
+            **context,
+            "effective_role": self._max_role(organization_role, project_role),
+        }
 
     async def _ensure_project_org_membership(
         self,
@@ -2227,6 +2517,64 @@ class LangfuseDatabaseReader:
         created = await cursor.fetchone()
         assert created is not None
         return created
+
+    async def _ensure_project_invitation_can_be_created(
+        self,
+        cursor: psycopg.AsyncCursor[dict[str, Any]],
+        organization_id: str,
+        email: str,
+    ) -> None:
+        await cursor.execute(
+            """
+            SELECT id
+            FROM membership_invitations
+            WHERE org_id = %(organization_id)s
+              AND lower(email) = lower(%(email)s)
+            LIMIT 1
+            """,
+            {
+                "organization_id": organization_id,
+                "email": email,
+            },
+        )
+        if await cursor.fetchone() is not None:
+            raise BusinessError(
+                1030,
+                "该邮箱已有待处理邀请，请先处理现有邀请",
+                409,
+            )
+
+    async def _get_project_invitation_cursor(
+        self,
+        cursor: psycopg.AsyncCursor[dict[str, Any]],
+        project_id: str,
+        invitation_id: str,
+    ) -> dict[str, Any]:
+        await cursor.execute(
+            """
+            SELECT
+                mi.id,
+                mi.email,
+                mi.org_role::text AS org_role,
+                mi.project_role::text AS project_role,
+                mi.created_at,
+                u.name AS invited_by_name,
+                u.email AS invited_by_email
+            FROM membership_invitations mi
+            LEFT JOIN users u ON u.id = mi.invited_by_user_id
+            WHERE mi.project_id = %(project_id)s
+              AND mi.id = %(invitation_id)s
+            LIMIT 1
+            """,
+            {
+                "project_id": project_id,
+                "invitation_id": invitation_id,
+            },
+        )
+        row = await cursor.fetchone()
+        if row is None:
+            raise BusinessError(1031, "项目成员邀请不存在", 404)
+        return self._to_project_invitation_payload(row)
 
     async def list_annotation_queues_for_user(
         self,
@@ -3171,9 +3519,7 @@ class LangfuseDatabaseReader:
         )
         return [self._to_evaluator_payload(row) for row in rows]
 
-    async def _list_pa_evaluators_for_user(
-        self, user_id: str
-    ) -> list[dict[str, Any]]:
+    async def _list_pa_evaluators_for_user(self, user_id: str) -> list[dict[str, Any]]:
         try:
             rows = await self._fetch_all(
                 f"""
@@ -3588,7 +3934,7 @@ class LangfuseDatabaseReader:
         self,
         organization_id: str,
     ) -> list[dict[str, Any]]:
-        rows = await self._fetch_all(
+        member_rows = await self._fetch_all(
             """
             SELECT
                 om.id,
@@ -3606,11 +3952,35 @@ class LangfuseDatabaseReader:
             """,
             {"organization_id": organization_id},
         )
-        return [self._to_member_payload(row) for row in rows]
+        invitation_rows = await self._fetch_all(
+            """
+            SELECT
+                mi.id,
+                mi.org_id,
+                mi.email,
+                mi.org_role::text AS org_role,
+                mi.project_id,
+                mi.project_role::text AS project_role,
+                mi.created_at,
+                mi.updated_at,
+                u.name AS invited_by_name,
+                u.email AS invited_by_email
+            FROM membership_invitations mi
+            LEFT JOIN users u ON u.id = mi.invited_by_user_id
+            WHERE mi.org_id = %(organization_id)s
+            ORDER BY mi.created_at DESC, mi.email
+            """,
+            {"organization_id": organization_id},
+        )
+        return [
+            *[self._to_member_payload(row) for row in member_rows],
+            *[self._to_organization_invitation_payload(row) for row in invitation_rows],
+        ]
 
     async def create_organization_member(
         self,
         organization_id: str,
+        actor_user_id: str,
         payload: dict[str, Any],
     ) -> dict[str, Any]:
         if not self._database_url:
@@ -3622,12 +3992,66 @@ class LangfuseDatabaseReader:
             row_factory=dict_row,
         ) as connection:
             async with connection.cursor() as cursor:
+                actor_role = await self._get_actor_organization_role_cursor(
+                    cursor,
+                    organization_id,
+                    actor_user_id,
+                )
+                self._ensure_manager_role(actor_role, "当前角色不能管理组织成员")
+                self._ensure_role_not_higher(
+                    actor_role,
+                    payload["role"],
+                    "不能授予高于当前角色的组织角色",
+                )
                 user = await self._get_user_by_email_cursor(
                     cursor,
                     payload["email"],
                 )
                 if user is None:
-                    raise BusinessError(1015, "用户不存在，请先让该用户登录 Langfuse", 404)
+                    await self._ensure_organization_invitation_can_be_created(
+                        cursor,
+                        organization_id,
+                        payload["email"],
+                    )
+                    invitation_id = _new_langfuse_id("invite")
+                    await cursor.execute(
+                        """
+                        INSERT INTO membership_invitations (
+                            id,
+                            email,
+                            org_id,
+                            org_role,
+                            project_id,
+                            project_role,
+                            invited_by_user_id,
+                            created_at,
+                            updated_at
+                        )
+                        VALUES (
+                            %(id)s,
+                            %(email)s,
+                            %(organization_id)s,
+                            %(org_role)s::"Role",
+                            NULL,
+                            NULL,
+                            %(invited_by_user_id)s,
+                            NOW(),
+                            NOW()
+                        )
+                        """,
+                        {
+                            "id": invitation_id,
+                            "email": payload["email"].strip().lower(),
+                            "organization_id": organization_id,
+                            "org_role": payload["role"],
+                            "invited_by_user_id": actor_user_id,
+                        },
+                    )
+                    return await self._get_organization_invitation_cursor(
+                        cursor,
+                        organization_id,
+                        invitation_id,
+                    )
 
                 try:
                     await cursor.execute(
@@ -3664,6 +4088,7 @@ class LangfuseDatabaseReader:
         self,
         organization_id: str,
         member_id: str,
+        actor_user_id: str,
         payload: dict[str, Any],
     ) -> dict[str, Any]:
         if not self._database_url:
@@ -3674,6 +4099,32 @@ class LangfuseDatabaseReader:
             row_factory=dict_row,
         ) as connection:
             async with connection.cursor() as cursor:
+                actor_role = await self._get_actor_organization_role_cursor(
+                    cursor,
+                    organization_id,
+                    actor_user_id,
+                )
+                self._ensure_manager_role(actor_role, "当前角色不能管理组织成员")
+                target = await self._get_organization_member_context_cursor(
+                    cursor,
+                    organization_id,
+                    member_id,
+                )
+                self._ensure_role_not_higher(
+                    actor_role,
+                    target["role"],
+                    "不能操作高于当前角色的组织成员",
+                )
+                self._ensure_role_not_higher(
+                    actor_role,
+                    payload["role"],
+                    "不能授予高于当前角色的组织角色",
+                )
+                if target["role"] == "OWNER" and payload["role"] != "OWNER":
+                    await self._ensure_not_last_organization_owner_cursor(
+                        cursor,
+                        organization_id,
+                    )
                 await cursor.execute(
                     """
                     UPDATE organization_memberships
@@ -3701,6 +4152,7 @@ class LangfuseDatabaseReader:
         self,
         organization_id: str,
         member_id: str,
+        actor_user_id: str,
     ) -> dict[str, Any]:
         if not self._database_url:
             raise LangfuseDatabaseConfigError()
@@ -3710,6 +4162,28 @@ class LangfuseDatabaseReader:
             row_factory=dict_row,
         ) as connection:
             async with connection.cursor() as cursor:
+                actor_role = await self._get_actor_organization_role_cursor(
+                    cursor,
+                    organization_id,
+                    actor_user_id,
+                )
+                target = await self._get_organization_member_context_cursor(
+                    cursor,
+                    organization_id,
+                    member_id,
+                )
+                if target["user_id"] != actor_user_id:
+                    self._ensure_manager_role(actor_role, "当前角色不能管理组织成员")
+                self._ensure_role_not_higher(
+                    actor_role,
+                    target["role"],
+                    "不能操作高于当前角色的组织成员",
+                )
+                if target["role"] == "OWNER":
+                    await self._ensure_not_last_organization_owner_cursor(
+                        cursor,
+                        organization_id,
+                    )
                 await cursor.execute(
                     """
                     DELETE FROM organization_memberships
@@ -3726,6 +4200,134 @@ class LangfuseDatabaseReader:
         if row is None:
             raise BusinessError(1017, "组织成员不存在", 404)
         return {"id": row["id"]}
+
+    async def _get_actor_organization_role_cursor(
+        self,
+        cursor: psycopg.AsyncCursor[dict[str, Any]],
+        organization_id: str,
+        actor_user_id: str,
+    ) -> str:
+        await cursor.execute(
+            """
+            SELECT role::text AS role
+            FROM organization_memberships
+            WHERE org_id = %(organization_id)s
+              AND user_id = %(actor_user_id)s
+            LIMIT 1
+            """,
+            {
+                "organization_id": organization_id,
+                "actor_user_id": actor_user_id,
+            },
+        )
+        actor = await cursor.fetchone()
+        if actor is None:
+            raise BusinessError(1004, "组织不存在或无访问权限", 404)
+        return actor["role"]
+
+    async def _get_organization_member_context_cursor(
+        self,
+        cursor: psycopg.AsyncCursor[dict[str, Any]],
+        organization_id: str,
+        member_id: str,
+    ) -> dict[str, Any]:
+        await cursor.execute(
+            """
+            SELECT id, user_id, role::text AS role
+            FROM organization_memberships
+            WHERE org_id = %(organization_id)s
+              AND id = %(member_id)s
+            LIMIT 1
+            """,
+            {"organization_id": organization_id, "member_id": member_id},
+        )
+        member = await cursor.fetchone()
+        if member is None:
+            raise BusinessError(1017, "组织成员不存在", 404)
+        return member
+
+    @staticmethod
+    def _raise_duplicate_organization_invitation() -> None:
+        raise BusinessError(
+            1030,
+            "该邮箱已有待处理邀请，请先处理现有邀请",
+            409,
+        )
+
+    async def _ensure_organization_invitation_can_be_created(
+        self,
+        cursor: psycopg.AsyncCursor[dict[str, Any]],
+        organization_id: str,
+        email: str,
+    ) -> None:
+        await cursor.execute(
+            """
+            SELECT id
+            FROM membership_invitations
+            WHERE org_id = %(organization_id)s
+              AND lower(email) = lower(%(email)s)
+            LIMIT 1
+            """,
+            {
+                "organization_id": organization_id,
+                "email": email,
+            },
+        )
+        if await cursor.fetchone() is not None:
+            self._raise_duplicate_organization_invitation()
+
+    async def _get_organization_invitation_cursor(
+        self,
+        cursor: psycopg.AsyncCursor[dict[str, Any]],
+        organization_id: str,
+        invitation_id: str,
+    ) -> dict[str, Any]:
+        await cursor.execute(
+            """
+            SELECT
+                mi.id,
+                mi.org_id,
+                mi.email,
+                mi.org_role::text AS org_role,
+                mi.project_id,
+                mi.project_role::text AS project_role,
+                mi.created_at,
+                mi.updated_at,
+                u.name AS invited_by_name,
+                u.email AS invited_by_email
+            FROM membership_invitations mi
+            LEFT JOIN users u ON u.id = mi.invited_by_user_id
+            WHERE mi.org_id = %(organization_id)s
+              AND mi.id = %(invitation_id)s
+            LIMIT 1
+            """,
+            {
+                "organization_id": organization_id,
+                "invitation_id": invitation_id,
+            },
+        )
+        row = await cursor.fetchone()
+        if row is None:
+            raise BusinessError(1031, "组织成员邀请不存在", 404)
+        return self._to_organization_invitation_payload(row)
+
+    async def _ensure_not_last_organization_owner_cursor(
+        self,
+        cursor: psycopg.AsyncCursor[dict[str, Any]],
+        organization_id: str,
+    ) -> None:
+        await cursor.execute(
+            """
+            SELECT COUNT(*)::int AS owner_count
+            FROM organization_memberships
+            WHERE org_id = %(organization_id)s
+              AND role::text = 'OWNER'
+            """,
+            {"organization_id": organization_id},
+        )
+        row = await cursor.fetchone()
+        if row is not None and row["owner_count"] <= 1:
+            raise BusinessError(1028, "不能删除或降级最后一个 Owner", 409)
 
     async def _get_user_by_email_cursor(
         self,
@@ -4441,7 +5043,9 @@ class LangfuseDatabaseReader:
         )
         rows = await cursor.fetchall()
         found = {row["id"] for row in rows}
-        missing = [config_id for config_id in score_config_ids if config_id not in found]
+        missing = [
+            config_id for config_id in score_config_ids if config_id not in found
+        ]
         if missing:
             raise BusinessError(
                 code=1024,
@@ -4811,7 +5415,9 @@ class LangfuseDatabaseReader:
         metadata = row.get("metadata") or {}
         pa_eval = metadata.get("paEval") if isinstance(metadata, dict) else None
         description = pa_eval.get("description") if isinstance(pa_eval, dict) else None
-        retention_days = pa_eval.get("retentionDays") if isinstance(pa_eval, dict) else None
+        retention_days = (
+            pa_eval.get("retentionDays") if isinstance(pa_eval, dict) else None
+        )
         organization_name = row["organization_name"]
 
         return {
@@ -4880,7 +5486,9 @@ class LangfuseDatabaseReader:
                 "temperature": row.get("temperature") or "0.2",
             }
 
-        fallback_models = fallback_connection.get("customModels") if fallback_connection else []
+        fallback_models = (
+            fallback_connection.get("customModels") if fallback_connection else []
+        )
         return {
             "id": f"pamodeldefault_{project_id}",
             "llmConnectionId": fallback_connection["id"] if fallback_connection else "",
@@ -4901,9 +5509,7 @@ class LangfuseDatabaseReader:
         if evaluator_type == "CODE":
             description = f"Code / {source_language or 'UNKNOWN'}"
         elif provider or model:
-            description = " / ".join(
-                str(value) for value in [provider, model] if value
-            )
+            description = " / ".join(str(value) for value in [provider, model] if value)
         elif partner:
             description = f"Langfuse managed / {partner}"
         else:
@@ -4971,7 +5577,11 @@ class LangfuseDatabaseReader:
     @staticmethod
     def _to_dataset_item_payload(row: dict[str, Any]) -> dict[str, Any]:
         raw_status = row.get("status")
-        status = "ARCHIVED" if row.get("is_deleted") or raw_status == "ARCHIVED" else "ACTIVE"
+        status = (
+            "ARCHIVED"
+            if row.get("is_deleted") or raw_status == "ARCHIVED"
+            else "ACTIVE"
+        )
 
         return {
             "id": row["id"],
@@ -5032,6 +5642,28 @@ class LangfuseDatabaseReader:
             "role": row.get("role"),
             "organizationRole": row.get("organization_role"),
             "projectRole": row.get("project_role"),
+            "status": "active",
+        }
+
+    @staticmethod
+    def _to_project_invitation_payload(row: dict[str, Any]) -> dict[str, Any]:
+        email = row.get("email") or ""
+        project_role = row.get("project_role")
+        invited_by_name = row.get("invited_by_name")
+        invited_by_email = row.get("invited_by_email")
+        return {
+            "id": row["id"],
+            "name": email.split("@")[0] or row["id"],
+            "email": email,
+            "role": project_role,
+            "organizationRole": row.get("org_role"),
+            "projectRole": project_role,
+            "status": "pending",
+            "invitedBy": {
+                "name": invited_by_name,
+                "email": invited_by_email,
+            },
+            "createdAt": _format_datetime(row.get("created_at")),
         }
 
     @staticmethod
@@ -5133,6 +5765,30 @@ class LangfuseDatabaseReader:
             "joinedAt": _format_datetime(row["created_at"]),
             "createdAt": _format_datetime(row["created_at"]),
             "updatedAt": _format_datetime(row["updated_at"]),
+        }
+
+    @staticmethod
+    def _to_organization_invitation_payload(row: dict[str, Any]) -> dict[str, Any]:
+        email = row.get("email") or ""
+        invited_by_name = row.get("invited_by_name")
+        invited_by_email = row.get("invited_by_email")
+        return {
+            "id": row["id"],
+            "organizationId": row["org_id"],
+            "userId": "",
+            "name": email.split("@")[0] or "待邀请用户",
+            "email": email,
+            "role": row.get("org_role") or "NONE",
+            "status": "INVITED",
+            "joinedAt": "",
+            "createdAt": _format_datetime(row["created_at"]),
+            "updatedAt": _format_datetime(row["updated_at"]),
+            "invitedBy": {
+                "name": invited_by_name,
+                "email": invited_by_email,
+            },
+            "projectId": row.get("project_id"),
+            "projectRole": row.get("project_role"),
         }
 
 

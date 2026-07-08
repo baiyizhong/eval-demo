@@ -7,10 +7,7 @@ export type DatasetItemStatus = 'ACTIVE' | 'ARCHIVED'
 export type DatasetExportFormat = 'xlsx' | 'csv' | 'txt'
 
 export type DatasetExportJobStatus =
-  | 'PENDING'
-  | 'RUNNING'
-  | 'SUCCEEDED'
-  | 'FAILED'
+  'PENDING' | 'RUNNING' | 'SUCCEEDED' | 'FAILED'
 
 export type JsonObject = Record<string, unknown>
 
@@ -134,6 +131,12 @@ export type ProjectUserRecord = {
   role?: 'OWNER' | 'ADMIN' | 'MEMBER' | 'VIEWER' | null
   organizationRole?: 'OWNER' | 'ADMIN' | 'MEMBER' | 'VIEWER' | 'NONE' | null
   projectRole?: 'OWNER' | 'ADMIN' | 'MEMBER' | 'VIEWER' | 'NONE' | null
+  status?: 'active' | 'pending'
+  invitedBy?: {
+    name?: string | null
+    email?: string | null
+  }
+  createdAt?: string
 }
 
 export type ScoreConfigRecord = {

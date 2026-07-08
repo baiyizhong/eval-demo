@@ -15,9 +15,10 @@ export function resolveCurrentOrganizationRole(
 
   const userId = currentUser.langfuseUserId?.trim()
   const email = normalizeEmail(currentUser.email)
+  const activeMembers = members.filter((item) => item.status !== 'INVITED')
   const member =
-    members.find((item) => Boolean(userId) && item.userId === userId) ??
-    members.find((item) => normalizeEmail(item.email) === email)
+    activeMembers.find((item) => Boolean(userId) && item.userId === userId) ??
+    activeMembers.find((item) => normalizeEmail(item.email) === email)
 
   return member?.role ?? null
 }

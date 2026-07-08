@@ -5,6 +5,7 @@ export const organizationRoleSchema = z.enum([
   'ADMIN',
   'MEMBER',
   'VIEWER',
+  'NONE',
 ])
 
 export type OrganizationRole = z.infer<typeof organizationRoleSchema>
@@ -32,6 +33,14 @@ export const organizationMemberSchema = z.object({
   joinedAt: z.string().optional(),
   createdAt: z.string(),
   updatedAt: z.string(),
+  invitedBy: z
+    .object({
+      name: z.string().nullable().optional(),
+      email: z.string().nullable().optional(),
+    })
+    .optional(),
+  projectId: z.string().nullable().optional(),
+  projectRole: organizationRoleSchema.nullable().optional(),
 })
 
 export type OrganizationMember = z.infer<typeof organizationMemberSchema>

@@ -2,6 +2,7 @@ from fastapi.testclient import TestClient
 import pytest
 
 from app.auth_context import CurrentUserContext, get_current_user_context
+from app.errors import BusinessError
 from app.langfuse_db import LangfuseDatabaseReader, get_langfuse_db_reader
 from app.main import app
 
@@ -194,9 +195,9 @@ class FakeDatabaseReader:
             "id": member_id,
             "name": "项目成员",
             "email": "member@example.com",
-            "role": payload["role"],
+            "role": None if payload["role"] == "NONE" else payload["role"],
             "organizationRole": "NONE",
-            "projectRole": payload["role"],
+            "projectRole": None if payload["role"] == "NONE" else payload["role"],
         }
 
     async def delete_project_member_for_user(
@@ -229,14 +230,21 @@ def clear_overrides() -> None:
 
 
 class RecordingLangfuseReader(LangfuseDatabaseReader):
-    def __init__(self, rows: list[dict] | None = None) -> None:
+    def __init__(
+        self,
+        rows: list[dict] | None = None,
+        invitation_rows: list[dict] | None = None,
+    ) -> None:
         self.queries: list[tuple[str, dict]] = []
         self.rows = rows or []
+        self.invitation_rows = invitation_rows or []
 
     async def _fetch_all(self, sql: str, params: dict | None = None) -> list[dict]:
         self.queries.append((sql, params or {}))
         if "SELECT p.id" in sql:
             return [{"id": "project-1"}]
+        if "membership_invitations" in sql:
+            return self.invitation_rows
         return self.rows
 
 
@@ -419,6 +427,45 @@ def test_updates_project_settings_member_role() -> None:
     }
 
 
+def test_updates_project_settings_member_to_none_for_removing_override() -> None:
+    fake_reader = FakeDatabaseReader()
+    override_reader(fake_reader)
+
+    try:
+        response = TestClient(app).patch(
+            "/api/projects/project-1/settings/members/user-2",
+            json={"role": "NONE"},
+        )
+    finally:
+        clear_overrides()
+
+    assert response.status_code == 200
+    assert response.json()["data"]["projectRole"] is None
+    assert fake_reader.updated_project_member_payload == {
+        "project_id": "project-1",
+        "member_id": "user-2",
+        "user_id": "user-1",
+        "payload": {"role": "NONE"},
+    }
+
+
+def test_project_member_create_rejects_existing_effective_member() -> None:
+    with pytest.raises(BusinessError) as exc_info:
+        LangfuseDatabaseReader._ensure_project_member_can_be_created(
+            {"effective_role": "MEMBER"}
+        )
+
+    assert exc_info.value.code == 1029
+    assert exc_info.value.status_code == 409
+    assert exc_info.value.message == "用户已在该项目中，请使用设置项目角色调整权限"
+
+
+def test_project_member_create_allows_project_only_member_without_access() -> None:
+    LangfuseDatabaseReader._ensure_project_member_can_be_created(
+        {"effective_role": "NONE"}
+    )
+
+
 def test_deletes_project_settings_member() -> None:
     fake_reader = FakeDatabaseReader()
     override_reader(fake_reader)
@@ -490,6 +537,7 @@ async def test_project_users_return_effective_project_members() -> None:
             "role": "OWNER",
             "organizationRole": "OWNER",
             "projectRole": None,
+            "status": "active",
         },
         {
             "id": "user-project",
@@ -498,8 +546,56 @@ async def test_project_users_return_effective_project_members() -> None:
             "role": "MEMBER",
             "organizationRole": "NONE",
             "projectRole": "MEMBER",
+            "status": "active",
         },
     ]
+
+
+@pytest.mark.anyio
+async def test_project_users_include_pending_membership_invitations() -> None:
+    reader = RecordingLangfuseReader(
+        rows=[
+            {
+                "id": "user-owner",
+                "name": "Owner",
+                "email": "owner@example.com",
+                "role": "OWNER",
+                "organization_role": "OWNER",
+                "project_role": None,
+            }
+        ],
+        invitation_rows=[
+            {
+                "id": "invite-1",
+                "email": "pending@example.com",
+                "org_role": "NONE",
+                "project_role": "VIEWER",
+                "created_at": "2026-07-08T08:00:00.000Z",
+                "invited_by_name": "Owner",
+                "invited_by_email": "owner@example.com",
+            }
+        ],
+    )
+
+    users = await reader.list_project_users_for_user("project-1", "user-1")
+
+    invite_sql, invite_params = reader.queries[2]
+    assert invite_params == {"project_id": "project-1"}
+    assert "membership_invitations" in invite_sql
+    assert users[-1] == {
+        "id": "invite-1",
+        "name": "pending",
+        "email": "pending@example.com",
+        "role": "VIEWER",
+        "organizationRole": "NONE",
+        "projectRole": "VIEWER",
+        "status": "pending",
+        "invitedBy": {
+            "name": "Owner",
+            "email": "owner@example.com",
+        },
+        "createdAt": "2026-07-08T08:00:00.000Z",
+    }
 
 
 def test_updates_project_for_current_user() -> None:
