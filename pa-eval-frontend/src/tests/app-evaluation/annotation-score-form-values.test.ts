@@ -119,8 +119,8 @@ const item = {
 
 test('boolean score options are always concise yes or no regardless of stored categories', () => {
   assert.deepEqual(getBooleanScoreOptions(), [
-    { value: '1', label: '是' },
-    { value: '0', label: '否' },
+    { value: '1', label: '通过' },
+    { value: '0', label: '不通过' },
   ])
 })
 

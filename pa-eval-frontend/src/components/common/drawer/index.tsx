@@ -50,7 +50,7 @@ function getDrawerWidth(mode: DrawerMode, width?: number | string) {
     return typeof width === 'number' ? `${width}px` : width
   }
 
-  return mode === 'enhanced' ? '70vw' : '500px'
+  return mode === 'enhanced' ? '50vw' : '500px'
 }
 
 function Drawer({
@@ -59,7 +59,7 @@ function Drawer({
   mode = 'default',
   width,
   resizable = true,
-  showOverlay,
+  showOverlay=true,
   actions,
   showCancel = true,
   showConfirm = true,

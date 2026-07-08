@@ -36,7 +36,6 @@ export function ProjectAutoEvaluationNew() {
         <AutoEvaluationTaskForm
           projectId={projectId}
           onDirtyChange={setDirty}
-          onCancel={backToList}
         />
       </div>
     </Page>

@@ -1,13 +1,14 @@
 import { useEffect, useState } from 'react'
+import { TRACE_QUICK_TIME_RANGE_OPTIONS } from '@/modules/app-observability/trace-time-ranges'
 import { listTaskEvaluators } from '@/modules/tasks/api/evaluator-api'
+import { Info } from 'lucide-react'
 import { useNavigate } from 'react-router'
 import { toast } from 'sonner'
-import { confirm } from '@/lib/confirm'
+import { cn } from '@/lib/utils'
 import { useAPI } from '@/hooks/use-api'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
 import { Label } from '@/components/ui/label'
-import { TRACE_QUICK_TIME_RANGE_OPTIONS } from '@/modules/app-observability/trace-time-ranges'
 import {
   Select,
   SelectContent,
@@ -19,6 +20,12 @@ import {
 import { Switch } from '@/components/ui/switch'
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs'
 import { Textarea } from '@/components/ui/textarea'
+import {
+  Tooltip,
+  TooltipContent,
+  TooltipTrigger,
+} from '@/components/ui/tooltip'
+import { Stepper } from '@/components/common/stepper'
 import {
   countProjectAutoEvaluationTraces,
   createProjectAutoEvaluationTask,
@@ -63,22 +70,31 @@ const sampleFieldOptions = [
   'sample.datasetItem.id',
 ]
 
+const autoEvaluationStepItems = autoEvaluationStepLabels.map(
+  (label, index) => ({
+    title: label,
+    description:
+      index === 0
+        ? '命名任务并定义评分字段'
+        : index === 1
+          ? '选择工作流评估器并映射变量'
+          : '设置样本来源、采样与报告',
+  })
+)
+
 export function AutoEvaluationTaskForm({
   projectId,
   onDirtyChange,
-  onCancel,
   onCompleted,
 }: {
   projectId: string
   onDirtyChange?: (dirty: boolean) => void
-  onCancel?: () => void
   onCompleted?: (taskId: string, mode: 'create' | 'run') => void
 }) {
   const $api = useAPI()
   const navigate = useNavigate()
   const [step, setStep] = useState(0)
   const [form, setForm] = useState<AutoEvaluationTaskFormInput>(initialForm)
-  const [dirty, setDirty] = useState(false)
   const [error, setError] = useState('')
   const [evaluatorKeyword, setEvaluatorKeyword] = useState('')
   const [datasetKeyword, setDatasetKeyword] = useState('')
@@ -149,7 +165,6 @@ export function AutoEvaluationTaskForm({
 
   const updateForm = (next: AutoEvaluationTaskFormInput) => {
     setForm(next)
-    setDirty(true)
     onDirtyChange?.(true)
     setError('')
   }
@@ -160,24 +175,24 @@ export function AutoEvaluationTaskForm({
     return !message
   }
 
-  const handleBack = async () => {
-    if (!dirty) {
-      onCancel?.()
-      if (!onCancel)
-        navigate(`/projects/${projectId}/evaluation/auto-evaluations`)
+  const handleStepChange = (nextStep: number) => {
+    if (nextStep <= step) {
+      setStep(nextStep)
+      setError('')
       return
     }
-    const confirmed = await confirm({
-      title: '离开新建自动评测？',
-      desc: '当前自动评测任务尚未保存，离开后已填写内容将丢失。',
-      confirmText: '离开',
-    })
-    if (confirmed) {
-      onDirtyChange?.(false)
-      onCancel?.()
-      if (!onCancel)
-        navigate(`/projects/${projectId}/evaluation/auto-evaluations`)
+
+    for (let index = step; index < nextStep; index += 1) {
+      const message = getStepError(index, form, selectedEvaluator)
+      if (message) {
+        setStep(index)
+        setError(message)
+        return
+      }
     }
+
+    setStep(nextStep)
+    setError('')
   }
 
   const handleSubmit = async (mode: 'create' | 'run') => {
@@ -252,32 +267,44 @@ export function AutoEvaluationTaskForm({
           按步骤配置基础信息、评估器和评测数据来源。
         </p>
       </div>
-        <div className='flex flex-wrap gap-2'>
-          {autoEvaluationStepLabels.map((label, index) => (
-            <Button
-              key={label}
-              type='button'
-              variant={step === index ? 'default' : 'outline'}
-              size='sm'
-              onClick={() => setStep(index)}
-            >
-              {label}
-            </Button>
-          ))}
+
+      <Stepper
+        items={autoEvaluationStepItems}
+        currentStep={step}
+        onStepChange={handleStepChange}
+      />
+
+      {error ? (
+        <div className='border-destructive/30 bg-destructive/5 text-destructive rounded-lg border px-3 py-2 text-sm'>
+          {error}
         </div>
-        {error ? <p className='text-destructive text-sm'>{error}</p> : null}
-        {step === 0 ? (
+      ) : null}
+
+      {step === 0 ? (
+        <section className='bg-card text-card-foreground rounded-lg border p-4'>
+          <div className='mb-4 flex flex-col gap-1'>
+            <h3 className='text-sm font-semibold'>基础信息</h3>
+            <p className='text-muted-foreground text-sm'>
+              基础信息会展示在任务列表和报告详情中，Score Name
+              会作为评测分数字段。
+            </p>
+          </div>
           <div className='grid gap-4 md:grid-cols-2'>
             <Field label='任务名称'>
               <Input
+                placeholder='例如：客服回答质量自动评测'
                 value={form.name}
                 onChange={(event) =>
                   updateForm({ ...form, name: event.target.value })
                 }
               />
             </Field>
-            <Field label='Score Name'>
+            <Field
+              label='Score Name'
+              tooltip='仅支持英文、数字、下划线和短横线。'
+            >
               <Input
+                placeholder='例如：answer_quality'
                 value={form.scoreName}
                 onChange={(event) =>
                   updateForm({
@@ -290,6 +317,8 @@ export function AutoEvaluationTaskForm({
             </Field>
             <Field label='任务描述' className='md:col-span-2'>
               <Textarea
+                className='min-h-28 resize-none'
+                placeholder='描述本次自动评测的目标、样本范围或执行策略'
                 value={form.description}
                 onChange={(event) =>
                   updateForm({ ...form, description: event.target.value })
@@ -297,24 +326,36 @@ export function AutoEvaluationTaskForm({
               />
             </Field>
           </div>
-        ) : null}
-        {step === 1 ? (
-          <div className='grid gap-4 lg:grid-cols-[280px_1fr]'>
+        </section>
+      ) : null}
+
+      {step === 1 ? (
+        <section className='grid gap-4 lg:grid-cols-[320px_1fr]'>
+          <div className='bg-card text-card-foreground flex min-h-[420px] flex-col gap-3 rounded-lg border p-4'>
+            <div className='flex flex-col gap-1'>
+              <h3 className='text-sm font-semibold'>评估器列表</h3>
+              <p className='text-muted-foreground text-sm'>
+                选择一个工作流评估器用于批量打分。
+              </p>
+            </div>
             <Field label='搜索评估器'>
               <Input
+                placeholder='搜索名称或描述'
                 value={evaluatorKeyword}
                 onChange={(event) => setEvaluatorKeyword(event.target.value)}
               />
             </Field>
-            <div className='flex flex-col gap-3'>
+            <div className='flex flex-1 flex-col gap-2 overflow-y-auto pr-1'>
               {evaluators.map((evaluator) => (
-                <Button
+                <button
                   key={evaluator.id}
                   type='button'
-                  variant={
-                    form.evaluatorId === evaluator.id ? 'default' : 'outline'
-                  }
-                  className='h-auto justify-start px-4 py-3'
+                  className={cn(
+                    'bg-background rounded-lg border p-3 text-left transition-colors',
+                    'hover:border-primary/50 hover:bg-accent focus-visible:ring-ring/50 focus-visible:ring-[3px] focus-visible:outline-none',
+                    form.evaluatorId === evaluator.id &&
+                      'border-primary bg-primary/5'
+                  )}
                   onClick={() =>
                     updateForm({
                       ...form,
@@ -325,16 +366,60 @@ export function AutoEvaluationTaskForm({
                     })
                   }
                 >
-                  <span className='flex flex-col items-start gap-1'>
-                    <span>{evaluator.name}</span>
-                    <span className='text-xs'>{evaluator.description}</span>
+                  <span className='flex flex-col gap-1'>
+                    <span className='font-medium'>{evaluator.name}</span>
+                    <span className='text-muted-foreground line-clamp-2 text-xs leading-5'>
+                      {evaluator.description || '暂无描述'}
+                    </span>
+                    <span className='text-muted-foreground text-xs'>
+                      v{evaluator.version} · {evaluator.variables.length} 个变量
+                    </span>
                   </span>
-                </Button>
+                </button>
               ))}
-              {selectedEvaluator ? (
-                <div className='grid gap-3 md:grid-cols-3'>
+              {evaluators.length === 0 ? (
+                <div className='text-muted-foreground rounded-lg border border-dashed p-4 text-sm'>
+                  暂无匹配的评估器。
+                </div>
+              ) : null}
+            </div>
+          </div>
+
+          <div className='bg-card text-card-foreground flex min-h-[420px] flex-col gap-4 rounded-lg border p-4'>
+            {selectedEvaluator ? (
+              <>
+                <div className='flex flex-col gap-1'>
+                  <h3 className='text-sm font-semibold'>
+                    {selectedEvaluator.name}
+                  </h3>
+                  <p className='text-muted-foreground text-sm leading-6'>
+                    {selectedEvaluator.description || '暂无描述'}
+                  </p>
+                </div>
+                <div className='bg-muted/40 grid gap-3 rounded-lg p-3 text-sm md:grid-cols-3'>
+                  <InfoItem label='类型' value={selectedEvaluator.type} />
+                  <InfoItem
+                    label='版本'
+                    value={`v${selectedEvaluator.version}`}
+                  />
+                  <InfoItem
+                    label='变量数量'
+                    value={`${selectedEvaluator.variables.length} 个`}
+                  />
+                </div>
+                <div className='flex flex-col gap-3'>
+                  <div className='flex flex-col gap-1'>
+                    <h4 className='text-sm font-medium'>变量映射</h4>
+                    <p className='text-muted-foreground text-sm'>
+                      将评估器输入变量映射到评测样本字段。
+                    </p>
+                  </div>
                   {selectedEvaluator.variables.map((variable) => (
-                    <Field key={variable} label={variable}>
+                    <div
+                      key={variable}
+                      className='bg-background grid gap-2 rounded-lg border p-3 md:grid-cols-[minmax(160px,220px)_1fr] md:items-center'
+                    >
+                      <Label className='text-sm font-medium'>{variable}</Label>
                       <Select
                         value={getMappingSelectValue(
                           form.variableMapping[variable]
@@ -362,15 +447,31 @@ export function AutoEvaluationTaskForm({
                           </SelectGroup>
                         </SelectContent>
                       </Select>
-                    </Field>
+                    </div>
                   ))}
                 </div>
-              ) : null}
-            </div>
+              </>
+            ) : (
+              <div className='flex min-h-72 flex-col items-center justify-center gap-2 rounded-lg border border-dashed p-6 text-center'>
+                <h3 className='text-sm font-semibold'>请选择评估器</h3>
+                <p className='text-muted-foreground max-w-sm text-sm leading-6'>
+                  选择后将在这里配置评估器变量映射。
+                </p>
+              </div>
+            )}
           </div>
-        ) : null}
-        {step === 2 ? (
-          <div className='flex flex-col gap-4'>
+        </section>
+      ) : null}
+
+      {step === 2 ? (
+        <section className='flex flex-col gap-4'>
+          <div className='bg-card text-card-foreground rounded-lg border p-4'>
+            <div className='mb-4 flex flex-col gap-1'>
+              <h3 className='text-sm font-semibold'>评测数据来源</h3>
+              <p className='text-muted-foreground text-sm'>
+                选择固定数据集，或通过 Trace 过滤条件动态抽样。
+              </p>
+            </div>
             <Tabs
               value={form.dataSource.type}
               onValueChange={(value) =>
@@ -392,127 +493,166 @@ export function AutoEvaluationTaskForm({
                 })
               }
             >
-              <TabsList>
+              <TabsList className='mb-4'>
                 <TabsTrigger value='DATASET'>数据集</TabsTrigger>
                 <TabsTrigger value='TRACE_FILTER'>Trace 过滤</TabsTrigger>
               </TabsList>
               <TabsContent
                 value='DATASET'
-                className='grid gap-4 md:grid-cols-2'
+                className='grid gap-4 md:grid-cols-[minmax(0,1fr)_minmax(260px,320px)]'
               >
-                <Field label='搜索数据集'>
-                  <Input
-                    value={datasetKeyword}
-                    onChange={(event) => setDatasetKeyword(event.target.value)}
-                  />
-                </Field>
-                <Field label='选择数据集'>
-                  <Select
-                    value={
-                      form.dataSource.type === 'DATASET'
-                        ? form.dataSource.datasetId
-                        : ''
-                    }
-                    onValueChange={(value) => {
-                      const dataset = datasets.find((item) => item.id === value)
-                      updateForm({
-                        ...form,
-                        dataSource: {
-                          type: 'DATASET',
-                          datasetId: value,
-                          projectId: dataset?.projectId,
-                        },
-                      })
-                    }}
-                  >
-                    <SelectTrigger className='w-full'>
-                      <SelectValue placeholder='选择数据集' />
-                    </SelectTrigger>
-                    <SelectContent>
-                      <SelectGroup>
-                        {datasets.map((dataset) => (
-                          <SelectItem key={dataset.id} value={dataset.id}>
-                            {dataset.name} · {dataset.itemCount} 条
-                            {dataset.projectName
-                              ? ` · ${dataset.projectName}`
-                              : ''}
-                          </SelectItem>
-                        ))}
-                      </SelectGroup>
-                    </SelectContent>
-                  </Select>
-                </Field>
+                <div className='grid gap-4 md:grid-cols-2'>
+                  <Field label='搜索数据集'>
+                    <Input
+                      placeholder='搜索数据集名称'
+                      value={datasetKeyword}
+                      onChange={(event) =>
+                        setDatasetKeyword(event.target.value)
+                      }
+                    />
+                  </Field>
+                  <Field label='选择数据集'>
+                    <Select
+                      value={
+                        form.dataSource.type === 'DATASET'
+                          ? form.dataSource.datasetId
+                          : ''
+                      }
+                      onValueChange={(value) => {
+                        const dataset = datasets.find(
+                          (item) => item.id === value
+                        )
+                        updateForm({
+                          ...form,
+                          dataSource: {
+                            type: 'DATASET',
+                            datasetId: value,
+                            projectId: dataset?.projectId,
+                          },
+                        })
+                      }}
+                    >
+                      <SelectTrigger className='w-full'>
+                        <SelectValue placeholder='选择数据集' />
+                      </SelectTrigger>
+                      <SelectContent>
+                        <SelectGroup>
+                          {datasets.map((dataset) => (
+                            <SelectItem key={dataset.id} value={dataset.id}>
+                              {dataset.name} · {dataset.itemCount} 条
+                              {dataset.projectName
+                                ? ` · ${dataset.projectName}`
+                                : ''}
+                            </SelectItem>
+                          ))}
+                        </SelectGroup>
+                      </SelectContent>
+                    </Select>
+                  </Field>
+                </div>
+                <SummaryPanel
+                  title='数据集摘要'
+                  items={[
+                    ['样本数', `${selectedDataset?.itemCount ?? 0} 条`],
+                    ['所属项目', selectedDataset?.projectName ?? '当前项目'],
+                    ['预计运行', `${estimatedRunCount} 条`],
+                  ]}
+                />
               </TabsContent>
               <TabsContent
                 value='TRACE_FILTER'
-                className='grid gap-4 md:grid-cols-3'
+                className='grid gap-4 md:grid-cols-[minmax(0,1fr)_minmax(220px,280px)]'
               >
-                <Field label='时间范围'>
-                  <Select
-                    value={
-                      form.dataSource.type === 'TRACE_FILTER'
-                        ? form.dataSource.timeRange
-                        : AUTO_EVALUATION_DEFAULT_TRACE_TIME_RANGE
-                    }
-                    onValueChange={(value) => {
-                      if (form.dataSource.type !== 'TRACE_FILTER') return
-                      updateForm({
-                        ...form,
-                        dataSource: {
-                          ...form.dataSource,
-                          timeRange: value,
-                        },
-                      })
-                    }}
-                  >
-                    <SelectTrigger className='w-full'>
-                      <SelectValue placeholder='选择时间范围' />
-                    </SelectTrigger>
-                    <SelectContent>
-                      <SelectGroup>
-                        {TRACE_QUICK_TIME_RANGE_OPTIONS.map((option) => (
-                          <SelectItem key={option.value} value={option.value}>
-                            {option.label}
-                          </SelectItem>
-                        ))}
-                      </SelectGroup>
-                    </SelectContent>
-                  </Select>
-                </Field>
-                <Field label='Trace Name'>
-                  <Input
-                    value={
-                      form.dataSource.type === 'TRACE_FILTER'
-                        ? form.dataSource.traceName
-                        : ''
-                    }
-                    onChange={(event) =>
-                      form.dataSource.type === 'TRACE_FILTER'
-                        ? updateForm({
-                            ...form,
-                            dataSource: {
-                              ...form.dataSource,
-                              traceName: event.target.value,
-                            },
-                          })
-                        : undefined
-                    }
-                  />
-                </Field>
-                <Field label='预估命中'>
-                  <Button
-                    type='button'
-                    variant='outline'
-                    onClick={() => void estimateTrace()}
-                  >
-                    {form.dataSource.type === 'TRACE_FILTER'
-                      ? `${form.dataSource.estimatedCount} 条`
-                      : '开始预估'}
-                  </Button>
-                </Field>
+                <div className='grid gap-4 md:grid-cols-2'>
+                  <Field label='时间范围'>
+                    <Select
+                      value={
+                        form.dataSource.type === 'TRACE_FILTER'
+                          ? form.dataSource.timeRange
+                          : AUTO_EVALUATION_DEFAULT_TRACE_TIME_RANGE
+                      }
+                      onValueChange={(value) => {
+                        if (form.dataSource.type !== 'TRACE_FILTER') return
+                        updateForm({
+                          ...form,
+                          dataSource: {
+                            ...form.dataSource,
+                            timeRange: value,
+                          },
+                        })
+                      }}
+                    >
+                      <SelectTrigger className='w-full'>
+                        <SelectValue placeholder='选择时间范围' />
+                      </SelectTrigger>
+                      <SelectContent>
+                        <SelectGroup>
+                          {TRACE_QUICK_TIME_RANGE_OPTIONS.map((option) => (
+                            <SelectItem key={option.value} value={option.value}>
+                              {option.label}
+                            </SelectItem>
+                          ))}
+                        </SelectGroup>
+                      </SelectContent>
+                    </Select>
+                  </Field>
+                  <Field label='Trace Name'>
+                    <Input
+                      placeholder='可选，按 Trace 名称过滤'
+                      value={
+                        form.dataSource.type === 'TRACE_FILTER'
+                          ? form.dataSource.traceName
+                          : ''
+                      }
+                      onChange={(event) =>
+                        form.dataSource.type === 'TRACE_FILTER'
+                          ? updateForm({
+                              ...form,
+                              dataSource: {
+                                ...form.dataSource,
+                                traceName: event.target.value,
+                              },
+                            })
+                          : undefined
+                      }
+                    />
+                  </Field>
+                </div>
+                <div className='bg-background flex flex-col justify-between gap-3 rounded-lg border p-4'>
+                  <div className='flex flex-col gap-1'>
+                    <span className='text-sm font-medium'>预估命中</span>
+                    <span className='text-muted-foreground text-sm'>
+                      运行前先统计符合过滤条件的 Trace 数量。
+                    </span>
+                  </div>
+                  <div className='flex items-end justify-between gap-3'>
+                    <span className='text-2xl font-semibold'>
+                      {form.dataSource.type === 'TRACE_FILTER'
+                        ? form.dataSource.estimatedCount
+                        : 0}
+                    </span>
+                    <Button
+                      type='button'
+                      variant='outline'
+                      size='sm'
+                      onClick={() => void estimateTrace()}
+                    >
+                      开始预估
+                    </Button>
+                  </div>
+                </div>
               </TabsContent>
             </Tabs>
-            <div className='grid gap-4 md:grid-cols-3'>
+          </div>
+
+          <div className='bg-card text-card-foreground rounded-lg border p-4'>
+            <div className='mb-4 flex flex-col gap-1'>
+              <h3 className='text-sm font-semibold'>执行配置</h3>
+              <p className='text-muted-foreground text-sm'>
+                配置报告模板、采样比例和 Badcase 规则。
+              </p>
+            </div>
+            <div className='grid gap-4 lg:grid-cols-4'>
               <Field label='报告模板'>
                 <Select
                   value={form.reportTemplateId}
@@ -549,8 +689,8 @@ export function AutoEvaluationTaskForm({
                   }
                 />
               </Field>
-              <Field label='Badcase'>
-                <div className='flex h-9 items-center gap-2'>
+              <Field label='Badcase' tooltip='关闭后不再生成 Badcase。'>
+                <div className='flex h-9 items-center gap-2 rounded-md border px-3'>
                   <Switch
                     checked={form.badcase.enabled}
                     onCheckedChange={(checked) =>
@@ -567,6 +707,7 @@ export function AutoEvaluationTaskForm({
                 <Input
                   type='number'
                   step='0.01'
+                  disabled={!form.badcase.enabled}
                   value={form.badcase.threshold ?? ''}
                   onChange={(event) =>
                     updateForm({
@@ -584,66 +725,119 @@ export function AutoEvaluationTaskForm({
               </Field>
             </div>
           </div>
-        ) : null}
-        <div className='flex flex-wrap justify-between gap-2'>
+        </section>
+      ) : null}
+
+      <div className='bg-background/95 supports-[backdrop-filter]:bg-background/80 sticky bottom-0 -mx-4 -mb-4 flex flex-wrap justify-between gap-2 border-t px-4 py-4 backdrop-blur'>
+        <div className='ml-auto flex gap-2'>
           <Button
             type='button'
             variant='outline'
-            onClick={() => void handleBack()}
+            disabled={step === 0}
+            onClick={() => setStep((value) => Math.max(0, value - 1))}
           >
-            取消
+            上一步
           </Button>
-          <div className='flex gap-2'>
+          {step < 2 ? (
             <Button
               type='button'
-              variant='outline'
-              disabled={step === 0}
-              onClick={() => setStep((value) => Math.max(0, value - 1))}
+              onClick={() => {
+                if (validateStep()) setStep((value) => value + 1)
+              }}
             >
-              上一步
+              下一步
             </Button>
-            {step < 2 ? (
+          ) : (
+            <>
               <Button
                 type='button'
-                onClick={() => {
-                  if (validateStep()) setStep((value) => value + 1)
-                }}
+                variant='outline'
+                onClick={() => void handleSubmit('create')}
               >
-                下一步
+                仅创建
               </Button>
-            ) : (
-              <>
-                <Button
-                  type='button'
-                  variant='outline'
-                  onClick={() => void handleSubmit('create')}
-                >
-                  仅创建
-                </Button>
-                <Button type='button' onClick={() => void handleSubmit('run')}>
-                  创建并运行
-                </Button>
-              </>
-            )}
-          </div>
+              <Button type='button' onClick={() => void handleSubmit('run')}>
+                创建并运行
+              </Button>
+            </>
+          )}
         </div>
+      </div>
     </div>
   )
 }
 
 function Field({
   label,
+  description,
+  tooltip,
   className,
   children,
 }: {
   label: string
+  description?: string
+  tooltip?: string
   className?: string
   children: React.ReactNode
 }) {
   return (
-    <div className={`flex flex-col gap-2 ${className ?? ''}`}>
-      <Label>{label}</Label>
+    <div className={cn('flex flex-col gap-2', className)}>
+      <div className='flex flex-col gap-1'>
+        <div className='flex items-center gap-1.5'>
+          <Label>{label}</Label>
+          {tooltip ? (
+            <Tooltip>
+              <TooltipTrigger asChild>
+                <button
+                  type='button'
+                  aria-label={`${label}说明`}
+                  className='text-muted-foreground hover:text-foreground focus-visible:ring-ring/50 inline-flex size-4 items-center justify-center rounded-full focus-visible:ring-[3px] focus-visible:outline-none'
+                >
+                  <Info className='size-3.5' />
+                </button>
+              </TooltipTrigger>
+              <TooltipContent side='top'>{tooltip}</TooltipContent>
+            </Tooltip>
+          ) : null}
+        </div>
+        {description ? (
+          <span className='text-muted-foreground text-xs leading-5'>
+            {description}
+          </span>
+        ) : null}
+      </div>
       {children}
+    </div>
+  )
+}
+
+function InfoItem({ label, value }: { label: string; value: React.ReactNode }) {
+  return (
+    <div className='flex min-w-0 flex-col gap-1'>
+      <span className='text-muted-foreground text-xs'>{label}</span>
+      <span className='truncate font-medium'>{value}</span>
+    </div>
+  )
+}
+
+function SummaryPanel({
+  title,
+  items,
+}: {
+  title: string
+  items: [string, React.ReactNode][]
+}) {
+  return (
+    <div className='bg-background rounded-lg border p-4'>
+      <h4 className='mb-3 text-sm font-medium'>{title}</h4>
+      <dl className='flex flex-col gap-3'>
+        {items.map(([label, value]) => (
+          <div key={label} className='flex items-center justify-between gap-3'>
+            <dt className='text-muted-foreground text-sm'>{label}</dt>
+            <dd className='min-w-0 truncate text-sm font-medium'>{value}</dd>
+          </div>
+        ))}
+      </dl>
     </div>
   )
 }

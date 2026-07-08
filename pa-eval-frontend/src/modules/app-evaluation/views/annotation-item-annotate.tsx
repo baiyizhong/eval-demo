@@ -1,6 +1,12 @@
-import { useCallback, useMemo, useState } from 'react'
+import {
+  useCallback,
+  useMemo,
+  useRef,
+  useState,
+  type CSSProperties,
+} from 'react'
 import { useQuery, useQueryClient } from '@tanstack/react-query'
-import { ArrowLeft, ArrowRight } from 'lucide-react'
+import { ArrowLeft, ArrowRight, GripVertical } from 'lucide-react'
 import { useNavigate, useParams, useSearchParams } from 'react-router'
 import { toast } from 'sonner'
 import { useAPI } from '@/hooks/use-api'
@@ -32,6 +38,8 @@ export function ProjectAnnotationItemAnnotate() {
     itemId = '',
   } = useParams()
   const [datasetDialogOpen, setDatasetDialogOpen] = useState(false)
+  const [scorePaneWidth, setScorePaneWidth] = useState(400)
+  const splitContainerRef = useRef<HTMLDivElement>(null)
 
   const queryState = useMemo(
     () => ({
@@ -148,8 +156,27 @@ export function ProjectAnnotationItemAnnotate() {
     toast.success('已加入数据集')
   }
 
+  const startResize = () => {
+    const onPointerMove = (event: PointerEvent) => {
+      const rect = splitContainerRef.current?.getBoundingClientRect()
+      if (!rect) return
+      const nextWidth = rect.right - event.clientX
+      setScorePaneWidth(Math.min(720, Math.max(320, nextWidth)))
+    }
+    const stopResize = () => {
+      window.removeEventListener('pointermove', onPointerMove)
+      window.removeEventListener('pointerup', stopResize)
+    }
+    window.addEventListener('pointermove', onPointerMove)
+    window.addEventListener('pointerup', stopResize)
+  }
+
+  const splitStyle = {
+    '--annotation-score-width': `${scorePaneWidth}px`,
+  } as CSSProperties
+
   return (
-    <Page fluid className='flex min-h-[calc(100svh-3.5rem)] flex-col'>
+    <Page fixed fluid className='flex min-h-[calc(100svh-3.5rem)] flex-col'>
       <div className='flex min-h-0 flex-1 flex-col gap-4'>
         <PageAction
           showBackButton
@@ -203,8 +230,20 @@ export function ProjectAnnotationItemAnnotate() {
         ) : null}
 
         {item && queue ? (
-          <section className='grid min-h-0 flex-1 grid-cols-1 gap-4 xl:grid-cols-[minmax(0,1.15fr)_minmax(380px,.85fr)]'>
+          <section
+            ref={splitContainerRef}
+            style={splitStyle}
+            className='flex min-h-0 flex-1 flex-col gap-4 overflow-hidden lg:grid lg:grid-cols-[minmax(520px,1fr)_8px_minmax(320px,var(--annotation-score-width))] lg:gap-0'
+          >
             <AnnotationSourcePanel item={item} />
+            <button
+              type='button'
+              aria-label='调整左右区域宽度'
+              className='hover:bg-accent focus-visible:ring-ring hidden cursor-col-resize items-center justify-center border-r border-l bg-muted/30 focus-visible:ring-2 focus-visible:outline-none lg:flex'
+              onPointerDown={startResize}
+            >
+              <GripVertical className='text-muted-foreground' />
+            </button>
             <div className='bg-card text-card-foreground flex min-h-0 flex-col overflow-hidden rounded-lg border'>
               <div className='flex shrink-0 items-center justify-between gap-3 border-b px-3 py-2.5'>
                 <h2 className='text-sm font-semibold'>评分指标</h2>

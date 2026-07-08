@@ -5,8 +5,8 @@ import { useNavigate, useParams } from 'react-router'
 import { toast } from 'sonner'
 import { confirm } from '@/lib/confirm'
 import { useAPI } from '@/hooks/use-api'
-import { Drawer } from '@/components/common/drawer'
 import { DataTable } from '@/components/common/data-table'
+import { Drawer } from '@/components/common/drawer'
 import { Loading } from '@/components/common/loading'
 import { Page } from '@/components/common/page'
 import {
@@ -20,8 +20,8 @@ import {
   AutoEvaluationSummaryCards,
   type AutoEvaluationSummaryFilter,
 } from '../components/auto-evaluation-summary-cards'
-import { EvaluationPageNav } from '../components/evaluation-page-nav'
 import { AutoEvaluationTaskForm } from '../components/auto-evaluation-task-form'
+import { EvaluationPageNav } from '../components/evaluation-page-nav'
 import type { AutoEvaluationTaskRecord } from '../types'
 
 export function ProjectAutoEvaluations() {
@@ -161,6 +161,7 @@ export function ProjectAutoEvaluations() {
         onOpenChange={setCreateOpen}
         mode='enhanced'
         title='新建自动评测'
+        showOverlay={true}
         showConfirm={false}
         cancelText='关闭'
         contentProps={{ className: 'overflow-y-auto' }}
@@ -168,7 +169,6 @@ export function ProjectAutoEvaluations() {
         <div className='p-4'>
           <AutoEvaluationTaskForm
             projectId={projectId}
-            onCancel={() => setCreateOpen(false)}
             onCompleted={(taskId, mode) => {
               setCreateOpen(false)
               void invalidateTasks()

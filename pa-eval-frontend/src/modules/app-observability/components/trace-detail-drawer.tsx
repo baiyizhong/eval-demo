@@ -124,6 +124,8 @@ export function TraceDetailDrawer({
       onOpenChange={(nextOpen) => {
         void close(nextOpen)
       }}
+      width='70vw'
+      showOverlay={false}
       mode='enhanced'
       title={detail ? `Trace 详情：${detail.traceId}` : 'Trace 详情'}
       showConfirm={false}

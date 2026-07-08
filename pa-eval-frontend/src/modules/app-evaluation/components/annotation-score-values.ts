@@ -43,8 +43,8 @@ export function normalizeBooleanScoreOptionValue(value: string) {
 
 export function getBooleanScoreOptions(): ScoreOption[] {
   return [
-    { value: '1', label: '是' },
-    { value: '0', label: '否' },
+    { value: '1', label: '通过' },
+    { value: '0', label: '不通过' },
   ]
 }
 

@@ -49,7 +49,7 @@ import {
   DataTable,
   DataTableColumnHeader,
 } from '@/components/common/data-table'
-import { FormDialog } from '@/components/common/form-dialog'
+import { Drawer } from '@/components/common/drawer'
 import { Loading } from '@/components/common/loading'
 import { LongText } from '@/components/common/long-text'
 import { Page } from '@/components/common/page'
@@ -307,15 +307,13 @@ export function TaskEvaluators({ navigation = 'tasks' }: TaskEvaluatorsProps) {
           />
         </section>
       </div>
-      <FormDialog
+      <Drawer
         open={createOpen}
         onOpenChange={setCreateOpen}
         title='新建评估器'
-        description='支持 Langfuse 原生评估器、工作流评估器和 OpenJudge SDK 评估器。'
-        confirmText='创建'
-        confirmProps={{ form: createEvaluatorFormId, type: 'submit' }}
-        contentProps={{ showCloseButton: true }}
+        mode='enhanced'
         width={860}
+        actions={null}
       >
         <BaseForm
           id={createEvaluatorFormId}
@@ -340,7 +338,7 @@ export function TaskEvaluators({ navigation = 'tasks' }: TaskEvaluatorsProps) {
             sdkPackage: '',
           }}
           onSubmit={handleCreate}
-          className='max-h-[70svh] gap-4 overflow-y-auto p-0'
+          className='min-h-full gap-4 overflow-visible p-6 pb-0'
         >
           {(form) => (
             <>
@@ -629,11 +627,23 @@ export function TaskEvaluators({ navigation = 'tasks' }: TaskEvaluatorsProps) {
                   </FormItem>
                 )}
               />
+              <div className='bg-background sticky bottom-0 -mx-6 mt-2 flex justify-end gap-2 border-t px-6 py-4'>
+                <Button
+                  type='button'
+                  variant='outline'
+                  onClick={() => setCreateOpen(false)}
+                >
+                  取消
+                </Button>
+                <Button form={createEvaluatorFormId} type='submit'>
+                  创建
+                </Button>
+              </div>
             </>
           )}
         </BaseForm>
-      </FormDialog>
-      <FormDialog
+      </Drawer>
+      <Drawer
         open={detailOpen}
         onOpenChange={(open) => {
           setDetailOpen(open)
@@ -642,11 +652,10 @@ export function TaskEvaluators({ navigation = 'tasks' }: TaskEvaluatorsProps) {
           }
         }}
         title='评估器详情'
-        description='查看评估器基础信息、变量和配置。鉴权凭据仅展示是否已配置。'
+        mode='enhanced'
+        width={820}
         showConfirm={false}
         cancelText='关闭'
-        contentProps={{ showCloseButton: true }}
-        width={820}
       >
         {detailLoading ? (
           <Loading
@@ -656,7 +665,7 @@ export function TaskEvaluators({ navigation = 'tasks' }: TaskEvaluatorsProps) {
         ) : selectedEvaluator ? (
           <EvaluatorDetailContent evaluator={selectedEvaluator} />
         ) : null}
-      </FormDialog>
+      </Drawer>
       <AlertDialog
         open={Boolean(deletingEvaluator)}
         onOpenChange={(open) => {
@@ -822,7 +831,7 @@ function EvaluatorDetailContent({
     : undefined
 
   return (
-    <div className='max-h-[70svh] overflow-y-auto'>
+    <div>
       <BaseDetail
         columns={2}
         items={[

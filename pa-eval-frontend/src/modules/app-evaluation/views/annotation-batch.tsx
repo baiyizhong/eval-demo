@@ -226,7 +226,7 @@ export function ProjectAnnotationBatch() {
   const [selectedItemId, setSelectedItemId] = useState(searchParams.get('item') ?? '')
   const [selectedItemIds, setSelectedItemIds] = useState<string[]>([])
   const [completedItemIds, setCompletedItemIds] = useState<string[]>([])
-  const [leftPanePercent, setLeftPanePercent] = useState(64)
+  const [scorePaneWidth, setScorePaneWidth] = useState(400)
   const splitContainerRef = useRef<HTMLDivElement>(null)
 
   const queryState = useMemo(
@@ -420,8 +420,8 @@ export function ProjectAnnotationBatch() {
     const onPointerMove = (event: PointerEvent) => {
       const rect = splitContainerRef.current?.getBoundingClientRect()
       if (!rect) return
-      const nextPercent = ((event.clientX - rect.left) / rect.width) * 100
-      setLeftPanePercent(Math.min(78, Math.max(52, nextPercent)))
+      const nextWidth = rect.right - event.clientX
+      setScorePaneWidth(Math.min(720, Math.max(320, nextWidth)))
     }
     const stopResize = () => {
       window.removeEventListener('pointermove', onPointerMove)
@@ -432,7 +432,7 @@ export function ProjectAnnotationBatch() {
   }
 
   const splitStyle = {
-    '--annotation-list-width': `${leftPanePercent}%`,
+    '--annotation-score-width': `${scorePaneWidth}px`,
   } as CSSProperties
 
   return (
@@ -457,7 +457,7 @@ export function ProjectAnnotationBatch() {
         <section
           ref={splitContainerRef}
           style={splitStyle}
-          className='bg-card text-card-foreground flex min-h-0 flex-1 flex-col overflow-hidden rounded-lg border lg:grid lg:grid-cols-[minmax(520px,var(--annotation-list-width))_8px_minmax(320px,1fr)]'
+          className='bg-card text-card-foreground flex min-h-0 flex-1 flex-col overflow-hidden rounded-lg border lg:grid lg:grid-cols-[minmax(520px,1fr)_8px_minmax(320px,var(--annotation-score-width))]'
         >
           <aside className='flex min-h-0 flex-col border-b lg:border-r lg:border-b-0'>
             <div className='grid gap-3 border-b p-3'>
@@ -708,13 +708,13 @@ export function ProjectAnnotationBatch() {
                   showAddToDataset={false}
                   saveLabel={
                     isBatchScoring
-                      ? `批量保存 ${selectedItemsOnPage.length} 条`
+                      ? `应用到选中项（${selectedItemsOnPage.length} 条）`
                       : '保存'
                   }
                   showSaveNext={!isBatchScoring}
                   submitHint={
                     isBatchScoring
-                      ? '当前评分会应用到左侧勾选的全部数据'
+                      ? `将应用到已选中的 ${selectedItemsOnPage.length} 条样本`
                       : ''
                   }
                   onAddToDataset={() => undefined}
