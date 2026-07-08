@@ -3,6 +3,7 @@ import { test } from 'node:test'
 import {
   countProjectAutoEvaluationTraces,
   createProjectAutoEvaluationTask,
+  listProjectAutoEvaluationTracePreview,
 } from './auto-evaluation-api.ts'
 
 test('createProjectAutoEvaluationTask sends task variable mapping', async () => {
@@ -92,6 +93,40 @@ test('countProjectAutoEvaluationTraces sends trace filter body', async () => {
       sessionId: '',
       tags: ['refund'],
       estimatedCount: 0,
+    },
+  })
+})
+
+test('listProjectAutoEvaluationTracePreview maps trace filter to trace list query', async () => {
+  const captured: { request?: Record<string, unknown> } = {}
+  const api = {
+    async listProjectTraces(input: Record<string, unknown>) {
+      captured.request = input
+      return { total: 2, datas: [] }
+    },
+  }
+
+  await listProjectAutoEvaluationTracePreview(api as never, 'project-1', {
+    type: 'TRACE_FILTER',
+    timeRange: '3d',
+    environments: [],
+    traceName: 'refund',
+    userId: 'user-1',
+    sessionId: 'session-1',
+    tags: ['vip'],
+    estimatedCount: 9,
+  })
+
+  assert.deepEqual(captured.request, {
+    path: { projectId: 'project-1' },
+    query: {
+      page: 1,
+      pageSize: 100,
+      timeRange: '3d',
+      keyword: 'refund',
+      userId: 'user-1',
+      sessionId: 'session-1',
+      tags: ['vip'],
     },
   })
 })

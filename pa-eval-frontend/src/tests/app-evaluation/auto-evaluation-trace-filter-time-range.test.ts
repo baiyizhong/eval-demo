@@ -14,3 +14,41 @@ test('auto evaluation trace filter uses supported quick time ranges', () => {
   assert.doesNotMatch(source, /timeRange:\s*'24h'/)
   assert.doesNotMatch(source, /:\s*'24h'/)
 })
+
+test('auto evaluation trace filter estimates automatically and exposes preview table', () => {
+  assert.match(source, /useEffect\(\(\) => \{/)
+  assert.match(source, /查看数据/)
+  assert.match(source, /listProjectAutoEvaluationTracePreview/)
+  assert.match(source, /TracePreviewDialog/)
+  assert.match(source, /pageSize:\s*1/)
+  assert.doesNotMatch(source, /countProjectAutoEvaluationTraces/)
+  assert.doesNotMatch(source, /开始预估/)
+  assert.doesNotMatch(source, /environments:\s*\['production'\]/)
+})
+
+test('trace preview dialog has 50 percent width, 600px min width, and scrolls', () => {
+  assert.match(source, /w-\[50vw\]/)
+  assert.match(source, /sm:max-w-\[50vw\]/)
+  assert.match(source, /min-w-\[600px\]/)
+  assert.match(source, /overflow-auto/)
+  assert.doesNotMatch(source, /\sresize\s/)
+  assert.match(source, /table-fixed/)
+  assert.match(source, /whitespace-normal/)
+})
+
+test('auto evaluation submit handles backend errors without bubbling server error', () => {
+  assert.match(source, /const \[submittingMode, setSubmittingMode\]/)
+  assert.match(source, /try \{/)
+  assert.match(source, /catch \(submitError\)/)
+  assert.match(source, /getSubmitErrorMessage\(submitError\)/)
+  assert.match(source, /toast\.error\(message\)/)
+})
+
+test('auto evaluation only offers workflow evaluators supported by runner', () => {
+  assert.match(source, /AUTO_EVALUATION_SUPPORTED_WORKFLOW_PROVIDERS/)
+  assert.match(source, /evaluator\.type === 'WORKFLOW'/)
+  assert.match(
+    source,
+    /AUTO_EVALUATION_SUPPORTED_WORKFLOW_PROVIDERS\.includes\(\s*evaluator\.provider\s*\)/
+  )
+})

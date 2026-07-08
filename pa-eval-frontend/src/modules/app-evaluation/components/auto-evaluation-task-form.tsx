@@ -7,6 +7,13 @@ import { toast } from 'sonner'
 import { cn } from '@/lib/utils'
 import { useAPI } from '@/hooks/use-api'
 import { Button } from '@/components/ui/button'
+import {
+  Dialog,
+  DialogContent,
+  DialogDescription,
+  DialogHeader,
+  DialogTitle,
+} from '@/components/ui/dialog'
 import { Input } from '@/components/ui/input'
 import { Label } from '@/components/ui/label'
 import {
@@ -18,6 +25,14 @@ import {
   SelectValue,
 } from '@/components/ui/select'
 import { Switch } from '@/components/ui/switch'
+import {
+  Table,
+  TableBody,
+  TableCell,
+  TableHead,
+  TableHeader,
+  TableRow,
+} from '@/components/ui/table'
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs'
 import { Textarea } from '@/components/ui/textarea'
 import {
@@ -27,8 +42,9 @@ import {
 } from '@/components/ui/tooltip'
 import { Stepper } from '@/components/common/stepper'
 import {
-  countProjectAutoEvaluationTraces,
   createProjectAutoEvaluationTask,
+  listProjectAutoEvaluationTracePreview,
+  type TraceLogRow,
 } from '../api/auto-evaluation-api'
 import { listProjectAutoEvaluationDatasets } from '../api/dataset-api'
 import { listProjectEvaluationReportTemplates } from '../api/report-template-api'
@@ -41,6 +57,11 @@ import type {
 import { autoEvaluationStepLabels } from './auto-evaluation-steps'
 
 const AUTO_EVALUATION_DEFAULT_TRACE_TIME_RANGE = '3d'
+const TRACE_PREVIEW_PAGE_SIZE = 100
+const AUTO_EVALUATION_SUPPORTED_WORKFLOW_PROVIDERS: readonly string[] = [
+  'DIFY',
+  'N8N',
+]
 
 const initialForm: AutoEvaluationTaskFormInput = {
   name: '',
@@ -105,6 +126,17 @@ export function AutoEvaluationTaskForm({
   const [reportTemplates, setReportTemplates] = useState<
     EvaluationReportTemplateRecord[]
   >([])
+  const [traceCountState, setTraceCountState] = useState<
+    'idle' | 'loading' | 'success' | 'error'
+  >('idle')
+  const [tracePreviewOpen, setTracePreviewOpen] = useState(false)
+  const [tracePreviewLoading, setTracePreviewLoading] = useState(false)
+  const [tracePreviewError, setTracePreviewError] = useState('')
+  const [tracePreviewRows, setTracePreviewRows] = useState<TraceLogRow[]>([])
+  const [tracePreviewTotal, setTracePreviewTotal] = useState(0)
+  const [submittingMode, setSubmittingMode] = useState<'create' | 'run' | null>(
+    null
+  )
 
   useEffect(() => {
     void listTaskEvaluators($api, {
@@ -116,7 +148,13 @@ export function AutoEvaluationTaskForm({
     }).then((result) => {
       setEvaluators(
         result.datas
-          .filter((evaluator) => evaluator.type === 'WORKFLOW')
+          .filter(
+            (evaluator) =>
+              evaluator.type === 'WORKFLOW' &&
+              AUTO_EVALUATION_SUPPORTED_WORKFLOW_PROVIDERS.includes(
+                evaluator.provider
+              )
+          )
           .map((evaluator) => ({
             id: evaluator.id,
             name: evaluator.name,
@@ -145,6 +183,123 @@ export function AutoEvaluationTaskForm({
       }
     )
   }, [$api, projectId])
+
+  const traceFilterKey =
+    form.dataSource.type === 'TRACE_FILTER'
+      ? getTraceFilterKey(form.dataSource)
+      : ''
+
+  useEffect(() => {
+    if (!traceFilterKey) {
+      return
+    }
+
+    let canceled = false
+    const traceFilter = parseTraceFilterKey(traceFilterKey)
+
+    void Promise.resolve()
+      .then(() => {
+        if (!canceled) setTraceCountState('loading')
+        return listProjectAutoEvaluationTracePreview(
+          $api,
+          projectId,
+          traceFilter,
+          { page: 1, pageSize: 1 }
+        )
+      })
+      .then((result) => {
+        if (canceled) return
+        setTraceCountState('success')
+        setForm((current) => {
+          if (
+            current.dataSource.type !== 'TRACE_FILTER' ||
+            getTraceFilterKey(current.dataSource) !== traceFilterKey
+          ) {
+            return current
+          }
+          return {
+            ...current,
+            dataSource: {
+              ...current.dataSource,
+              estimatedCount: result.total,
+            },
+          }
+        })
+      })
+      .catch(() => {
+        if (canceled) return
+        setTraceCountState('error')
+        setForm((current) => {
+          if (
+            current.dataSource.type !== 'TRACE_FILTER' ||
+            getTraceFilterKey(current.dataSource) !== traceFilterKey
+          ) {
+            return current
+          }
+          return {
+            ...current,
+            dataSource: { ...current.dataSource, estimatedCount: 0 },
+          }
+        })
+      })
+
+    return () => {
+      canceled = true
+    }
+  }, [$api, projectId, traceFilterKey])
+
+  useEffect(() => {
+    if (!tracePreviewOpen || !traceFilterKey) return
+
+    let canceled = false
+    const traceFilter = parseTraceFilterKey(traceFilterKey)
+
+    async function loadTracePreview() {
+      await Promise.resolve()
+      if (canceled) return
+      setTracePreviewLoading(true)
+      setTracePreviewError('')
+
+      const firstPage = await listProjectAutoEvaluationTracePreview(
+        $api,
+        projectId,
+        traceFilter,
+        { page: 1, pageSize: TRACE_PREVIEW_PAGE_SIZE }
+      )
+      let rows = firstPage.datas
+      const total = firstPage.total
+      const totalPages = Math.ceil(total / TRACE_PREVIEW_PAGE_SIZE)
+
+      for (let page = 2; page <= totalPages; page += 1) {
+        const nextPage = await listProjectAutoEvaluationTracePreview(
+          $api,
+          projectId,
+          traceFilter,
+          { page, pageSize: TRACE_PREVIEW_PAGE_SIZE }
+        )
+        rows = [...rows, ...nextPage.datas]
+      }
+
+      if (canceled) return
+      setTracePreviewRows(rows)
+      setTracePreviewTotal(total)
+    }
+
+    void loadTracePreview()
+      .catch(() => {
+        if (canceled) return
+        setTracePreviewRows([])
+        setTracePreviewTotal(0)
+        setTracePreviewError('Trace 数据加载失败，请稍后重试')
+      })
+      .finally(() => {
+        if (!canceled) setTracePreviewLoading(false)
+      })
+
+    return () => {
+      canceled = true
+    }
+  }, [$api, projectId, traceFilterKey, tracePreviewOpen])
 
   const selectedEvaluator = evaluators.find(
     (item) => item.id === form.evaluatorId
@@ -196,6 +351,8 @@ export function AutoEvaluationTaskForm({
   }
 
   const handleSubmit = async (mode: 'create' | 'run') => {
+    if (submittingMode) return
+
     const currentStep = step
     for (let index = 0; index < 3; index += 1) {
       const message = getStepError(index, form, selectedEvaluator)
@@ -206,57 +363,38 @@ export function AutoEvaluationTaskForm({
       }
     }
     setStep(currentStep)
-    const task = await createProjectAutoEvaluationTask($api, projectId, {
-      name: form.name,
-      description: form.description,
-      scoreName: form.scoreName,
-      evaluatorId: form.evaluatorId,
-      sampleRate: form.sampleRate,
-      dataSource: form.dataSource,
-      variableMapping: form.variableMapping,
-      reportTemplateId: form.reportTemplateId,
-    })
-    onDirtyChange?.(false)
-    toast.success('自动评测任务已创建并开始运行')
-    if (onCompleted) {
-      onCompleted(task.id, mode)
-      return
+    setSubmittingMode(mode)
+    try {
+      const task = await createProjectAutoEvaluationTask($api, projectId, {
+        name: form.name,
+        description: form.description,
+        scoreName: form.scoreName,
+        evaluatorId: form.evaluatorId,
+        sampleRate: form.sampleRate,
+        dataSource: form.dataSource,
+        variableMapping: form.variableMapping,
+        reportTemplateId: form.reportTemplateId,
+      })
+      onDirtyChange?.(false)
+      toast.success(
+        mode === 'run' ? '自动评测任务已创建并开始运行' : '自动评测任务已创建'
+      )
+      if (onCompleted) {
+        onCompleted(task.id, mode)
+        return
+      }
+      navigate(
+        mode === 'run'
+          ? `/projects/${projectId}/evaluation/auto-evaluations/${task.id}`
+          : `/projects/${projectId}/evaluation/auto-evaluations`
+      )
+    } catch (submitError) {
+      const message = getSubmitErrorMessage(submitError)
+      setError(message)
+      toast.error(message)
+    } finally {
+      setSubmittingMode(null)
     }
-    navigate(
-      mode === 'run'
-        ? `/projects/${projectId}/evaluation/auto-evaluations/${task.id}`
-        : `/projects/${projectId}/evaluation/auto-evaluations`
-    )
-  }
-
-  const estimateTrace = async () => {
-    const traceFilter =
-      form.dataSource.type === 'TRACE_FILTER'
-        ? form.dataSource
-        : {
-            type: 'TRACE_FILTER' as const,
-            timeRange: AUTO_EVALUATION_DEFAULT_TRACE_TIME_RANGE,
-            environments: ['production'],
-            traceName: '',
-            userId: '',
-            sessionId: '',
-            tags: [],
-            estimatedCount: 0,
-          }
-    const result = await countProjectAutoEvaluationTraces(
-      $api,
-      projectId,
-      traceFilter
-    )
-    const count = result.count
-    updateForm({
-      ...form,
-      dataSource:
-        form.dataSource.type === 'TRACE_FILTER'
-          ? { ...traceFilter, estimatedCount: count }
-          : { ...traceFilter, estimatedCount: count },
-    })
-    toast.success(`Trace 过滤预估命中 ${count} 条`)
   }
 
   return (
@@ -480,16 +618,7 @@ export function AutoEvaluationTaskForm({
                   dataSource:
                     value === 'DATASET'
                       ? { type: 'DATASET', datasetId: '' }
-                      : {
-                          type: 'TRACE_FILTER',
-                          timeRange: AUTO_EVALUATION_DEFAULT_TRACE_TIME_RANGE,
-                          environments: ['production'],
-                          traceName: '',
-                          userId: '',
-                          sessionId: '',
-                          tags: [],
-                          estimatedCount: 0,
-                        },
+                      : createDefaultTraceFilter(),
                 })
               }
             >
@@ -617,6 +746,71 @@ export function AutoEvaluationTaskForm({
                       }
                     />
                   </Field>
+                  <Field label='User ID'>
+                    <Input
+                      placeholder='可选，按用户标识过滤'
+                      value={
+                        form.dataSource.type === 'TRACE_FILTER'
+                          ? form.dataSource.userId
+                          : ''
+                      }
+                      onChange={(event) =>
+                        form.dataSource.type === 'TRACE_FILTER'
+                          ? updateForm({
+                              ...form,
+                              dataSource: {
+                                ...form.dataSource,
+                                userId: event.target.value,
+                              },
+                            })
+                          : undefined
+                      }
+                    />
+                  </Field>
+                  <Field label='Session ID'>
+                    <Input
+                      placeholder='可选，按 Session ID 过滤'
+                      value={
+                        form.dataSource.type === 'TRACE_FILTER'
+                          ? form.dataSource.sessionId
+                          : ''
+                      }
+                      onChange={(event) =>
+                        form.dataSource.type === 'TRACE_FILTER'
+                          ? updateForm({
+                              ...form,
+                              dataSource: {
+                                ...form.dataSource,
+                                sessionId: event.target.value,
+                              },
+                            })
+                          : undefined
+                      }
+                    />
+                  </Field>
+                  <Field label='Tags' className='md:col-span-2'>
+                    <Input
+                      placeholder='可选，多个标签用逗号分隔'
+                      value={
+                        form.dataSource.type === 'TRACE_FILTER'
+                          ? form.dataSource.tags.join(', ')
+                          : ''
+                      }
+                      onChange={(event) =>
+                        form.dataSource.type === 'TRACE_FILTER'
+                          ? updateForm({
+                              ...form,
+                              dataSource: {
+                                ...form.dataSource,
+                                tags: parseCommaSeparatedValues(
+                                  event.target.value
+                                ),
+                              },
+                            })
+                          : undefined
+                      }
+                    />
+                  </Field>
                 </div>
                 <div className='bg-background flex flex-col justify-between gap-3 rounded-lg border p-4'>
                   <div className='flex flex-col gap-1'>
@@ -624,6 +818,16 @@ export function AutoEvaluationTaskForm({
                     <span className='text-muted-foreground text-sm'>
                       运行前先统计符合过滤条件的 Trace 数量。
                     </span>
+                    {traceCountState === 'loading' ? (
+                      <span className='text-muted-foreground text-xs'>
+                        正在统计...
+                      </span>
+                    ) : null}
+                    {traceCountState === 'error' ? (
+                      <span className='text-destructive text-xs'>
+                        统计失败，请调整条件或稍后重试。
+                      </span>
+                    ) : null}
                   </div>
                   <div className='flex items-end justify-between gap-3'>
                     <span className='text-2xl font-semibold'>
@@ -635,9 +839,10 @@ export function AutoEvaluationTaskForm({
                       type='button'
                       variant='outline'
                       size='sm'
-                      onClick={() => void estimateTrace()}
+                      disabled={form.dataSource.type !== 'TRACE_FILTER'}
+                      onClick={() => setTracePreviewOpen(true)}
                     >
-                      开始预估
+                      查看数据
                     </Button>
                   </div>
                 </div>
@@ -752,17 +957,30 @@ export function AutoEvaluationTaskForm({
               <Button
                 type='button'
                 variant='outline'
+                disabled={submittingMode !== null}
                 onClick={() => void handleSubmit('create')}
               >
-                仅创建
+                {submittingMode === 'create' ? '创建中...' : '仅创建'}
               </Button>
-              <Button type='button' onClick={() => void handleSubmit('run')}>
-                创建并运行
+              <Button
+                type='button'
+                disabled={submittingMode !== null}
+                onClick={() => void handleSubmit('run')}
+              >
+                {submittingMode === 'run' ? '创建中...' : '创建并运行'}
               </Button>
             </>
           )}
         </div>
       </div>
+      <TracePreviewDialog
+        open={tracePreviewOpen}
+        onOpenChange={setTracePreviewOpen}
+        rows={tracePreviewRows}
+        total={tracePreviewTotal}
+        loading={tracePreviewLoading}
+        error={tracePreviewError}
+      />
     </div>
   )
 }
@@ -842,6 +1060,83 @@ function SummaryPanel({
   )
 }
 
+function TracePreviewDialog({
+  open,
+  onOpenChange,
+  rows,
+  total,
+  loading,
+  error,
+}: {
+  open: boolean
+  onOpenChange: (open: boolean) => void
+  rows: TraceLogRow[]
+  total: number
+  loading: boolean
+  error: string
+}) {
+  return (
+    <Dialog open={open} onOpenChange={onOpenChange}>
+      <DialogContent className='flex h-[50svh] max-h-[calc(100svh-2rem)] w-[50vw] max-w-[calc(100vw-2rem)] min-w-[600px] flex-col gap-0 overflow-hidden p-0 sm:max-w-[50vw]'>
+        <DialogHeader className='border-b p-6 pb-4 text-start'>
+          <DialogTitle>查看 Trace 数据</DialogTitle>
+          <DialogDescription>
+            当前过滤条件共命中 {total} 条 Trace。
+          </DialogDescription>
+        </DialogHeader>
+        <div className='min-h-0 flex-1 overflow-auto p-6'>
+          {loading ? (
+            <div className='text-muted-foreground flex min-h-40 items-center justify-center text-sm'>
+              加载 Trace 数据中...
+            </div>
+          ) : error ? (
+            <div className='text-destructive flex min-h-40 items-center justify-center text-sm'>
+              {error}
+            </div>
+          ) : rows.length ? (
+            <div className='rounded-md border'>
+              <Table className='table-fixed'>
+                <TableHeader>
+                  <TableRow>
+                    <TableHead className='w-[30%]'>Trace ID</TableHead>
+                    <TableHead className='w-[20%]'>Session ID</TableHead>
+                    <TableHead className='w-[12%]'>环境</TableHead>
+                    <TableHead className='w-[10%]'>状态</TableHead>
+                    <TableHead className='w-[16%]'>用户</TableHead>
+                    <TableHead className='w-[12%]'>创建时间</TableHead>
+                  </TableRow>
+                </TableHeader>
+                <TableBody>
+                  {rows.map((trace) => (
+                    <TableRow key={trace.traceId}>
+                      <TableCell className='font-medium break-all whitespace-normal'>
+                        {trace.traceId}
+                      </TableCell>
+                      <TableCell className='break-all whitespace-normal'>
+                        {trace.sessionId || '-'}
+                      </TableCell>
+                      <TableCell>{trace.environment || '-'}</TableCell>
+                      <TableCell>{trace.status || '-'}</TableCell>
+                      <TableCell className='break-all whitespace-normal'>
+                        {trace.userId || '-'}
+                      </TableCell>
+                      <TableCell>{formatDateTime(trace.createdAt)}</TableCell>
+                    </TableRow>
+                  ))}
+                </TableBody>
+              </Table>
+            </div>
+          ) : (
+            <div className='text-muted-foreground flex min-h-40 items-center justify-center rounded-md border border-dashed text-sm'>
+              当前过滤条件下暂无 Trace 数据。
+            </div>
+          )}
+        </div>
+      </DialogContent>
+    </Dialog>
+  )
+}
+
 function getStepError(
   step: number,
   form: AutoEvaluationTaskFormInput,
@@ -894,6 +1189,90 @@ function isScoreNameValid(value: string) {
 
 function getEstimatedRunCount(sampleCount: number, sampleRate: number) {
   return Math.ceil((sampleCount * sampleRate) / 100)
+}
+
+function createDefaultTraceFilter(): Extract<
+  AutoEvaluationTaskFormInput['dataSource'],
+  { type: 'TRACE_FILTER' }
+> {
+  return {
+    type: 'TRACE_FILTER',
+    timeRange: AUTO_EVALUATION_DEFAULT_TRACE_TIME_RANGE,
+    environments: [],
+    traceName: '',
+    userId: '',
+    sessionId: '',
+    tags: [],
+    estimatedCount: 0,
+  }
+}
+
+function getTraceFilterKey(
+  traceFilter: Extract<
+    AutoEvaluationTaskFormInput['dataSource'],
+    { type: 'TRACE_FILTER' }
+  >
+) {
+  return JSON.stringify({
+    type: 'TRACE_FILTER',
+    timeRange: traceFilter.timeRange,
+    environments: traceFilter.environments,
+    traceName: traceFilter.traceName,
+    userId: traceFilter.userId,
+    sessionId: traceFilter.sessionId,
+    tags: traceFilter.tags,
+  })
+}
+
+function parseTraceFilterKey(
+  key: string
+): Extract<
+  AutoEvaluationTaskFormInput['dataSource'],
+  { type: 'TRACE_FILTER' }
+> {
+  const parsed = JSON.parse(key) as Omit<
+    Extract<
+      AutoEvaluationTaskFormInput['dataSource'],
+      { type: 'TRACE_FILTER' }
+    >,
+    'estimatedCount'
+  >
+
+  return {
+    ...parsed,
+    estimatedCount: 0,
+  }
+}
+
+function parseCommaSeparatedValues(value: string) {
+  return value
+    .split(',')
+    .map((item) => item.trim())
+    .filter(Boolean)
+}
+
+function formatDateTime(value: string) {
+  const date = new Date(value)
+  if (Number.isNaN(date.getTime())) return value
+
+  return date.toLocaleString('zh-CN', {
+    year: 'numeric',
+    month: '2-digit',
+    day: '2-digit',
+    hour: '2-digit',
+    minute: '2-digit',
+  })
+}
+
+function getSubmitErrorMessage(error: unknown) {
+  if (error && typeof error === 'object' && 'message' in error) {
+    const message = String((error as { message?: unknown }).message ?? '')
+    if (message) return message
+  }
+  if (error instanceof Error && error.message) {
+    return error.message
+  }
+  return '自动评测任务创建失败，请稍后重试'
 }
 
 function toMappingTemplate(value: string) {

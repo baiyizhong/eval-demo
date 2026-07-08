@@ -1,3 +1,7 @@
+import type {
+  TraceListResponse,
+  TraceLogRow,
+} from '@/modules/app-observability/types'
 import type { ApiMethod } from '@/api/types'
 import type {
   DataTableListResponse,
@@ -14,6 +18,7 @@ type AutoEvaluationApiClient = {
   getAutoEvaluationTasks: ApiMethod
   createAutoEvaluationTask: ApiMethod
   countProjectTraces: ApiMethod
+  listProjectTraces: ApiMethod
   getAutoEvaluationSummary: ApiMethod
   getAutoEvaluationTask: ApiMethod
   deleteAutoEvaluationTask: ApiMethod
@@ -61,6 +66,48 @@ export function countProjectAutoEvaluationTraces(
     body: { traceFilter },
   })
 }
+
+export function listProjectAutoEvaluationTracePreview(
+  api: AutoEvaluationApiClient,
+  projectId: string,
+  traceFilter: Extract<
+    AutoEvaluationTaskFormInput['dataSource'],
+    { type: 'TRACE_FILTER' }
+  >,
+  options: { page?: number; pageSize?: number } = {}
+) {
+  return api.listProjectTraces<TraceListResponse>({
+    path: { projectId },
+    query: buildAutoEvaluationTraceListQuery(traceFilter, options),
+  })
+}
+
+function buildAutoEvaluationTraceListQuery(
+  traceFilter: Extract<
+    AutoEvaluationTaskFormInput['dataSource'],
+    { type: 'TRACE_FILTER' }
+  >,
+  options: { page?: number; pageSize?: number }
+) {
+  const traceName = traceFilter.traceName.trim()
+  const userId = traceFilter.userId.trim()
+  const sessionId = traceFilter.sessionId.trim()
+
+  return {
+    page: options.page ?? 1,
+    pageSize: options.pageSize ?? 100,
+    timeRange: traceFilter.timeRange,
+    ...(traceName ? { keyword: traceName } : {}),
+    ...(traceFilter.environments.length
+      ? { environments: traceFilter.environments }
+      : {}),
+    ...(userId ? { userId } : {}),
+    ...(sessionId ? { sessionId } : {}),
+    ...(traceFilter.tags.length ? { tags: traceFilter.tags } : {}),
+  }
+}
+
+export type { TraceLogRow }
 
 export function listProjectAutoEvaluationTasks(
   api: AutoEvaluationApiClient,

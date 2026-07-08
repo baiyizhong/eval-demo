@@ -41,13 +41,14 @@ request.interceptors.response.use(
   },
   (error: AxiosError) => {
     const status = error.response?.status
+    let message = error.message || 'Request failed'
 
     if (!error.response && !error.request) {
       // 网络异常（无 response 也无 request，可能是拦截器中断或 Cancel）
-      const message = error.message || '网络异常'
       toast.error(message, { id: `network-${message}` })
     } else if (!error.response) {
       // 请求已发出但无响应（断网、超时、CORS 等）
+      message = '网络连接失败，请检查网络后重试'
       toast.error('网络连接失败，请检查网络后重试', {
         id: 'network-error',
         duration: Infinity,
@@ -69,11 +70,12 @@ request.interceptors.response.use(
       const msg = serverMessage
         ? String(serverMessage)
         : statusMessages[status] || `网络失败 (${status})`
+      message = msg
       toast.error(msg, { id })
     }
 
     const payload: ApiErrorPayload = {
-      message: error.message || 'Request failed',
+      message,
       status: error.response?.status,
       code: error.code,
       details: error.response?.data as Record<string, unknown>,

@@ -1,4 +1,5 @@
 import json
+import logging
 import math
 from datetime import datetime, timezone
 from typing import Any
@@ -18,6 +19,7 @@ from app.langfuse_db import LangfuseDatabaseConfigError, PROJECT_ACCESS_EXISTS_S
 from app.response import success
 
 router = APIRouter(prefix="/api/projects/{project_id}", tags=["auto-evaluations"])
+logger = logging.getLogger(__name__)
 
 DEFAULT_REPORT_SECTIONS = {
     "metrics": True,
@@ -273,11 +275,17 @@ async def _list_trace_generation_samples(
             data_source_payload.get("timeRange")
         )
         if trace_name:
-            conditions.append(f"positionCaseInsensitive(t.name, {_clickhouse_quote(trace_name)}) > 0")
+            conditions.append(
+                f"positionCaseInsensitive(t.name, {_clickhouse_quote(trace_name)}) > 0"
+            )
         if user_id:
-            conditions.append(f"positionCaseInsensitive(ifNull(t.user_id, ''), {_clickhouse_quote(user_id)}) > 0")
+            conditions.append(
+                f"positionCaseInsensitive(ifNull(t.user_id, ''), {_clickhouse_quote(user_id)}) > 0"
+            )
         if session_id:
-            conditions.append(f"positionCaseInsensitive(ifNull(t.session_id, ''), {_clickhouse_quote(session_id)}) > 0")
+            conditions.append(
+                f"positionCaseInsensitive(ifNull(t.session_id, ''), {_clickhouse_quote(session_id)}) > 0"
+            )
         for tag in tag_values:
             conditions.append(f"has(t.tags, {_clickhouse_quote(tag)})")
 
@@ -317,10 +325,7 @@ async def _list_trace_generation_samples(
             trace_id = _stringify_value(row.get("trace_id"))
             if trace_id and trace_id not in latest_by_trace:
                 latest_by_trace[trace_id] = row
-        return [
-            _to_trace_generation_sample(row)
-            for row in latest_by_trace.values()
-        ]
+        return [_to_trace_generation_sample(row) for row in latest_by_trace.values()]
 
     await cursor.execute(
         """
@@ -387,12 +392,16 @@ async def _count_trace_generation_samples(
     data_source_payload: dict[str, Any],
     settings: Settings | None = None,
 ) -> int:
-    samples = await _list_trace_generation_samples(
-        cursor,
-        project_id,
-        data_source_payload,
-        settings,
-    )
+    try:
+        samples = await _list_trace_generation_samples(
+            cursor,
+            project_id,
+            data_source_payload,
+            settings,
+        )
+    except httpx.HTTPError:
+        logger.warning("Trace count unavailable; returning zero", exc_info=True)
+        return 0
     return len(samples)
 
 
@@ -415,7 +424,9 @@ def _task_compat_fields(
     report_template_id: str | None,
 ) -> dict[str, Any]:
     data_source_type = str(data_source.get("type") or "TRACE_FILTER")
-    dataset_id = str(data_source.get("datasetId") or "") if data_source_type == "DATASET" else ""
+    dataset_id = (
+        str(data_source.get("datasetId") or "") if data_source_type == "DATASET" else ""
+    )
     trace_query = (
         data_source.get("traceFilter")
         if isinstance(data_source.get("traceFilter"), dict)
@@ -485,11 +496,7 @@ async def _query_clickhouse_json_each_row(
             ),
         )
     response.raise_for_status()
-    return [
-        json.loads(line)
-        for line in response.text.splitlines()
-        if line.strip()
-    ]
+    return [json.loads(line) for line in response.text.splitlines() if line.strip()]
 
 
 def _build_dify_inputs_from_dataset_item(item: dict[str, Any]) -> dict[str, str]:
@@ -602,7 +609,9 @@ def _resolve_mapping_template(template: str, sample: dict[str, Any]) -> str:
 
 def _default_input_mapping(evaluator: dict[str, Any]) -> dict[str, str]:
     variables = (
-        evaluator.get("variables") if isinstance(evaluator.get("variables"), list) else []
+        evaluator.get("variables")
+        if isinstance(evaluator.get("variables"), list)
+        else []
     )
     defaults = {
         "input": "{{ sample.input }}",
@@ -631,7 +640,9 @@ def _get_effective_input_mapping(
 ) -> dict[str, Any]:
     config = evaluator.get("config") or {}
     evaluator_mapping = (
-        config.get("inputMapping") if isinstance(config.get("inputMapping"), dict) else {}
+        config.get("inputMapping")
+        if isinstance(config.get("inputMapping"), dict)
+        else {}
     )
     mapping = {**_default_input_mapping(evaluator), **evaluator_mapping}
     if task_mapping:
@@ -858,7 +869,9 @@ def _compare_score(score: float, operator: str, threshold: float) -> bool:
     return score <= threshold
 
 
-def _is_report_badcase(result: dict[str, Any], template_snapshot: dict[str, Any]) -> bool:
+def _is_report_badcase(
+    result: dict[str, Any], template_snapshot: dict[str, Any]
+) -> bool:
     rule = template_snapshot.get("badcaseRule")
     badcase_rule = rule if isinstance(rule, dict) else {}
     mode = str(badcase_rule.get("mode") or "EVALUATOR_RESULT").upper()
@@ -956,9 +969,7 @@ def _build_report_from_template(
         "distribution": _bucket_scores(results)
         if sections.get("distribution", True)
         else [],
-        "groupAnalysis": group_analysis
-        if sections.get("groupAnalysis", True)
-        else [],
+        "groupAnalysis": group_analysis if sections.get("groupAnalysis", True) else [],
         "recommendations": snapshot["recommendations"]
         if sections.get("recommendations", True)
         else [],
@@ -1419,15 +1430,21 @@ async def _resolve_auto_evaluation_samples(
             "datasetProjectId": dataset["project_id"],
             "sampleCount": len(samples),
             "totalItemCount": len(dataset_items),
-                }
+        }
 
     if data_source_payload.get("type") == "TRACE_FILTER":
-        trace_samples = await _list_trace_generation_samples(
-            cursor,
-            project_id,
-            data_source_payload,
-            settings,
-        )
+        try:
+            trace_samples = await _list_trace_generation_samples(
+                cursor,
+                project_id,
+                data_source_payload,
+                settings,
+            )
+        except httpx.HTTPError:
+            logger.warning(
+                "Trace samples unavailable; returning business error", exc_info=True
+            )
+            trace_samples = []
         samples = _sample_dataset_items(trace_samples, payload.sample_rate)
         if not samples:
             raise BusinessError(4007, "Trace 过滤没有可用样本")
@@ -1962,7 +1979,9 @@ async def _complete_auto_evaluation_success(
             "sample_count": sample_count,
             "badcase_count": badcase_count,
             "generated_at": now,
-            "dataset_id": data_source.get("datasetId") if data_source.get("type") == "DATASET" else None,
+            "dataset_id": data_source.get("datasetId")
+            if data_source.get("type") == "DATASET"
+            else None,
             "evaluator_ids": Jsonb([evaluator["id"]]),
             "generated_by": create_by,
             "summary": Jsonb(_report_summary_payload(report["summary"])),
@@ -2822,7 +2841,9 @@ async def _preview_report_flowback(
     report_id: str,
     payload: EvaluationReportFlowbackPayload,
 ) -> dict[str, Any]:
-    sources = await _list_report_flowback_sources(cursor, project_id, report_id, payload)
+    sources = await _list_report_flowback_sources(
+        cursor, project_id, report_id, payload
+    )
     dataset_name = _default_flowback_dataset_name(payload.flowback_type)
     duplicate_source_ids: set[str] = set()
 
@@ -2862,7 +2883,9 @@ async def _create_report_flowback(
     payload: EvaluationReportFlowbackPayload,
     created_by: str,
 ) -> dict[str, Any]:
-    sources = await _list_report_flowback_sources(cursor, project_id, report_id, payload)
+    sources = await _list_report_flowback_sources(
+        cursor, project_id, report_id, payload
+    )
     dataset_created = payload.target_dataset.mode == "CREATE"
     now = datetime.now(timezone.utc)
 
@@ -3278,18 +3301,23 @@ async def _find_report_flowback_duplicate_source_ids(
             source.get("source_dataset_item_id"),
         }
         for row in existing_rows:
-            metadata = row.get("metadata") if isinstance(row.get("metadata"), dict) else {}
+            metadata = (
+                row.get("metadata") if isinstance(row.get("metadata"), dict) else {}
+            )
             pa_metadata = metadata.get("paEvaluationReport") or {}
             if (
-                source.get("source_trace_id")
-                and row.get("source_trace_id") == source.get("source_trace_id")
-            ) or (
-                source.get("source_observation_id")
-                and row.get("source_observation_id")
-                == source.get("source_observation_id")
-            ) or pa_metadata.get("sourceItemId") in source_metadata_keys or pa_metadata.get(
-                "sourceDatasetItemId"
-            ) in source_metadata_keys:
+                (
+                    source.get("source_trace_id")
+                    and row.get("source_trace_id") == source.get("source_trace_id")
+                )
+                or (
+                    source.get("source_observation_id")
+                    and row.get("source_observation_id")
+                    == source.get("source_observation_id")
+                )
+                or pa_metadata.get("sourceItemId") in source_metadata_keys
+                or pa_metadata.get("sourceDatasetItemId") in source_metadata_keys
+            ):
                 duplicate_source_ids.add(source["source_item_id"])
                 break
     return duplicate_source_ids
@@ -3396,7 +3424,9 @@ def _source_flowback_metadata(
     report_id: str,
     flowback_type: str,
 ) -> dict[str, Any]:
-    metadata = source.get("metadata") if isinstance(source.get("metadata"), dict) else {}
+    metadata = (
+        source.get("metadata") if isinstance(source.get("metadata"), dict) else {}
+    )
     return {
         **metadata,
         "paEvaluationReport": {
@@ -3554,7 +3584,9 @@ def _to_task(row: dict[str, Any]) -> dict[str, Any]:
         "badcaseCount": row["badcase_count"],
         "createdBy": row["create_by"],
         "createdAt": _format_datetime(row["create_date"]),
-        "lastRunAt": _format_datetime(row["last_run_at"]) if row.get("last_run_at") else "",
+        "lastRunAt": _format_datetime(row["last_run_at"])
+        if row.get("last_run_at")
+        else "",
         "updatedAt": _format_datetime(row["update_date"]),
     }
 

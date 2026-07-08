@@ -1,3 +1,4 @@
+import httpx
 import pytest
 
 from app.auto_evaluations import (
@@ -7,6 +8,7 @@ from app.auto_evaluations import (
     _build_workflow_headers,
     _complete_auto_evaluation_success,
     _create_report_flowback,
+    _count_trace_generation_samples,
     _ensure_report_exists,
     _get_path_value,
     _get_pa_evaluator,
@@ -17,6 +19,7 @@ from app.auto_evaluations import (
     _parse_workflow_result,
     _preview_report_flowback,
     _resolve_mapping_template,
+    _resolve_auto_evaluation_samples,
     _trace_time_range_condition,
     _mark_auto_evaluation_failed,
     _update_auto_evaluation_progress,
@@ -25,6 +28,7 @@ from app.auto_evaluations import (
     CreateAutoEvaluationPayload,
     EvaluationReportFlowbackPayload,
 )
+import app.auto_evaluations as auto_evaluations
 from app.errors import BusinessError
 
 
@@ -73,7 +77,9 @@ def _jsonb_value(value):
 
 
 @pytest.mark.anyio
-async def test_delete_auto_evaluation_task_physically_deletes_task_and_reports() -> None:
+async def test_delete_auto_evaluation_task_physically_deletes_task_and_reports() -> (
+    None
+):
     cursor = FakeCursor({"id": "task-1"})
 
     await _delete_auto_evaluation_task(
@@ -237,6 +243,75 @@ def test_trace_generation_sample_prefers_trace_payload_fields() -> None:
     assert sample["expected_output"] == "期望答案"
 
 
+@pytest.mark.anyio
+async def test_count_trace_generation_samples_returns_zero_when_clickhouse_unavailable(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    async def _raise_clickhouse_error(settings, query):
+        request = httpx.Request("POST", "http://localhost:8123")
+        response = httpx.Response(502, request=request)
+        raise httpx.HTTPStatusError(
+            "ClickHouse unavailable",
+            request=request,
+            response=response,
+        )
+
+    monkeypatch.setattr(
+        auto_evaluations,
+        "_query_clickhouse_json_each_row",
+        _raise_clickhouse_error,
+    )
+
+    count = await _count_trace_generation_samples(
+        FakeCursor(),  # type: ignore[arg-type]
+        project_id="project-1",
+        data_source_payload={"type": "TRACE_FILTER", "timeRange": "7d"},
+        settings=object(),  # type: ignore[arg-type]
+    )
+
+    assert count == 0
+
+
+@pytest.mark.anyio
+async def test_resolve_auto_evaluation_samples_returns_business_error_when_trace_query_unavailable(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    async def _raise_clickhouse_error(settings, query):
+        request = httpx.Request("POST", "http://localhost:8123")
+        response = httpx.Response(502, request=request)
+        raise httpx.HTTPStatusError(
+            "ClickHouse unavailable",
+            request=request,
+            response=response,
+        )
+
+    monkeypatch.setattr(
+        auto_evaluations,
+        "_query_clickhouse_json_each_row",
+        _raise_clickhouse_error,
+    )
+    payload = CreateAutoEvaluationPayload.model_validate(
+        {
+            "name": "客服质检",
+            "scoreName": "quality",
+            "evaluatorId": "evaluator-1",
+            "dataSource": {"type": "TRACE_FILTER", "timeRange": "7d"},
+        }
+    )
+
+    with pytest.raises(BusinessError) as exc:
+        await _resolve_auto_evaluation_samples(
+            FakeCursor(),  # type: ignore[arg-type]
+            "project-1",
+            payload,
+            "user-1",
+            object(),  # type: ignore[arg-type]
+        )
+
+    assert exc.value.code == 4007
+    assert exc.value.message == "Trace 过滤没有可用样本"
+
+
 def test_normalize_dataset_item_sample_exposes_sample_fields() -> None:
     sample = _normalize_dataset_item_sample(
         {
@@ -348,7 +423,9 @@ def test_build_workflow_inputs_prefers_task_mapping_over_evaluator_mapping() -> 
 
 
 @pytest.mark.anyio
-async def test_list_trace_generation_samples_queries_last_generation_with_filters() -> None:
+async def test_list_trace_generation_samples_queries_last_generation_with_filters() -> (
+    None
+):
     cursor = FakeCursor(rows=[{"trace_id": "trace-1", "observation_id": "obs-1"}])
 
     samples = await _list_trace_generation_samples(
@@ -413,10 +490,19 @@ def test_parse_workflow_result_derives_passed_when_dify_omits_passed() -> None:
 
 
 def test_trace_time_range_condition_supports_auto_evaluation_quick_ranges() -> None:
-    assert _trace_time_range_condition("1d") == "AND t.timestamp >= now() - INTERVAL 1 DAY"
-    assert _trace_time_range_condition("3d") == "AND t.timestamp >= now() - INTERVAL 3 DAY"
-    assert _trace_time_range_condition("7d") == "AND t.timestamp >= now() - INTERVAL 7 DAY"
-    assert _trace_time_range_condition("14d") == "AND t.timestamp >= now() - INTERVAL 14 DAY"
+    assert (
+        _trace_time_range_condition("1d") == "AND t.timestamp >= now() - INTERVAL 1 DAY"
+    )
+    assert (
+        _trace_time_range_condition("3d") == "AND t.timestamp >= now() - INTERVAL 3 DAY"
+    )
+    assert (
+        _trace_time_range_condition("7d") == "AND t.timestamp >= now() - INTERVAL 7 DAY"
+    )
+    assert (
+        _trace_time_range_condition("14d")
+        == "AND t.timestamp >= now() - INTERVAL 14 DAY"
+    )
 
 
 def test_build_workflow_headers_supports_bearer_token() -> None:
@@ -432,7 +518,9 @@ def test_build_workflow_headers_supports_bearer_token() -> None:
     assert headers == {"Authorization": "Bearer token-1"}
 
 
-def test_build_report_from_template_applies_title_summary_sections_and_badcase_rule() -> None:
+def test_build_report_from_template_applies_title_summary_sections_and_badcase_rule() -> (
+    None
+):
     report = _build_report_from_template(
         task_name="客服质检",
         score_name="quality",
@@ -458,8 +546,7 @@ def test_build_report_from_template_applies_title_summary_sections_and_badcase_r
             "name": "严格报告",
             "titleTemplate": "{taskName} 自定义报告",
             "summaryTemplate": (
-                "样本 {sampleCount} 条，平均 {averageScore}，"
-                "Badcase {badcaseCount} 条"
+                "样本 {sampleCount} 条，平均 {averageScore}，Badcase {badcaseCount} 条"
             ),
             "sections": {
                 "metrics": True,
@@ -492,7 +579,9 @@ def test_build_report_from_template_applies_title_summary_sections_and_badcase_r
 
 
 @pytest.mark.anyio
-async def test_complete_auto_evaluation_success_persists_report_template_snapshot() -> None:
+async def test_complete_auto_evaluation_success_persists_report_template_snapshot() -> (
+    None
+):
     cursor = FakeCursor({"create_date": None, "create_by": "creator@163.com"})
     payload = CreateAutoEvaluationPayload.model_validate(
         {
@@ -625,7 +714,9 @@ async def test_preview_report_flowback_counts_duplicates_for_existing_dataset() 
 
 
 @pytest.mark.anyio
-async def test_create_report_flowback_creates_dataset_items_and_updates_statuses() -> None:
+async def test_create_report_flowback_creates_dataset_items_and_updates_statuses() -> (
+    None
+):
     cursor = SequentialCursor(
         rows_by_fetchall=[
             [
@@ -680,7 +771,9 @@ async def test_create_report_flowback_creates_dataset_items_and_updates_statuses
     assert record["requestedCount"] == 1
     assert record["targetDatasetName"] == "回流 Badcase 集"
     dataset_item_params = next(
-        params for sql, params in cursor.executions if "INSERT INTO dataset_items" in sql
+        params
+        for sql, params in cursor.executions
+        if "INSERT INTO dataset_items" in sql
     )
     metadata = _jsonb_value(dataset_item_params["metadata"])
     assert metadata["paEvaluationReport"]["reportId"] == "report-1"
@@ -689,7 +782,9 @@ async def test_create_report_flowback_creates_dataset_items_and_updates_statuses
 
 
 @pytest.mark.anyio
-async def test_insert_running_auto_evaluation_returns_before_report_generation() -> None:
+async def test_insert_running_auto_evaluation_returns_before_report_generation() -> (
+    None
+):
     cursor = FakeCursor(None)
 
     await _insert_running_auto_evaluation(
