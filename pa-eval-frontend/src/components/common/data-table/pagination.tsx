@@ -17,11 +17,13 @@ import {
 
 type DataTablePaginationProps<TData> = {
   table: Table<TData>
+  totalRows: number
   className?: string
 }
 
 export function DataTablePagination<TData>({
   table,
+  totalRows,
   className,
 }: DataTablePaginationProps<TData>) {
   const currentPage = table.getState().pagination.pageIndex + 1
@@ -38,8 +40,8 @@ export function DataTablePagination<TData>({
       style={{ overflowClipMargin: 1 }}
     >
       <div className='flex w-full items-center justify-between'>
-        <div className='flex w-[100px] items-center justify-center text-sm font-medium @2xl/content:hidden'>
-          第 {currentPage} / {totalPages} 页
+        <div className='flex min-w-[120px] items-center justify-center text-sm font-medium @2xl/content:hidden'>
+          共 {totalRows.toLocaleString()} 条
         </div>
         <div className='flex items-center gap-2 @max-2xl/content:flex-row-reverse'>
           <Select
@@ -64,8 +66,9 @@ export function DataTablePagination<TData>({
       </div>
 
       <div className='flex items-center sm:gap-6 lg:gap-8'>
-        <div className='flex w-[100px] items-center justify-center text-sm font-medium @max-3xl/content:hidden'>
-          第 {currentPage} / {totalPages} 页
+        <div className='flex min-w-[180px] items-center justify-center text-sm font-medium @max-3xl/content:hidden'>
+          共 {totalRows.toLocaleString()} 条，第 {currentPage} / {totalPages}{' '}
+          页
         </div>
         <div className='flex items-center gap-2'>
           <Button

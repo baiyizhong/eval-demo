@@ -563,7 +563,11 @@ function DataTableContent<
           </Table>
         </div>
 
-        <DataTablePagination table={table} className='mt-auto' />
+        <DataTablePagination
+          table={table}
+          totalRows={total}
+          className='mt-auto'
+        />
         {bulkActions ? bulkActions(table) : null}
       </div>
     </div>

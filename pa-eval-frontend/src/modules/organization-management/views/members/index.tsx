@@ -3,23 +3,17 @@ import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { type ColumnDef } from '@tanstack/react-table'
 import { EmptyOrganizationState } from '@/modules/organization-management/components/empty-organization-state'
 import {
-  buildMemberImportResult,
-  parseMemberImportCsv,
-} from '@/modules/organization-management/data/member-import'
-import {
   canManageMembers,
   canRemoveMember,
 } from '@/modules/organization-management/data/permissions'
 import {
-  type ImportOrganizationMembersPayload,
-  type ImportOrganizationMembersResult,
   type OrganizationMember,
   type OrganizationRole,
   type PaginatedResult,
 } from '@/modules/organization-management/data/schema'
 import { useCurrentOrganizationRole } from '@/modules/organization-management/hooks/use-current-organization-role'
 import { useOrganizations } from '@/modules/organization-management/hooks/use-organizations'
-import { MoreHorizontal, Plus, Upload } from 'lucide-react'
+import { MoreHorizontal, Plus } from 'lucide-react'
 import { toast } from 'sonner'
 import { useOrganizationStore } from '@/stores/organization.store'
 import { useAPI } from '@/hooks/use-api'
@@ -40,12 +34,7 @@ import {
   type DataTableQueryState,
   type DataTableToolbarFilter,
 } from '@/components/common/data-table'
-import { ImportDialog } from '@/components/common/import-dialog'
 import { MemberFormDrawer } from './member-form-drawer'
-import {
-  MemberImportResultDialog,
-  type MemberImportResultSummary,
-} from './member-import-result-dialog'
 
 const ROLE_LABELS: Record<OrganizationRole, string> = {
   OWNER: 'Owner',
@@ -148,7 +137,6 @@ function OrganizationMembersLoading() {
     <div className='flex flex-col gap-4'>
       <div className='flex flex-wrap justify-end gap-2'>
         <Skeleton className='h-9 w-24' />
-        <Skeleton className='h-9 w-24' />
       </div>
       <div className='rounded-lg border p-4'>
         <div className='flex flex-col gap-3'>
@@ -177,15 +165,11 @@ export function SettingsOrganizationMembers() {
   const isLoaded = useOrganizationStore((state) => state.isLoaded)
 
   const [createOpen, setCreateOpen] = useState(false)
-  const [importOpen, setImportOpen] = useState(false)
   const [editingMember, setEditingMember] = useState<OrganizationMember | null>(
     null
   )
   const [deletingMember, setDeletingMember] =
     useState<OrganizationMember | null>(null)
-  const [importResult, setImportResult] =
-    useState<MemberImportResultSummary | null>(null)
-  const [importResultOpen, setImportResultOpen] = useState(false)
 
   const queryOrganizations = organizationsData?.datas
   const effectiveOrganizations = queryOrganizations ?? storeOrganizations
@@ -245,22 +229,6 @@ export function SettingsOrganizationMembers() {
       ])
       toast.success('成员已删除')
       setDeletingMember(null)
-    },
-  })
-
-  const importMutation = useMutation({
-    mutationFn: (payload: ImportOrganizationMembersPayload) => {
-      if (!organizationId) {
-        throw new Error('缺少组织 ID')
-      }
-
-      return $api.importOrganizationMembers<
-        ImportOrganizationMembersResult,
-        ImportOrganizationMembersPayload
-      >({
-        path: { organizationId },
-        body: payload,
-      })
     },
   })
 
@@ -394,66 +362,10 @@ export function SettingsOrganizationMembers() {
     [actorRole, ownerCount]
   )
 
-  const handleImport = async (file: File) => {
-    if (!actorRole) {
-      toast.error('当前角色信息加载中，请稍后重试')
-      return
-    }
-
-    const text = await file.text()
-    const parsed = parseMemberImportCsv(text, actorRole)
-
-    if (!organizationId) {
-      return
-    }
-
-    if (parsed.members.length === 0) {
-      setImportResult(
-        buildMemberImportResult(parsed, {
-          total: 0,
-          datas: [],
-          failures: [],
-        })
-      )
-      setImportResultOpen(true)
-      return
-    }
-
-    try {
-      const response = await importMutation.mutateAsync({
-        members: parsed.members.map((member) => ({
-          name: member.name,
-          email: member.email,
-          role: member.role,
-        })),
-      })
-
-      await Promise.all([
-        queryClient.invalidateQueries({
-          queryKey: ['organization-members', organizationId],
-        }),
-        queryClient.invalidateQueries({
-          queryKey: ['organization-members-actor', organizationId],
-        }),
-      ])
-
-      const result = buildMemberImportResult(parsed, response)
-      setImportResult(result)
-      setImportResultOpen(true)
-      toast.success(
-        result.failures.length > 0
-          ? '成员导入已完成'
-          : `已导入 ${result.successCount} 位成员`
-      )
-    } catch {
-      // 请求层会统一提示错误，这里不重复 toast
-    }
-  }
-
   return (
     <ContentSection
       title='组织人员'
-      desc='管理当前组织成员、角色权限，并支持批量导入结果回看。'
+      desc='管理当前组织成员和角色权限。'
     >
       <>
         {isLoading ? (
@@ -463,15 +375,6 @@ export function SettingsOrganizationMembers() {
         ) : organizationId ? (
           <div className='flex min-w-0 flex-col gap-4'>
             <div className='flex flex-wrap items-center justify-end gap-2'>
-              <Button
-                type='button'
-                variant='outline'
-                onClick={() => setImportOpen(true)}
-                disabled={!canManage || actorRolePending}
-              >
-                <Upload className='size-4' />
-                导入成员
-              </Button>
               <Button
                 type='button'
                 onClick={() => setCreateOpen(true)}
@@ -548,15 +451,6 @@ export function SettingsOrganizationMembers() {
           />
         ) : null}
 
-        <ImportDialog
-          open={importOpen}
-          onOpenChange={setImportOpen}
-          title='导入组织成员'
-          description='请上传 CSV 文件，支持姓名/邮箱/组织角色三列。'
-          fileTypes={['text/csv', '.csv']}
-          onImport={handleImport}
-        />
-
         <ConfirmDialog
           open={Boolean(deletingMember)}
           onOpenChange={(open) => {
@@ -586,12 +480,6 @@ export function SettingsOrganizationMembers() {
               void deleteMutation.mutateAsync(deletingMember)
             }
           }}
-        />
-
-        <MemberImportResultDialog
-          open={importResultOpen}
-          onOpenChange={setImportResultOpen}
-          result={importResult}
         />
       </>
     </ContentSection>
