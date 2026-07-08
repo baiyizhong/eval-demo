@@ -221,7 +221,7 @@ export function MarkdownEditorPanel({
           className={cn(
             'w-full text-sm',
             readOnly &&
-              'bg-gray-100 [&_.w-md-editor-input]:bg-gray-100 [&_.wmde-markdown]:bg-gray-100',
+              'bg-gray-100 [&_.w-md-editor-input]:bg-gray-100 [&_.wmde-markdown]:bg-gray-100 [&_.wmde-markdown pre]:bg-gray-100',
             editorClassName
           )}
           textareaProps={{
