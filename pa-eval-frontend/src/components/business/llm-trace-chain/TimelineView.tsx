@@ -59,26 +59,24 @@ export function TimelineView({
     didDrag: false,
   })
 
-  useEffect(() => {
-    setOpenNodeIds((current) => {
-      const availableIds = new Set(collectExpandableNodeIds(data))
-      const next = new Set<string>()
+  const effectiveOpenNodeIds = useMemo(() => {
+    const availableIds = new Set(collectExpandableNodeIds(data))
+    const next = new Set<string>()
 
-      availableIds.forEach((id) => {
-        if (current.has(id)) next.add(id)
-      })
-
-      if (!next.size) {
-        availableIds.forEach((id) => next.add(id))
-      }
-
-      return next
+    availableIds.forEach((id) => {
+      if (openNodeIds.has(id)) next.add(id)
     })
-  }, [data])
 
-  const rows = useMemo(() => getTimelineRows(data, openNodeIds), [
+    if (!next.size) {
+      availableIds.forEach((id) => next.add(id))
+    }
+
+    return next
+  }, [data, openNodeIds])
+
+  const rows = useMemo(() => getTimelineRows(data, effectiveOpenNodeIds), [
     data,
-    openNodeIds,
+    effectiveOpenNodeIds,
   ])
   const timelineRange = useMemo(() => getTimelineRange(rows), [rows])
   const timelineWidth = Math.ceil(timelineRange.totalSeconds) * TIMELINE_SCALE_PX
@@ -245,7 +243,7 @@ export function TimelineView({
           >
             {rows.map(({ node, depth, hasChildren }) => {
               const style = getNodeStyle(node.type, nodeStyles)
-              const isOpen = openNodeIds.has(node.id)
+              const isOpen = effectiveOpenNodeIds.has(node.id)
               const isSelected = selectedNodeId === node.id
 
               return (

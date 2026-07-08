@@ -85,7 +85,13 @@ export function LLMTraceChain({
   })
   const [searchQuery, setSearchQuery] = useState('')
   const [uncontrolledIsCollapsed, setUncontrolledIsCollapsed] = useState(false)
-  const [resizedWidth, setResizedWidth] = useState<number | undefined>()
+  const [resizedWidthState, setResizedWidthState] = useState<
+    | {
+        sourceWidth: number | string
+        value: number
+      }
+    | undefined
+  >()
   const [isResizing, setIsResizing] = useState(false)
   const [viewMode, setViewMode] = useState<TraceViewMode>('tree')
   const [selectedTreeNodeId, setSelectedTreeNodeId] = useState<
@@ -151,6 +157,8 @@ export function LLMTraceChain({
     (viewMode === 'graph' && enabledGraphView)
       ? viewMode
       : fallbackViewMode
+  const resizedWidth =
+    resizedWidthState?.sourceWidth === width ? resizedWidthState.value : undefined
   const containerStyle = useMemo<CSSProperties>(
     () => ({
       width: toCssSize(
@@ -162,16 +170,6 @@ export function LLMTraceChain({
   )
 
   useEffect(() => {
-    setResizedWidth(undefined)
-  }, [width])
-
-  useEffect(() => {
-    if (viewMode !== effectiveViewMode) {
-      setViewMode(effectiveViewMode)
-    }
-  }, [effectiveViewMode, viewMode])
-
-  useEffect(() => {
     const previousViewMode = previousViewModeRef.current
 
     if (previousViewMode === effectiveViewMode) return
@@ -179,8 +177,6 @@ export function LLMTraceChain({
     previousViewModeRef.current = effectiveViewMode
 
     if (effectiveViewMode === 'graph') {
-      setSelectedTreeNodeId(firstGraphNodeId)
-
       if (firstGraphObservation) {
         const graphNodeId = firstGraphObservation.id
 
@@ -201,8 +197,6 @@ export function LLMTraceChain({
     }
 
     if (previousViewMode === 'graph') {
-      setSelectedTreeNodeId(firstRootNodeId)
-
       if (firstRootNode) {
         onNodeClick?.(firstRootNode, {
           depth: 0,
@@ -249,7 +243,7 @@ export function LLMTraceChain({
         maxWidth
       )
 
-      setResizedWidth(nextWidth)
+      setResizedWidthState({ sourceWidth: width, value: nextWidth })
       onWidthChange?.(nextWidth)
     }
 
@@ -266,7 +260,7 @@ export function LLMTraceChain({
       window.removeEventListener('pointermove', handlePointerMove)
       window.removeEventListener('pointerup', handlePointerUp)
     }
-  }, [isResizing, onWidthChange])
+  }, [isResizing, onWidthChange, width])
 
   const handleExport = useCallback(() => {
     onExport?.({
@@ -317,10 +311,7 @@ export function LLMTraceChain({
   )
 
   const isTreeMode = effectiveViewMode === 'tree'
-
-  useEffect(() => {
-    if (!isTreeMode) setIsMetadataMenuOpen(false)
-  }, [isTreeMode])
+  const isMetadataMenuEffectivelyOpen = isTreeMode && isMetadataMenuOpen
 
   return (
     <div
@@ -443,7 +434,7 @@ export function LLMTraceChain({
               </div>
             )}
             <DropdownMenu
-              open={isTreeMode ? isMetadataMenuOpen : false}
+              open={isMetadataMenuEffectivelyOpen}
               onOpenChange={(open) => {
                 if (!isTreeMode) return
                 setIsMetadataMenuOpen(open)

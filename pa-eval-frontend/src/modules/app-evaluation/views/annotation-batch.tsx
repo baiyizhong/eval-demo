@@ -74,12 +74,9 @@ import {
   type AnnotationQueueItemRecord,
   type AnnotationQueueRecord,
   type AnnotationScoreFormInput,
+  type ProjectUserRecord,
+  type ScoreConfigRecord,
 } from '../types'
-import {
-  mockAnnotationQueueItems,
-  mockAnnotationQueues,
-  mockScoreConfigs,
-} from '../data/mock-annotations'
 
 type StatusView = AnnotationItemStatus | 'ALL'
 type FilterOperator = 'contains' | 'equals' | 'exists'
@@ -118,6 +115,85 @@ const DEFAULT_BATCH_COLUMN_VISIBILITY: Record<BatchColumnKey, boolean> = {
   output: true,
   metadata: true,
 }
+const MOCK_BATCH_CREATED_AT = '2026-07-08T08:00:00.000Z'
+const mockAnnotationUser: ProjectUserRecord = {
+  id: 'user_admin',
+  name: '测试用户',
+  email: 'admin@example.com',
+  role: 'ADMIN',
+}
+const mockScoreConfigs: ScoreConfigRecord[] = [
+  {
+    id: 'score_accuracy',
+    projectId: 'project_customer_agent',
+    name: 'accuracy',
+    dataType: 'BOOLEAN',
+    description: '回答是否准确',
+    categories: [],
+    archived: false,
+    createdAt: MOCK_BATCH_CREATED_AT,
+    updatedAt: MOCK_BATCH_CREATED_AT,
+  },
+  {
+    id: 'score_relevance',
+    projectId: 'project_customer_agent',
+    name: 'relevance',
+    dataType: 'NUMERIC',
+    description: '相关性评分',
+    minValue: 0,
+    maxValue: 10,
+    categories: [],
+    archived: false,
+    createdAt: MOCK_BATCH_CREATED_AT,
+    updatedAt: MOCK_BATCH_CREATED_AT,
+  },
+]
+const mockAnnotationQueues: AnnotationQueueRecord[] = [
+  {
+    id: 'queue_mock_batch',
+    projectId: 'project_customer_agent',
+    name: '客服质检队列',
+    description: '人工复核客服 Trace',
+    scoreConfigIds: mockScoreConfigs.map((config) => config.id),
+    assigneeIds: [mockAnnotationUser.id],
+    completedCount: 1,
+    pendingCount: 1,
+    scoreConfigs: mockScoreConfigs,
+    assignees: [mockAnnotationUser],
+    createdAt: MOCK_BATCH_CREATED_AT,
+    updatedAt: MOCK_BATCH_CREATED_AT,
+  },
+]
+const mockAnnotationQueueItems: AnnotationQueueItemRecord[] = [
+  {
+    id: 'ann_item_mock',
+    projectId: 'project_customer_agent',
+    queueId: 'queue_mock_batch',
+    objectId: 'trace_mock_batch',
+    objectType: 'TRACE',
+    status: 'PENDING',
+    scores: [],
+    completedAt: '',
+    completedBy: null,
+    createdAt: MOCK_BATCH_CREATED_AT,
+    updatedAt: MOCK_BATCH_CREATED_AT,
+    source: {
+      objectId: 'trace_mock_batch',
+      objectType: 'TRACE',
+      title: '批量待标注样本',
+      input: { question: '如何重置密码？' },
+      output: { answer: '请在账户设置中重置密码' },
+      metadata: { channel: 'web', source: 'batch_mock' },
+      traceId: 'trace_mock_batch',
+      observationId: '',
+      sessionId: 'session_mock_batch',
+      userId: 'mock_customer',
+      latencyMs: 920,
+      costUsd: 0.002,
+      createdAt: MOCK_BATCH_CREATED_AT,
+    },
+  },
+]
 
 export function ProjectAnnotationBatch() {
   const $api = useAPI()
