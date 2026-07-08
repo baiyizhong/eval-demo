@@ -4,6 +4,14 @@ export type DatasetTypeFilter = DatasetType | 'all'
 
 export type DatasetItemStatus = 'ACTIVE' | 'ARCHIVED'
 
+export type DatasetExportFormat = 'xlsx' | 'csv' | 'txt'
+
+export type DatasetExportJobStatus =
+  | 'PENDING'
+  | 'RUNNING'
+  | 'SUCCEEDED'
+  | 'FAILED'
+
 export type JsonObject = Record<string, unknown>
 
 export type DatasetRecord = {
@@ -33,6 +41,22 @@ export type DatasetItemRecord = {
   sourceObservationId: string
   createdAt: string
   updatedAt: string
+}
+
+export type DatasetExportJobRecord = {
+  id: string
+  projectId: string
+  datasetId: string
+  format: DatasetExportFormat
+  status: DatasetExportJobStatus
+  totalCount: number
+  exportedCount: number
+  fileName: string
+  fileSize: number
+  errorMessage: string
+  createdAt: string
+  updatedAt: string
+  expiresAt: string
 }
 
 export type DatasetFormInput = {
@@ -98,6 +122,11 @@ export type AnnotationItemStatus = 'PENDING' | 'COMPLETED'
 
 export type ScoreDataType = 'NUMERIC' | 'CATEGORICAL' | 'BOOLEAN' | 'TEXT'
 
+export type ScoreConfigCategory = {
+  label: string
+  value: number
+}
+
 export type ProjectUserRecord = {
   id: string
   name: string
@@ -115,7 +144,7 @@ export type ScoreConfigRecord = {
   description: string
   minValue?: number
   maxValue?: number
-  categories?: string[]
+  categories?: ScoreConfigCategory[]
   archived?: boolean
   createdAt?: string
   updatedAt?: string
@@ -202,6 +231,49 @@ export type AnnotationScoreFormInput = {
     stringValue: string
     comment: string
   }[]
+}
+
+export type AnnotationBatchFiltersInput = {
+  keyword?: string
+  status?: AnnotationItemStatus[]
+  objectType?: AnnotationObjectType[]
+  completedBy?: string[]
+  createdAtFrom?: string
+  createdAtTo?: string
+  completedAtFrom?: string
+  completedAtTo?: string
+  hasScores?: boolean
+  metadataFilter?: {
+    key: string
+    operator: 'contains' | 'equals' | 'exists'
+    value?: string
+  }
+  metadataFilters?: {
+    key: string
+    operator: 'contains' | 'equals' | 'exists'
+    value?: string
+  }[]
+  itemIds?: string[]
+}
+
+export type AnnotationBatchPreviewResult = {
+  totalCount: number
+  pendingCount: number
+  completedCount: number
+  samples: AnnotationQueueItemRecord[]
+  filterSummary: string
+}
+
+export type AnnotationBatchSaveResult = {
+  successCount: number
+  failureCount: number
+  skippedCount: number
+  successItemIds: string[]
+  failures: {
+    itemId: string
+    reason: string
+  }[]
+  filterSummary: string
 }
 
 export type AddAnnotationItemToDatasetInput = {

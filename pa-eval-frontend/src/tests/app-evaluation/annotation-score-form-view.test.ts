@@ -42,3 +42,21 @@ test('annotation detail right panel keeps the score header compact', () => {
   assert.match(pageSource, /评分指标/)
   assert.match(pageSource, /queue\.scoreConfigs\.length/)
 })
+
+test('categorical score form switches dense option sets to select control', () => {
+  assert.match(source, /shouldUseCategoricalSelect/)
+  assert.match(source, /SelectTrigger/)
+  assert.match(source, /SelectItem/)
+  assert.match(source, /选择分类/)
+})
+
+test('annotation source panel uses lightweight sections instead of nested cards', () => {
+  const sourcePanel = readFileSync(
+    'src/modules/app-evaluation/components/annotation-source-panel.tsx',
+    'utf8'
+  )
+
+  assert.doesNotMatch(sourcePanel, /@\/components\/ui\/card/)
+  assert.match(sourcePanel, /AnnotationSourceSection/)
+  assert.match(sourcePanel, /formatAnnotationScoreDisplay/)
+})

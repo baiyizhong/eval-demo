@@ -85,6 +85,7 @@ type DataTableRequestConfig<TData, TResponse> = {
     readonly unknown[] | ((state: DataTableQueryState) => readonly unknown[])
   queryFn: (state: DataTableQueryState) => Promise<TResponse>
   enabled?: boolean
+  refetchInterval?: number | false
   selectRows?: (response: TResponse) => TData[]
   selectTotal?: (response: TResponse) => number
 }
@@ -263,6 +264,7 @@ function DataTableContent<
     queryKey,
     queryFn: () => request.queryFn(queryState),
     enabled: request.enabled ?? true,
+    refetchInterval: request.refetchInterval,
     placeholderData: keepPreviousData,
   })
 

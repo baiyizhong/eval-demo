@@ -26,7 +26,10 @@ const scoreConfigs: ScoreConfigRecord[] = [
     name: '是否合格',
     dataType: 'BOOLEAN',
     description: '',
-    categories: ['是|1', '否|0', 'unexpected|不要展示'],
+    categories: [
+      { label: 'True', value: 1 },
+      { label: 'False', value: 0 },
+    ],
   },
   {
     id: 'category_config',
@@ -34,7 +37,10 @@ const scoreConfigs: ScoreConfigRecord[] = [
     name: '问题类型',
     dataType: 'CATEGORICAL',
     description: '',
-    categories: ['tool|工具', 'answer|答案'],
+    categories: [
+      { label: '工具', value: 1 },
+      { label: '答案', value: 2 },
+    ],
   },
   {
     id: 'text_config',
@@ -82,8 +88,8 @@ const item = {
       configId: 'category_config',
       name: '问题类型',
       dataType: 'CATEGORICAL',
-      value: null,
-      stringValue: 'tool',
+      value: 2,
+      stringValue: '答案',
       comment: '',
       authorUserId: 'user_a',
       createdAt: '',
@@ -136,8 +142,8 @@ test('annotation score defaults map each score type into the field it actually e
     },
     {
       configId: 'category_config',
-      value: null,
-      stringValue: 'tool',
+      value: 2,
+      stringValue: '答案',
       comment: '',
     },
     {
@@ -167,8 +173,8 @@ test('annotation score submit payload clears stale fields by score type', () => 
         },
         {
           configId: 'category_config',
-          value: 5,
-          stringValue: 'answer',
+          value: null,
+          stringValue: '答案',
           comment: '',
         },
         {
@@ -192,15 +198,26 @@ test('annotation score submit payload clears stale fields by score type', () => 
     },
     {
       configId: 'category_config',
-      value: null,
-      stringValue: 'answer',
+      value: 2,
+      stringValue: '答案',
       comment: '',
     },
     {
       configId: 'text_config',
-      value: null,
+      value: 0,
       stringValue: '人工说明',
       comment: '',
     },
+  ])
+})
+
+test('categorical options expose Langfuse numeric values with display labels', async () => {
+  const { getCategoricalScoreOptions } = await import(
+    '../../modules/app-evaluation/components/annotation-score-values.ts'
+  )
+
+  assert.deepEqual(getCategoricalScoreOptions(scoreConfigs[2]), [
+    { value: '1', label: '工具' },
+    { value: '2', label: '答案' },
   ])
 })

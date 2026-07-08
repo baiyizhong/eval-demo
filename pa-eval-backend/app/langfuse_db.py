@@ -1,5 +1,5 @@
 import json
-from datetime import datetime
+from datetime import datetime, timedelta, timezone
 from typing import Any
 from uuid import uuid4
 
@@ -28,6 +28,12 @@ EXISTS (
       )
 )
 """
+
+LANGFUSE_BOOLEAN_SCORE_CATEGORIES = [
+    {"label": "True", "value": 1},
+    {"label": "False", "value": 0},
+]
+TEXT_SCORE_MAX_LENGTH = 500
 
 
 class LangfuseDatabaseConfigError(BusinessError):
@@ -1598,6 +1604,160 @@ class LangfuseDatabaseReader:
             )
         return self._to_dataset_item_payload(row)
 
+    async def create_dataset_export_job_for_user(
+        self,
+        project_id: str,
+        dataset_id: str,
+        user_id: str,
+        export_format: str,
+    ) -> dict[str, Any]:
+        if not self._database_url:
+            raise LangfuseDatabaseConfigError()
+
+        job_id = _new_langfuse_id("paexport")
+        expires_at = datetime.now(timezone.utc) + timedelta(days=7)
+        async with await psycopg.AsyncConnection.connect(
+            self._database_url,
+            row_factory=dict_row,
+        ) as connection:
+            async with connection.cursor() as cursor:
+                await self._get_project_for_user(cursor, project_id, user_id)
+                await self._ensure_dataset_exists(cursor, project_id, dataset_id)
+                await cursor.execute(
+                    """
+                    INSERT INTO pa_dataset_export_jobs (
+                        create_by,
+                        update_by,
+                        id,
+                        project_id,
+                        dataset_id,
+                        format,
+                        status,
+                        expires_at
+                    )
+                    VALUES (
+                        %(user_id)s,
+                        %(user_id)s,
+                        %(id)s,
+                        %(project_id)s,
+                        %(dataset_id)s,
+                        %(format)s,
+                        'PENDING',
+                        %(expires_at)s
+                    )
+                    """,
+                    {
+                        "id": job_id,
+                        "project_id": project_id,
+                        "dataset_id": dataset_id,
+                        "user_id": user_id,
+                        "format": export_format,
+                        "expires_at": expires_at,
+                    },
+                )
+                return await self._get_dataset_export_job_payload_cursor(
+                    cursor,
+                    project_id,
+                    dataset_id,
+                    job_id,
+                )
+
+    async def get_dataset_export_job_for_user(
+        self,
+        project_id: str,
+        dataset_id: str,
+        job_id: str,
+        user_id: str,
+    ) -> dict[str, Any]:
+        if not self._database_url:
+            raise LangfuseDatabaseConfigError()
+
+        async with await psycopg.AsyncConnection.connect(
+            self._database_url,
+            row_factory=dict_row,
+        ) as connection:
+            async with connection.cursor() as cursor:
+                await self._get_project_for_user(cursor, project_id, user_id)
+                await self._ensure_dataset_exists(cursor, project_id, dataset_id)
+                return await self._get_dataset_export_job_payload_cursor(
+                    cursor,
+                    project_id,
+                    dataset_id,
+                    job_id,
+                )
+
+    async def mark_dataset_export_job_running(
+        self,
+        project_id: str,
+        dataset_id: str,
+        job_id: str,
+    ) -> None:
+        await self._execute_dataset_export_job_update(
+            project_id,
+            dataset_id,
+            job_id,
+            """
+            status = 'RUNNING',
+            started_at = COALESCE(started_at, NOW()),
+            update_date = NOW()
+            """,
+            {},
+        )
+
+    async def mark_dataset_export_job_succeeded(
+        self,
+        project_id: str,
+        dataset_id: str,
+        job_id: str,
+        *,
+        total_count: int,
+        file_name: str,
+        file_path: str,
+        file_size: int,
+    ) -> None:
+        await self._execute_dataset_export_job_update(
+            project_id,
+            dataset_id,
+            job_id,
+            """
+            status = 'SUCCEEDED',
+            total_count = %(total_count)s,
+            exported_count = %(total_count)s,
+            file_name = %(file_name)s,
+            file_path = %(file_path)s,
+            file_size = %(file_size)s,
+            error_message = '',
+            completed_at = NOW(),
+            update_date = NOW()
+            """,
+            {
+                "total_count": total_count,
+                "file_name": file_name,
+                "file_path": file_path,
+                "file_size": file_size,
+            },
+        )
+
+    async def mark_dataset_export_job_failed(
+        self,
+        project_id: str,
+        dataset_id: str,
+        job_id: str,
+        error_message: str,
+    ) -> None:
+        await self._execute_dataset_export_job_update(
+            project_id,
+            dataset_id,
+            job_id,
+            """
+            status = 'FAILED',
+            error_message = %(error_message)s,
+            completed_at = NOW(),
+            update_date = NOW()
+            """,
+            {"error_message": error_message[:1000]},
+        )
+
     async def list_score_configs_for_user(
         self,
         project_id: str,
@@ -2612,6 +2772,12 @@ class LangfuseDatabaseReader:
                         project_id,
                         config_id,
                     )
+                    if config.get("is_archived"):
+                        raise BusinessError(
+                            code=1026,
+                            message="已归档评分指标不能继续标注",
+                            status_code=400,
+                        )
                     await cursor.execute(
                         """
                         DELETE FROM scores
@@ -2637,7 +2803,7 @@ class LangfuseDatabaseReader:
                         },
                     )
                     value, string_value = self._normalize_score_value(
-                        config["data_type"],
+                        config,
                         score.get("value"),
                         score.get("stringValue") or "",
                     )
@@ -4161,6 +4327,79 @@ class LangfuseDatabaseReader:
                 status_code=404,
             )
 
+    async def _get_dataset_export_job_payload_cursor(
+        self,
+        cursor: psycopg.AsyncCursor[dict[str, Any]],
+        project_id: str,
+        dataset_id: str,
+        job_id: str,
+    ) -> dict[str, Any]:
+        await cursor.execute(
+            """
+            SELECT
+                id,
+                project_id,
+                dataset_id,
+                format,
+                status,
+                total_count,
+                exported_count,
+                file_name,
+                file_path,
+                file_size,
+                error_message,
+                create_date,
+                update_date,
+                expires_at
+            FROM pa_dataset_export_jobs
+            WHERE project_id = %(project_id)s
+              AND dataset_id = %(dataset_id)s
+              AND id = %(job_id)s
+            LIMIT 1
+            """,
+            {
+                "project_id": project_id,
+                "dataset_id": dataset_id,
+                "job_id": job_id,
+            },
+        )
+        row = await cursor.fetchone()
+        if row is None:
+            raise BusinessError(1027, "数据集导出任务不存在或无访问权限", 404)
+        return self._to_dataset_export_job_payload(row)
+
+    async def _execute_dataset_export_job_update(
+        self,
+        project_id: str,
+        dataset_id: str,
+        job_id: str,
+        assignments_sql: str,
+        params: dict[str, Any],
+    ) -> None:
+        if not self._database_url:
+            raise LangfuseDatabaseConfigError()
+
+        async with await psycopg.AsyncConnection.connect(
+            self._database_url,
+            row_factory=dict_row,
+        ) as connection:
+            async with connection.cursor() as cursor:
+                await cursor.execute(
+                    f"""
+                    UPDATE pa_dataset_export_jobs
+                    SET {assignments_sql}
+                    WHERE project_id = %(project_id)s
+                      AND dataset_id = %(dataset_id)s
+                      AND id = %(job_id)s
+                    """,
+                    {
+                        **params,
+                        "project_id": project_id,
+                        "dataset_id": dataset_id,
+                        "job_id": job_id,
+                    },
+                )
+
     @staticmethod
     async def _get_latest_evaluator_version(
         cursor: psycopg.AsyncCursor[dict[str, Any]],
@@ -4462,7 +4701,11 @@ class LangfuseDatabaseReader:
             SELECT
                 id,
                 name,
-                data_type::text AS data_type
+                data_type::text AS data_type,
+                min_value,
+                max_value,
+                categories,
+                is_archived
             FROM score_configs
             WHERE project_id = %(project_id)s
               AND id = %(config_id)s
@@ -4513,17 +4756,43 @@ class LangfuseDatabaseReader:
 
     @staticmethod
     def _normalize_score_value(
-        data_type: str,
+        config: dict[str, Any] | str,
         value: Any,
         string_value: str,
     ) -> tuple[float | None, str | None]:
+        if isinstance(config, str):
+            data_type = config
+            config_payload: dict[str, Any] = {"data_type": data_type}
+        else:
+            data_type = config.get("data_type") or config.get("dataType") or "NUMERIC"
+            config_payload = config
+
         if data_type == "NUMERIC":
-            return (float(value) if value is not None else None, None)
+            numeric_value = float(value) if value is not None else None
+            min_value = _to_float_or_none(config_payload.get("min_value"))
+            max_value = _to_float_or_none(config_payload.get("max_value"))
+            if numeric_value is not None:
+                if min_value is not None and numeric_value < min_value:
+                    raise BusinessError(1026, "评分值不能小于指标最小值", 400)
+                if max_value is not None and numeric_value > max_value:
+                    raise BusinessError(1026, "评分值不能大于指标最大值", 400)
+            return (numeric_value, None)
         if data_type == "BOOLEAN":
             boolean_value = _parse_boolean_score_value(value, string_value)
             if boolean_value is None:
                 return None, None
             return (1.0 if boolean_value else 0.0, str(boolean_value).lower())
+        if data_type == "CATEGORICAL":
+            categories = _normalize_score_categories(config_payload.get("categories"))
+            category = _find_score_category(categories, value, string_value)
+            if category is None:
+                raise BusinessError(1026, "分类评分值不在指标选项中", 400)
+            return (float(category["value"]), str(category["label"]))
+        if data_type == "TEXT":
+            text_value = (string_value or "").strip()
+            if len(text_value) > TEXT_SCORE_MAX_LENGTH:
+                raise BusinessError(1026, "文本评分不能超过 500 个字符", 400)
+            return (0.0, text_value or None)
         return None, string_value or None
 
     @staticmethod
@@ -4719,6 +4988,25 @@ class LangfuseDatabaseReader:
         }
 
     @staticmethod
+    def _to_dataset_export_job_payload(row: dict[str, Any]) -> dict[str, Any]:
+        return {
+            "id": row["id"],
+            "projectId": row["project_id"],
+            "datasetId": row["dataset_id"],
+            "format": row["format"],
+            "status": row["status"],
+            "totalCount": row.get("total_count") or 0,
+            "exportedCount": row.get("exported_count") or 0,
+            "fileName": row.get("file_name") or "",
+            "filePath": row.get("file_path") or "",
+            "fileSize": row.get("file_size") or 0,
+            "errorMessage": row.get("error_message") or "",
+            "createdAt": _format_datetime(row["create_date"]),
+            "updatedAt": _format_datetime(row["update_date"]),
+            "expiresAt": _format_datetime(row["expires_at"]),
+        }
+
+    @staticmethod
     def _to_score_config_payload(row: dict[str, Any]) -> dict[str, Any]:
         return {
             "id": row["id"],
@@ -4860,6 +5148,8 @@ def _format_datetime(value: Any) -> str:
 def _to_float_or_none(value: Any) -> float | None:
     if value is None:
         return None
+    if value == "":
+        return None
     return float(value)
 
 
@@ -4886,18 +5176,24 @@ def _parse_boolean_score_value(value: Any, string_value: str = "") -> bool | Non
     return None
 
 
-def _normalize_score_categories(value: Any) -> list[str]:
+def _normalize_score_categories(value: Any) -> list[dict[str, float | str]]:
     if not isinstance(value, list):
         return []
 
-    categories: list[str] = []
-    for item in value:
+    categories: list[dict[str, float | str]] = []
+    for index, item in enumerate(value):
         if isinstance(item, str):
-            categories.append(item)
+            categories.append(_legacy_string_score_category(item, index))
         elif isinstance(item, dict):
-            raw_value = item.get("value") or item.get("label")
-            if raw_value:
-                categories.append(str(raw_value))
+            label = str(item.get("label") or item.get("value") or "").strip()
+            raw_value = item.get("value")
+            if not label:
+                continue
+            try:
+                numeric_value = float(raw_value)
+            except (TypeError, ValueError):
+                numeric_value = float(index + 1)
+            categories.append({"label": label, "value": numeric_value})
     return categories
 
 
@@ -4913,6 +5209,43 @@ def _normalize_score_config_object(config: dict[str, Any]) -> dict[str, Any]:
         "categories": _normalize_score_categories(config.get("categories")),
         "archived": bool(config.get("archived")),
     }
+
+
+def _legacy_string_score_category(
+    item: str,
+    index: int,
+) -> dict[str, float | str]:
+    raw_value, separator, raw_label = item.partition("|")
+    label = (raw_label if separator else raw_value).strip()
+    value_candidate = raw_value.strip()
+    try:
+        numeric_value = float(value_candidate)
+    except ValueError:
+        numeric_value = float(index + 1)
+    return {"label": label or value_candidate, "value": numeric_value}
+
+
+def _find_score_category(
+    categories: list[dict[str, float | str]],
+    value: Any,
+    string_value: str,
+) -> dict[str, float | str] | None:
+    label_candidate = (string_value or "").strip()
+    numeric_candidate: float | None = None
+    if value is not None:
+        try:
+            numeric_candidate = float(value)
+        except (TypeError, ValueError):
+            label_candidate = str(value).strip()
+
+    for category in categories:
+        category_label = str(category["label"])
+        category_value = float(category["value"])
+        if label_candidate and label_candidate == category_label:
+            return category
+        if numeric_candidate is not None and numeric_candidate == category_value:
+            return category
+    return None
 
 
 def _normalize_annotation_score_object(score: dict[str, Any]) -> dict[str, Any]:
@@ -4943,13 +5276,22 @@ def _decode_jsonish(value: Any) -> Any:
 
 
 def _score_config_storage_payload(payload: dict[str, Any]) -> dict[str, Any]:
+    data_type = payload["dataType"]
+    min_value = payload.get("minValue") if data_type == "NUMERIC" else None
+    max_value = payload.get("maxValue") if data_type == "NUMERIC" else None
+    categories: Jsonb | None = None
+    if data_type == "BOOLEAN":
+        categories = Jsonb(LANGFUSE_BOOLEAN_SCORE_CATEGORIES)
+    elif data_type == "CATEGORICAL":
+        categories = Jsonb(_normalize_score_categories(payload.get("categories") or []))
+
     return {
         "name": payload["name"],
-        "data_type": payload["dataType"],
+        "data_type": data_type,
         "description": payload.get("description") or "",
-        "min_value": payload.get("minValue"),
-        "max_value": payload.get("maxValue"),
-        "categories": Jsonb(payload.get("categories") or []),
+        "min_value": min_value,
+        "max_value": max_value,
+        "categories": categories,
     }
 
 

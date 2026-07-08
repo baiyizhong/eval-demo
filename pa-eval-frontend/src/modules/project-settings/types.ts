@@ -1,5 +1,10 @@
 export type ScoreConfigDataType = 'NUMERIC' | 'CATEGORICAL' | 'BOOLEAN' | 'TEXT'
 
+export type ScoreConfigCategory = {
+  label: string
+  value: number
+}
+
 export type ProjectRole = 'OWNER' | 'ADMIN' | 'MEMBER' | 'VIEWER'
 
 export type ProjectInfo = {
@@ -19,7 +24,7 @@ export type ScoreConfig = {
   description: string
   minValue?: number
   maxValue?: number
-  categories?: string[]
+  categories?: ScoreConfigCategory[]
   isArchived: boolean
   createdAt?: string
   updatedAt: string

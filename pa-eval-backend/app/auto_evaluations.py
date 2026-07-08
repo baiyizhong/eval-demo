@@ -458,12 +458,17 @@ def _clickhouse_quote(value: str) -> str:
 
 
 def _trace_time_range_condition(time_range: Any) -> str:
-    normalized = str(time_range or "24h")
-    if normalized == "7d":
-        return "AND t.timestamp >= now() - INTERVAL 7 DAY"
-    if normalized == "30d":
-        return "AND t.timestamp >= now() - INTERVAL 30 DAY"
-    return "AND t.timestamp >= now() - INTERVAL 24 HOUR"
+    normalized = str(time_range or "1d")
+    day_ranges = {
+        "1d": 1,
+        "24h": 1,
+        "3d": 3,
+        "7d": 7,
+        "14d": 14,
+        "30d": 30,
+    }
+    days = day_ranges.get(normalized, 1)
+    return f"AND t.timestamp >= now() - INTERVAL {days} DAY"
 
 
 async def _query_clickhouse_json_each_row(
@@ -752,11 +757,12 @@ def _parse_workflow_result(
 
     score = float(outputs.get("score") or 0)
     passed_value = outputs.get("passed")
-    passed = (
-        passed_value
-        if isinstance(passed_value, bool)
-        else str(passed_value or "false").lower() == "true"
-    )
+    if passed_value is None:
+        passed = score >= 0.6
+    elif isinstance(passed_value, bool):
+        passed = passed_value
+    else:
+        passed = str(passed_value).lower() == "true"
     reason = str(outputs.get("reason") or "")
     return {
         "raw": body,
@@ -1682,6 +1688,103 @@ async def _insert_rerun_auto_evaluation(
     )
 
 
+async def _update_auto_evaluation_progress(
+    cursor: psycopg.AsyncCursor[dict[str, Any]],
+    *,
+    project_id: str,
+    task_id: str,
+    run_id: str,
+    sample_count: int,
+    completed_count: int,
+    failed_count: int,
+    running_count: int,
+    updated_by: str,
+) -> None:
+    now = datetime.now(timezone.utc)
+    pending_count = max(
+        sample_count - completed_count - failed_count - running_count,
+        0,
+    )
+    execution_stats = {
+        "pending": pending_count,
+        "running": running_count,
+        "completed": completed_count,
+        "failed": failed_count,
+        "cancelled": 0,
+    }
+    await cursor.execute(
+        """
+        UPDATE pa_auto_evaluation_tasks
+        SET status = %(status)s,
+            execution_stats = %(execution_stats)s,
+            update_by = %(update_by)s,
+            update_date = %(update_date)s
+        WHERE project_id = %(project_id)s
+          AND id = %(task_id)s
+        """,
+        {
+            "project_id": project_id,
+            "task_id": task_id,
+            "status": "RUNNING",
+            "execution_stats": Jsonb(execution_stats),
+            "update_by": updated_by,
+            "update_date": now,
+        },
+    )
+    await cursor.execute(
+        """
+        UPDATE pa_auto_evaluation_runs
+        SET status = %(status)s,
+            completed_count = %(completed_count)s,
+            failed_count = %(failed_count)s,
+            duration_text = %(duration_text)s,
+            update_by = %(update_by)s,
+            update_date = %(update_date)s
+        WHERE project_id = %(project_id)s
+          AND task_id = %(task_id)s
+          AND id = %(run_id)s
+        """,
+        {
+            "project_id": project_id,
+            "task_id": task_id,
+            "run_id": run_id,
+            "status": "RUNNING",
+            "completed_count": completed_count,
+            "failed_count": failed_count,
+            "duration_text": "运行中",
+            "update_by": updated_by,
+            "update_date": now,
+        },
+    )
+
+
+async def _persist_auto_evaluation_progress(
+    settings: Settings,
+    *,
+    project_id: str,
+    task_id: str,
+    run_id: str,
+    sample_count: int,
+    completed_count: int,
+    failed_count: int = 0,
+    running_count: int = 0,
+    updated_by: str,
+) -> None:
+    async with await _connect(settings) as connection:
+        async with connection.cursor() as cursor:
+            await _update_auto_evaluation_progress(
+                cursor,
+                project_id=project_id,
+                task_id=task_id,
+                run_id=run_id,
+                sample_count=sample_count,
+                completed_count=completed_count,
+                failed_count=failed_count,
+                running_count=running_count,
+                updated_by=updated_by,
+            )
+
+
 async def _run_auto_evaluation_background(
     settings: Settings,
     project_id: str,
@@ -1693,9 +1796,21 @@ async def _run_auto_evaluation_background(
     data_source: dict[str, Any],
     updated_by: str,
 ) -> None:
+    completed_count = 0
     try:
         results: list[dict[str, Any]] = []
+        sample_count = len(samples)
         for sample in samples:
+            await _persist_auto_evaluation_progress(
+                settings,
+                project_id=project_id,
+                task_id=task_id,
+                run_id=run_id,
+                sample_count=sample_count,
+                completed_count=completed_count,
+                running_count=1,
+                updated_by=updated_by,
+            )
             normalized_sample = _normalize_dataset_item_sample(sample)
             inputs = _build_workflow_inputs(
                 normalized_sample,
@@ -1709,6 +1824,17 @@ async def _run_auto_evaluation_background(
                     "normalizedSample": normalized_sample,
                     **result,
                 }
+            )
+            completed_count += 1
+            await _persist_auto_evaluation_progress(
+                settings,
+                project_id=project_id,
+                task_id=task_id,
+                run_id=run_id,
+                sample_count=sample_count,
+                completed_count=completed_count,
+                running_count=0,
+                updated_by=updated_by,
             )
 
         async with await _connect(settings) as connection:
@@ -1734,6 +1860,7 @@ async def _run_auto_evaluation_background(
                     task_id=task_id,
                     run_id=run_id,
                     sample_count=len(samples),
+                    completed_count=completed_count,
                     message=message,
                     updated_by=updated_by,
                 )
@@ -2000,15 +2127,17 @@ async def _mark_auto_evaluation_failed(
     task_id: str,
     run_id: str,
     sample_count: int,
+    completed_count: int = 0,
     message: str,
     updated_by: str,
 ) -> None:
     now = datetime.now(timezone.utc)
+    failed_count = max(sample_count - completed_count, 0)
     execution_stats = {
         "pending": 0,
         "running": 0,
-        "completed": 0,
-        "failed": sample_count,
+        "completed": completed_count,
+        "failed": failed_count,
         "cancelled": 0,
     }
     await cursor.execute(
@@ -2034,6 +2163,7 @@ async def _mark_auto_evaluation_failed(
         """
         UPDATE pa_auto_evaluation_runs
         SET status = %(status)s,
+            completed_count = %(completed_count)s,
             failed_count = %(failed_count)s,
             ended_at = %(ended_at)s,
             duration_text = %(duration_text)s,
@@ -2049,7 +2179,8 @@ async def _mark_auto_evaluation_failed(
             "task_id": task_id,
             "run_id": run_id,
             "status": "FAILED",
-            "failed_count": sample_count,
+            "completed_count": completed_count,
+            "failed_count": failed_count,
             "ended_at": now,
             "duration_text": "执行失败",
             "error_message": message,

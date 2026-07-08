@@ -15,6 +15,7 @@ class FakeDatabaseReader:
         self.created_item = None
         self.updated_item = None
         self.archived_item = None
+        self.export_job = None
 
     async def list_datasets_for_user(self, project_id: str, user_id: str) -> list[dict]:
         self.project_id = project_id
@@ -247,6 +248,104 @@ class FakeDatabaseReader:
             "updatedAt": "2026-07-02T09:10:00.000Z",
         }
 
+    async def create_dataset_export_job_for_user(
+        self,
+        project_id: str,
+        dataset_id: str,
+        user_id: str,
+        export_format: str,
+    ) -> dict:
+        self.project_id = project_id
+        self.user_id = user_id
+        self.export_job = {
+            "id": "export-job-1",
+            "projectId": project_id,
+            "datasetId": dataset_id,
+            "format": export_format,
+            "status": "PENDING",
+            "totalCount": 0,
+            "exportedCount": 0,
+            "fileName": "",
+            "fileSize": 0,
+            "errorMessage": "",
+            "createdAt": "2026-07-02T10:00:00.000Z",
+            "updatedAt": "2026-07-02T10:00:00.000Z",
+            "expiresAt": "2026-07-09T10:00:00.000Z",
+        }
+        return self.export_job
+
+    async def get_dataset_export_job_for_user(
+        self,
+        project_id: str,
+        dataset_id: str,
+        job_id: str,
+        user_id: str,
+    ) -> dict:
+        self.project_id = project_id
+        self.user_id = user_id
+        return self.export_job or {
+            "id": job_id,
+            "projectId": project_id,
+            "datasetId": dataset_id,
+            "format": "csv",
+            "status": "SUCCEEDED",
+            "totalCount": 1,
+            "exportedCount": 1,
+            "fileName": "dataset.csv",
+            "fileSize": 128,
+            "errorMessage": "",
+            "createdAt": "2026-07-02T10:00:00.000Z",
+            "updatedAt": "2026-07-02T10:01:00.000Z",
+            "expiresAt": "2026-07-09T10:00:00.000Z",
+        }
+
+    async def mark_dataset_export_job_running(
+        self,
+        project_id: str,
+        dataset_id: str,
+        job_id: str,
+    ) -> None:
+        if self.export_job:
+            self.export_job["status"] = "RUNNING"
+
+    async def mark_dataset_export_job_succeeded(
+        self,
+        project_id: str,
+        dataset_id: str,
+        job_id: str,
+        *,
+        total_count: int,
+        file_name: str,
+        file_path: str,
+        file_size: int,
+    ) -> None:
+        if self.export_job:
+            self.export_job.update(
+                {
+                    "status": "SUCCEEDED",
+                    "totalCount": total_count,
+                    "exportedCount": total_count,
+                    "fileName": file_name,
+                    "filePath": file_path,
+                    "fileSize": file_size,
+                }
+            )
+
+    async def mark_dataset_export_job_failed(
+        self,
+        project_id: str,
+        dataset_id: str,
+        job_id: str,
+        error_message: str,
+    ) -> None:
+        if self.export_job:
+            self.export_job.update(
+                {
+                    "status": "FAILED",
+                    "errorMessage": error_message,
+                }
+            )
+
 
 def override_reader(fake_reader: FakeDatabaseReader):
     async def _override() -> LangfuseDatabaseReader:
@@ -415,3 +514,42 @@ def test_creates_updates_and_archives_langfuse_dataset_items() -> None:
         "dataset_id": "dataset-1",
         "item_id": "item-created",
     }
+
+
+def test_creates_and_gets_dataset_export_job() -> None:
+    fake_reader = FakeDatabaseReader()
+    override_reader(fake_reader)
+
+    try:
+        client = TestClient(app)
+        create_response = client.post(
+            "/api/projects/project-1/datasets/dataset-1/export-jobs",
+            json={"format": "csv"},
+        )
+        get_response = client.get(
+            "/api/projects/project-1/datasets/dataset-1/export-jobs/export-job-1"
+        )
+    finally:
+        clear_overrides()
+
+    assert create_response.status_code == 200
+    assert create_response.json()["data"]["id"] == "export-job-1"
+    assert create_response.json()["data"]["format"] == "csv"
+    assert fake_reader.export_job is not None
+    assert get_response.status_code == 200
+    assert get_response.json()["data"]["projectId"] == "project-1"
+
+
+def test_rejects_unsupported_dataset_export_format() -> None:
+    fake_reader = FakeDatabaseReader()
+    override_reader(fake_reader)
+
+    try:
+        response = TestClient(app).post(
+            "/api/projects/project-1/datasets/dataset-1/export-jobs",
+            json={"format": "json"},
+        )
+    finally:
+        clear_overrides()
+
+    assert response.status_code == 422

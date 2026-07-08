@@ -5,6 +5,9 @@ import type {
 } from '@/components/common/data-table'
 import type {
   AddAnnotationItemToDatasetInput,
+  AnnotationBatchFiltersInput,
+  AnnotationBatchPreviewResult,
+  AnnotationBatchSaveResult,
   AnnotationNavigationResult,
   AnnotationQueueExportPayload,
   AnnotationQueueFormInput,
@@ -13,6 +16,7 @@ import type {
   AnnotationQueueRecord,
   AnnotationScoreFormInput,
   ProjectUserRecord,
+  ScoreConfigCategory,
   ScoreConfigRecord,
 } from '../types'
 
@@ -32,6 +36,8 @@ type AnnotationApiClient = {
   getProjectAnnotationQueueMetrics: ApiMethod
   getProjectAnnotationQueueItems: ApiMethod
   deleteProjectAnnotationQueueItems: ApiMethod
+  previewProjectAnnotationBatch: ApiMethod
+  saveProjectAnnotationBatchScores: ApiMethod
   saveProjectAnnotationScores: ApiMethod
   addProjectAnnotationItemToDataset: ApiMethod
   createTraceAnnotationTask: ApiMethod
@@ -44,7 +50,7 @@ export type ScoreConfigInput = {
   description: string
   minValue?: number | null
   maxValue?: number | null
-  categories: string[]
+  categories: ScoreConfigCategory[]
 }
 
 export function listProjectScoreConfigs(
@@ -213,6 +219,18 @@ export function listProjectAnnotationQueueItems(
   const status = query.filters.status as string[] | undefined
   const objectType = query.filters.objectType as string[] | undefined
   const completedBy = query.filters.completedBy as string[] | undefined
+  const createdAtFrom = query.filters.createdAtFrom as string | undefined
+  const createdAtTo = query.filters.createdAtTo as string | undefined
+  const completedAtFrom = query.filters.completedAtFrom as string | undefined
+  const completedAtTo = query.filters.completedAtTo as string | undefined
+  const hasScores = query.filters.hasScores as boolean | undefined
+  const metadataKey = query.filters.metadataKey as string | undefined
+  const metadataOperator = query.filters.metadataOperator as string | undefined
+  const metadataValue = query.filters.metadataValue as string | undefined
+  const metadataFilters = query.filters.metadataFilters as
+    | AnnotationBatchFiltersInput['metadataFilters']
+    | undefined
+  const itemIds = query.filters.itemIds as string[] | undefined
 
   return api.getProjectAnnotationQueueItems<
     DataTableListResponse<AnnotationQueueItemRecord>
@@ -225,6 +243,18 @@ export function listProjectAnnotationQueueItems(
       ...(status?.length ? { status } : {}),
       ...(objectType?.length ? { objectType } : {}),
       ...(completedBy?.length ? { completedBy } : {}),
+      ...(createdAtFrom ? { createdAtFrom } : {}),
+      ...(createdAtTo ? { createdAtTo } : {}),
+      ...(completedAtFrom ? { completedAtFrom } : {}),
+      ...(completedAtTo ? { completedAtTo } : {}),
+      ...(typeof hasScores === 'boolean' ? { hasScores } : {}),
+      ...(metadataKey ? { metadataKey } : {}),
+      ...(metadataOperator ? { metadataOperator } : {}),
+      ...(metadataValue ? { metadataValue } : {}),
+      ...(metadataFilters?.length
+        ? { metadataFilters: JSON.stringify(metadataFilters) }
+        : {}),
+      ...(itemIds?.length ? { itemIds } : {}),
     },
   })
 }
@@ -271,6 +301,88 @@ export function saveProjectAnnotationScores(
     path: { projectId, queueId, itemId },
     body: input,
   })
+}
+
+export function previewProjectAnnotationBatch(
+  api: AnnotationApiClient,
+  projectId: string,
+  queueId: string,
+  input: {
+    filters: AnnotationBatchFiltersInput
+    limit?: number
+  }
+) {
+  return api.previewProjectAnnotationBatch<AnnotationBatchPreviewResult>({
+    path: { projectId, queueId },
+    body: input,
+  })
+}
+
+export function saveProjectAnnotationBatchScores(
+  api: AnnotationApiClient,
+  projectId: string,
+  queueId: string,
+  input: {
+    filters: AnnotationBatchFiltersInput
+    scores: AnnotationScoreFormInput['scores']
+    expectedPendingCount: number
+    confirmLargeBatch?: boolean
+  }
+) {
+  return api.saveProjectAnnotationBatchScores<AnnotationBatchSaveResult>({
+    path: { projectId, queueId },
+    body: input,
+  })
+}
+
+export function buildAnnotationBatchFilters(
+  query: DataTableQueryState
+): AnnotationBatchFiltersInput {
+  const keyword = query.keyword.trim()
+  const status = query.filters.status as string[] | undefined
+  const objectType = query.filters.objectType as string[] | undefined
+  const completedBy = query.filters.completedBy as string[] | undefined
+  const createdAtFrom = query.filters.createdAtFrom as string | undefined
+  const createdAtTo = query.filters.createdAtTo as string | undefined
+  const completedAtFrom = query.filters.completedAtFrom as string | undefined
+  const completedAtTo = query.filters.completedAtTo as string | undefined
+  const hasScores = query.filters.hasScores as boolean | undefined
+  const metadataKey = query.filters.metadataKey as string | undefined
+  const metadataOperator = query.filters.metadataOperator as
+    | NonNullable<AnnotationBatchFiltersInput['metadataFilter']>['operator']
+    | undefined
+  const metadataValue = query.filters.metadataValue as string | undefined
+  const metadataFilters = query.filters.metadataFilters as
+    | AnnotationBatchFiltersInput['metadataFilters']
+    | undefined
+  const itemIds = query.filters.itemIds as string[] | undefined
+
+  return {
+    ...(keyword ? { keyword } : {}),
+    ...(status?.length
+      ? { status: status as AnnotationBatchFiltersInput['status'] }
+      : {}),
+    ...(objectType?.length
+      ? { objectType: objectType as AnnotationBatchFiltersInput['objectType'] }
+      : {}),
+    ...(completedBy?.length ? { completedBy } : {}),
+    ...(createdAtFrom ? { createdAtFrom } : {}),
+    ...(createdAtTo ? { createdAtTo } : {}),
+    ...(completedAtFrom ? { completedAtFrom } : {}),
+    ...(completedAtTo ? { completedAtTo } : {}),
+    ...(typeof hasScores === 'boolean' ? { hasScores } : {}),
+    ...(metadataKey
+      ? {
+          metadataFilter: {
+            key: metadataKey,
+            operator: metadataOperator ?? 'contains',
+            ...(metadataValue ? { value: metadataValue } : {}),
+          },
+        }
+      : {}),
+    ...(metadataFilters?.length ? { metadataFilters } : {}),
+    ...(itemIds?.length ? { itemIds } : {}),
+  }
 }
 
 export function deleteProjectAnnotationQueueItems(

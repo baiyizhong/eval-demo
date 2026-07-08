@@ -3,6 +3,7 @@ import {
   AppEvaluation,
   AppEvaluationIndexRedirect,
 } from '@/modules/app-evaluation'
+import { ProjectAnnotationBatch } from '@/modules/app-evaluation/views/annotation-batch'
 import { ProjectAnnotationItemAnnotate } from '@/modules/app-evaluation/views/annotation-item-annotate'
 import { ProjectAnnotationQueueDetail } from '@/modules/app-evaluation/views/annotation-queue-detail'
 import { ProjectAnnotationQueues } from '@/modules/app-evaluation/views/annotation-queues'
@@ -180,6 +181,10 @@ export const routes = [
                   {
                     path: 'annotation-queues/:queueId/items/:itemId/annotate',
                     element: <ProjectAnnotationItemAnnotate />,
+                  },
+                  {
+                    path: 'manual-annotations/:queueId/batch',
+                    element: <ProjectAnnotationBatch />,
                   },
                   {
                     path: 'auto-evaluations',

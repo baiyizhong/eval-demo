@@ -34,7 +34,11 @@ export const mockScoreConfigs: ScoreConfig[] = [
     name: 'safety_label',
     dataType: 'CATEGORICAL',
     description: '标记回复是否触发安全风险。',
-    categories: ['safe', 'warning', 'unsafe'],
+    categories: [
+      { label: 'safe', value: 1 },
+      { label: 'warning', value: 2 },
+      { label: 'unsafe', value: 3 },
+    ],
     isArchived: false,
     updatedAt: '2026-07-01T13:10:00+08:00',
   },

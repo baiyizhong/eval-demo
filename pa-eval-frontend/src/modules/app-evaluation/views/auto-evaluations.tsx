@@ -49,6 +49,7 @@ export function ProjectAutoEvaluations() {
   const summaryQuery = useQuery({
     queryKey: ['project-auto-evaluations', $api, projectId, 'summary'],
     queryFn: () => getProjectAutoEvaluationTaskSummary($api, projectId),
+    refetchInterval: 3000,
   })
 
   const columns = useMemo(
@@ -124,6 +125,7 @@ export function ProjectAutoEvaluations() {
               ],
               queryFn: (state) =>
                 listProjectAutoEvaluationTasks($api, projectId, state),
+              refetchInterval: 3000,
             }}
             urlState={{
               defaultPageSize: 10,

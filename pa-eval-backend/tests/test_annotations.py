@@ -1,6 +1,7 @@
 from fastapi.testclient import TestClient
 
 from app.auth_context import CurrentUserContext, get_current_user_context
+from app.errors import BusinessError
 from app.langfuse_clickhouse import get_langfuse_clickhouse_reader
 from app.langfuse_db import LangfuseDatabaseReader, get_langfuse_db_reader
 from app.main import app
@@ -251,7 +252,67 @@ class FakeAnnotationDatabaseReader:
                 "completedBy": None,
                 "createdAt": "2026-07-06T01:00:00.000Z",
                 "updatedAt": "2026-07-06T01:00:00.000Z",
-            }
+            },
+            {
+                "id": "item-2",
+                "projectId": project_id,
+                "queueId": queue_id,
+                "objectId": "trace-2",
+                "objectType": "TRACE",
+                "status": "PENDING",
+                "source": {
+                    "objectId": "trace-2",
+                    "objectType": "TRACE",
+                    "title": "trace-2",
+                    "input": {"question": "如何修改发票抬头？"},
+                    "output": {"answer": "进入订单详情修改"},
+                    "metadata": {"environment": "production", "errorType": "billing"},
+                    "traceId": "trace-2",
+                    "observationId": "",
+                    "sessionId": "session-2",
+                    "userId": "user-2",
+                    "latencyMs": 10,
+                    "costUsd": 0,
+                    "createdAt": "2026-07-06T01:10:00.000Z",
+                },
+                "scores": [],
+                "completedAt": "",
+                "completedBy": None,
+                "createdAt": "2026-07-06T01:10:00.000Z",
+                "updatedAt": "2026-07-06T01:10:00.000Z",
+            },
+            {
+                "id": "item-done",
+                "projectId": project_id,
+                "queueId": queue_id,
+                "objectId": "trace-done",
+                "objectType": "TRACE",
+                "status": "COMPLETED",
+                "source": {
+                    "objectId": "trace-done",
+                    "objectType": "TRACE",
+                    "title": "trace-done",
+                    "input": {"question": "已完成样本"},
+                    "output": {"answer": "已处理"},
+                    "metadata": {"environment": "production"},
+                    "traceId": "trace-done",
+                    "observationId": "",
+                    "sessionId": "session-done",
+                    "userId": "user-done",
+                    "latencyMs": 20,
+                    "costUsd": 0,
+                    "createdAt": "2026-07-06T01:20:00.000Z",
+                },
+                "scores": [],
+                "completedAt": "2026-07-06T02:00:00.000Z",
+                "completedBy": {
+                    "id": "user-1",
+                    "name": "Octocat",
+                    "email": "octocat@example.com",
+                },
+                "createdAt": "2026-07-06T01:20:00.000Z",
+                "updatedAt": "2026-07-06T02:00:00.000Z",
+            },
         ]
 
 
@@ -461,6 +522,84 @@ def test_creates_updates_and_archives_score_configs() -> None:
     ]
 
 
+def test_score_config_payload_uses_langfuse_category_objects() -> None:
+    fake_reader = FakeAnnotationDatabaseReader()
+    override_reader(fake_reader)
+
+    payload = {
+        "name": "问题类型",
+        "dataType": "CATEGORICAL",
+        "description": "人工标注的问题分类",
+        "minValue": None,
+        "maxValue": None,
+        "categories": [
+            {"label": "工具调用错误", "value": 1},
+            {"label": "答案事实错误", "value": 2},
+        ],
+    }
+    try:
+        response = TestClient(app).post(
+            "/api/projects/project-1/score-configs",
+            json=payload,
+        )
+    finally:
+        clear_overrides()
+
+    assert response.status_code == 200
+    assert fake_reader.calls[0] == (
+        "create_score_config",
+        ("project-1", "user-1", payload),
+    )
+
+
+def test_boolean_score_config_forces_langfuse_boolean_categories() -> None:
+    fake_reader = FakeAnnotationDatabaseReader()
+    override_reader(fake_reader)
+
+    try:
+        response = TestClient(app).post(
+            "/api/projects/project-1/score-configs",
+            json={
+                "name": "是否合格",
+                "dataType": "BOOLEAN",
+                "description": "",
+                "categories": [{"label": "自定义", "value": 99}],
+            },
+        )
+    finally:
+        clear_overrides()
+
+    assert response.status_code == 200
+    assert fake_reader.calls[0][1][2]["categories"] == [
+        {"label": "True", "value": 1},
+        {"label": "False", "value": 0},
+    ]
+
+
+def test_rejects_invalid_categorical_score_config_categories() -> None:
+    fake_reader = FakeAnnotationDatabaseReader()
+    override_reader(fake_reader)
+
+    try:
+        response = TestClient(app).post(
+            "/api/projects/project-1/score-configs",
+            json={
+                "name": "问题类型",
+                "dataType": "CATEGORICAL",
+                "description": "",
+                "categories": [
+                    {"label": "重复", "value": 1},
+                    {"label": "重复", "value": 2},
+                ],
+            },
+        )
+    finally:
+        clear_overrides()
+
+    assert response.status_code == 400
+    assert response.json()["code"] != 0
+
+
 def test_adds_selected_traces_to_dataset_with_trace_details() -> None:
     fake_reader = FakeAnnotationDatabaseReader()
     override_reader(fake_reader)
@@ -516,6 +655,173 @@ def test_saves_annotation_scores_and_completes_queue_item() -> None:
     )
 
 
+def test_previews_annotation_batch_scope_without_overwriting_completed_items() -> None:
+    fake_reader = FakeAnnotationDatabaseReader()
+    override_reader(fake_reader)
+
+    payload = {
+        "filters": {
+            "keyword": "trace",
+            "status": ["PENDING", "COMPLETED"],
+            "objectType": ["TRACE"],
+        },
+        "limit": 2,
+    }
+    try:
+        response = TestClient(app).post(
+            "/api/projects/project-1/annotation-queues/queue-1/batch-preview",
+            json=payload,
+        )
+    finally:
+        clear_overrides()
+
+    assert response.status_code == 200
+    body = response.json()["data"]
+    assert body["totalCount"] == 3
+    assert body["pendingCount"] == 2
+    assert body["completedCount"] == 1
+    assert [item["id"] for item in body["samples"]] == ["item-1", "item-2"]
+    assert "待标注 2 条" in body["filterSummary"]
+    assert fake_reader.calls[0] == ("list_items", ("project-1", "queue-1", "user-1"))
+
+
+def test_previews_annotation_batch_with_time_and_metadata_filters() -> None:
+    fake_reader = FakeAnnotationDatabaseReader()
+    override_reader(fake_reader)
+
+    try:
+        response = TestClient(app).post(
+            "/api/projects/project-1/annotation-queues/queue-1/batch-preview",
+            json={
+                "filters": {
+                    "status": ["PENDING"],
+                    "objectType": ["TRACE"],
+                    "createdAtFrom": "2026-07-06T01:05:00.000Z",
+                    "createdAtTo": "2026-07-06T01:15:00.000Z",
+                    "metadataFilter": {
+                        "key": "errorType",
+                        "operator": "equals",
+                        "value": "billing",
+                    },
+                },
+                "limit": 5,
+            },
+        )
+    finally:
+        clear_overrides()
+
+    assert response.status_code == 200
+    body = response.json()["data"]
+    assert body["totalCount"] == 1
+    assert body["pendingCount"] == 1
+    assert [item["id"] for item in body["samples"]] == ["item-2"]
+    assert "Metadata：errorType equals" in body["filterSummary"]
+
+
+def test_previews_annotation_batch_with_multiple_metadata_filters() -> None:
+    fake_reader = FakeAnnotationDatabaseReader()
+    override_reader(fake_reader)
+
+    try:
+        response = TestClient(app).post(
+            "/api/projects/project-1/annotation-queues/queue-1/batch-preview",
+            json={
+                "filters": {
+                    "status": ["PENDING"],
+                    "metadataFilters": [
+                        {
+                            "key": "environment",
+                            "operator": "equals",
+                            "value": "production",
+                        },
+                        {
+                            "key": "errorType",
+                            "operator": "exists",
+                        },
+                    ],
+                },
+                "limit": 5,
+            },
+        )
+    finally:
+        clear_overrides()
+
+    assert response.status_code == 200
+    body = response.json()["data"]
+    assert body["totalCount"] == 1
+    assert body["pendingCount"] == 1
+    assert [item["id"] for item in body["samples"]] == ["item-2"]
+    assert "Metadata：2 个条件" in body["filterSummary"]
+
+
+def test_lists_annotation_items_with_multiple_metadata_filters() -> None:
+    fake_reader = FakeAnnotationDatabaseReader()
+    override_reader(fake_reader)
+
+    try:
+        response = TestClient(app).get(
+            "/api/projects/project-1/annotation-queues/queue-1/items",
+            params={
+                "status": "PENDING",
+                "metadataFilters": (
+                    '[{"key":"environment","operator":"equals","value":"production"},'
+                    '{"key":"errorType","operator":"exists"}]'
+                ),
+            },
+        )
+    finally:
+        clear_overrides()
+
+    assert response.status_code == 200
+    body = response.json()["data"]
+    assert body["total"] == 1
+    assert [item["id"] for item in body["datas"]] == ["item-2"]
+
+
+def test_bulk_saves_annotation_scores_only_for_pending_filtered_items() -> None:
+    fake_reader = FakeAnnotationDatabaseReader()
+    override_reader(fake_reader)
+
+    scores = [
+        {
+            "configId": "score-1",
+            "value": 2,
+            "stringValue": "",
+            "comment": "同类错误统一低分",
+        }
+    ]
+    payload = {
+        "filters": {
+            "keyword": "trace",
+            "status": ["PENDING", "COMPLETED"],
+            "objectType": ["TRACE"],
+        },
+        "scores": scores,
+        "expectedPendingCount": 2,
+        "confirmLargeBatch": False,
+    }
+    try:
+        response = TestClient(app).post(
+            "/api/projects/project-1/annotation-queues/queue-1/batch-scores",
+            json=payload,
+        )
+    finally:
+        clear_overrides()
+
+    assert response.status_code == 200
+    body = response.json()["data"]
+    assert body["successCount"] == 2
+    assert body["failureCount"] == 0
+    assert body["skippedCount"] == 1
+    assert body["successItemIds"] == ["item-1", "item-2"]
+    assert body["failures"] == []
+    assert fake_reader.calls == [
+        ("list_items", ("project-1", "queue-1", "user-1")),
+        ("save_scores", ("project-1", "queue-1", "item-1", "user-1", {"scores": scores})),
+        ("save_scores", ("project-1", "queue-1", "item-2", "user-1", {"scores": scores})),
+    ]
+
+
 def test_normalizes_boolean_annotation_score_values() -> None:
     normalize = LangfuseDatabaseReader._normalize_score_value
 
@@ -531,6 +837,48 @@ def test_normalizes_boolean_annotation_score_values() -> None:
     assert normalize("BOOLEAN", "false", "") == (0.0, "false")
     assert normalize("BOOLEAN", "否", "") == (0.0, "false")
     assert normalize("BOOLEAN", None, "") == (None, None)
+
+
+def test_normalizes_categorical_annotation_score_with_langfuse_category() -> None:
+    config = {
+        "data_type": "CATEGORICAL",
+        "categories": [
+            {"label": "工具调用错误", "value": 1},
+            {"label": "答案事实错误", "value": 2},
+        ],
+    }
+
+    assert LangfuseDatabaseReader._normalize_score_value(
+        config,
+        2,
+        "答案事实错误",
+    ) == (2.0, "答案事实错误")
+    assert LangfuseDatabaseReader._normalize_score_value(
+        config,
+        None,
+        "工具调用错误",
+    ) == (1.0, "工具调用错误")
+
+
+def test_normalizes_text_annotation_score_value_like_langfuse() -> None:
+    assert LangfuseDatabaseReader._normalize_score_value(
+        {"data_type": "TEXT"},
+        None,
+        "需要复核引用来源",
+    ) == (0.0, "需要复核引用来源")
+
+
+def test_rejects_overlong_text_annotation_score_value() -> None:
+    try:
+        LangfuseDatabaseReader._normalize_score_value(
+            {"data_type": "TEXT"},
+            None,
+            "x" * 501,
+        )
+    except BusinessError as exc:
+        assert exc.code == 1026
+    else:
+        raise AssertionError("expected BusinessError for overlong text score")
 
 
 def test_lists_annotation_queue_items_with_large_page_size_for_navigation() -> None:

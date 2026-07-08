@@ -15,6 +15,7 @@ class Settings(BaseSettings):
     pa_eval_api_timeout: float = Field(default=20)
     pa_eval_cors_origins: str = Field(default="*")
     pa_eval_frontend_url: str = Field(default="http://localhost:5173")
+    pa_eval_export_storage_dir: str = Field(default=".pa-eval/exports")
     pa_eval_auth_cookie_name: str = Field(default="thisisjustarandomstring")
     pa_eval_auth_secret: str = Field(default="")
     github_client_id: str = Field(default="")

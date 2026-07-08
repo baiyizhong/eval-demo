@@ -5,6 +5,8 @@ import type {
 } from '@/components/common/data-table'
 import type {
   DatasetFormInput,
+  DatasetExportFormat,
+  DatasetExportJobRecord,
   DatasetItemFormInput,
   DatasetItemRecord,
   DatasetMetricSummary,
@@ -22,6 +24,9 @@ type DatasetApiClient = {
   deleteProjectDataset: ApiMethod
   getProjectDatasetMetrics: ApiMethod
   getProjectDatasetItems: ApiMethod
+  createProjectDatasetExportJob: ApiMethod
+  getProjectDatasetExportJob: ApiMethod
+  downloadProjectDatasetExportJob: ApiMethod
   createProjectDatasetItem: ApiMethod
   updateProjectDatasetItem: ApiMethod
   archiveProjectDatasetItem: ApiMethod
@@ -123,6 +128,67 @@ export function listProjectDatasetItems(
       ...(statuses?.length ? { status: statuses } : {}),
     },
   })
+}
+
+export function createProjectDatasetExportJob(
+  api: DatasetApiClient,
+  projectId: string,
+  datasetId: string,
+  format: DatasetExportFormat
+) {
+  return api.createProjectDatasetExportJob<DatasetExportJobRecord>({
+    path: { projectId, datasetId },
+    body: { format },
+  })
+}
+
+export function getProjectDatasetExportJob(
+  api: DatasetApiClient,
+  projectId: string,
+  datasetId: string,
+  jobId: string
+) {
+  return api.getProjectDatasetExportJob<DatasetExportJobRecord>({
+    path: { projectId, datasetId, jobId },
+  })
+}
+
+export function downloadProjectDatasetExportJob(
+  api: DatasetApiClient,
+  projectId: string,
+  datasetId: string,
+  jobId: string
+) {
+  return api.downloadProjectDatasetExportJob<Blob>({
+    path: { projectId, datasetId, jobId },
+  })
+}
+
+export async function pollDatasetExportJob(
+  api: DatasetApiClient,
+  projectId: string,
+  datasetId: string,
+  jobId: string,
+  options: {
+    intervalMs?: number
+    timeoutMs?: number
+  } = {}
+) {
+  const intervalMs = options.intervalMs ?? 1200
+  const timeoutMs = options.timeoutMs ?? 120000
+  const startedAt = Date.now()
+
+  while (Date.now() - startedAt <= timeoutMs) {
+    const job = await getProjectDatasetExportJob(api, projectId, datasetId, jobId)
+
+    if (job.status === 'SUCCEEDED' || job.status === 'FAILED') {
+      return job
+    }
+
+    await new Promise((resolve) => window.setTimeout(resolve, intervalMs))
+  }
+
+  throw new Error('导出任务仍在处理中，请稍后刷新后下载')
 }
 
 export function createProjectDatasetItem(

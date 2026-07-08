@@ -51,7 +51,10 @@ export function getBooleanScoreOptions(): ScoreOption[] {
 export function getCategoricalScoreOptions(
   config: Pick<ScoreConfigRecord, 'categories'>
 ): ScoreOption[] {
-  return (config.categories ?? []).map(parseScoreOption)
+  return (config.categories ?? []).map((category, index) => ({
+    value: String(category.value ?? index + 1),
+    label: category.label || String(category.value ?? index + 1),
+  }))
 }
 
 export function buildAnnotationScoreDefaultValues(
@@ -83,7 +86,10 @@ export function buildAnnotationScoreDefaultValues(
 
       return {
         configId: config.id,
-        value: null,
+        value:
+          config.dataType === 'CATEGORICAL'
+            ? resolveCategoricalValue(config, existing?.value, existing?.stringValue)
+            : null,
         stringValue: existing?.stringValue ?? '',
         comment,
       }
@@ -118,6 +124,29 @@ export function normalizeAnnotationScoreFormInput(
         }
       }
 
+      if (config?.dataType === 'CATEGORICAL') {
+        const category = resolveCategoricalCategory(
+          config,
+          score.value,
+          score.stringValue
+        )
+        return {
+          configId: score.configId,
+          value: category ? category.value : null,
+          stringValue: category?.label ?? score.stringValue,
+          comment: score.comment,
+        }
+      }
+
+      if (config?.dataType === 'TEXT') {
+        return {
+          configId: score.configId,
+          value: 0,
+          stringValue: score.stringValue.slice(0, 500),
+          comment: score.comment,
+        }
+      }
+
       return {
         configId: score.configId,
         value: null,
@@ -128,10 +157,29 @@ export function normalizeAnnotationScoreFormInput(
   }
 }
 
-function parseScoreOption(value: string): ScoreOption {
-  const [rawValue, rawLabel] = value.split('|')
-  return {
-    value: rawValue || value,
-    label: rawLabel || rawValue || value,
-  }
+function resolveCategoricalValue(
+  config: Pick<ScoreConfigRecord, 'categories'>,
+  value: unknown,
+  stringValue: string | undefined
+): number | null {
+  return resolveCategoricalCategory(config, value, stringValue)?.value ?? null
+}
+
+function resolveCategoricalCategory(
+  config: Pick<ScoreConfigRecord, 'categories'>,
+  value: unknown,
+  stringValue: string | undefined
+) {
+  const label = stringValue?.trim()
+  const numericValue =
+    typeof value === 'number'
+      ? value
+      : typeof value === 'string' && value.trim() !== ''
+        ? Number(value)
+        : Number.NaN
+
+  return (config.categories ?? []).find((category) => {
+    if (label && category.label === label) return true
+    return Number.isFinite(numericValue) && category.value === numericValue
+  })
 }

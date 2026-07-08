@@ -1,11 +1,18 @@
 import { useCallback, useMemo, useState } from 'react'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
-import { Plus } from 'lucide-react'
+import { Download, Loader2, Plus } from 'lucide-react'
 import { useNavigate, useParams } from 'react-router'
 import { toast } from 'sonner'
 import { confirm } from '@/lib/confirm'
 import { useAPI } from '@/hooks/use-api'
+import { Button } from '@/components/ui/button'
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card'
+import {
+  DropdownMenu,
+  DropdownMenuContent,
+  DropdownMenuItem,
+  DropdownMenuTrigger,
+} from '@/components/ui/dropdown-menu'
 import {
   DataTable,
   type DataTableFilterBinding,
@@ -16,10 +23,13 @@ import { Page } from '@/components/common/page'
 import { PageAction } from '@/components/common/page-action'
 import {
   archiveProjectDatasetItem,
+  createProjectDatasetExportJob,
   createProjectDatasetItem,
+  downloadProjectDatasetExportJob,
   getProjectDataset,
   getProjectDatasetMetricSummary,
   listProjectDatasetItems,
+  pollDatasetExportJob,
   updateProjectDatasetItem,
 } from '../api/dataset-api'
 import { DatasetItemBulkActions } from '../components/dataset-item-bulk-actions'
@@ -27,7 +37,11 @@ import { createDatasetItemColumns } from '../components/dataset-item-columns'
 import { DatasetItemFormDrawer } from '../components/dataset-item-form-drawer'
 import { DatasetTypeBadge } from '../components/dataset-type-badge'
 import { formatDateTime } from '../components/format'
-import type { DatasetItemFormInput, DatasetItemRecord } from '../types'
+import type {
+  DatasetExportFormat,
+  DatasetItemFormInput,
+  DatasetItemRecord,
+} from '../types'
 
 const itemUrlFilters: DataTableFilterBinding[] = [
   { fieldId: 'status', type: 'array' },
@@ -51,6 +65,8 @@ export function ProjectDatasetDetail() {
   const { projectId = 'project_customer_agent', datasetId = '' } = useParams()
   const [itemDrawerOpen, setItemDrawerOpen] = useState(false)
   const [editingItem, setEditingItem] = useState<DatasetItemRecord | null>(null)
+  const [exportingFormat, setExportingFormat] =
+    useState<DatasetExportFormat | null>(null)
 
   const datasetQuery = useQuery({
     queryKey: ['project-dataset', $api, projectId, datasetId],
@@ -136,6 +152,53 @@ export function ProjectDatasetDetail() {
     [archiveItem]
   )
 
+  const handleExportDataset = useCallback(
+    async (format: DatasetExportFormat) => {
+      if (!datasetId || exportingFormat) {
+        return
+      }
+
+      setExportingFormat(format)
+      try {
+        const job = await createProjectDatasetExportJob(
+          $api,
+          projectId,
+          datasetId,
+          format
+        )
+        toast.info('导出任务已创建，正在生成文件')
+        const completedJob = await pollDatasetExportJob(
+          $api,
+          projectId,
+          datasetId,
+          job.id
+        )
+
+        if (completedJob.status === 'FAILED') {
+          throw new Error(completedJob.errorMessage || '数据集导出失败')
+        }
+
+        const blob = await downloadProjectDatasetExportJob(
+          $api,
+          projectId,
+          datasetId,
+          completedJob.id
+        )
+        downloadBlob(
+          blob,
+          completedJob.fileName ||
+            `dataset-${datasetId}-${completedJob.id}.${format}`
+        )
+        toast.success('数据集导出完成')
+      } catch (error) {
+        toast.error(error instanceof Error ? error.message : '数据集导出失败')
+      } finally {
+        setExportingFormat(null)
+      }
+    },
+    [$api, datasetId, exportingFormat, projectId]
+  )
+
   const columns = useMemo(
     () =>
       createDatasetItemColumns({
@@ -156,6 +219,14 @@ export function ProjectDatasetDetail() {
         <PageAction
           showBackButton
           onBack={() => navigate(`/projects/${projectId}/evaluation/datasets`)}
+          actions={
+            <DatasetExportMenu
+              exportingFormat={exportingFormat}
+              onExport={(format) => {
+                void handleExportDataset(format)
+              }}
+            />
+          }
           buttonGroups={{
             buttons: [
               {
@@ -286,6 +357,60 @@ export function ProjectDatasetDetail() {
       />
     </Page>
   )
+}
+
+const exportFormatOptions: {
+  value: DatasetExportFormat
+  label: string
+}[] = [
+  { value: 'xlsx', label: 'Excel' },
+  { value: 'csv', label: 'CSV' },
+  { value: 'txt', label: 'TXT' },
+]
+
+function DatasetExportMenu({
+  exportingFormat,
+  onExport,
+}: {
+  exportingFormat: DatasetExportFormat | null
+  onExport: (format: DatasetExportFormat) => void
+}) {
+  const isExporting = Boolean(exportingFormat)
+
+  return (
+    <DropdownMenu modal={false}>
+      <DropdownMenuTrigger asChild>
+        <Button type='button' variant='outline' size='sm' disabled={isExporting}>
+          {isExporting ? (
+            <Loader2 className='size-4 animate-spin' data-icon='inline-start' />
+          ) : (
+            <Download className='size-4' data-icon='inline-start' />
+          )}
+          <span>导出数据集</span>
+        </Button>
+      </DropdownMenuTrigger>
+      <DropdownMenuContent align='end'>
+        {exportFormatOptions.map((option) => (
+          <DropdownMenuItem
+            key={option.value}
+            disabled={isExporting}
+            onSelect={() => onExport(option.value)}
+          >
+            {option.label}
+          </DropdownMenuItem>
+        ))}
+      </DropdownMenuContent>
+    </DropdownMenu>
+  )
+}
+
+function downloadBlob(blob: Blob, fileName: string) {
+  const url = URL.createObjectURL(blob)
+  const link = document.createElement('a')
+  link.href = url
+  link.download = fileName
+  link.click()
+  URL.revokeObjectURL(url)
 }
 
 function MetricCard({ title, value }: { title: string; value: string }) {

@@ -3,6 +3,8 @@ import { test } from 'node:test'
 import {
   archiveProjectDatasetItem,
   createProjectDatasetItem,
+  createProjectDatasetExportJob,
+  getProjectDatasetExportJob,
   updateProjectDatasetItem,
 } from '../modules/app-evaluation/api/dataset-api.ts'
 
@@ -26,6 +28,14 @@ test('dataset item mutations call project-scoped real endpoints', async () => {
       calls.push(['archive-item', options])
       return { id: 'item-1' }
     },
+    async createProjectDatasetExportJob(options: unknown) {
+      calls.push(['create-export-job', options])
+      return { id: 'job-1' }
+    },
+    async getProjectDatasetExportJob(options: unknown) {
+      calls.push(['get-export-job', options])
+      return { id: 'job-1' }
+    },
   }
 
   await createProjectDatasetItem(api as never, 'project-1', 'dataset-1', input)
@@ -41,6 +51,18 @@ test('dataset item mutations call project-scoped real endpoints', async () => {
     'project-1',
     'dataset-1',
     'item-1'
+  )
+  await createProjectDatasetExportJob(
+    api as never,
+    'project-1',
+    'dataset-1',
+    'xlsx'
+  )
+  await getProjectDatasetExportJob(
+    api as never,
+    'project-1',
+    'dataset-1',
+    'job-1'
   )
 
   assert.deepEqual(calls, [
@@ -70,6 +92,19 @@ test('dataset item mutations call project-scoped real endpoints', async () => {
           datasetId: 'dataset-1',
           itemId: 'item-1',
         },
+      },
+    ],
+    [
+      'create-export-job',
+      {
+        path: { projectId: 'project-1', datasetId: 'dataset-1' },
+        body: { format: 'xlsx' },
+      },
+    ],
+    [
+      'get-export-job',
+      {
+        path: { projectId: 'project-1', datasetId: 'dataset-1', jobId: 'job-1' },
       },
     ],
   ])

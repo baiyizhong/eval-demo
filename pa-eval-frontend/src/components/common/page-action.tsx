@@ -6,12 +6,14 @@ import { ButtonGroups, type ButtonGroupsProps } from './button-groups'
 
 type PageActionProps = React.HTMLAttributes<HTMLDivElement> & {
   buttonGroups?: ButtonGroupsProps | null
+  actions?: React.ReactNode
   showBackButton?: boolean
   onBack?: () => void
 }
 
 export function PageAction({
   buttonGroups,
+  actions,
   showBackButton,
   onBack,
   children,
@@ -22,7 +24,7 @@ export function PageAction({
   const hasChildren =
     children !== undefined && children !== null && children !== false
 
-  if (!showBackButton && !hasChildren && !buttonGroups?.buttons?.length) {
+  if (!showBackButton && !hasChildren && !actions && !buttonGroups?.buttons?.length) {
     return null
   }
 
@@ -58,11 +60,13 @@ export function PageAction({
         ) : null}
         {hasChildren ? <div className='min-w-0'>{children}</div> : null}
       </div>
-      {buttonGroups?.buttons?.length ? (
-        <ButtonGroups
-          {...buttonGroups}
-          className={cn('ml-auto shrink-0', buttonGroups.className)}
-        />
+      {actions || buttonGroups?.buttons?.length ? (
+        <div className='ml-auto flex shrink-0 items-center gap-2'>
+          {actions}
+          {buttonGroups?.buttons?.length ? (
+            <ButtonGroups {...buttonGroups} className={buttonGroups.className} />
+          ) : null}
+        </div>
       ) : null}
     </div>
   )

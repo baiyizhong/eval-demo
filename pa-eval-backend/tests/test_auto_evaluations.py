@@ -17,7 +17,9 @@ from app.auto_evaluations import (
     _parse_workflow_result,
     _preview_report_flowback,
     _resolve_mapping_template,
+    _trace_time_range_condition,
     _mark_auto_evaluation_failed,
+    _update_auto_evaluation_progress,
     _sample_dataset_items,
     _delete_auto_evaluation_task,
     CreateAutoEvaluationPayload,
@@ -392,6 +394,31 @@ def test_parse_workflow_result_supports_n8n_direct_response() -> None:
     }
 
 
+def test_parse_workflow_result_derives_passed_when_dify_omits_passed() -> None:
+    result = _parse_workflow_result(
+        {"provider": "DIFY"},
+        {
+            "data": {
+                "outputs": {
+                    "score": 0.7,
+                    "reason": "命中主要标准",
+                }
+            }
+        },
+    )
+
+    assert result["score"] == 0.7
+    assert result["passed"] is True
+    assert result["reason"] == "命中主要标准"
+
+
+def test_trace_time_range_condition_supports_auto_evaluation_quick_ranges() -> None:
+    assert _trace_time_range_condition("1d") == "AND t.timestamp >= now() - INTERVAL 1 DAY"
+    assert _trace_time_range_condition("3d") == "AND t.timestamp >= now() - INTERVAL 3 DAY"
+    assert _trace_time_range_condition("7d") == "AND t.timestamp >= now() - INTERVAL 7 DAY"
+    assert _trace_time_range_condition("14d") == "AND t.timestamp >= now() - INTERVAL 14 DAY"
+
+
 def test_build_workflow_headers_supports_bearer_token() -> None:
     headers = _build_workflow_headers(
         {
@@ -746,6 +773,41 @@ async def test_mark_auto_evaluation_failed_updates_task_and_run() -> None:
     assert "UPDATE pa_auto_evaluation_runs" in run_sql
     assert "update_by = %(update_by)s" in run_sql
     assert "update_date = %(update_date)s" in run_sql
+    assert "completed_count = %(completed_count)s" in run_sql
     assert run_params["status"] == "FAILED"
+    assert run_params["completed_count"] == 0
     assert run_params["error_message"] == "Dify 工作流调用失败"
     assert run_params["update_by"] == "admin@163.com"
+
+
+@pytest.mark.anyio
+async def test_update_auto_evaluation_progress_persists_intermediate_counts() -> None:
+    cursor = FakeCursor(None)
+
+    await _update_auto_evaluation_progress(
+        cursor,  # type: ignore[arg-type]
+        project_id="project-1",
+        task_id="task-1",
+        run_id="run-1",
+        sample_count=10,
+        completed_count=3,
+        failed_count=1,
+        running_count=1,
+        updated_by="admin@163.com",
+    )
+
+    task_sql, task_params = cursor.executions[0]
+    run_sql, run_params = cursor.executions[1]
+    assert "UPDATE pa_auto_evaluation_tasks" in task_sql
+    assert task_params["status"] == "RUNNING"
+    assert _jsonb_value(task_params["execution_stats"]) == {
+        "pending": 5,
+        "running": 1,
+        "completed": 3,
+        "failed": 1,
+        "cancelled": 0,
+    }
+    assert "UPDATE pa_auto_evaluation_runs" in run_sql
+    assert run_params["status"] == "RUNNING"
+    assert run_params["completed_count"] == 3
+    assert run_params["failed_count"] == 1

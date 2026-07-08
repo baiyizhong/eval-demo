@@ -41,7 +41,12 @@ export const mockScoreConfigs: ScoreConfigRecord[] = [
     name: '错误类型',
     dataType: 'CATEGORICAL',
     description: '人工归因错误类型',
-    categories: ['意图识别错误', '事实错误', '格式错误', '无错误'],
+    categories: [
+      { label: '意图识别错误', value: 1 },
+      { label: '事实错误', value: 2 },
+      { label: '格式错误', value: 3 },
+      { label: '无错误', value: 4 },
+    ],
   },
   {
     id: 'score_comment',

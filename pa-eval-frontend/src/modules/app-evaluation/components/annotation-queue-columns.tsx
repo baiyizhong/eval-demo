@@ -98,13 +98,22 @@ export function createAnnotationQueueColumns({
       id: 'process',
       header: '处理',
       cell: ({ row }) => (
-        <Button asChild size='sm' variant='outline'>
-          <Link
-            to={`/projects/${projectId}/evaluation/annotation-queues/${row.original.id}`}
-          >
-            处理
-          </Link>
-        </Button>
+        <div className='flex gap-2'>
+          <Button asChild size='sm'>
+            <Link
+              to={`/projects/${projectId}/evaluation/manual-annotations/${row.original.id}/batch`}
+            >
+              进入标注
+            </Link>
+          </Button>
+          <Button asChild size='sm' variant='outline'>
+            <Link
+              to={`/projects/${projectId}/evaluation/annotation-queues/${row.original.id}`}
+            >
+              数据管理
+            </Link>
+          </Button>
+        </div>
       ),
       enableHiding: false,
     },

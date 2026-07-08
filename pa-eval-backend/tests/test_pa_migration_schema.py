@@ -17,6 +17,7 @@ PA_TABLES = (
     "pa_project_model_definitions",
     "pa_project_model_settings",
     "pa_audit_logs",
+    "pa_dataset_export_jobs",
 )
 
 
@@ -34,6 +35,8 @@ def test_pa_schema_migrations_are_defined_in_order() -> None:
         "20260707_0003_align_legacy_pa_tables.py",
         "20260707_0004_create_pa_audit_logs.py",
         "20260707_0005_normalize_pa_audit_actions.py",
+        "20260707_0006_create_pa_dataset_export_jobs.py",
+        "20260707_0007_normalize_langfuse_score_config_categories.py",
     ]
 
 
@@ -44,6 +47,16 @@ def test_audit_action_normalization_migration_is_defined() -> None:
     assert "UPDATE pa_audit_logs" in content
     assert "UPPER(action)" in content
     assert "UPPER(status)" in content
+
+
+def test_langfuse_score_config_normalization_migration_is_defined() -> None:
+    migration = MIGRATIONS_DIR / "20260707_0007_normalize_langfuse_score_config_categories.py"
+    content = migration.read_text(encoding="utf-8")
+
+    assert "UPDATE score_configs" in content
+    assert "data_type::text IN ('NUMERIC', 'TEXT')" in content
+    assert '"label":"True"' in content
+    assert "jsonb_array_elements(categories)" in content
 
 
 def test_pa_tables_use_physical_delete_and_uniform_audit_fields() -> None:

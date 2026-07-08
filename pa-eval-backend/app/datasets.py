@@ -1,15 +1,27 @@
 from typing import Any, Literal
+from pathlib import Path
 
-from fastapi import APIRouter, Depends, Query
+from fastapi import APIRouter, BackgroundTasks, Depends, Query
+from fastapi.responses import FileResponse
 from pydantic import BaseModel, Field
 
 from app.auth_context import CurrentUserContext, get_current_user_context
+from app.config import Settings, get_settings
+from app.dataset_exports import generate_dataset_export_file
+from app.errors import BusinessError
 from app.langfuse_db import LangfuseDatabaseReader, get_langfuse_db_reader
 from app.response import success
 
 router = APIRouter(prefix="/api/projects/{project_id}/datasets", tags=["datasets"])
 
 DatasetType = Literal["evaluation", "badcase", "golden", "anomaly"]
+DatasetExportFormat = Literal["xlsx", "csv", "txt"]
+
+EXPORT_MEDIA_TYPES = {
+    "xlsx": "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+    "csv": "text/csv; charset=utf-8",
+    "txt": "text/plain; charset=utf-8",
+}
 
 
 class DatasetPayload(BaseModel):
@@ -28,6 +40,14 @@ class DatasetItemPayload(BaseModel):
     input: Any = Field(default_factory=dict)
     expected_output: Any = Field(default_factory=dict, alias="expectedOutput")
     metadata: dict[str, Any] = Field(default_factory=dict)
+
+
+class DatasetExportJobPayload(BaseModel):
+    format: DatasetExportFormat
+
+
+def _to_public_export_job(job: dict[str, Any]) -> dict[str, Any]:
+    return {key: value for key, value in job.items() if key != "filePath"}
 
 
 def _paginate(items: list[dict[str, Any]], page: int, page_size: int) -> dict[str, Any]:
@@ -83,6 +103,80 @@ def _to_dataset_item_payload(payload: DatasetItemPayload) -> dict[str, Any]:
         "expectedOutput": payload.expected_output,
         "metadata": payload.metadata,
     }
+
+
+@router.post("/{dataset_id}/export-jobs")
+async def create_dataset_export_job(
+    project_id: str,
+    dataset_id: str,
+    payload: DatasetExportJobPayload,
+    background_tasks: BackgroundTasks,
+    current_user: CurrentUserContext = Depends(get_current_user_context),
+    reader: LangfuseDatabaseReader = Depends(get_langfuse_db_reader),
+    settings: Settings = Depends(get_settings),
+) -> dict[str, Any]:
+    job = await reader.create_dataset_export_job_for_user(
+        project_id,
+        dataset_id,
+        current_user.user_id,
+        payload.format,
+    )
+    background_tasks.add_task(
+        generate_dataset_export_file,
+        reader=reader,
+        project_id=project_id,
+        dataset_id=dataset_id,
+        job_id=job["id"],
+        user_id=current_user.user_id,
+        export_format=payload.format,
+        storage_dir=settings.pa_eval_export_storage_dir,
+    )
+    return success(_to_public_export_job(job))
+
+
+@router.get("/{dataset_id}/export-jobs/{job_id}")
+async def get_dataset_export_job(
+    project_id: str,
+    dataset_id: str,
+    job_id: str,
+    current_user: CurrentUserContext = Depends(get_current_user_context),
+    reader: LangfuseDatabaseReader = Depends(get_langfuse_db_reader),
+) -> dict[str, Any]:
+    job = await reader.get_dataset_export_job_for_user(
+        project_id,
+        dataset_id,
+        job_id,
+        current_user.user_id,
+    )
+    return success(_to_public_export_job(job))
+
+
+@router.get("/{dataset_id}/export-jobs/{job_id}/download")
+async def download_dataset_export_job(
+    project_id: str,
+    dataset_id: str,
+    job_id: str,
+    current_user: CurrentUserContext = Depends(get_current_user_context),
+    reader: LangfuseDatabaseReader = Depends(get_langfuse_db_reader),
+) -> FileResponse:
+    job = await reader.get_dataset_export_job_for_user(
+        project_id,
+        dataset_id,
+        job_id,
+        current_user.user_id,
+    )
+    if job["status"] != "SUCCEEDED":
+        raise BusinessError(1028, "数据集导出任务尚未完成", 409)
+
+    file_path = Path(job.get("filePath") or "")
+    if not file_path.is_file():
+        raise BusinessError(1029, "数据集导出文件不存在或已过期", 404)
+
+    return FileResponse(
+        file_path,
+        media_type=EXPORT_MEDIA_TYPES.get(job["format"], "application/octet-stream"),
+        filename=job.get("fileName") or file_path.name,
+    )
 
 
 @router.get("")

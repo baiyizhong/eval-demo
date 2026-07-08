@@ -336,14 +336,67 @@ function filterQueueItems(
   const statuses = query.filters.status as string[] | undefined
   const objectTypes = query.filters.objectType as string[] | undefined
   const annotators = query.filters.completedBy as string[] | undefined
+  const createdAtFrom = query.filters.createdAtFrom as string | undefined
+  const createdAtTo = query.filters.createdAtTo as string | undefined
+  const completedAtFrom = query.filters.completedAtFrom as string | undefined
+  const completedAtTo = query.filters.completedAtTo as string | undefined
+  const hasScores = query.filters.hasScores as boolean | undefined
+  const metadataKey = query.filters.metadataKey as string | undefined
+  const metadataOperator =
+    (query.filters.metadataOperator as 'contains' | 'equals' | 'exists') ??
+    'contains'
+  const metadataValue = query.filters.metadataValue as string | undefined
+  const metadataFilters = query.filters.metadataFilters as
+    | {
+        key: string
+        operator: 'contains' | 'equals' | 'exists'
+        value?: string
+      }[]
+    | undefined
+  const itemIds = query.filters.itemIds as string[] | undefined
 
   return listQueueItems(projectId, queueId).filter((item) => {
+    if (itemIds?.length && !itemIds.includes(item.id)) return false
     if (statuses?.length && !statuses.includes(item.status)) return false
     if (objectTypes?.length && !objectTypes.includes(item.objectType))
       return false
     if (
       annotators?.length &&
       !annotators.includes(item.completedBy?.id ?? '')
+    ) {
+      return false
+    }
+    if (
+      !isWithinTimeRange(item.createdAt, createdAtFrom, createdAtTo) ||
+      !isWithinTimeRange(item.completedAt, completedAtFrom, completedAtTo)
+    ) {
+      return false
+    }
+    if (typeof hasScores === 'boolean' && Boolean(item.scores.length) !== hasScores) {
+      return false
+    }
+    if (
+      metadataKey &&
+      !matchesMetadataFilter(
+        item.source.metadata,
+        metadataKey,
+        metadataOperator,
+        metadataValue ?? ''
+      )
+    ) {
+      return false
+    }
+    if (
+      metadataFilters?.some(
+        (filter) =>
+          filter.key &&
+          !matchesMetadataFilter(
+            item.source.metadata,
+            filter.key,
+            filter.operator,
+            filter.value ?? ''
+          )
+      )
     ) {
       return false
     }
@@ -361,6 +414,40 @@ function filterQueueItems(
       .toLowerCase()
       .includes(keyword)
   })
+}
+
+function isWithinTimeRange(value: string, start?: string, end?: string) {
+  const timestamp = Date.parse(value)
+  if (start && (!Number.isFinite(timestamp) || timestamp < Date.parse(start))) {
+    return false
+  }
+  if (end && (!Number.isFinite(timestamp) || timestamp > Date.parse(end))) {
+    return false
+  }
+  return true
+}
+
+function matchesMetadataFilter(
+  metadata: Record<string, unknown>,
+  key: string,
+  operator: 'contains' | 'equals' | 'exists',
+  value: string
+) {
+  const metadataValue = key
+    .replace(/^metadata\./, '')
+    .split('.')
+    .filter(Boolean)
+    .reduce<unknown>(
+      (current, part) =>
+        current && typeof current === 'object'
+          ? (current as Record<string, unknown>)[part]
+          : undefined,
+      metadata
+    )
+  if (operator === 'exists') return metadataValue !== undefined
+  if (metadataValue === undefined) return false
+  if (operator === 'equals') return String(metadataValue) === value
+  return String(metadataValue).toLowerCase().includes(value.toLowerCase())
 }
 
 function hydrateQueue(queue: AnnotationQueueRecord): AnnotationQueueRecord {

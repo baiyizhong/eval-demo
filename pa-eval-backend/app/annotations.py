@@ -1,3 +1,6 @@
+import json
+import re
+from datetime import datetime, timezone
 from typing import Any, Literal
 
 from fastapi import APIRouter, Body, Depends, Query
@@ -17,6 +20,11 @@ router = APIRouter(prefix="/api/projects/{project_id}", tags=["annotations"])
 AnnotationObjectType = Literal["TRACE", "OBSERVATION", "SESSION"]
 AnnotationItemStatus = Literal["PENDING", "COMPLETED"]
 ScoreConfigDataType = Literal["NUMERIC", "CATEGORICAL", "BOOLEAN", "TEXT"]
+SCORE_CONFIG_NAME_PATTERN = re.compile(r"^[\w .()\-\u4e00-\u9fff]+$")
+LANGFUSE_BOOLEAN_CATEGORIES = [
+    {"label": "True", "value": 1},
+    {"label": "False", "value": 0},
+]
 
 
 class AnnotationQueuePayload(BaseModel):
@@ -26,13 +34,18 @@ class AnnotationQueuePayload(BaseModel):
     assignee_ids: list[str] = Field(default_factory=list, alias="assigneeIds")
 
 
+class ScoreConfigCategoryPayload(BaseModel):
+    label: str = Field(min_length=1)
+    value: float
+
+
 class ScoreConfigPayload(BaseModel):
-    name: str = Field(min_length=1, max_length=120)
+    name: str = Field(min_length=1, max_length=35)
     data_type: ScoreConfigDataType = Field(alias="dataType")
     description: str = Field(default="", max_length=1000)
     min_value: float | None = Field(default=None, alias="minValue")
     max_value: float | None = Field(default=None, alias="maxValue")
-    categories: list[str] = Field(default_factory=list)
+    categories: list[ScoreConfigCategoryPayload] = Field(default_factory=list)
 
 
 class AnnotationQueueItemPayload(BaseModel):
@@ -60,6 +73,42 @@ class AnnotationScoreInput(BaseModel):
 
 class AnnotationScorePayload(BaseModel):
     scores: list[AnnotationScoreInput] = Field(default_factory=list)
+
+
+class MetadataFilterPayload(BaseModel):
+    key: str = ""
+    operator: Literal["contains", "equals", "exists"] = "contains"
+    value: str = ""
+
+
+class AnnotationBatchFiltersPayload(BaseModel):
+    keyword: str = ""
+    status: list[AnnotationItemStatus] = Field(default_factory=list)
+    object_type: list[AnnotationObjectType] = Field(default_factory=list, alias="objectType")
+    completed_by: list[str] = Field(default_factory=list, alias="completedBy")
+    created_at_from: str = Field(default="", alias="createdAtFrom")
+    created_at_to: str = Field(default="", alias="createdAtTo")
+    completed_at_from: str = Field(default="", alias="completedAtFrom")
+    completed_at_to: str = Field(default="", alias="completedAtTo")
+    has_scores: bool | None = Field(default=None, alias="hasScores")
+    metadata_filter: MetadataFilterPayload | None = Field(default=None, alias="metadataFilter")
+    metadata_filters: list[MetadataFilterPayload] = Field(
+        default_factory=list,
+        alias="metadataFilters",
+    )
+    item_ids: list[str] = Field(default_factory=list, alias="itemIds")
+
+
+class AnnotationBatchPreviewPayload(BaseModel):
+    filters: AnnotationBatchFiltersPayload = Field(default_factory=AnnotationBatchFiltersPayload)
+    limit: int = Field(default=5, ge=1, le=20)
+
+
+class AnnotationBatchScorePayload(BaseModel):
+    filters: AnnotationBatchFiltersPayload = Field(default_factory=AnnotationBatchFiltersPayload)
+    scores: list[AnnotationScoreInput] = Field(min_length=1)
+    expected_pending_count: int | None = Field(default=None, alias="expectedPendingCount")
+    confirm_large_batch: bool = Field(default=False, alias="confirmLargeBatch")
 
 
 class DeleteItemsPayload(BaseModel):
@@ -110,6 +159,74 @@ def _matches_item_keyword(item: dict[str, Any], keyword: str | None) -> bool:
     )
 
 
+def _parse_time(value: str | None) -> datetime | None:
+    if not value:
+        return None
+    try:
+        parsed = datetime.fromisoformat(value.replace("Z", "+00:00"))
+    except ValueError:
+        return None
+    if parsed.tzinfo is None:
+        return parsed.replace(tzinfo=timezone.utc)
+    return parsed.astimezone(timezone.utc)
+
+
+def _matches_time_range(value: str | None, start: str, end: str) -> bool:
+    timestamp = _parse_time(value)
+    start_time = _parse_time(start)
+    end_time = _parse_time(end)
+    if start_time and (timestamp is None or timestamp < start_time):
+        return False
+    if end_time and (timestamp is None or timestamp > end_time):
+        return False
+    return True
+
+
+def _get_nested_value(data: dict[str, Any], path: str) -> Any:
+    current: Any = data
+    for part in path.split("."):
+        if not part:
+            continue
+        if isinstance(current, dict):
+            current = current.get(part)
+            continue
+        return None
+    return current
+
+
+def _matches_metadata_filter(
+    item: dict[str, Any],
+    metadata_filter: MetadataFilterPayload | None,
+) -> bool:
+    if not metadata_filter or not metadata_filter.key.strip():
+        return True
+    source = item.get("source") or {}
+    metadata = source.get("metadata") or {}
+    key = metadata_filter.key.strip()
+    if key.startswith("metadata."):
+        key = key.removeprefix("metadata.")
+    value = _get_nested_value(metadata, key)
+    if metadata_filter.operator == "exists":
+        return value is not None
+    if value is None:
+        return False
+    if metadata_filter.operator == "equals":
+        return str(value) == metadata_filter.value
+    return metadata_filter.value.lower() in str(value).lower()
+
+
+def _parse_metadata_filters_query(value: str) -> list[MetadataFilterPayload]:
+    if not value:
+        return []
+    try:
+        parsed = json.loads(value)
+    except json.JSONDecodeError as exc:
+        raise BusinessError(1026, "Metadata 筛选条件格式不正确", 400) from exc
+    if not isinstance(parsed, list):
+        raise BusinessError(1026, "Metadata 筛选条件必须是数组", 400)
+    return [MetadataFilterPayload(**item) for item in parsed if isinstance(item, dict)]
+
+
 def _queue_payload(payload: AnnotationQueuePayload) -> dict[str, Any]:
     return {
         "name": payload.name.strip(),
@@ -120,13 +237,49 @@ def _queue_payload(payload: AnnotationQueuePayload) -> dict[str, Any]:
 
 
 def _score_config_payload(payload: ScoreConfigPayload) -> dict[str, Any]:
+    name = payload.name.strip()
+    if not SCORE_CONFIG_NAME_PATTERN.match(name):
+        raise BusinessError(1026, "评分指标名称包含不支持的字符", 400)
+
+    categories = [
+        {"label": category.label.strip(), "value": category.value}
+        for category in payload.categories
+        if category.label.strip()
+    ]
+
+    min_value = payload.min_value
+    max_value = payload.max_value
+    if payload.data_type == "NUMERIC":
+        if min_value is not None and max_value is not None and max_value <= min_value:
+            raise BusinessError(1026, "评分指标最大值必须大于最小值", 400)
+        categories = []
+    elif payload.data_type == "BOOLEAN":
+        min_value = None
+        max_value = None
+        categories = LANGFUSE_BOOLEAN_CATEGORIES
+    elif payload.data_type == "CATEGORICAL":
+        min_value = None
+        max_value = None
+        if not categories:
+            raise BusinessError(1026, "分类评分指标至少需要一个选项", 400)
+        labels = [category["label"] for category in categories]
+        values = [category["value"] for category in categories]
+        if len(labels) != len(set(labels)):
+            raise BusinessError(1026, "分类评分指标选项名称不能重复", 400)
+        if len(values) != len(set(values)):
+            raise BusinessError(1026, "分类评分指标选项值不能重复", 400)
+    elif payload.data_type == "TEXT":
+        min_value = None
+        max_value = None
+        categories = []
+
     return {
-        "name": payload.name.strip(),
+        "name": name,
         "dataType": payload.data_type,
         "description": payload.description,
-        "minValue": payload.min_value,
-        "maxValue": payload.max_value,
-        "categories": payload.categories,
+        "minValue": min_value,
+        "maxValue": max_value,
+        "categories": categories,
     }
 
 
@@ -135,6 +288,130 @@ def _first_non_empty_list(
     fallback: list[Any] | None,
 ) -> list[Any] | None:
     return primary if primary else fallback
+
+
+def _score_payload(payload: AnnotationScorePayload | AnnotationBatchScorePayload) -> dict[str, Any]:
+    return {
+        "scores": [
+            {
+                "configId": score.config_id,
+                "value": score.value,
+                "stringValue": score.string_value,
+                "comment": score.comment,
+            }
+            for score in payload.scores
+        ]
+    }
+
+
+def _filter_annotation_items(
+    items: list[dict[str, Any]],
+    filters: AnnotationBatchFiltersPayload,
+) -> list[dict[str, Any]]:
+    filtered = [item for item in items if _matches_item_keyword(item, filters.keyword)]
+    if filters.status:
+        allowed_statuses = set(filters.status)
+        filtered = [item for item in filtered if item["status"] in allowed_statuses]
+    if filters.object_type:
+        allowed_types = set(filters.object_type)
+        filtered = [item for item in filtered if item["objectType"] in allowed_types]
+    if filters.completed_by:
+        allowed_users = set(filters.completed_by)
+        filtered = [
+            item
+            for item in filtered
+            if (item.get("completedBy") or {}).get("id") in allowed_users
+        ]
+    if filters.item_ids:
+        allowed_item_ids = set(filters.item_ids)
+        filtered = [item for item in filtered if item["id"] in allowed_item_ids]
+    if filters.created_at_from or filters.created_at_to:
+        filtered = [
+            item
+            for item in filtered
+            if _matches_time_range(
+                item.get("createdAt"),
+                filters.created_at_from,
+                filters.created_at_to,
+            )
+        ]
+    if filters.completed_at_from or filters.completed_at_to:
+        filtered = [
+            item
+            for item in filtered
+            if _matches_time_range(
+                item.get("completedAt"),
+                filters.completed_at_from,
+                filters.completed_at_to,
+            )
+        ]
+    if filters.has_scores is not None:
+        filtered = [
+            item
+            for item in filtered
+            if bool(item.get("scores")) is filters.has_scores
+        ]
+    metadata_filters = filters.metadata_filters
+    if filters.metadata_filter:
+        metadata_filters = [filters.metadata_filter, *metadata_filters]
+    for metadata_filter in metadata_filters:
+        filtered = [
+            item
+            for item in filtered
+            if _matches_metadata_filter(item, metadata_filter)
+        ]
+    return filtered
+
+
+def _annotation_batch_preview(
+    items: list[dict[str, Any]],
+    filters: AnnotationBatchFiltersPayload,
+    limit: int,
+) -> dict[str, Any]:
+    filtered = _filter_annotation_items(items, filters)
+    pending_items = [item for item in filtered if item["status"] == "PENDING"]
+    completed_count = len([item for item in filtered if item["status"] == "COMPLETED"])
+    return {
+        "totalCount": len(filtered),
+        "pendingCount": len(pending_items),
+        "completedCount": completed_count,
+        "samples": pending_items[:limit],
+        "filterSummary": _build_annotation_filter_summary(filters, len(pending_items)),
+    }
+
+
+def _build_annotation_filter_summary(
+    filters: AnnotationBatchFiltersPayload,
+    pending_count: int,
+) -> str:
+    parts = [f"待标注 {pending_count} 条"]
+    if filters.keyword:
+        parts.append(f"关键词：{filters.keyword}")
+    if filters.status:
+        parts.append(f"状态：{', '.join(filters.status)}")
+    if filters.object_type:
+        parts.append(f"对象类型：{', '.join(filters.object_type)}")
+    if filters.completed_by:
+        parts.append(f"标注人：{', '.join(filters.completed_by)}")
+    if filters.created_at_from or filters.created_at_to:
+        parts.append(
+            f"加入时间：{filters.created_at_from or '-'} ~ {filters.created_at_to or '-'}"
+        )
+    if filters.completed_at_from or filters.completed_at_to:
+        parts.append(
+            f"完成时间：{filters.completed_at_from or '-'} ~ {filters.completed_at_to or '-'}"
+        )
+    if filters.has_scores is not None:
+        parts.append(f"评分状态：{'有评分' if filters.has_scores else '无评分'}")
+    if filters.metadata_filter and filters.metadata_filter.key:
+        parts.append(
+            f"Metadata：{filters.metadata_filter.key} {filters.metadata_filter.operator}"
+        )
+    if filters.metadata_filters:
+        parts.append(f"Metadata：{len(filters.metadata_filters)} 个条件")
+    if filters.item_ids:
+        parts.append(f"指定失败项：{len(filters.item_ids)} 条")
+    return "；".join(parts)
 
 
 @router.get("/score-configs")
@@ -389,6 +666,20 @@ async def list_annotation_queue_items(
         default=None,
         alias="completedBy[]",
     ),
+    created_at_from: str = Query(default="", alias="createdAtFrom"),
+    created_at_to: str = Query(default="", alias="createdAtTo"),
+    completed_at_from: str = Query(default="", alias="completedAtFrom"),
+    completed_at_to: str = Query(default="", alias="completedAtTo"),
+    has_scores: bool | None = Query(default=None, alias="hasScores"),
+    metadata_key: str = Query(default="", alias="metadataKey"),
+    metadata_operator: Literal["contains", "equals", "exists"] = Query(
+        default="contains",
+        alias="metadataOperator",
+    ),
+    metadata_value: str = Query(default="", alias="metadataValue"),
+    metadata_filters: str = Query(default="", alias="metadataFilters"),
+    item_ids: list[str] | None = Query(default=None, alias="itemIds"),
+    item_ids_bracket: list[str] | None = Query(default=None, alias="itemIds[]"),
     current_user: CurrentUserContext = Depends(get_current_user_context),
     reader: LangfuseDatabaseReader = Depends(get_langfuse_db_reader),
 ) -> dict[str, Any]:
@@ -401,19 +692,31 @@ async def list_annotation_queue_items(
     effective_status = _first_non_empty_list(status, status_bracket)
     effective_object_type = _first_non_empty_list(object_type, object_type_bracket)
     effective_completed_by = _first_non_empty_list(completed_by, completed_by_bracket)
-    if effective_status:
-        allowed_statuses = set(effective_status)
-        filtered = [item for item in filtered if item["status"] in allowed_statuses]
-    if effective_object_type:
-        allowed_types = set(effective_object_type)
-        filtered = [item for item in filtered if item["objectType"] in allowed_types]
-    if effective_completed_by:
-        allowed_users = set(effective_completed_by)
-        filtered = [
-            item
-            for item in filtered
-            if (item.get("completedBy") or {}).get("id") in allowed_users
-        ]
+    effective_item_ids = _first_non_empty_list(item_ids, item_ids_bracket)
+    parsed_metadata_filters = _parse_metadata_filters_query(metadata_filters)
+    filtered = _filter_annotation_items(
+        filtered,
+        AnnotationBatchFiltersPayload(
+            keyword="",
+            status=effective_status or [],
+            objectType=effective_object_type or [],
+            completedBy=effective_completed_by or [],
+            createdAtFrom=created_at_from,
+            createdAtTo=created_at_to,
+            completedAtFrom=completed_at_from,
+            completedAtTo=completed_at_to,
+            hasScores=has_scores,
+            metadataFilter=MetadataFilterPayload(
+                key=metadata_key,
+                operator=metadata_operator,
+                value=metadata_value,
+            )
+            if metadata_key
+            else None,
+            metadataFilters=parsed_metadata_filters,
+            itemIds=effective_item_ids or [],
+        ),
+    )
     return success(_paginate(filtered, page, page_size))
 
 
@@ -468,6 +771,85 @@ async def delete_annotation_queue_items(
     return success({"ids": deleted})
 
 
+@router.post("/annotation-queues/{queue_id}/batch-preview")
+async def preview_annotation_batch(
+    project_id: str,
+    queue_id: str,
+    payload: AnnotationBatchPreviewPayload,
+    current_user: CurrentUserContext = Depends(get_current_user_context),
+    reader: LangfuseDatabaseReader = Depends(get_langfuse_db_reader),
+) -> dict[str, Any]:
+    items = await reader.list_annotation_queue_items_for_user(
+        project_id,
+        queue_id,
+        current_user.user_id,
+    )
+    return success(_annotation_batch_preview(items, payload.filters, payload.limit))
+
+
+@router.post("/annotation-queues/{queue_id}/batch-scores")
+async def save_annotation_batch_scores(
+    project_id: str,
+    queue_id: str,
+    payload: AnnotationBatchScorePayload,
+    current_user: CurrentUserContext = Depends(get_current_user_context),
+    reader: LangfuseDatabaseReader = Depends(get_langfuse_db_reader),
+) -> dict[str, Any]:
+    items = await reader.list_annotation_queue_items_for_user(
+        project_id,
+        queue_id,
+        current_user.user_id,
+    )
+    filtered = _filter_annotation_items(items, payload.filters)
+    pending_items = [item for item in filtered if item["status"] == "PENDING"]
+    completed_count = len([item for item in filtered if item["status"] == "COMPLETED"])
+
+    if payload.expected_pending_count is not None and (
+        payload.expected_pending_count != len(pending_items)
+    ):
+        raise BusinessError(
+            code=1027,
+            message="批量标注命中数量已变化，请刷新预览后重试",
+            status_code=409,
+        )
+    if len(pending_items) > 100 and not payload.confirm_large_batch:
+        raise BusinessError(
+            code=1028,
+            message="本次批量标注超过 100 条，请确认后再提交",
+            status_code=409,
+        )
+
+    score_payload = _score_payload(payload)
+    success_item_ids: list[str] = []
+    failures: list[dict[str, Any]] = []
+    for item in pending_items:
+        try:
+            await reader.save_annotation_scores_for_user(
+                project_id,
+                queue_id,
+                item["id"],
+                current_user.user_id,
+                score_payload,
+            )
+            success_item_ids.append(item["id"])
+        except BusinessError as exc:
+            failures.append({"itemId": item["id"], "reason": exc.message})
+
+    return success(
+        {
+            "successCount": len(success_item_ids),
+            "failureCount": len(failures),
+            "skippedCount": completed_count,
+            "successItemIds": success_item_ids,
+            "failures": failures,
+            "filterSummary": _build_annotation_filter_summary(
+                payload.filters,
+                len(pending_items),
+            ),
+        }
+    )
+
+
 @router.post("/annotation-queues/{queue_id}/items/{item_id}/scores")
 async def save_annotation_scores(
     project_id: str,
@@ -482,17 +864,7 @@ async def save_annotation_scores(
         queue_id,
         item_id,
         current_user.user_id,
-        {
-            "scores": [
-                {
-                    "configId": score.config_id,
-                    "value": score.value,
-                    "stringValue": score.string_value,
-                    "comment": score.comment,
-                }
-                for score in payload.scores
-            ]
-        },
+        _score_payload(payload),
     )
     return success(item)
 

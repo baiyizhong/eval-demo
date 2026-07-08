@@ -10,6 +10,13 @@ import {
   FormMessage,
 } from '@/components/ui/form'
 import { Input } from '@/components/ui/input'
+import {
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from '@/components/ui/select'
 import { Textarea } from '@/components/ui/textarea'
 import { ToggleGroup, ToggleGroupItem } from '@/components/ui/toggle-group'
 import { BaseForm } from '@/components/common/base-form'
@@ -77,7 +84,7 @@ export function AnnotationScoreForm({
               {scoreConfigs.map((config, index) => (
                 <div
                   key={config.id}
-                  className='annotation-score-row grid gap-2 border-b p-2.5 last:border-b-0'
+                  className='annotation-score-row grid gap-2 border-b px-3 py-2.5 last:border-b-0'
                 >
                   <div className='min-w-0'>
                     <div className='flex min-w-0 items-center gap-2'>
@@ -94,7 +101,13 @@ export function AnnotationScoreForm({
                       </div>
                     ) : null}
                   </div>
-                  <div className='grid gap-2 xl:grid-cols-[minmax(150px,200px)_minmax(0,1fr)]'>
+                  <div
+                    className={
+                      config.dataType === 'TEXT'
+                        ? 'grid gap-2'
+                        : 'grid items-start gap-2 xl:grid-cols-[minmax(150px,200px)_minmax(0,1fr)]'
+                    }
+                  >
                     <ScoreValueField
                       index={index}
                       config={config}
@@ -180,6 +193,7 @@ function ScoreValueField({
                 placeholder='评分值'
                 min={config.minValue}
                 max={config.maxValue}
+                disabled={config.archived}
                 value={typeof field.value === 'number' ? field.value : ''}
                 onChange={(event) =>
                   field.onChange(
@@ -210,6 +224,7 @@ function ScoreValueField({
                 size='sm'
                 spacing={0}
                 className='grid w-full grid-cols-2'
+                disabled={config.archived}
                 value={getBooleanScoreRadioValue(field.value)}
                 onValueChange={(value) => {
                   if (!value) return
@@ -237,24 +252,59 @@ function ScoreValueField({
 
   if (config.dataType === 'CATEGORICAL') {
     const options = getCategoricalScoreOptions(config)
+    const useSelect = shouldUseCategoricalSelect(options)
     return (
       <FormField
         control={form.control}
-        name={`scores.${index}.stringValue`}
+        name={`scores.${index}.value`}
         render={({ field }) => (
           <FormItem>
             <FormLabel className='sr-only'>{config.name} 评分值</FormLabel>
             <FormControl>
-              {options.length ? (
+              {!options.length ? (
+                <div className='text-muted-foreground flex h-8 items-center text-xs'>
+                  未配置选项
+                </div>
+              ) : useSelect ? (
+                <Select
+                  value={typeof field.value === 'number' ? String(field.value) : ''}
+                  disabled={config.archived}
+                  onValueChange={(value) => {
+                    const option = options.find((item) => item.value === value)
+                    field.onChange(Number(value))
+                    form.setValue(
+                      `scores.${index}.stringValue`,
+                      option?.label ?? ''
+                    )
+                  }}
+                >
+                  <SelectTrigger className='h-8'>
+                    <SelectValue placeholder='选择分类' />
+                  </SelectTrigger>
+                  <SelectContent>
+                    {options.map((option) => (
+                      <SelectItem key={option.value} value={option.value}>
+                        {option.label}
+                      </SelectItem>
+                    ))}
+                  </SelectContent>
+                </Select>
+              ) : (
                 <ToggleGroup
                   type='single'
                   variant='outline'
                   size='sm'
                   spacing={0}
-                  value={field.value}
+                  value={typeof field.value === 'number' ? String(field.value) : ''}
+                  disabled={config.archived}
                   onValueChange={(value) => {
                     if (!value) return
-                    field.onChange(value)
+                    const option = options.find((item) => item.value === value)
+                    field.onChange(Number(value))
+                    form.setValue(
+                      `scores.${index}.stringValue`,
+                      option?.label ?? ''
+                    )
                   }}
                   className='flex w-full flex-wrap'
                 >
@@ -269,10 +319,6 @@ function ScoreValueField({
                     </ToggleGroupItem>
                   ))}
                 </ToggleGroup>
-              ) : (
-                <div className='text-muted-foreground flex h-8 items-center text-xs'>
-                  未配置选项
-                </div>
               )}
             </FormControl>
             <FormMessage />
@@ -293,6 +339,8 @@ function ScoreValueField({
             <Textarea
               placeholder='文本评分'
               className='min-h-16 resize-y'
+              maxLength={500}
+              disabled={config.archived}
               {...field}
             />
           </FormControl>
@@ -301,4 +349,8 @@ function ScoreValueField({
       )}
     />
   )
+}
+
+function shouldUseCategoricalSelect(options: { label: string }[]) {
+  return options.length > 3 || options.some((option) => option.label.length > 8)
 }

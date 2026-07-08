@@ -1,15 +1,14 @@
-import { useState } from 'react'
+import { useState, type ReactNode } from 'react'
 import type { JsonData } from 'json-edit-react'
 import { cn } from '@/lib/utils'
 import { Button } from '@/components/ui/button'
-import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card'
 import {
   Collapsible,
   CollapsibleContent,
   CollapsibleTrigger,
 } from '@/components/ui/collapsible'
 import { JsonEditorPanel } from '@/components/common/json-editor'
-import type { AnnotationQueueItemRecord } from '../types'
+import type { AnnotationQueueItemRecord, AnnotationScoreRecord } from '../types'
 import { AnnotationObjectTypeBadge } from './annotation-object-type-badge'
 import { AnnotationStatusBadge } from './annotation-status-badge'
 import { formatDateTime } from './format'
@@ -38,17 +37,19 @@ export function AnnotationSourcePanel({ item }: AnnotationSourcePanelProps) {
         onOpenChange={setSummaryOpen}
         className='shrink-0'
       >
-        <Card>
-          <CardHeader className='flex flex-row items-center justify-between'>
-            <CardTitle className='text-sm'>源对象摘要</CardTitle>
+        <AnnotationSourceSection
+          title='源对象摘要'
+          open={summaryOpen}
+          action={
             <CollapsibleTrigger asChild>
               <Button size='sm' variant='ghost'>
                 {summaryOpen ? '折叠' : '展开'}
               </Button>
             </CollapsibleTrigger>
-          </CardHeader>
+          }
+        >
           <CollapsibleContent>
-            <CardContent className='grid gap-3 text-sm md:grid-cols-3'>
+            <div className='grid gap-3 px-3 pb-3 text-sm md:grid-cols-3'>
               <InfoItem label='Source ID' value={item.objectId} mono />
               <InfoItem
                 label='类型'
@@ -73,9 +74,9 @@ export function AnnotationSourcePanel({ item }: AnnotationSourcePanelProps) {
               <InfoItem label='Latency' value={`${item.source.latencyMs} ms`} />
               <InfoItem label='Cost' value={`$${item.source.costUsd}`} />
               <InfoItem label='标题' value={item.source.title} />
-            </CardContent>
+            </div>
           </CollapsibleContent>
-        </Card>
+        </AnnotationSourceSection>
       </Collapsible>
 
       <Collapsible
@@ -83,17 +84,20 @@ export function AnnotationSourcePanel({ item }: AnnotationSourcePanelProps) {
         onOpenChange={setContextOpen}
         className='shrink-0'
       >
-        <Card className='flex min-h-0 flex-col'>
-          <CardHeader className='flex flex-row items-center justify-between'>
-            <CardTitle className='text-sm'>上下文详情</CardTitle>
+        <AnnotationSourceSection
+          title='上下文详情'
+          open={contextOpen}
+          className='flex min-h-0 flex-col'
+          action={
             <CollapsibleTrigger asChild>
               <Button size='sm' variant='ghost'>
                 {contextOpen ? '折叠' : '展开'}
               </Button>
             </CollapsibleTrigger>
-          </CardHeader>
+          }
+        >
           <CollapsibleContent className='min-h-0 flex-1'>
-            <CardContent className='grid min-h-0 grid-cols-1 gap-3 md:grid-cols-2'>
+            <div className='grid min-h-0 grid-cols-1 gap-3 px-3 pb-3 md:grid-cols-2'>
               <JsonEditorPanel
                 data={item.source.input as JsonData}
                 readOnly
@@ -119,9 +123,9 @@ export function AnnotationSourcePanel({ item }: AnnotationSourcePanelProps) {
                 rootName='metadata'
                 height={160}
               />
-            </CardContent>
+            </div>
           </CollapsibleContent>
-        </Card>
+        </AnnotationSourceSection>
       </Collapsible>
 
       <Collapsible
@@ -129,36 +133,93 @@ export function AnnotationSourcePanel({ item }: AnnotationSourcePanelProps) {
         onOpenChange={setHistoryOpen}
         className='shrink-0'
       >
-        <Card>
-          <CardHeader className='flex flex-row items-center justify-between'>
-            <CardTitle className='text-sm'>历史人工评分</CardTitle>
+        <AnnotationSourceSection
+          title='历史人工评分'
+          open={historyOpen}
+          action={
             <CollapsibleTrigger asChild>
               <Button size='sm' variant='ghost'>
                 {historyOpen ? '折叠' : '展开'}
               </Button>
             </CollapsibleTrigger>
-          </CardHeader>
+          }
+        >
           <CollapsibleContent>
-            <CardContent className='flex flex-col gap-2 text-sm'>
+            <div className='flex flex-col gap-2 px-3 pb-3 text-sm'>
               {item.scores.length ? (
                 item.scores.map((score) => (
-                  <div key={score.id} className='rounded-md border p-2'>
-                    <div className='font-medium'>{score.name}</div>
-                    <div className='text-muted-foreground'>
-                      {String(score.value ?? (score.stringValue || '-'))}
+                  <div
+                    key={score.id}
+                    className='grid gap-1 rounded-md border bg-muted/20 px-2.5 py-2'
+                  >
+                    <div className='flex min-w-0 items-center justify-between gap-2'>
+                      <div className='truncate font-medium'>{score.name}</div>
+                      <div className='text-muted-foreground shrink-0 text-xs'>
+                        {formatAnnotationScoreDisplay(score)}
+                      </div>
                     </div>
-                    <div>{score.comment || '-'}</div>
+                    <div className='text-muted-foreground line-clamp-2 text-xs'>
+                      {score.comment || '无备注'}
+                    </div>
                   </div>
                 ))
               ) : (
                 <div className='text-muted-foreground'>暂无历史人工评分</div>
               )}
-            </CardContent>
+            </div>
           </CollapsibleContent>
-        </Card>
+        </AnnotationSourceSection>
       </Collapsible>
     </div>
   )
+}
+
+function AnnotationSourceSection({
+  title,
+  open,
+  action,
+  className,
+  children,
+}: {
+  title: string
+  open: boolean
+  action: ReactNode
+  className?: string
+  children: ReactNode
+}) {
+  return (
+    <section
+      className={cn(
+        'rounded-md border bg-card text-card-foreground',
+        className
+      )}
+    >
+      <div
+        className={cn(
+          'flex items-center justify-between gap-3 px-3 py-2',
+          open && 'border-b'
+        )}
+      >
+        <h2 className='text-sm font-semibold'>{title}</h2>
+        {action}
+      </div>
+      {children}
+    </section>
+  )
+}
+
+function formatAnnotationScoreDisplay(score: AnnotationScoreRecord) {
+  if (score.dataType === 'BOOLEAN') {
+    if (score.value === 1 || score.stringValue === 'true') return '是'
+    if (score.value === 0 || score.stringValue === 'false') return '否'
+  }
+  if (score.dataType === 'TEXT') {
+    return score.stringValue || '-'
+  }
+  if (score.dataType === 'CATEGORICAL') {
+    return score.stringValue || String(score.value ?? '-')
+  }
+  return score.value == null ? '-' : String(score.value)
 }
 
 function InfoItem({

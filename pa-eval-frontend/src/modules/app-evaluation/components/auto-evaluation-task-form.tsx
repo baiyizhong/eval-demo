@@ -7,6 +7,7 @@ import { useAPI } from '@/hooks/use-api'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
 import { Label } from '@/components/ui/label'
+import { TRACE_QUICK_TIME_RANGE_OPTIONS } from '@/modules/app-observability/trace-time-ranges'
 import {
   Select,
   SelectContent,
@@ -31,6 +32,8 @@ import type {
   MockAutoEvaluationEvaluator,
 } from '../types'
 import { autoEvaluationStepLabels } from './auto-evaluation-steps'
+
+const AUTO_EVALUATION_DEFAULT_TRACE_TIME_RANGE = '3d'
 
 const initialForm: AutoEvaluationTaskFormInput = {
   name: '',
@@ -217,7 +220,7 @@ export function AutoEvaluationTaskForm({
         ? form.dataSource
         : {
             type: 'TRACE_FILTER' as const,
-            timeRange: '24h',
+            timeRange: AUTO_EVALUATION_DEFAULT_TRACE_TIME_RANGE,
             environments: ['production'],
             traceName: '',
             userId: '',
@@ -378,7 +381,7 @@ export function AutoEvaluationTaskForm({
                       ? { type: 'DATASET', datasetId: '' }
                       : {
                           type: 'TRACE_FILTER',
-                          timeRange: '24h',
+                          timeRange: AUTO_EVALUATION_DEFAULT_TRACE_TIME_RANGE,
                           environments: ['production'],
                           traceName: '',
                           userId: '',
@@ -445,24 +448,36 @@ export function AutoEvaluationTaskForm({
                 className='grid gap-4 md:grid-cols-3'
               >
                 <Field label='时间范围'>
-                  <Input
+                  <Select
                     value={
                       form.dataSource.type === 'TRACE_FILTER'
                         ? form.dataSource.timeRange
-                        : '24h'
+                        : AUTO_EVALUATION_DEFAULT_TRACE_TIME_RANGE
                     }
-                    onChange={(event) =>
-                      form.dataSource.type === 'TRACE_FILTER'
-                        ? updateForm({
-                            ...form,
-                            dataSource: {
-                              ...form.dataSource,
-                              timeRange: event.target.value,
-                            },
-                          })
-                        : undefined
-                    }
-                  />
+                    onValueChange={(value) => {
+                      if (form.dataSource.type !== 'TRACE_FILTER') return
+                      updateForm({
+                        ...form,
+                        dataSource: {
+                          ...form.dataSource,
+                          timeRange: value,
+                        },
+                      })
+                    }}
+                  >
+                    <SelectTrigger className='w-full'>
+                      <SelectValue placeholder='选择时间范围' />
+                    </SelectTrigger>
+                    <SelectContent>
+                      <SelectGroup>
+                        {TRACE_QUICK_TIME_RANGE_OPTIONS.map((option) => (
+                          <SelectItem key={option.value} value={option.value}>
+                            {option.label}
+                          </SelectItem>
+                        ))}
+                      </SelectGroup>
+                    </SelectContent>
+                  </Select>
                 </Field>
                 <Field label='Trace Name'>
                   <Input

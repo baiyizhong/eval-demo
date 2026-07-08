@@ -41,7 +41,11 @@ import {
 import { Textarea } from '@/components/ui/textarea'
 import { ContentSection } from '@/components/common/content-section'
 import { Loading } from '@/components/common/loading'
-import type { ScoreConfig, ScoreConfigDataType } from '../types'
+import type {
+  ScoreConfig,
+  ScoreConfigCategory,
+  ScoreConfigDataType,
+} from '../types'
 
 const DATA_TYPE_LABELS: Record<ScoreConfigDataType, string> = {
   NUMERIC: '数值',
@@ -50,9 +54,9 @@ const DATA_TYPE_LABELS: Record<ScoreConfigDataType, string> = {
   TEXT: '文本',
 }
 
-const BOOLEAN_SCORE_OPTIONS: ScoreOptionRow[] = [
-  { value: '1', label: '是' },
-  { value: '0', label: '否' },
+const BOOLEAN_SCORE_OPTIONS: ScoreConfigCategory[] = [
+  { value: 1, label: '是' },
+  { value: 0, label: '否' },
 ]
 
 function formatDateTime(value: string) {
@@ -300,11 +304,14 @@ function ScoreConfigDialog({
     }
     const categoryValues = categoryRows
       .map((item) => ({
-        value: item.value.trim(),
+        value: Number(item.value.trim()),
         label: item.label.trim(),
       }))
-      .filter((item) => item.value)
-      .map((item) => encodeScoreOption(item))
+      .filter((item) => Number.isFinite(item.value) && item.label)
+    if (dataType === 'CATEGORICAL' && categoryValues.length === 0) {
+      toast.error('请至少配置一个有效分类选项')
+      return
+    }
     onSubmit({
       name: trimmedName,
       dataType,
@@ -315,7 +322,7 @@ function ScoreConfigDialog({
         dataType === 'NUMERIC' && maxValue !== '' ? Number(maxValue) : null,
       categories:
         dataType === 'BOOLEAN'
-          ? BOOLEAN_SCORE_OPTIONS.map(encodeScoreOption)
+          ? toLangfuseBooleanCategories()
           : dataType === 'CATEGORICAL'
             ? categoryValues
             : [],
@@ -487,32 +494,32 @@ function ScoreOptionRows({
 
 function getInitialScoreOptionRows(config: ScoreConfig | null): ScoreOptionRow[] {
   if (config?.dataType === 'BOOLEAN') {
-    return BOOLEAN_SCORE_OPTIONS
+    return BOOLEAN_SCORE_OPTIONS.map((option) => ({
+      value: String(option.value),
+      label: option.label,
+    }))
   }
   if (config?.categories?.length) {
-    return config.categories.map(parseScoreOption)
+    return config.categories.map((category) => ({
+      value: String(category.value),
+      label: category.label,
+    }))
   }
   return [
-    { value: 'good', label: '好' },
-    { value: 'bad', label: '差' },
+    { value: '1', label: '好' },
+    { value: '0', label: '差' },
   ]
 }
 
-function encodeScoreOption(option: ScoreOptionRow) {
-  return `${option.value}|${option.label || option.value}`
+function toLangfuseBooleanCategories(): ScoreConfigCategory[] {
+  return [
+    { label: 'True', value: 1 },
+    { label: 'False', value: 0 },
+  ]
 }
 
-function parseScoreOption(value: string): ScoreOptionRow {
-  const [rawValue, rawLabel] = value.split('|')
-  return {
-    value: rawValue || value,
-    label: rawLabel || rawValue || value,
-  }
-}
-
-function formatScoreOption(value: string) {
-  const option = parseScoreOption(value)
-  return `${option.value}（${option.label}）`
+function formatScoreOption(option: ScoreConfigCategory) {
+  return `${option.label}（${option.value}）`
 }
 
 function Field({ label, children }: { label: string; children: ReactNode }) {

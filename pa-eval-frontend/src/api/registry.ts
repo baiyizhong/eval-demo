@@ -160,6 +160,19 @@ export const apiRegistry = {
     method: 'GET',
     url: '/projects/:projectId/datasets/:datasetId/items',
   },
+  createProjectDatasetExportJob: {
+    method: 'POST',
+    url: '/projects/:projectId/datasets/:datasetId/export-jobs',
+  },
+  getProjectDatasetExportJob: {
+    method: 'GET',
+    url: '/projects/:projectId/datasets/:datasetId/export-jobs/:jobId',
+  },
+  downloadProjectDatasetExportJob: {
+    method: 'GET',
+    url: '/projects/:projectId/datasets/:datasetId/export-jobs/:jobId/download',
+    responseType: 'blob',
+  },
   createProjectDatasetItem: {
     method: 'POST',
     url: '/projects/:projectId/datasets/:datasetId/items',
@@ -239,6 +252,14 @@ export const apiRegistry = {
   getProjectAnnotationQueueItem: {
     method: 'GET',
     url: '/projects/:projectId/annotation-queues/:queueId/items/:itemId',
+  },
+  previewProjectAnnotationBatch: {
+    method: 'POST',
+    url: '/projects/:projectId/annotation-queues/:queueId/batch-preview',
+  },
+  saveProjectAnnotationBatchScores: {
+    method: 'POST',
+    url: '/projects/:projectId/annotation-queues/:queueId/batch-scores',
   },
   saveProjectAnnotationScores: {
     method: 'POST',
