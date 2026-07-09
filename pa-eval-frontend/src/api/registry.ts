@@ -333,14 +333,6 @@ export const apiRegistry = {
     method: 'POST',
     url: '/projects/:projectId/auto-evaluations/:taskId/rerun',
   },
-  startAutoEvaluationSchedule: {
-    method: 'POST',
-    url: '/projects/:projectId/auto-evaluations/:taskId/schedule/start',
-  },
-  pauseAutoEvaluationSchedule: {
-    method: 'POST',
-    url: '/projects/:projectId/auto-evaluations/:taskId/schedule/pause',
-  },
   getAutoEvaluationLatestReport: {
     method: 'GET',
     url: '/projects/:projectId/auto-evaluations/:taskId/latest-report',
@@ -348,6 +340,42 @@ export const apiRegistry = {
   getAutoEvaluationRuns: {
     method: 'GET',
     url: '/projects/:projectId/auto-evaluations/:taskId/runs',
+  },
+  getScheduledJobs: {
+    method: 'GET',
+    url: '/projects/:projectId/scheduled-jobs',
+  },
+  createScheduledJob: {
+    method: 'POST',
+    url: '/projects/:projectId/scheduled-jobs',
+  },
+  updateScheduledJob: {
+    method: 'PATCH',
+    url: '/projects/:projectId/scheduled-jobs/:jobId',
+  },
+  pauseScheduledJob: {
+    method: 'POST',
+    url: '/projects/:projectId/scheduled-jobs/:jobId/pause',
+  },
+  resumeScheduledJob: {
+    method: 'POST',
+    url: '/projects/:projectId/scheduled-jobs/:jobId/resume',
+  },
+  deleteScheduledJob: {
+    method: 'DELETE',
+    url: '/projects/:projectId/scheduled-jobs/:jobId',
+  },
+  runScheduledJob: {
+    method: 'POST',
+    url: '/projects/:projectId/scheduled-jobs/:jobId/run',
+  },
+  triggerScheduledJob: {
+    method: 'POST',
+    url: '/projects/:projectId/scheduled-jobs/:jobId/trigger',
+  },
+  getScheduledJobLogs: {
+    method: 'GET',
+    url: '/projects/:projectId/scheduled-job-logs',
   },
 } as const
 

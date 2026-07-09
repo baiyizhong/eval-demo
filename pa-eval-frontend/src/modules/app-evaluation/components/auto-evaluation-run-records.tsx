@@ -11,12 +11,6 @@ import type { AutoEvaluationRunRecord } from '../types'
 import { AutoEvaluationStatusBadge } from './auto-evaluation-status-badge'
 import { formatDateTime } from './format'
 
-const triggerSourceLabels = {
-  MANUAL: '手动',
-  SCHEDULED: '调度',
-  RETRY: '重试',
-} as const
-
 export function AutoEvaluationRunRecords({
   runs,
 }: {
@@ -33,9 +27,6 @@ export function AutoEvaluationRunRecords({
             <TableHeader>
               <TableRow>
                 <TableHead>状态</TableHead>
-                <TableHead>触发方式</TableHead>
-                <TableHead>时间窗口</TableHead>
-                <TableHead>尝试次数</TableHead>
                 <TableHead>样本数</TableHead>
                 <TableHead>完成</TableHead>
                 <TableHead>失败</TableHead>
@@ -51,13 +42,6 @@ export function AutoEvaluationRunRecords({
                   <TableCell>
                     <AutoEvaluationStatusBadge status={run.status} />
                   </TableCell>
-                  <TableCell>
-                    {run.triggerSource
-                      ? triggerSourceLabels[run.triggerSource]
-                      : '-'}
-                  </TableCell>
-                  <TableCell>{formatRunWindow(run)}</TableCell>
-                  <TableCell>{run.attemptNo ?? '-'}</TableCell>
                   <TableCell>{run.sampleCount}</TableCell>
                   <TableCell>{run.completedCount}</TableCell>
                   <TableCell>{run.failedCount}</TableCell>
@@ -75,9 +59,4 @@ export function AutoEvaluationRunRecords({
       </CardContent>
     </Card>
   )
-}
-
-function formatRunWindow(run: AutoEvaluationRunRecord) {
-  if (!run.windowStart || !run.windowEnd) return '-'
-  return `${formatDateTime(run.windowStart)} - ${formatDateTime(run.windowEnd)}`
 }

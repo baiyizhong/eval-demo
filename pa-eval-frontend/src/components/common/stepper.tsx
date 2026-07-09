@@ -23,7 +23,12 @@ export function Stepper({
 }: StepperProps) {
   return (
     <nav aria-label='步骤进度' className={className}>
-      <ol className='grid gap-0 md:grid-cols-3'>
+      <ol
+        className='grid gap-0'
+        style={{
+          gridTemplateColumns: `repeat(${items.length}, minmax(0, 1fr))`,
+        }}
+      >
         {items.map((item, index) => {
           const isCurrent = index === currentStep
           const isCompleted = index < currentStep

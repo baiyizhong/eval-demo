@@ -42,6 +42,7 @@ import { ProjectGeneralSettings } from '@/modules/project-settings/views/general
 import { ProjectMembersSettings } from '@/modules/project-settings/views/members'
 import { ProjectModelsSettings } from '@/modules/project-settings/views/models'
 import { ProjectScoreConfigsSettings } from '@/modules/project-settings/views/score-configs'
+import { ScheduledJobs } from '@/modules/scheduled-jobs'
 import { Settings } from '@/modules/settings'
 import {
   BackendManagement,
@@ -208,6 +209,10 @@ export const routes = [
                     element: <ProjectEvaluationReportDetail />,
                   },
                 ],
+              },
+              {
+                path: 'projects/:projectId/scheduled-jobs',
+                element: <ScheduledJobs />,
               },
               {
                 path: 'projects/:projectId/settings',

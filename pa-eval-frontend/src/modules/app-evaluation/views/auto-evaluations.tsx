@@ -13,9 +13,7 @@ import {
   deleteProjectAutoEvaluationTask,
   getProjectAutoEvaluationTaskSummary,
   listProjectAutoEvaluationTasks,
-  pauseProjectAutoEvaluationSchedule,
   rerunProjectAutoEvaluationTask,
-  startProjectAutoEvaluationSchedule,
 } from '../api/auto-evaluation-api'
 import { createAutoEvaluationColumns } from '../components/auto-evaluation-columns'
 import {
@@ -60,26 +58,6 @@ export function ProjectAutoEvaluations() {
         projectId,
         onRerun: (task) => {
           void handleRerun($api, projectId, task, invalidateTasks)
-        },
-        onStartSchedule: (task) => {
-          void handleStartSchedule(
-            $api as unknown as Parameters<
-              typeof startProjectAutoEvaluationSchedule
-            >[0],
-            projectId,
-            task,
-            invalidateTasks
-          )
-        },
-        onPauseSchedule: (task) => {
-          void handlePauseSchedule(
-            $api as unknown as Parameters<
-              typeof pauseProjectAutoEvaluationSchedule
-            >[0],
-            projectId,
-            task,
-            invalidateTasks
-          )
         },
         onDelete: (task) => {
           void handleDelete($api, projectId, task, invalidateTasks)
@@ -161,9 +139,6 @@ export function ProjectAutoEvaluations() {
                 evaluator: '评估器',
                 dataSource: '数据源',
                 sampleRate: '采样率',
-                runMode: '运行方式',
-                scheduleStatus: '调度状态',
-                nextRunAt: '下次执行',
                 executionResult: '执行结果',
                 badcaseCount: 'Badcase',
                 lastRunAt: '最近运行',
@@ -253,26 +228,4 @@ async function handleDelete(
   await deleteProjectAutoEvaluationTask(api, projectId, task.id)
   await onCompleted()
   toast.success('自动评测任务已删除')
-}
-
-async function handleStartSchedule(
-  api: Parameters<typeof startProjectAutoEvaluationSchedule>[0],
-  projectId: string,
-  task: AutoEvaluationTaskRecord,
-  onCompleted: () => Promise<unknown>
-) {
-  await startProjectAutoEvaluationSchedule(api, projectId, task.id)
-  await onCompleted()
-  toast.success('自动评测调度已启动')
-}
-
-async function handlePauseSchedule(
-  api: Parameters<typeof pauseProjectAutoEvaluationSchedule>[0],
-  projectId: string,
-  task: AutoEvaluationTaskRecord,
-  onCompleted: () => Promise<unknown>
-) {
-  await pauseProjectAutoEvaluationSchedule(api, projectId, task.id)
-  await onCompleted()
-  toast.success('自动评测调度已停止')
 }

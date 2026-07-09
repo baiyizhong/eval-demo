@@ -122,6 +122,12 @@ function buildProjectNavItems(projectId: string): NavItem[] {
       activeMatch: 'prefix',
     },
     {
+      title: '定时任务',
+      url: `/projects/${encodedProjectId}/scheduled-jobs`,
+      icon: 'CalendarClock',
+      activeMatch: 'prefix',
+    },
+    {
       title: '项目设置',
       url: `/projects/${encodedProjectId}/settings/general`,
       icon: 'Settings',

@@ -1,4 +1,5 @@
 from functools import lru_cache
+from uuid import uuid4
 
 from pydantic import Field
 from pydantic_settings import BaseSettings, SettingsConfigDict
@@ -18,6 +19,13 @@ class Settings(BaseSettings):
     pa_eval_export_storage_dir: str = Field(default=".pa-eval/exports")
     pa_eval_auth_cookie_name: str = Field(default="thisisjustarandomstring")
     pa_eval_auth_secret: str = Field(default="")
+    pa_eval_scheduler_enabled: bool = Field(default=False)
+    pa_eval_scheduler_poll_interval_seconds: float = Field(default=10)
+    pa_eval_scheduler_batch_size: int = Field(default=10)
+    pa_eval_scheduler_lease_seconds: int = Field(default=120)
+    pa_eval_scheduler_instance_id: str = Field(
+        default_factory=lambda: f"pa-eval-scheduler-{uuid4().hex}"
+    )
     github_client_id: str = Field(default="")
     github_client_secret: str = Field(default="")
     github_oauth_redirect_uri: str = Field(
@@ -37,6 +45,10 @@ class Settings(BaseSettings):
             for item in self.pa_eval_cors_origins.split(",")
             if item.strip()
         ]
+
+    @property
+    def scheduler_instance_id(self) -> str:
+        return self.pa_eval_scheduler_instance_id
 
 
 @lru_cache

@@ -1,4 +1,5 @@
 from typing import Any
+from contextlib import asynccontextmanager
 
 from fastapi import FastAPI, Request
 from fastapi.exceptions import RequestValidationError
@@ -21,12 +22,25 @@ from app.observability import router as observability_router
 from app.organizations import router as organizations_router
 from app.projects import router as projects_router
 from app.response import failure, success
+from app.scheduled_jobs import (
+    router as scheduled_jobs_router,
+    start_scheduled_job_scheduler,
+)
 from app.system import router as system_router
 
 
 def create_app() -> FastAPI:
     settings = get_settings()
-    app = FastAPI(title="PA Eval Backend")
+
+    @asynccontextmanager
+    async def lifespan(app: FastAPI):
+        scheduler = start_scheduled_job_scheduler(settings)
+        try:
+            yield
+        finally:
+            await scheduler.stop()
+
+    app = FastAPI(title="PA Eval Backend", lifespan=lifespan)
 
     app.add_middleware(
         CORSMiddleware,
@@ -44,6 +58,7 @@ def create_app() -> FastAPI:
     app.include_router(datasets_router)
     app.include_router(annotations_router)
     app.include_router(observability_router)
+    app.include_router(scheduled_jobs_router)
     app.include_router(admin_router)
     app.include_router(audit_router)
     app.include_router(system_router)

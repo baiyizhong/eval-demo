@@ -36,10 +36,15 @@ test('Stepper 步骤项不使用 hover 和选中背景效果', () => {
 })
 
 test('Stepper 步骤之间无间距且步骤项无左右内边距', () => {
-  assert.match(stepperSource, /grid gap-0 md:grid-cols-3/)
+  assert.match(stepperSource, /grid gap-0/)
+  assert.match(
+    stepperSource,
+    /gridTemplateColumns: `repeat\(\$\{items\.length\}, minmax\(0, 1fr\)\)`/
+  )
   assert.match(stepperSource, /py-3/)
   assert.match(stepperSource, /px-0/)
   assert.doesNotMatch(stepperSource, /grid gap-3 md:grid-cols-3/)
+  assert.doesNotMatch(stepperSource, /md:grid-cols-3/)
   assert.doesNotMatch(stepperSource, /rounded-lg p-3/)
 })
 

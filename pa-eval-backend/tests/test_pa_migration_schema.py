@@ -9,7 +9,6 @@ PA_TABLES = (
     "pa_project_api_keys",
     "pa_auto_evaluation_tasks",
     "pa_auto_evaluation_runs",
-    "pa_auto_evaluation_schedules",
     "pa_evaluation_reports",
     "pa_evaluation_report_items",
     "pa_evaluation_report_badcases",
@@ -19,6 +18,8 @@ PA_TABLES = (
     "pa_project_model_settings",
     "pa_audit_logs",
     "pa_dataset_export_jobs",
+    "pa_scheduled_jobs",
+    "pa_scheduled_job_execution_logs",
 )
 
 
@@ -40,7 +41,7 @@ def test_pa_schema_migrations_are_defined_in_order() -> None:
         "20260707_0007_normalize_langfuse_score_config_categories.py",
         "20260708_0008_align_auto_eval_compat_columns.py",
         "20260708_0009_add_report_flowback_compat_columns.py",
-        "20260709_0010_create_auto_eval_schedules.py",
+        "20260709_0010_create_scheduled_jobs.py",
     ]
 
 

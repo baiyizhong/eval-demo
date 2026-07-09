@@ -1,5 +1,5 @@
 import type { Row } from '@tanstack/react-table'
-import { Eye, MoreHorizontal, Pause, Play, Trash2 } from 'lucide-react'
+import { Eye, MoreHorizontal, Play, Trash2 } from 'lucide-react'
 import { Link } from 'react-router'
 import { Button } from '@/components/ui/button'
 import {
@@ -15,8 +15,6 @@ type AutoEvaluationRowActionsProps = {
   row: Row<AutoEvaluationTaskRecord>
   projectId: string
   onRerun: (task: AutoEvaluationTaskRecord) => void
-  onStartSchedule: (task: AutoEvaluationTaskRecord) => void
-  onPauseSchedule: (task: AutoEvaluationTaskRecord) => void
   onDelete: (task: AutoEvaluationTaskRecord) => void
 }
 
@@ -24,13 +22,9 @@ export function AutoEvaluationRowActions({
   row,
   projectId,
   onRerun,
-  onStartSchedule,
-  onPauseSchedule,
   onDelete,
 }: AutoEvaluationRowActionsProps) {
   const task = row.original
-  const isScheduled = task.runMode === 'SCHEDULED'
-  const isActiveSchedule = task.schedule?.status === 'ACTIVE'
 
   return (
     <DropdownMenu>
@@ -57,18 +51,6 @@ export function AutoEvaluationRowActions({
             <Play data-icon='inline-start' />
             重新运行
           </DropdownMenuItem>
-          {isScheduled && !isActiveSchedule ? (
-            <DropdownMenuItem onSelect={() => onStartSchedule(task)}>
-              <Play data-icon='inline-start' />
-              启动调度
-            </DropdownMenuItem>
-          ) : null}
-          {isScheduled && isActiveSchedule ? (
-            <DropdownMenuItem onSelect={() => onPauseSchedule(task)}>
-              <Pause data-icon='inline-start' />
-              停止调度
-            </DropdownMenuItem>
-          ) : null}
           <DropdownMenuItem
             variant='destructive'
             onSelect={() => onDelete(task)}

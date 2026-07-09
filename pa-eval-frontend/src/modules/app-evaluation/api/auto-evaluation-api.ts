@@ -27,14 +27,6 @@ type AutoEvaluationApiClient = {
   getAutoEvaluationRuns: ApiMethod
 }
 
-type StartAutoEvaluationScheduleApiClient = {
-  startAutoEvaluationSchedule: ApiMethod
-}
-
-type PauseAutoEvaluationScheduleApiClient = {
-  pauseAutoEvaluationSchedule: ApiMethod
-}
-
 export function createProjectAutoEvaluationTask(
   api: AutoEvaluationApiClient,
   projectId: string,
@@ -43,29 +35,16 @@ export function createProjectAutoEvaluationTask(
     description: string
     scoreName: string
     evaluatorId: string
-    runMode?: AutoEvaluationTaskFormInput['runMode']
-    schedule?: AutoEvaluationTaskFormInput['schedule']
     sampleRate: number
     dataSource: AutoEvaluationTaskFormInput['dataSource']
     variableMapping: AutoEvaluationTaskFormInput['variableMapping']
     reportTemplateId: string
   }
 ) {
-  const runMode = input.runMode ?? 'IMMEDIATE'
-
   return api.createAutoEvaluationTask<AutoEvaluationTaskRecord>({
     path: { projectId },
     body: {
-      name: input.name,
-      description: input.description,
-      scoreName: input.scoreName,
-      evaluatorId: input.evaluatorId,
-      runMode,
-      schedule: runMode === 'SCHEDULED' ? input.schedule : null,
-      sampleRate: input.sampleRate,
-      dataSource: input.dataSource,
-      variableMapping: input.variableMapping,
-      reportTemplateId: input.reportTemplateId,
+      ...input,
       input: '用户问：怎么申请退款？',
       output: '您可以在订单详情页提交退款申请。',
       expectedOutput: '退款申请',
@@ -192,26 +171,6 @@ export function rerunProjectAutoEvaluationTask(
   taskId: string
 ) {
   return api.rerunAutoEvaluationTask<AutoEvaluationTaskRecord>({
-    path: { projectId, taskId },
-  })
-}
-
-export function startProjectAutoEvaluationSchedule(
-  api: StartAutoEvaluationScheduleApiClient,
-  projectId: string,
-  taskId: string
-) {
-  return api.startAutoEvaluationSchedule<AutoEvaluationTaskRecord>({
-    path: { projectId, taskId },
-  })
-}
-
-export function pauseProjectAutoEvaluationSchedule(
-  api: PauseAutoEvaluationScheduleApiClient,
-  projectId: string,
-  taskId: string
-) {
-  return api.pauseAutoEvaluationSchedule<AutoEvaluationTaskRecord>({
     path: { projectId, taskId },
   })
 }
