@@ -34,6 +34,7 @@ logger = logging.getLogger(__name__)
 ScheduledJobTaskType = Literal["AUTO_EVALUATION"]
 ScheduledJobRunMode = Literal["ONCE", "RECURRING"]
 ScheduledJobStatus = Literal["NOT_STARTED", "RUNNING", "PAUSED", "SUCCEEDED", "FAILED"]
+ScheduledJobLogStatus = Literal["RUNNING", "SUCCEEDED", "FAILED"]
 ScheduledJobTriggerType = Literal["MANUAL", "JOB"]
 
 
@@ -159,9 +160,7 @@ async def _scheduler_loop(settings: Settings, stop_event: asyncio.Event) -> None
             now = datetime.now(timezone.utc)
             claimed_jobs = await _claim_due_scheduled_jobs(settings, now)
             for job in claimed_jobs:
-                asyncio.create_task(
-                    _execute_claimed_scheduled_job(settings, job, now)
-                )
+                asyncio.create_task(_execute_claimed_scheduled_job(settings, job, now))
         except Exception:
             logger.exception("Scheduled job poll failed")
 
@@ -203,6 +202,12 @@ def _build_due_job_claim_sql() -> str:
               AND next_run_at IS NOT NULL
               AND next_run_at <= %(now)s
               AND (lock_until IS NULL OR lock_until <= %(now)s)
+              AND NOT EXISTS (
+                SELECT 1
+                FROM pa_scheduled_job_execution_logs logs
+                WHERE logs.scheduled_job_id = pa_scheduled_jobs.id
+                  AND logs.status = 'RUNNING'
+              )
             ORDER BY next_run_at ASC, id ASC
             LIMIT %(limit)s
             FOR UPDATE SKIP LOCKED
@@ -241,6 +246,7 @@ async def list_scheduled_jobs(
     page: int = Query(default=1, ge=1),
     page_size: int = Query(default=10, ge=1, le=200, alias="pageSize"),
     keyword: str | None = Query(default=None),
+    status: list[ScheduledJobStatus] = Query(default_factory=list),
     current_user: CurrentUserContext = Depends(get_current_user_context),
     settings: Settings = Depends(get_settings),
 ) -> dict[str, Any]:
@@ -255,8 +261,14 @@ async def list_scheduled_jobs(
                 FROM pa_scheduled_jobs
                 WHERE project_id = %(project_id)s
                   AND (%(keyword)s = '' OR name ILIKE %(like)s OR description ILIKE %(like)s)
+                  AND (cardinality(%(status)s::text[]) = 0 OR status = ANY(%(status)s::text[]))
                 """,
-                {"project_id": project_id, "keyword": keyword or "", "like": like},
+                {
+                    "project_id": project_id,
+                    "keyword": keyword or "",
+                    "like": like,
+                    "status": status,
+                },
             )
             total = (await cursor.fetchone() or {}).get("total", 0)
             await cursor.execute(
@@ -265,6 +277,7 @@ async def list_scheduled_jobs(
                 FROM pa_scheduled_jobs
                 WHERE project_id = %(project_id)s
                   AND (%(keyword)s = '' OR name ILIKE %(like)s OR description ILIKE %(like)s)
+                  AND (cardinality(%(status)s::text[]) = 0 OR status = ANY(%(status)s::text[]))
                 ORDER BY update_date DESC, id DESC
                 LIMIT %(limit)s OFFSET %(offset)s
                 """,
@@ -272,6 +285,7 @@ async def list_scheduled_jobs(
                     "project_id": project_id,
                     "keyword": keyword or "",
                     "like": like,
+                    "status": status,
                     "limit": page_size,
                     "offset": offset,
                 },
@@ -536,10 +550,17 @@ async def list_scheduled_job_logs(
     page: int = Query(default=1, ge=1),
     page_size: int = Query(default=10, ge=1, le=200, alias="pageSize"),
     job_id: str | None = Query(default=None, alias="jobId"),
+    keyword: str | None = Query(default=None),
+    status: list[ScheduledJobLogStatus] = Query(default_factory=list),
+    trigger_type: list[ScheduledJobTriggerType] = Query(
+        default_factory=list,
+        alias="triggerType",
+    ),
     current_user: CurrentUserContext = Depends(get_current_user_context),
     settings: Settings = Depends(get_settings),
 ) -> dict[str, Any]:
     offset = (page - 1) * page_size
+    like = f"%{keyword or ''}%"
     async with await _connect(settings) as connection:
         async with connection.cursor() as cursor:
             await _ensure_project_access(cursor, project_id, current_user.user_id)
@@ -549,8 +570,18 @@ async def list_scheduled_job_logs(
                 FROM pa_scheduled_job_execution_logs
                 WHERE project_id = %(project_id)s
                   AND (%(job_id)s = '' OR scheduled_job_id = %(job_id)s)
+                  AND (%(keyword)s = '' OR scheduled_job_name ILIKE %(like)s OR auto_evaluation_task_name ILIKE %(like)s)
+                  AND (cardinality(%(status)s::text[]) = 0 OR status = ANY(%(status)s::text[]))
+                  AND (cardinality(%(trigger_type)s::text[]) = 0 OR trigger_type = ANY(%(trigger_type)s::text[]))
                 """,
-                {"project_id": project_id, "job_id": job_id or ""},
+                {
+                    "project_id": project_id,
+                    "job_id": job_id or "",
+                    "keyword": keyword or "",
+                    "like": like,
+                    "status": status,
+                    "trigger_type": trigger_type,
+                },
             )
             total = (await cursor.fetchone() or {}).get("total", 0)
             await cursor.execute(
@@ -559,12 +590,19 @@ async def list_scheduled_job_logs(
                 FROM pa_scheduled_job_execution_logs
                 WHERE project_id = %(project_id)s
                   AND (%(job_id)s = '' OR scheduled_job_id = %(job_id)s)
+                  AND (%(keyword)s = '' OR scheduled_job_name ILIKE %(like)s OR auto_evaluation_task_name ILIKE %(like)s)
+                  AND (cardinality(%(status)s::text[]) = 0 OR status = ANY(%(status)s::text[]))
+                  AND (cardinality(%(trigger_type)s::text[]) = 0 OR trigger_type = ANY(%(trigger_type)s::text[]))
                 ORDER BY started_at DESC, id DESC
                 LIMIT %(limit)s OFFSET %(offset)s
                 """,
                 {
                     "project_id": project_id,
                     "job_id": job_id or "",
+                    "keyword": keyword or "",
+                    "like": like,
+                    "status": status,
+                    "trigger_type": trigger_type,
                     "limit": page_size,
                     "offset": offset,
                 },
@@ -645,116 +683,152 @@ async def _trigger_scheduled_job(
             if inserted_log is None:
                 return
 
-            evaluator = await _get_pa_evaluator(
-                cursor,
-                job["evaluator_id"],
-                job["created_user_id"],
-            )
-            payload = _build_auto_evaluation_payload_from_job(
-                job,
-                auto_task_name,
-                fire_at,
-            )
-            data_source, samples = await _resolve_auto_evaluation_samples(
-                cursor,
-                project_id,
-                payload,
-                job["created_user_id"],
-                settings,
-            )
-            report_template_snapshot = await _resolve_report_template_snapshot(
-                cursor,
-                project_id=project_id,
-                template_id=payload.report_template_id,
-            )
-            payload = payload.model_copy(
-                update={
-                    "report_template_id": report_template_snapshot["id"],
-                    "report_template_snapshot": report_template_snapshot,
-                }
-            )
-            await _insert_running_auto_evaluation(
-                cursor,
-                task_id=auto_task_id,
-                run_id=run_id,
-                project_id=project_id,
-                name=payload.name,
-                description=payload.description,
-                score_name=payload.score_name,
-                evaluator=evaluator,
-                data_source=data_source,
-                sample_rate=payload.sample_rate,
-                sample_count=len(samples),
-                report_template_id=payload.report_template_id,
-                report_template_snapshot=report_template_snapshot,
-                create_by=triggered_by,
-                now=now,
-            )
-            await cursor.execute(
-                """
-                UPDATE pa_scheduled_job_execution_logs
-                SET auto_evaluation_task_id = %(auto_task_id)s,
-                    auto_evaluation_run_id = %(run_id)s,
-                    sample_count = %(sample_count)s,
-                    trigger_payload = %(trigger_payload)s,
-                    update_by = %(update_by)s,
-                    update_date = %(update_date)s
-                WHERE id = %(log_id)s
-                """,
-                {
-                    "log_id": log_id,
-                    "auto_task_id": auto_task_id,
-                    "run_id": run_id,
-                    "sample_count": len(samples),
-                    "trigger_payload": Jsonb(
-                        {
-                            "job": _to_scheduled_job(job),
-                            "autoEvaluationPayload": payload.model_dump(by_alias=True),
-                            "dataSource": data_source,
-                        }
-                    ),
-                    "update_by": triggered_by,
-                    "update_date": now,
-                },
-            )
-            next_run_at = _next_run_after_trigger(job, fire_at)
-            await cursor.execute(
-                """
-                UPDATE pa_scheduled_jobs
-                SET latest_auto_evaluation_task_id = %(auto_task_id)s,
-                    last_run_at = %(last_run_at)s,
-                    last_fire_key = %(fire_key)s,
-                    next_run_at = %(next_run_at)s,
-                    lock_owner = NULL,
-                    lock_until = NULL,
-                    update_by = %(update_by)s,
-                    update_date = %(update_date)s
-                WHERE project_id = %(project_id)s
-                  AND id = %(job_id)s
-                """,
-                {
-                    "project_id": project_id,
-                    "job_id": job["id"],
-                    "auto_task_id": auto_task_id,
-                    "last_run_at": now,
-                    "fire_key": fire_key,
-                    "next_run_at": next_run_at,
-                    "update_by": triggered_by,
-                    "update_date": now,
-                },
-            )
+            try:
+                evaluator = await _get_pa_evaluator(
+                    cursor,
+                    job["evaluator_id"],
+                    job["created_user_id"],
+                )
+                payload = _build_auto_evaluation_payload_from_job(
+                    job,
+                    auto_task_name,
+                    fire_at,
+                )
+                data_source, samples = await _resolve_auto_evaluation_samples(
+                    cursor,
+                    project_id,
+                    payload,
+                    job["created_user_id"],
+                    settings,
+                )
+                report_template_snapshot = await _resolve_report_template_snapshot(
+                    cursor,
+                    project_id=project_id,
+                    template_id=payload.report_template_id,
+                )
+                payload = payload.model_copy(
+                    update={
+                        "report_template_id": report_template_snapshot["id"],
+                        "report_template_snapshot": report_template_snapshot,
+                    }
+                )
+                await _insert_running_auto_evaluation(
+                    cursor,
+                    task_id=auto_task_id,
+                    run_id=run_id,
+                    project_id=project_id,
+                    name=payload.name,
+                    description=payload.description,
+                    score_name=payload.score_name,
+                    evaluator=evaluator,
+                    data_source=data_source,
+                    sample_rate=payload.sample_rate,
+                    sample_count=len(samples),
+                    report_template_id=payload.report_template_id,
+                    report_template_snapshot=report_template_snapshot,
+                    create_by=triggered_by,
+                    now=now,
+                )
+                await cursor.execute(
+                    """
+                    UPDATE pa_scheduled_job_execution_logs
+                    SET auto_evaluation_task_id = %(auto_task_id)s,
+                        auto_evaluation_run_id = %(run_id)s,
+                        sample_count = %(sample_count)s,
+                        trigger_payload = %(trigger_payload)s,
+                        update_by = %(update_by)s,
+                        update_date = %(update_date)s
+                    WHERE id = %(log_id)s
+                    """,
+                    {
+                        "log_id": log_id,
+                        "auto_task_id": auto_task_id,
+                        "run_id": run_id,
+                        "sample_count": len(samples),
+                        "trigger_payload": Jsonb(
+                            {
+                                "job": _to_scheduled_job(job),
+                                "autoEvaluationPayload": payload.model_dump(
+                                    by_alias=True
+                                ),
+                                "dataSource": data_source,
+                            }
+                        ),
+                        "update_by": triggered_by,
+                        "update_date": now,
+                    },
+                )
+                next_run_at = _next_run_after_trigger(job, fire_at)
+                await cursor.execute(
+                    """
+                    UPDATE pa_scheduled_jobs
+                    SET latest_auto_evaluation_task_id = %(auto_task_id)s,
+                        last_run_at = %(last_run_at)s,
+                        last_fire_key = %(fire_key)s,
+                        next_run_at = %(next_run_at)s,
+                        lock_owner = NULL,
+                        lock_until = NULL,
+                        update_by = %(update_by)s,
+                        update_date = %(update_date)s
+                    WHERE project_id = %(project_id)s
+                      AND id = %(job_id)s
+                    """,
+                    {
+                        "project_id": project_id,
+                        "job_id": job["id"],
+                        "auto_task_id": auto_task_id,
+                        "last_run_at": now,
+                        "fire_key": fire_key,
+                        "next_run_at": next_run_at,
+                        "update_by": triggered_by,
+                        "update_date": now,
+                    },
+                )
+            except Exception as exc:
+                logger.exception(
+                    "Scheduled job setup failed", extra={"job_id": job["id"]}
+                )
+                await _mark_scheduled_job_trigger_failed(
+                    cursor,
+                    project_id=project_id,
+                    job=job,
+                    log_id=log_id,
+                    fire_at=fire_at,
+                    fire_key=fire_key,
+                    started_at=now,
+                    error_message=_safe_error_message(exc),
+                    updated_by=triggered_by,
+                )
+                return
 
-    await _run_auto_evaluation_background(
-        settings,
-        project_id,
-        auto_task_id,
-        run_id,
-        payload,
-        evaluator,
-        samples,
-        data_source,
-        triggered_by,
-    )
+    try:
+        await _run_auto_evaluation_background(
+            settings,
+            project_id,
+            auto_task_id,
+            run_id,
+            payload,
+            evaluator,
+            samples,
+            data_source,
+            triggered_by,
+        )
+    except Exception as exc:
+        logger.exception("Scheduled job execution failed", extra={"job_id": job["id"]})
+        async with await _connect(settings) as connection:
+            async with connection.cursor() as cursor:
+                await _mark_scheduled_job_trigger_failed(
+                    cursor,
+                    project_id=project_id,
+                    job=job,
+                    log_id=log_id,
+                    fire_at=fire_at,
+                    fire_key=fire_key,
+                    started_at=now,
+                    error_message=_safe_error_message(exc),
+                    updated_by=triggered_by,
+                )
+        return
     await _sync_execution_log_from_auto_evaluation(
         settings,
         project_id=project_id,
@@ -764,6 +838,78 @@ async def _trigger_scheduled_job(
         updated_by=triggered_by,
         started_at=now,
     )
+
+
+async def _mark_scheduled_job_trigger_failed(
+    cursor: Any,
+    *,
+    project_id: str,
+    job: dict[str, Any],
+    log_id: str,
+    fire_at: datetime,
+    fire_key: str,
+    started_at: datetime,
+    error_message: str,
+    updated_by: str,
+) -> None:
+    ended_at = datetime.now(timezone.utc)
+    next_run_at = _next_run_after_trigger(job, fire_at)
+    await cursor.execute(
+        """
+        UPDATE pa_scheduled_job_execution_logs
+        SET status = %(status)s,
+            ended_at = %(ended_at)s,
+            duration_text = %(duration_text)s,
+            error_message = %(error_message)s,
+            lock_owner = NULL,
+            lock_until = NULL,
+            update_by = %(update_by)s,
+            update_date = %(update_date)s
+        WHERE project_id = %(project_id)s
+          AND id = %(log_id)s
+        """,
+        {
+            "project_id": project_id,
+            "log_id": log_id,
+            "status": "FAILED",
+            "ended_at": ended_at,
+            "duration_text": _duration_text(started_at, ended_at),
+            "error_message": error_message,
+            "update_by": updated_by,
+            "update_date": ended_at,
+        },
+    )
+    await cursor.execute(
+        """
+        UPDATE pa_scheduled_jobs
+        SET status = %(status)s,
+            last_run_at = %(last_run_at)s,
+            last_fire_key = %(fire_key)s,
+            next_run_at = %(next_run_at)s,
+            lock_owner = NULL,
+            lock_until = NULL,
+            update_by = %(update_by)s,
+            update_date = %(update_date)s
+        WHERE project_id = %(project_id)s
+          AND id = %(job_id)s
+          AND status != 'PAUSED'
+        """,
+        {
+            "project_id": project_id,
+            "job_id": job["id"],
+            "status": "FAILED",
+            "last_run_at": ended_at,
+            "fire_key": fire_key,
+            "next_run_at": next_run_at,
+            "update_by": updated_by,
+            "update_date": ended_at,
+        },
+    )
+
+
+def _safe_error_message(exc: Exception) -> str:
+    message = str(exc).strip() or exc.__class__.__name__
+    return message[:1000]
 
 
 async def _sync_execution_log_from_auto_evaluation(
@@ -874,7 +1020,9 @@ def _scheduled_job_insert_params(
                 "variables": evaluator.get("variables") or [],
             }
         ),
-        "variable_mapping": Jsonb(_normalize_variable_mapping(payload.variable_mapping)),
+        "variable_mapping": Jsonb(
+            _normalize_variable_mapping(payload.variable_mapping)
+        ),
         "data_source": Jsonb(payload.data_source),
         "sample_rate": payload.sample_rate,
         "report_template_id": report_template_snapshot["id"],
@@ -940,12 +1088,20 @@ def _normalize_auto_evaluation_data_source(
 
     return {
         "type": "TRACE_FILTER",
-        "traceName": filter_payload.get("traceName") or filter_payload.get("name"),
+        "traceName": _normalize_trace_name(
+            filter_payload.get("traceName") or filter_payload.get("name")
+        ),
         "userId": filter_payload.get("userId") or "",
         "sessionId": filter_payload.get("sessionId") or "",
+        "environments": filter_payload.get("environments") or [],
         "tags": filter_payload.get("tags") or [],
         "createdAtRange": created_at_range,
     }
+
+
+def _normalize_trace_name(value: Any) -> str:
+    trace_name = value.strip() if isinstance(value, str) else ""
+    return "" if trace_name == "默认 Trace 过滤" else trace_name
 
 
 def _normalize_variable_mapping(mapping: dict[str, Any]) -> dict[str, Any]:
@@ -1040,7 +1196,9 @@ def _compute_next_cron_run_at(
         )
         return candidate if candidate > local_now else candidate + timedelta(hours=1)
     if minute.isdigit() and hour.isdigit():
-        candidate = _local_time_candidate(local_now, f"{int(hour):02d}:{int(minute):02d}")
+        candidate = _local_time_candidate(
+            local_now, f"{int(hour):02d}:{int(minute):02d}"
+        )
         if weekday == "*":
             return candidate if candidate > local_now else candidate + timedelta(days=1)
         target_weekdays = _cron_weekdays(weekday)
@@ -1049,7 +1207,10 @@ def _compute_next_cron_run_at(
                 local_now + timedelta(days=offset),
                 f"{int(hour):02d}:{int(minute):02d}",
             )
-            if weekly_candidate.weekday() in target_weekdays and weekly_candidate > local_now:
+            if (
+                weekly_candidate.weekday() in target_weekdays
+                and weekly_candidate > local_now
+            ):
                 return weekly_candidate
     raise ValueError("当前 Cron 表达式暂不支持")
 
@@ -1109,7 +1270,9 @@ def _build_job_triggered_auto_evaluation_name(
     triggered_at: datetime,
     timezone_name: str,
 ) -> str:
-    local_time = _ensure_aware_datetime(triggered_at).astimezone(ZoneInfo(timezone_name))
+    local_time = _ensure_aware_datetime(triggered_at).astimezone(
+        ZoneInfo(timezone_name)
+    )
     return f"【JOB触发】{job_name}-{local_time.strftime('%Y%m%d%H%M')}"
 
 

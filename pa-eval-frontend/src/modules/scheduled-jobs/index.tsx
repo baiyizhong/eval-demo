@@ -4,6 +4,7 @@ import { useParams, useSearchParams } from 'react-router'
 import { toast } from 'sonner'
 import { confirm } from '@/lib/confirm'
 import { useAPI } from '@/hooks/use-api'
+import type { DataTableQueryState } from '@/components/common/data-table'
 import { Page } from '@/components/common/page'
 import {
   createProjectScheduledJob,
@@ -77,27 +78,6 @@ function ScheduledJobsProject({
   const [editingTask, setEditingTask] = useState<ScheduledJobTask | null>(null)
   const [drawerFormKey, setDrawerFormKey] = useState(0)
 
-  const tableQuery = useMemo(
-    () => ({
-      page: 1,
-      pageSize: 200,
-      keyword: '',
-      sorting: [],
-      filters: {},
-    }),
-    []
-  )
-
-  const tasksQuery = useQuery({
-    queryKey: ['scheduled-jobs', $api, projectId, 'tasks', tableQuery],
-    queryFn: () => listProjectScheduledJobs($api, projectId, tableQuery),
-    refetchInterval: 3000,
-  })
-  const logsQuery = useQuery({
-    queryKey: ['scheduled-jobs', $api, projectId, 'logs', tableQuery],
-    queryFn: () => listProjectScheduledJobLogs($api, projectId, tableQuery),
-    refetchInterval: 3000,
-  })
   const evaluatorsQuery = useQuery({
     queryKey: ['scheduled-jobs', $api, projectId, 'evaluators'],
     queryFn: async () => {
@@ -135,13 +115,38 @@ function ScheduledJobsProject({
       return response.datas.map(toScheduledJobReportTemplate)
     },
   })
-  const tasks = tasksQuery.data?.datas ?? []
-  const logs = logsQuery.data?.datas ?? []
+
+  const taskTableRequest = useMemo(
+    () => ({
+      queryKey: (state: DataTableQueryState) =>
+        ['scheduled-job-tasks', $api, projectId, state] as const,
+      queryFn: (state: DataTableQueryState) =>
+        listProjectScheduledJobs($api, projectId, state),
+      refetchInterval: 3000,
+    }),
+    [$api, projectId]
+  )
+  const logTableRequest = useMemo(
+    () => ({
+      queryKey: (state: DataTableQueryState) =>
+        ['scheduled-job-logs', $api, projectId, state] as const,
+      queryFn: (state: DataTableQueryState) =>
+        listProjectScheduledJobLogs($api, projectId, state),
+      refetchInterval: 3000,
+    }),
+    [$api, projectId]
+  )
 
   const invalidateScheduledJobs = useCallback(async () => {
     await queryClient.invalidateQueries({
       predicate: (query) =>
         query.queryKey[0] === 'scheduled-jobs' &&
+        query.queryKey.includes(projectId),
+    })
+    await queryClient.invalidateQueries({
+      predicate: (query) =>
+        (query.queryKey[0] === 'scheduled-job-tasks' ||
+          query.queryKey[0] === 'scheduled-job-logs') &&
         query.queryKey.includes(projectId),
     })
     await queryClient.invalidateQueries({
@@ -189,7 +194,7 @@ function ScheduledJobsProject({
   }
 
   const handleSaveTask = (task: ScheduledJobTask) => {
-    const isExisting = tasks.some((row) => row.id === task.id)
+    const isExisting = Boolean(editingTask)
     void saveScheduledJob($api, projectId, task, isExisting).then(async () => {
       await invalidateScheduledJobs()
       toast.success('定时任务已保存')
@@ -252,7 +257,7 @@ function ScheduledJobsProject({
         <section className='bg-card text-card-foreground flex min-h-0 min-w-0 flex-1 flex-col rounded-lg border p-4'>
           {activeTab === 'tasks' ? (
             <ScheduledJobTable
-              tasks={tasks}
+              request={taskTableRequest}
               onEdit={handleEditTask}
               onPause={handlePauseTask}
               onResume={handleResumeTask}
@@ -261,7 +266,7 @@ function ScheduledJobsProject({
               onDelete={handleDeleteTask}
             />
           ) : (
-            <ScheduledJobLogTable logs={logs} />
+            <ScheduledJobLogTable request={logTableRequest} />
           )}
         </section>
         <ScheduledJobDrawer

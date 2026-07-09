@@ -450,6 +450,54 @@ async def test_list_trace_generation_samples_queries_last_generation_with_filter
 
 
 @pytest.mark.anyio
+async def test_list_trace_generation_samples_filters_postgres_environments() -> None:
+    cursor = FakeCursor(rows=[{"trace_id": "trace-1", "observation_id": "obs-1"}])
+
+    await _list_trace_generation_samples(
+        cursor,  # type: ignore[arg-type]
+        project_id="project-1",
+        data_source_payload={
+            "environments": ["production", "staging"],
+        },
+    )
+
+    assert "COALESCE(t.environment, 'default')" in cursor.sql
+    assert "ANY(%(environments)s::text[])" in cursor.sql
+    assert cursor.params["environments"] == ["production", "staging"]
+
+
+@pytest.mark.anyio
+async def test_list_trace_generation_samples_filters_clickhouse_environments(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    captured: dict[str, str] = {}
+
+    async def fake_query_clickhouse_json_each_row(settings, query):
+        captured["query"] = query
+        return [{"trace_id": "trace-1", "observation_id": "obs-1"}]
+
+    monkeypatch.setattr(
+        auto_evaluations,
+        "_query_clickhouse_json_each_row",
+        fake_query_clickhouse_json_each_row,
+    )
+
+    samples = await _list_trace_generation_samples(
+        FakeCursor(),  # type: ignore[arg-type]
+        project_id="project-1",
+        data_source_payload={
+            "environments": ["production"],
+        },
+        settings=auto_evaluations.Settings(
+            langfuse_clickhouse_url="http://clickhouse.local:8123"
+        ),
+    )
+
+    assert len(samples) == 1
+    assert "t.environment IN ('production')" in captured["query"]
+
+
+@pytest.mark.anyio
 async def test_list_trace_generation_samples_queries_custom_created_at_range() -> (
     None
 ):

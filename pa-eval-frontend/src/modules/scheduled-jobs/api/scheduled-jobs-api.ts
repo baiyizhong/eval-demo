@@ -41,6 +41,7 @@ export function listProjectScheduledJobs(
   query: DataTableQueryState
 ) {
   const keyword = query.keyword.trim()
+  const status = getStringArrayFilter(query.filters.status)
 
   return api.getScheduledJobs<DataTableListResponse<ScheduledJobTask>>({
     path: { projectId },
@@ -48,6 +49,7 @@ export function listProjectScheduledJobs(
       page: query.page,
       pageSize: query.pageSize,
       ...(keyword ? { keyword } : {}),
+      ...(status.length > 0 ? { status } : {}),
     },
   })
 }
@@ -125,6 +127,8 @@ export function listProjectScheduledJobLogs(
   query: DataTableQueryState
 ) {
   const keyword = query.keyword.trim()
+  const status = getStringArrayFilter(query.filters.status)
+  const triggerType = getStringArrayFilter(query.filters.triggerType)
 
   return api.getScheduledJobLogs<DataTableListResponse<ScheduledJobExecutionLog>>({
     path: { projectId },
@@ -132,6 +136,16 @@ export function listProjectScheduledJobLogs(
       page: query.page,
       pageSize: query.pageSize,
       ...(keyword ? { keyword } : {}),
+      ...(status.length > 0 ? { status } : {}),
+      ...(triggerType.length > 0 ? { triggerType } : {}),
     },
   })
+}
+
+function getStringArrayFilter(value: unknown): string[] {
+  if (!Array.isArray(value)) {
+    return []
+  }
+
+  return value.filter((item): item is string => typeof item === 'string')
 }

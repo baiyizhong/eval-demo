@@ -11,19 +11,17 @@ import {
 import {
   DataTable,
   DataTableColumnHeader,
-  type DataTableListResponse,
-  type DataTableQueryState,
+  type DataTableProps,
 } from '@/components/common/data-table'
 import { formatFrequencyLabel } from '../mock-store'
 import {
   scheduledJobTaskTypeLabels,
   type ScheduledJobTask,
-  type ScheduledJobStatus,
 } from '../types'
 import { ScheduledJobStatusBadge } from './scheduled-job-status-badge'
 
 type ScheduledJobTableProps = {
-  tasks: ScheduledJobTask[]
+  request: DataTableProps<ScheduledJobTask>['request']
   onEdit: (task: ScheduledJobTask) => void
   onPause: (task: ScheduledJobTask) => void
   onResume: (task: ScheduledJobTask) => void
@@ -45,39 +43,8 @@ function formatDateTime(value: string | null) {
   }).format(new Date(value))
 }
 
-function queryTasks(
-  tasks: ScheduledJobTask[],
-  state: DataTableQueryState
-): DataTableListResponse<ScheduledJobTask> {
-  const keyword = state.keyword.trim().toLowerCase()
-  const statusFilter = state.filters.status
-  const statusValues = Array.isArray(statusFilter)
-    ? statusFilter.filter((value): value is ScheduledJobStatus =>
-        ['NOT_STARTED', 'RUNNING', 'PAUSED', 'SUCCEEDED', 'FAILED'].includes(
-          String(value)
-        )
-      )
-    : []
-  const filtered = tasks.filter((task) => {
-    const matchesKeyword =
-      !keyword ||
-      task.name.toLowerCase().includes(keyword) ||
-      task.description.toLowerCase().includes(keyword)
-    const matchesStatus =
-      statusValues.length === 0 || statusValues.includes(task.status)
-
-    return matchesKeyword && matchesStatus
-  })
-  const start = (state.page - 1) * state.pageSize
-
-  return {
-    total: filtered.length,
-    datas: filtered.slice(start, start + state.pageSize),
-  }
-}
-
 export function ScheduledJobTable({
-  tasks,
+  request,
   onEdit,
   onPause,
   onResume,
@@ -217,10 +184,7 @@ export function ScheduledJobTable({
     <DataTable<ScheduledJobTask>
       className='min-h-0 flex-1'
       columns={columns}
-      request={{
-        queryKey: (state) => ['scheduled-job-tasks', tasks, state],
-        queryFn: async (state) => queryTasks(tasks, state),
-      }}
+      request={request}
       urlState={{
         defaultPageSize: 10,
         globalFilterKey: 'taskKeyword',

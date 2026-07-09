@@ -1,8 +1,11 @@
 import { useMemo, useState } from 'react'
+import { useQuery } from '@tanstack/react-query'
 import { z } from 'zod'
 import { AlertTriangle } from 'lucide-react'
 import { toast } from 'sonner'
+import { confirm } from '@/lib/confirm'
 import { cn } from '@/lib/utils'
+import { useAPI } from '@/hooks/use-api'
 import { Alert, AlertDescription } from '@/components/ui/alert'
 import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
@@ -95,6 +98,8 @@ type ScheduledJobForm = {
     threshold: number | null
   }
 }
+
+type TraceCountState = 'idle' | 'loading' | 'success' | 'error'
 
 const steps = [
   { id: 'basic', title: '基础信息' },
@@ -480,7 +485,7 @@ function getDefaultForm(
     traceEstimatedCount:
       task?.dataSource.type === 'TRACE_FILTER'
         ? task.dataSource.estimatedCount
-        : 1280,
+        : 0,
     reportTemplateId:
       task?.reportTemplateId ??
       options.reportTemplates.find((template) => template.isDefault)?.id ??
@@ -498,7 +503,8 @@ function buildDataSource(
   form: ScheduledJobForm,
   projectId: string,
   frequency: ScheduledJobFrequency,
-  datasets: ScheduledJobDatasetOption[]
+  datasets: ScheduledJobDatasetOption[],
+  traceEstimatedCount = form.traceEstimatedCount
 ): ScheduledJobDataSource {
   if (form.dataSourceType === 'DATASET') {
     const dataset = getDefaultDataset(projectId, datasets)
@@ -517,15 +523,44 @@ function buildDataSource(
     type: 'TRACE_FILTER',
     traceWindow: buildTraceWindowFromFrequency(frequency, form),
     traceFilter: {
-      name: '默认 Trace 过滤',
+      name: '',
       environments: form.traceEnvironments,
       userId: form.traceUserId,
       sessionId: form.traceSessionId,
       tags: parseCommaSeparatedValues(form.traceTags),
       createdAtRange: form.traceCreatedAtRange,
-      estimatedCount: form.traceEstimatedCount,
+      estimatedCount: traceEstimatedCount,
     },
-    estimatedCount: form.traceEstimatedCount,
+    estimatedCount: traceEstimatedCount,
+  }
+}
+
+function buildTraceCountPayload(
+  frequencyForm: FrequencyForm,
+  frequency: ScheduledJobFrequency,
+  values: Pick<
+    ScheduledJobForm,
+    | 'traceCreatedAtRange'
+    | 'traceEnvironments'
+    | 'traceSessionId'
+    | 'traceTags'
+    | 'traceUserId'
+  >
+) {
+  const previewRange = getTracePreviewRange(frequencyForm)
+  const createdAtRange =
+    frequency.kind === 'ONCE' ? values.traceCreatedAtRange : previewRange
+
+  return {
+    traceName: '',
+    environments: values.traceEnvironments,
+    userId: values.traceUserId,
+    sessionId: values.traceSessionId,
+    tags: parseCommaSeparatedValues(values.traceTags),
+    createdAtRange: [
+      toIsoFromDateTimeLocal(createdAtRange?.[0] ?? ''),
+      toIsoFromDateTimeLocal(createdAtRange?.[1] ?? ''),
+    ].filter(Boolean),
   }
 }
 
@@ -622,6 +657,7 @@ export function ScheduledJobDrawer({
   onOpenChange,
   onSave,
 }: ScheduledJobDrawerProps) {
+  const $api = useAPI()
   const evaluatorOptions = evaluators?.length
     ? evaluators
     : scheduledJobMockEvaluators
@@ -652,6 +688,56 @@ export function ScheduledJobDrawer({
     () => formToFrequency(form.frequency),
     [form.frequency]
   )
+  const traceCountPayload = useMemo(
+    () =>
+      form.dataSourceType === 'TRACE_FILTER'
+        ? buildTraceCountPayload(form.frequency, currentFrequency, {
+            traceCreatedAtRange: form.traceCreatedAtRange,
+            traceEnvironments: form.traceEnvironments,
+            traceSessionId: form.traceSessionId,
+            traceTags: form.traceTags,
+            traceUserId: form.traceUserId,
+          })
+        : null,
+    [
+      currentFrequency,
+      form.dataSourceType,
+      form.frequency,
+      form.traceCreatedAtRange,
+      form.traceEnvironments,
+      form.traceSessionId,
+      form.traceTags,
+      form.traceUserId,
+    ]
+  )
+  const traceCountKey = traceCountPayload
+    ? JSON.stringify(traceCountPayload)
+    : ''
+  const traceCountQuery = useQuery({
+    queryKey: [
+      'scheduled-job-trace-count',
+      $api,
+      projectId,
+      traceCountKey,
+      traceCountPayload,
+    ],
+    queryFn: () =>
+      $api.countProjectTraces<{ count: number }>({
+        path: { projectId },
+        body: { traceFilter: traceCountPayload ?? {} },
+      }),
+    enabled: Boolean(traceCountPayload && traceCountKey),
+  })
+  const traceCountState: TraceCountState =
+    form.dataSourceType !== 'TRACE_FILTER'
+      ? 'idle'
+      : traceCountQuery.isLoading || traceCountQuery.isFetching
+        ? 'loading'
+        : traceCountQuery.isError
+          ? 'error'
+          : traceCountQuery.data
+            ? 'success'
+            : 'idle'
   const estimatedCount =
     form.dataSourceType === 'DATASET'
       ? buildDataSource(
@@ -660,7 +746,9 @@ export function ScheduledJobDrawer({
           currentFrequency,
           datasetOptions
         ).estimatedCount
-      : form.traceEstimatedCount
+      : traceCountQuery.isError
+        ? 0
+        : Number(traceCountQuery.data?.count ?? form.traceEstimatedCount)
   const effectiveSampleCount = getEffectiveSampleCount(
     estimatedCount,
     form.sampleRate
@@ -794,7 +882,7 @@ export function ScheduledJobDrawer({
     return true
   }
 
-  const handleConfirm = () => {
+  const handleConfirm = async () => {
     if (step === 0) {
       if (validateBasic()) {
         setStep(1)
@@ -806,10 +894,28 @@ export function ScheduledJobDrawer({
       return
     }
 
+    if (form.dataSourceType === 'TRACE_FILTER' && estimatedCount === 0) {
+      const shouldContinue = await confirm({
+        title: '当前筛选无样本',
+        desc:
+          '当前 Trace 筛选条件没有匹配到可评测样本，保存后任务执行时可能失败。是否继续保存？',
+        confirmText: '继续保存',
+        cancelBtnText: '返回调整',
+      })
+
+      if (!shouldContinue) {
+        return
+      }
+    }
+
     const frequency = currentFrequency
     const frequencyWithLabel = {
       ...frequency,
       label: formatFrequencyLabel(frequency),
+    }
+    const formWithEstimatedCount = {
+      ...form,
+      traceEstimatedCount: estimatedCount,
     }
     const savedTask: ScheduledJobTask = {
       id: task?.id ?? createScheduledJobId(),
@@ -821,7 +927,13 @@ export function ScheduledJobDrawer({
       runMode: form.frequency.mode,
       frequency: frequencyWithLabel,
       status: task?.status ?? 'NOT_STARTED',
-      dataSource: buildDataSource(form, projectId, frequency, datasetOptions),
+      dataSource: buildDataSource(
+        formWithEstimatedCount,
+        projectId,
+        frequency,
+        datasetOptions,
+        estimatedCount
+      ),
       evaluator: evaluator as ScheduledJobEvaluator,
       variableMapping: form.variableMapping,
       reportTemplateId: form.reportTemplateId,
@@ -879,6 +991,7 @@ export function ScheduledJobDrawer({
             evaluator={evaluator}
             estimatedCount={estimatedCount}
             effectiveSampleCount={effectiveSampleCount}
+            traceCountState={traceCountState}
             projectId={projectId}
             evaluators={evaluatorOptions}
             datasets={datasetOptions}
@@ -1108,6 +1221,7 @@ type ConfigStepProps = {
   evaluator: ScheduledJobEvaluator
   estimatedCount: number
   effectiveSampleCount: number
+  traceCountState: TraceCountState
   projectId: string
   evaluators: ScheduledJobEvaluator[]
   datasets: ScheduledJobDatasetOption[]
@@ -1121,6 +1235,7 @@ function ConfigStep({
   evaluator,
   estimatedCount,
   effectiveSampleCount,
+  traceCountState,
   projectId,
   evaluators,
   datasets: datasetOptions,
@@ -1147,6 +1262,18 @@ function ConfigStep({
     )
   })
   const tracePreviewRange = getTracePreviewRange(form.frequency)
+  const traceCountHelperText =
+    traceCountState === 'loading'
+      ? '正在按当前筛选条件统计 Trace 样本...'
+      : traceCountState === 'error'
+        ? 'Trace 样本统计失败，请检查筛选条件或稍后重试。'
+        : traceCountState === 'success'
+          ? '已按当前筛选条件完成 Trace 样本统计。'
+          : ''
+  const estimatedCountValue =
+    form.dataSourceType === 'TRACE_FILTER' && traceCountState === 'loading'
+      ? '统计中'
+      : estimatedCount
 
   return (
     <div className='grid gap-5'>
@@ -1396,16 +1523,28 @@ function ConfigStep({
                   <p className='text-muted-foreground text-sm'>
                     {formatTraceWindowSummary(
                       form.frequency,
-                      form.traceEstimatedCount
+                      estimatedCount
                     )}
                   </p>
+                  {traceCountHelperText ? (
+                    <p
+                      className={cn(
+                        'text-xs',
+                        traceCountState === 'error'
+                          ? 'text-destructive'
+                          : 'text-muted-foreground'
+                      )}
+                    >
+                      {traceCountHelperText}
+                    </p>
+                  ) : null}
                 </Field>
               ) : (
                 <Field label='Trace 数据范围'>
                   <div className='bg-muted/30 rounded-md border p-3 text-sm'>
                     {formatTraceWindowSummary(
                       form.frequency,
-                      form.traceEstimatedCount
+                      estimatedCount
                     )}
                     {tracePreviewRange ? (
                       <span className='text-muted-foreground block'>
@@ -1413,6 +1552,18 @@ function ConfigStep({
                       </span>
                     ) : null}
                   </div>
+                  {traceCountHelperText ? (
+                    <p
+                      className={cn(
+                        'text-xs',
+                        traceCountState === 'error'
+                          ? 'text-destructive'
+                          : 'text-muted-foreground'
+                      )}
+                    >
+                      {traceCountHelperText}
+                    </p>
+                  ) : null}
                 </Field>
               )}
 
@@ -1550,7 +1701,7 @@ function ConfigStep({
           </div>
 
           <div className='grid gap-3 text-sm sm:grid-cols-2'>
-            <SummaryStat label='预估样本量' value={estimatedCount} />
+            <SummaryStat label='预估样本量' value={estimatedCountValue} />
             <SummaryStat label='生效样本量' value={effectiveSampleCount} />
           </div>
 

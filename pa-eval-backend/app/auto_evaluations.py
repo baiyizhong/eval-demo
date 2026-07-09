@@ -263,6 +263,9 @@ async def _list_trace_generation_samples(
     session_id = _stringify_value(data_source_payload.get("sessionId")).strip()
     tags = data_source_payload.get("tags")
     tag_values = [str(tag) for tag in tags] if isinstance(tags, list) else []
+    environments = _normalize_trace_environments(
+        data_source_payload.get("environments")
+    )
 
     if settings is not None:
         conditions = [
@@ -284,6 +287,11 @@ async def _list_trace_generation_samples(
             conditions.append(
                 f"positionCaseInsensitive(ifNull(t.session_id, ''), {_clickhouse_quote(session_id)}) > 0"
             )
+        if environments:
+            quoted_environments = ", ".join(
+                _clickhouse_quote(environment) for environment in environments
+            )
+            conditions.append(f"t.environment IN ({quoted_environments})")
         for tag in tag_values:
             conditions.append(f"has(t.tags, {_clickhouse_quote(tag)})")
 
@@ -367,6 +375,10 @@ async def _list_trace_generation_samples(
                 cardinality(%(tags)s::text[]) = 0
                 OR COALESCE(t.tags, ARRAY[]::text[]) @> %(tags)s::text[]
               )
+              AND (
+                cardinality(%(environments)s::text[]) = 0
+                OR COALESCE(t.environment, 'default') = ANY(%(environments)s::text[])
+              )
             ORDER BY
                 t.id,
                 o.start_time DESC NULLS LAST,
@@ -387,6 +399,7 @@ async def _list_trace_generation_samples(
             "session_id": session_id,
             "session_id_like": f"%{session_id}%",
             "tags": tag_values,
+            "environments": environments,
             "created_at_from": _created_at_range_value(
                 data_source_payload.get("createdAtRange"),
                 0,
@@ -428,6 +441,18 @@ def _sample_dataset_items(
 
     sample_count = max(1, math.ceil(len(items) * sample_rate / 100))
     return items[:sample_count]
+
+
+def _normalize_trace_environments(value: Any) -> list[str]:
+    if not isinstance(value, list):
+        return []
+
+    environments: list[str] = []
+    for item in value:
+        environment = str(item).strip()
+        if environment and environment.lower() != "all":
+            environments.append(environment)
+    return environments
 
 
 def _task_compat_fields(
@@ -1502,6 +1527,7 @@ async def _resolve_auto_evaluation_samples(
                 "traceName": data_source_payload.get("traceName"),
                 "userId": data_source_payload.get("userId"),
                 "sessionId": data_source_payload.get("sessionId"),
+                "environments": data_source_payload.get("environments") or [],
                 "tags": data_source_payload.get("tags") or [],
             },
             "sampleCount": len(samples),

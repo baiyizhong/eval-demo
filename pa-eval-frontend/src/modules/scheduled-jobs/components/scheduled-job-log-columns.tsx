@@ -4,20 +4,17 @@ import { Link } from 'react-router'
 import {
   DataTable,
   DataTableColumnHeader,
-  type DataTableListResponse,
-  type DataTableQueryState,
+  type DataTableProps,
 } from '@/components/common/data-table'
 import {
   scheduledJobTaskTypeLabels,
   scheduledJobTriggerLabels,
   type ScheduledJobExecutionLog,
-  type ScheduledJobLogStatus,
-  type ScheduledJobTriggerType,
 } from '../types'
 import { ScheduledJobLogStatusBadge } from './scheduled-job-status-badge'
 
 type ScheduledJobLogTableProps = {
-  logs: ScheduledJobExecutionLog[]
+  request: DataTableProps<ScheduledJobExecutionLog>['request']
 }
 
 function formatDateTime(value: string | null) {
@@ -45,44 +42,7 @@ function renderLink(path: string | undefined, label: string) {
   )
 }
 
-function queryLogs(
-  logs: ScheduledJobExecutionLog[],
-  state: DataTableQueryState
-): DataTableListResponse<ScheduledJobExecutionLog> {
-  const keyword = state.keyword.trim().toLowerCase()
-  const statusFilter = state.filters.status
-  const triggerFilter = state.filters.triggerType
-  const statusValues = Array.isArray(statusFilter)
-    ? statusFilter.filter((value): value is ScheduledJobLogStatus =>
-        ['RUNNING', 'SUCCEEDED', 'FAILED'].includes(String(value))
-      )
-    : []
-  const triggerValues = Array.isArray(triggerFilter)
-    ? triggerFilter.filter((value): value is ScheduledJobTriggerType =>
-        ['MANUAL', 'JOB'].includes(String(value))
-      )
-    : []
-  const filtered = logs.filter((log) => {
-    const matchesKeyword =
-      !keyword ||
-      log.taskName.toLowerCase().includes(keyword) ||
-      log.autoEvaluationTaskName.toLowerCase().includes(keyword)
-    const matchesStatus =
-      statusValues.length === 0 || statusValues.includes(log.status)
-    const matchesTrigger =
-      triggerValues.length === 0 || triggerValues.includes(log.triggerType)
-
-    return matchesKeyword && matchesStatus && matchesTrigger
-  })
-  const start = (state.page - 1) * state.pageSize
-
-  return {
-    total: filtered.length,
-    datas: filtered.slice(start, start + state.pageSize),
-  }
-}
-
-export function ScheduledJobLogTable({ logs }: ScheduledJobLogTableProps) {
+export function ScheduledJobLogTable({ request }: ScheduledJobLogTableProps) {
   const columns = useMemo<ColumnDef<ScheduledJobExecutionLog>[]>(
     () => [
       {
@@ -189,10 +149,7 @@ export function ScheduledJobLogTable({ logs }: ScheduledJobLogTableProps) {
     <DataTable<ScheduledJobExecutionLog>
       className='min-h-0 flex-1'
       columns={columns}
-      request={{
-        queryKey: (state) => ['scheduled-job-logs', logs, state],
-        queryFn: async (state) => queryLogs(logs, state),
-      }}
+      request={request}
       urlState={{
         defaultPageSize: 10,
         globalFilterKey: 'logKeyword',

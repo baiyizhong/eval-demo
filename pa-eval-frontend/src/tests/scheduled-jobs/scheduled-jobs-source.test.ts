@@ -45,6 +45,10 @@ const pageNavSource = readFileSync(
   'src/modules/scheduled-jobs/components/scheduled-jobs-page-nav.tsx',
   'utf8'
 )
+const apiSource = readFileSync(
+  'src/modules/scheduled-jobs/api/scheduled-jobs-api.ts',
+  'utf8'
+)
 
 const projects = [
   {
@@ -124,6 +128,21 @@ test('scheduled job tables expose required columns and actions', () => {
   assert.match(logColumnsSource, /任务已删除/)
 })
 
+test('scheduled job tables use backend pagination and filters', () => {
+  assert.doesNotMatch(pageSource, /pageSize:\s*200/)
+  assert.doesNotMatch(taskColumnsSource, /function queryTasks/)
+  assert.doesNotMatch(logColumnsSource, /function queryLogs/)
+  assert.match(taskColumnsSource, /DataTableProps<ScheduledJobTask>\['request'\]/)
+  assert.match(
+    logColumnsSource,
+    /DataTableProps<ScheduledJobExecutionLog>\['request'\]/
+  )
+  assert.match(pageSource, /listProjectScheduledJobs\(\$api, projectId, state\)/)
+  assert.match(pageSource, /listProjectScheduledJobLogs\(\$api, projectId, state\)/)
+  assert.match(apiSource, /filters\.status/)
+  assert.match(apiSource, /filters\.triggerType/)
+})
+
 test('scheduled jobs page wires backend task row actions', () => {
   assert.match(pageSource, /createProjectScheduledJob/)
   assert.match(pageSource, /updateProjectScheduledJob/)
@@ -181,6 +200,16 @@ test('scheduled job drawer implements required creation flow rules', () => {
   assert.match(drawerSource, /buildTraceWindowFromFrequency/)
 })
 
+test('scheduled job drawer uses environments for trace estimate and guards zero samples', () => {
+  assert.match(drawerSource, /traceEnvironments/)
+  assert.match(drawerSource, /environments:\s*values\.traceEnvironments/)
+  assert.match(drawerSource, /traceEnvironments:\s*form\.traceEnvironments/)
+  assert.match(drawerSource, /form\.traceEnvironments/)
+  assert.match(drawerSource, /当前筛选无样本/)
+  assert.match(drawerSource, /继续保存/)
+  assert.match(drawerSource, /await confirm\(/)
+})
+
 test('scheduled job drawer uses grouped basic cards and stacked auto evaluation config', () => {
   assert.match(drawerSource, /任务类型/)
   assert.match(drawerSource, /任务名称/)
@@ -229,7 +258,7 @@ test('scheduled job drawer supports trace filter fields and schedule-aligned win
   assert.match(drawerSource, /formatTraceWindowSummary/)
   assert.match(
     drawerSource,
-    /formatTraceWindowSummary\(\s*form\.frequency,\s*form\.traceEstimatedCount\s*\)/
+    /formatTraceWindowSummary\(\s*form\.frequency,\s*estimatedCount\s*\)/
   )
   assert.match(drawerSource, /buildTraceWindowFromFrequency\(frequency, form\)/)
   assert.doesNotMatch(drawerSource, /<Field label='评测数据来源'>/)
@@ -241,6 +270,11 @@ test('scheduled job drawer supports trace filter fields and schedule-aligned win
   assert.match(typesSource, /createdAtRange/)
   assert.match(mockDataSource, /scheduledJobMockMappingFields/)
   assert.match(mockDataSource, /sample\.context/)
+  assert.doesNotMatch(drawerSource, /name:\s*'默认 Trace 过滤'/)
+  assert.doesNotMatch(drawerSource, /:\s*1280/)
+  assert.match(drawerSource, /countProjectTraces/)
+  assert.match(drawerSource, /traceCountState/)
+  assert.match(drawerSource, /buildTraceCountPayload/)
 })
 
 test('scheduled job drawer moves sampling controls into execution config card', () => {
