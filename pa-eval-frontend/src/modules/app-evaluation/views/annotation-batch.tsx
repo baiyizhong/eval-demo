@@ -707,14 +707,12 @@ export function ProjectAnnotationBatch() {
                   scoreConfigs={queue.scoreConfigs}
                   showAddToDataset={false}
                   saveLabel={
-                    isBatchScoring
-                      ? `应用到选中项（${selectedItemsOnPage.length} 条）`
-                      : '保存'
+                    isBatchScoring ? '批量保存' : '保存'
                   }
                   showSaveNext={!isBatchScoring}
                   submitHint={
                     isBatchScoring
-                      ? `将应用到已选中的 ${selectedItemsOnPage.length} 条样本`
+                      ? `将批量保存已选中的 ${selectedItemsOnPage.length} 条样本`
                       : ''
                   }
                   onAddToDataset={() => undefined}
