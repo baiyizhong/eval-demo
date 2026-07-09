@@ -1,6 +1,6 @@
 import { useMemo } from 'react'
 import { useQuery, useQueryClient } from '@tanstack/react-query'
-import { RefreshCw, RotateCcw, Trash2 } from 'lucide-react'
+import { Pause, Play, RefreshCw, RotateCcw, Trash2 } from 'lucide-react'
 import { useNavigate, useParams } from 'react-router'
 import { toast } from 'sonner'
 import { confirm } from '@/lib/confirm'
@@ -14,12 +14,21 @@ import {
   getProjectAutoEvaluationLatestReport,
   getProjectAutoEvaluationTask,
   listProjectAutoEvaluationRuns,
+  pauseProjectAutoEvaluationSchedule,
   rerunProjectAutoEvaluationTask,
+  startProjectAutoEvaluationSchedule,
 } from '../api/auto-evaluation-api'
 import { AutoEvaluationReportCard } from '../components/auto-evaluation-report-card'
 import { AutoEvaluationRunRecords } from '../components/auto-evaluation-run-records'
 import { AutoEvaluationStatusBadge } from '../components/auto-evaluation-status-badge'
 import { formatDateTime } from '../components/format'
+import type { AutoEvaluationTaskRecord } from '../types'
+
+const scheduleStatusLabels = {
+  DRAFT: '未启动',
+  ACTIVE: '运行中',
+  PAUSED: '已停止',
+} as const
 
 export function ProjectAutoEvaluationDetail() {
   const { projectId = 'project_customer_agent', taskId = '' } = useParams()
@@ -111,6 +120,32 @@ export function ProjectAutoEvaluationDetail() {
     toast.success('自动评测任务已重新运行')
   }
 
+  const handleStartSchedule = async () => {
+    if (!task) return
+    await startProjectAutoEvaluationSchedule(
+      $api as unknown as Parameters<
+        typeof startProjectAutoEvaluationSchedule
+      >[0],
+      projectId,
+      task.id
+    )
+    await invalidateDetail()
+    toast.success('自动评测调度已启动')
+  }
+
+  const handlePauseSchedule = async () => {
+    if (!task) return
+    await pauseProjectAutoEvaluationSchedule(
+      $api as unknown as Parameters<
+        typeof pauseProjectAutoEvaluationSchedule
+      >[0],
+      projectId,
+      task.id
+    )
+    await invalidateDetail()
+    toast.success('自动评测调度已停止')
+  }
+
   const handleDelete = async () => {
     if (!task) return
     if (task.status === 'RUNNING') {
@@ -130,6 +165,66 @@ export function ProjectAutoEvaluationDetail() {
     navigate(`/projects/${projectId}/evaluation/auto-evaluations`)
   }
 
+  const actionButtons = [
+    {
+      id: 'refresh',
+      label: '刷新',
+      icon: RefreshCw,
+      iconPosition: 'start' as const,
+      variant: 'outline' as const,
+      size: 'sm' as const,
+      onClick: () => void handleRefresh(),
+    },
+    {
+      id: 'rerun',
+      label: '重新运行',
+      icon: RotateCcw,
+      iconPosition: 'start' as const,
+      variant: 'outline' as const,
+      size: 'sm' as const,
+      disabled: !task || task.status === 'RUNNING',
+      onClick: () => void handleRerun(),
+    },
+    ...(task?.runMode === 'SCHEDULED' && task.schedule?.status !== 'ACTIVE'
+      ? [
+          {
+            id: 'start-schedule',
+            label: '启动调度',
+            icon: Play,
+            iconPosition: 'start' as const,
+            variant: 'outline' as const,
+            size: 'sm' as const,
+            disabled: !task,
+            onClick: () => void handleStartSchedule(),
+          },
+        ]
+      : []),
+    ...(task?.runMode === 'SCHEDULED' && task.schedule?.status === 'ACTIVE'
+      ? [
+          {
+            id: 'pause-schedule',
+            label: '停止调度',
+            icon: Pause,
+            iconPosition: 'start' as const,
+            variant: 'outline' as const,
+            size: 'sm' as const,
+            disabled: !task,
+            onClick: () => void handlePauseSchedule(),
+          },
+        ]
+      : []),
+    {
+      id: 'delete',
+      label: '删除',
+      icon: Trash2,
+      iconPosition: 'start' as const,
+      variant: 'destructive' as const,
+      size: 'sm' as const,
+      disabled: !task,
+      onClick: () => void handleDelete(),
+    },
+  ]
+
   return (
     <Page fixed fluid className='flex min-h-[calc(100svh-3.5rem)] flex-col'>
       <div className='flex min-h-0 flex-1 flex-col gap-4 overflow-auto'>
@@ -139,37 +234,7 @@ export function ProjectAutoEvaluationDetail() {
             navigate(`/projects/${projectId}/evaluation/auto-evaluations`)
           }
           buttonGroups={{
-            buttons: [
-              {
-                id: 'refresh',
-                label: '刷新',
-                icon: RefreshCw,
-                iconPosition: 'start',
-                variant: 'outline',
-                size: 'sm',
-                onClick: () => void handleRefresh(),
-              },
-              {
-                id: 'rerun',
-                label: '重新运行',
-                icon: RotateCcw,
-                iconPosition: 'start',
-                variant: 'outline',
-                size: 'sm',
-                disabled: !task || task.status === 'RUNNING',
-                onClick: () => void handleRerun(),
-              },
-              {
-                id: 'delete',
-                label: '删除',
-                icon: Trash2,
-                iconPosition: 'start',
-                variant: 'destructive',
-                size: 'sm',
-                disabled: !task,
-                onClick: () => void handleDelete(),
-              },
-            ],
+            buttons: actionButtons,
           }}
         />
         {taskQuery.isLoading ? (
@@ -218,6 +283,7 @@ export function ProjectAutoEvaluationDetail() {
                 report={reportQuery.data ?? null}
               />
             </section>
+            {task.schedule ? <ScheduleCard task={task} /> : null}
             <AutoEvaluationRunRecords runs={runsQuery.data ?? []} />
           </>
         ) : (
@@ -229,6 +295,42 @@ export function ProjectAutoEvaluationDetail() {
         )}
       </div>
     </Page>
+  )
+}
+
+function ScheduleCard({
+  task,
+}: {
+  task: AutoEvaluationTaskRecord
+}) {
+  const schedule = task.schedule
+  if (!schedule) return null
+
+  return (
+    <Card>
+      <CardHeader>
+        <CardTitle>调度配置</CardTitle>
+      </CardHeader>
+      <CardContent className='grid gap-4 md:grid-cols-3'>
+        <Info label='状态' value={scheduleStatusLabels[schedule.status]} />
+        <Info label='Cron' value={schedule.cronExpression} />
+        <Info label='时区' value={schedule.timezone} />
+        <Info
+          label='下次执行'
+          value={schedule.nextRunAt ? formatDateTime(schedule.nextRunAt) : '-'}
+        />
+        <Info
+          label='最近调度'
+          value={
+            schedule.lastScheduledAt
+              ? formatDateTime(schedule.lastScheduledAt)
+              : '-'
+          }
+        />
+        <Info label='时间窗口' value={formatScheduleWindow(schedule.window)} />
+        <Info label='重试策略' value={formatScheduleRetry(schedule.retry)} />
+      </CardContent>
+    </Card>
   )
 }
 
@@ -250,4 +352,26 @@ function Info({ label, value }: { label: string; value: string }) {
       <span className='text-sm'>{value}</span>
     </div>
   )
+}
+
+function formatScheduleWindow(
+  window: NonNullable<AutoEvaluationTaskRecord['schedule']>['window']
+) {
+  if (window.mode === 'rolling_interval') {
+    if (window.intervalMinutes === 30) return '触发前 30 分钟'
+    if (window.intervalMinutes === 60) return '触发前 1 小时'
+    return `触发前 ${window.intervalMinutes} 分钟`
+  }
+  return '上一自然日 00:00 - 当天 00:00'
+}
+
+function formatScheduleRetry(
+  retry: NonNullable<AutoEvaluationTaskRecord['schedule']>['retry']
+) {
+  const maxAttempts = Number.isInteger(retry.maxAttempts) ? retry.maxAttempts : 3
+  const backoffMinutes =
+    Array.isArray(retry.backoffMinutes) && retry.backoffMinutes.length > 0
+      ? retry.backoffMinutes
+      : [10, 30, 60]
+  return `最多 ${maxAttempts} 次 · ${backoffMinutes.join('、')} 分钟`
 }

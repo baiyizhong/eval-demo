@@ -42,6 +42,7 @@ import {
 import { ToggleGroup, ToggleGroupItem } from '@/components/ui/toggle-group'
 import { Stepper } from '@/components/common/stepper'
 import {
+  countProjectAutoEvaluationTraces,
   createProjectAutoEvaluationTask,
   listProjectAutoEvaluationTracePreview,
   type TraceLogRow,
@@ -49,6 +50,7 @@ import {
 import { listProjectAutoEvaluationDatasets } from '../api/dataset-api'
 import { listProjectEvaluationReportTemplates } from '../api/report-template-api'
 import type {
+  AutoEvaluationScheduleFrequency,
   AutoEvaluationTaskFormInput,
   EvaluationReportTemplateRecord,
   MockAutoEvaluationDataset,
@@ -67,12 +69,36 @@ const AUTO_EVALUATION_SUPPORTED_WORKFLOW_PROVIDERS: readonly string[] = [
   'DIFY',
   'N8N',
 ]
+const autoEvaluationScheduleHourOptions = Array.from(
+  { length: 24 },
+  (_, hour) => ({
+    label: formatScheduleHour(hour),
+    value: String(hour),
+  })
+)
+
+const defaultSchedule: NonNullable<AutoEvaluationTaskFormInput['schedule']> = {
+  frequency: 'DAILY',
+  executionHour: 1,
+  timezone: 'Asia/Shanghai',
+  window: {
+    mode: 'previous_day',
+    startHour: 0,
+    endHour: 0,
+  },
+  retry: {
+    maxAttempts: 3,
+    backoffMinutes: [10, 30, 60],
+  },
+}
 
 const initialForm: AutoEvaluationTaskFormInput = {
   name: '',
   description: '',
   scoreName: '',
   evaluatorId: '',
+  runMode: 'IMMEDIATE',
+  schedule: defaultSchedule,
   variableMapping: {},
   reportTemplateId: 'default',
   dataSource: createDefaultTraceFilter(),
@@ -84,6 +110,11 @@ const initialForm: AutoEvaluationTaskFormInput = {
     threshold: 0.6,
   },
 }
+
+type AutoEvaluationTraceFilterInput = Extract<
+  AutoEvaluationTaskFormInput['dataSource'],
+  { type: 'TRACE_FILTER' }
+>
 
 const sampleFieldOptions = [
   'sample.input',
@@ -189,10 +220,15 @@ export function AutoEvaluationTaskForm({
     )
   }, [$api, projectId])
 
-  const traceFilterKey =
+  const schedule = form.schedule ?? defaultSchedule
+  const isScheduledRunMode = form.runMode === 'SCHEDULED'
+  const effectiveTraceFilter =
     form.dataSource.type === 'TRACE_FILTER'
-      ? getTraceFilterKey(form.dataSource)
-      : ''
+      ? getEffectiveTraceFilter(form, schedule)
+      : null
+  const traceFilterKey = effectiveTraceFilter
+    ? getTraceFilterKey(effectiveTraceFilter)
+    : ''
 
   useEffect(() => {
     if (!traceFilterKey) {
@@ -205,20 +241,25 @@ export function AutoEvaluationTaskForm({
     void Promise.resolve()
       .then(() => {
         if (!canceled) setTraceCountState('loading')
-        return listProjectAutoEvaluationTracePreview(
+        return countProjectAutoEvaluationTraces(
           $api,
           projectId,
-          traceFilter,
-          { page: 1, pageSize: 1 }
+          traceFilter
         )
       })
       .then((result) => {
         if (canceled) return
         setTraceCountState('success')
         setForm((current) => {
+          const currentSchedule = current.schedule ?? defaultSchedule
+          const currentTraceFilter =
+            current.dataSource.type === 'TRACE_FILTER'
+              ? getEffectiveTraceFilter(current, currentSchedule)
+              : null
           if (
             current.dataSource.type !== 'TRACE_FILTER' ||
-            getTraceFilterKey(current.dataSource) !== traceFilterKey
+            !currentTraceFilter ||
+            getTraceFilterKey(currentTraceFilter) !== traceFilterKey
           ) {
             return current
           }
@@ -226,7 +267,7 @@ export function AutoEvaluationTaskForm({
             ...current,
             dataSource: {
               ...current.dataSource,
-              estimatedCount: result.total,
+              estimatedCount: result.count,
             },
           }
         })
@@ -235,9 +276,15 @@ export function AutoEvaluationTaskForm({
         if (canceled) return
         setTraceCountState('error')
         setForm((current) => {
+          const currentSchedule = current.schedule ?? defaultSchedule
+          const currentTraceFilter =
+            current.dataSource.type === 'TRACE_FILTER'
+              ? getEffectiveTraceFilter(current, currentSchedule)
+              : null
           if (
             current.dataSource.type !== 'TRACE_FILTER' ||
-            getTraceFilterKey(current.dataSource) !== traceFilterKey
+            !currentTraceFilter ||
+            getTraceFilterKey(currentTraceFilter) !== traceFilterKey
           ) {
             return current
           }
@@ -328,6 +375,25 @@ export function AutoEvaluationTaskForm({
     onDirtyChange?.(true)
     setError('')
   }
+  const updateFormWith = (
+    updater: (current: AutoEvaluationTaskFormInput) => AutoEvaluationTaskFormInput
+  ) => {
+    setForm((current) => updater(current))
+    onDirtyChange?.(true)
+    setError('')
+  }
+  const updateSchedule = (
+    updater: (
+      current: NonNullable<AutoEvaluationTaskFormInput['schedule']>
+    ) => NonNullable<AutoEvaluationTaskFormInput['schedule']>
+  ) => {
+    setForm((current) => {
+      const nextSchedule = updater(current.schedule ?? defaultSchedule)
+      onDirtyChange?.(true)
+      setError('')
+      return { ...current, schedule: nextSchedule }
+    })
+  }
 
   const validateStep = () => {
     const message = getStepError(step, form, selectedEvaluator)
@@ -369,27 +435,36 @@ export function AutoEvaluationTaskForm({
     }
     setStep(currentStep)
     setSubmittingMode(mode)
+    const runMode = form.runMode ?? 'IMMEDIATE'
+    const effectiveSchedule = form.schedule ?? defaultSchedule
+    const completionMode = runMode === 'SCHEDULED' ? 'create' : mode
     try {
       const task = await createProjectAutoEvaluationTask($api, projectId, {
         name: form.name,
         description: form.description,
         scoreName: form.scoreName,
         evaluatorId: form.evaluatorId,
+        runMode: form.runMode,
+        schedule: runMode === 'SCHEDULED' ? effectiveSchedule : null,
         sampleRate: form.sampleRate,
-        dataSource: form.dataSource,
+        dataSource: getSubmissionDataSource(form, runMode),
         variableMapping: form.variableMapping,
         reportTemplateId: form.reportTemplateId,
       })
       onDirtyChange?.(false)
       toast.success(
-        mode === 'run' ? '自动评测任务已创建并开始运行' : '自动评测任务已创建'
+        runMode === 'SCHEDULED'
+          ? '定时评测任务已保存，启动后按计划执行'
+          : mode === 'run'
+            ? '自动评测任务已创建并开始运行'
+            : '自动评测任务已创建'
       )
       if (onCompleted) {
-        onCompleted(task.id, mode)
+        onCompleted(task.id, completionMode)
         return
       }
       navigate(
-        mode === 'run'
+        completionMode === 'run'
           ? `/projects/${projectId}/evaluation/auto-evaluations/${task.id}`
           : `/projects/${projectId}/evaluation/auto-evaluations`
       )
@@ -603,9 +678,13 @@ export function AutoEvaluationTaskForm({
         <section className='flex flex-col gap-4'>
           <div className='bg-card text-card-foreground rounded-lg border p-4'>
             <div className='mb-4 flex flex-col gap-1'>
-              <h3 className='text-sm font-semibold'>评测数据来源</h3>
+              <h3 className='text-sm font-semibold'>
+                {isScheduledRunMode ? '动态评测数据规则' : '评测数据来源'}
+              </h3>
               <p className='text-muted-foreground text-sm'>
-                选择固定数据集，或通过 Trace 过滤条件动态抽样。
+                {isScheduledRunMode
+                  ? '保存 Trace 筛选规则，每次定时触发时按执行频率动态查询增量样本。'
+                  : '选择固定数据集，或通过 Trace 过滤条件在创建时锁定样本。'}
               </p>
             </div>
             <Tabs
@@ -629,97 +708,112 @@ export function AutoEvaluationTaskForm({
                 className='grid gap-4 md:grid-cols-[minmax(0,1fr)_minmax(220px,280px)]'
               >
                 <div className='grid gap-4 md:grid-cols-2'>
-                  <Field label='时间范围' className='md:col-span-2'>
-                    <div className='grid gap-3 lg:grid-cols-[minmax(0,1fr)_auto] lg:items-end'>
-                      <div className='grid gap-3 sm:grid-cols-2'>
-                        <Input
-                          type='datetime-local'
-                          aria-label='开始时间'
-                          value={
-                            form.dataSource.type === 'TRACE_FILTER'
-                              ? (form.dataSource.createdAtRange[0] ?? '')
-                              : ''
-                          }
-                          onChange={(event) => {
-                            if (form.dataSource.type !== 'TRACE_FILTER') return
-                            updateForm({
-                              ...form,
-                              dataSource: {
-                                ...form.dataSource,
-                                timeRange: '',
-                                createdAtRange: [
-                                  event.target.value,
-                                  form.dataSource.createdAtRange[1] ?? '',
-                                ],
-                              },
-                            })
-                          }}
-                        />
-                        <Input
-                          type='datetime-local'
-                          aria-label='结束时间'
-                          value={
-                            form.dataSource.type === 'TRACE_FILTER'
-                              ? (form.dataSource.createdAtRange[1] ?? '')
-                              : ''
-                          }
-                          onChange={(event) => {
-                            if (form.dataSource.type !== 'TRACE_FILTER') return
-                            updateForm({
-                              ...form,
-                              dataSource: {
-                                ...form.dataSource,
-                                timeRange: '',
-                                createdAtRange: [
-                                  form.dataSource.createdAtRange[0] ?? '',
-                                  event.target.value,
-                                ],
-                              },
-                            })
-                          }}
-                        />
+                  {isScheduledRunMode ? (
+                    <Field
+                      label='Trace 数据范围'
+                      description={getScheduleTraceWindowDescription(schedule)}
+                      className='md:col-span-2'
+                    >
+                      <div className='bg-muted/30 rounded-md border p-3 text-sm'>
+                        {getScheduleTraceWindowSummary(schedule)}
                       </div>
-                      <ToggleGroup
-                        type='single'
-                        variant='outline'
-                        size='default'
-                        value={
-                          form.dataSource.type === 'TRACE_FILTER'
-                            ? form.dataSource.timeRange
-                            : AUTO_EVALUATION_DEFAULT_TRACE_TIME_RANGE
-                        }
-                        onValueChange={(value) => {
-                          if (form.dataSource.type !== 'TRACE_FILTER' || !value)
-                            return
-                          const timeRange =
-                            value as (typeof AUTO_EVALUATION_TRACE_QUICK_TIME_RANGE_OPTIONS)[number]['value']
-                          updateForm({
-                            ...form,
-                            dataSource: {
-                              ...form.dataSource,
-                              timeRange,
-                              createdAtRange:
-                                createTraceDateTimeRange(timeRange),
-                            },
-                          })
-                        }}
-                        aria-label='快捷时间范围'
-                        className='w-fit'
-                      >
-                        {AUTO_EVALUATION_TRACE_QUICK_TIME_RANGE_OPTIONS.map(
-                          (option) => (
-                            <ToggleGroupItem
-                              key={option.value}
-                              value={option.value}
-                              aria-label={`最近 ${option.label}`}
-                            >
-                              {option.label}
-                            </ToggleGroupItem>
-                          )
-                        )}
-                      </ToggleGroup>
-                    </div>
-                  </Field>
+                    </Field>
+                  ) : (
+                    <Field label='固定时间范围' className='md:col-span-2'>
+                      <div className='grid gap-3 lg:grid-cols-[minmax(0,1fr)_auto] lg:items-end'>
+                        <div className='grid gap-3 sm:grid-cols-2'>
+                          <Input
+                            type='datetime-local'
+                            aria-label='开始时间'
+                            value={
+                              form.dataSource.type === 'TRACE_FILTER'
+                                ? (form.dataSource.createdAtRange[0] ?? '')
+                                : ''
+                            }
+                            onChange={(event) => {
+                              if (form.dataSource.type !== 'TRACE_FILTER') return
+                              updateForm({
+                                ...form,
+                                dataSource: {
+                                  ...form.dataSource,
+                                  timeRange: '',
+                                  createdAtRange: [
+                                    event.target.value,
+                                    form.dataSource.createdAtRange[1] ?? '',
+                                  ],
+                                },
+                              })
+                            }}
+                          />
+                          <Input
+                            type='datetime-local'
+                            aria-label='结束时间'
+                            value={
+                              form.dataSource.type === 'TRACE_FILTER'
+                                ? (form.dataSource.createdAtRange[1] ?? '')
+                                : ''
+                            }
+                            onChange={(event) => {
+                              if (form.dataSource.type !== 'TRACE_FILTER') return
+                              updateForm({
+                                ...form,
+                                dataSource: {
+                                  ...form.dataSource,
+                                  timeRange: '',
+                                  createdAtRange: [
+                                    form.dataSource.createdAtRange[0] ?? '',
+                                    event.target.value,
+                                  ],
+                                },
+                              })
+                            }}
+                          />
+                        </div>
+                        <ToggleGroup
+                          type='single'
+                          variant='outline'
+                          size='default'
+                          value={
+                            form.dataSource.type === 'TRACE_FILTER'
+                              ? form.dataSource.timeRange
+                              : AUTO_EVALUATION_DEFAULT_TRACE_TIME_RANGE
+                          }
+                          onValueChange={(value) => {
+                            if (
+                              form.dataSource.type !== 'TRACE_FILTER' ||
+                              !value
+                            )
+                              return
+                            const timeRange =
+                              value as (typeof AUTO_EVALUATION_TRACE_QUICK_TIME_RANGE_OPTIONS)[number]['value']
+                            updateForm({
+                              ...form,
+                              dataSource: {
+                                ...form.dataSource,
+                                timeRange,
+                                createdAtRange:
+                                  createTraceDateTimeRange(timeRange),
+                              },
+                            })
+                          }}
+                          aria-label='快捷时间范围'
+                          className='w-fit'
+                        >
+                          {AUTO_EVALUATION_TRACE_QUICK_TIME_RANGE_OPTIONS.map(
+                            (option) => (
+                              <ToggleGroupItem
+                                key={option.value}
+                                value={option.value}
+                                aria-label={`最近 ${option.label}`}
+                              >
+                                {option.label}
+                              </ToggleGroupItem>
+                            )
+                          )}
+                        </ToggleGroup>
+                      </div>
+                    </Field>
+                  )}
                   <Field label='User ID'>
                     <Input
                       placeholder='可选，按用户标识过滤'
@@ -790,7 +884,9 @@ export function AutoEvaluationTaskForm({
                   <div className='flex flex-col gap-1'>
                     <span className='text-sm font-medium'>预估命中</span>
                     <span className='text-muted-foreground text-sm'>
-                      运行前先统计符合过滤条件的 Trace 数量。
+                      {isScheduledRunMode
+                        ? '按当前时间窗口预估每次定时运行的 Trace 数量。'
+                        : '运行前先统计符合固定过滤条件的 Trace 数量。'}
                     </span>
                     {traceCountState === 'loading' ? (
                       <span className='text-muted-foreground text-xs'>
@@ -893,77 +989,207 @@ export function AutoEvaluationTaskForm({
                 配置报告模板、采样比例和 Badcase 规则。
               </p>
             </div>
-            <div className='grid gap-4 lg:grid-cols-4'>
-              <Field label='报告模板'>
-                <Select
-                  value={form.reportTemplateId}
-                  onValueChange={(value) =>
-                    updateForm({ ...form, reportTemplateId: value })
-                  }
+            <div className='flex flex-col gap-4'>
+              <Field label='运行方式'>
+                <ToggleGroup
+                  type='single'
+                  variant='outline'
+                  size='default'
+                  value={form.runMode ?? 'IMMEDIATE'}
+                  onValueChange={(value) => {
+                    if (!value) return
+                    updateFormWith((current) => ({
+                      ...current,
+                      runMode:
+                        value as NonNullable<AutoEvaluationTaskFormInput['runMode']>,
+                      schedule: current.schedule ?? defaultSchedule,
+                    }))
+                  }}
+                  aria-label='运行方式'
+                  className='w-fit'
                 >
-                  <SelectTrigger className='w-full'>
-                    <SelectValue placeholder='选择报告模板' />
-                  </SelectTrigger>
-                  <SelectContent>
-                    <SelectGroup>
-                      {reportTemplates.map((template) => (
-                        <SelectItem key={template.id} value={template.id}>
-                          {template.name}
-                          {template.isDefault ? ' · 默认' : ''}
-                        </SelectItem>
-                      ))}
-                    </SelectGroup>
-                  </SelectContent>
-                </Select>
+                  <ToggleGroupItem value='IMMEDIATE' aria-label='立即执行'>
+                    立即执行
+                  </ToggleGroupItem>
+                  <ToggleGroupItem value='SCHEDULED' aria-label='定时执行'>
+                    定时执行
+                  </ToggleGroupItem>
+                </ToggleGroup>
               </Field>
-              <Field label={`采样率：预计运行 ${estimatedRunCount} 条`}>
-                <Input
-                  type='number'
-                  min={1}
-                  max={100}
-                  value={form.sampleRate}
-                  onChange={(event) =>
-                    updateForm({
-                      ...form,
-                      sampleRate: Number(event.target.value),
-                    })
-                  }
-                />
-              </Field>
-              <Field label='Badcase' tooltip='关闭后不再生成 Badcase。'>
-                <div className='flex h-9 items-center gap-2 rounded-md border px-3'>
-                  <Switch
-                    checked={form.badcase.enabled}
-                    onCheckedChange={(checked) =>
+              {form.runMode === 'SCHEDULED' ? (
+                <fieldset className='rounded-lg border p-4'>
+                  <legend className='px-1 text-sm font-medium'>
+                    定时执行配置
+                  </legend>
+                  <div className='flex flex-col gap-4'>
+                    <p className='text-muted-foreground text-sm'>
+                      保存后不会立即执行，启动后按计划采集 Trace 并执行评测。
+                    </p>
+
+                    <div className='grid gap-3 lg:grid-cols-4'>
+                      <Field label='执行频率' className='lg:col-span-2'>
+                        <ToggleGroup
+                          type='single'
+                          variant='outline'
+                          size='default'
+                          value={schedule.frequency}
+                          onValueChange={(value) => {
+                            if (!value) return
+                            const frequency =
+                              value as AutoEvaluationScheduleFrequency
+                            updateSchedule((currentSchedule) => ({
+                              ...currentSchedule,
+                              frequency,
+                              window:
+                                createScheduleWindowForFrequency(frequency),
+                            }))
+                          }}
+                          aria-label='执行频率'
+                          className='w-fit flex-wrap justify-start'
+                        >
+                          <ToggleGroupItem value='HALF_HOURLY'>
+                            每 30 分钟
+                          </ToggleGroupItem>
+                          <ToggleGroupItem value='HOURLY'>
+                            每小时
+                          </ToggleGroupItem>
+                          <ToggleGroupItem value='DAILY'>每天</ToggleGroupItem>
+                        </ToggleGroup>
+                      </Field>
+                      {schedule.frequency === 'DAILY' ? (
+                        <Field label='执行时间'>
+                          <Select
+                            value={String(schedule.executionHour)}
+                            onValueChange={(value) =>
+                              updateSchedule((currentSchedule) => ({
+                                ...currentSchedule,
+                                executionHour: Number(value),
+                              }))
+                            }
+                          >
+                            <SelectTrigger className='w-full'>
+                              <SelectValue placeholder='01:00' />
+                            </SelectTrigger>
+                            <SelectContent>
+                              <SelectGroup>
+                                {autoEvaluationScheduleHourOptions.map(
+                                  (option) => (
+                                    <SelectItem
+                                      key={option.value}
+                                      value={option.value}
+                                    >
+                                      {option.label}
+                                    </SelectItem>
+                                  )
+                                )}
+                              </SelectGroup>
+                            </SelectContent>
+                          </Select>
+                        </Field>
+                      ) : null}
+                      <Field label='时区'>
+                        <Select
+                          value={schedule.timezone}
+                          onValueChange={(value) =>
+                            updateSchedule((currentSchedule) => ({
+                              ...currentSchedule,
+                              timezone: value,
+                            }))
+                          }
+                        >
+                          <SelectTrigger className='w-full'>
+                            <SelectValue placeholder='Asia/Shanghai' />
+                          </SelectTrigger>
+                          <SelectContent>
+                            <SelectGroup>
+                              <SelectItem value='Asia/Shanghai'>
+                                Asia/Shanghai
+                              </SelectItem>
+                            </SelectGroup>
+                          </SelectContent>
+                        </Select>
+                      </Field>
+                      <Field label='失败重试'>
+                        <div className='bg-muted/30 text-muted-foreground flex min-h-9 items-center rounded-md border px-3 text-sm'>
+                          最多 3 次，间隔 10、30、60 分钟
+                        </div>
+                      </Field>
+                    </div>
+                  </div>
+                </fieldset>
+              ) : null}
+              <div className='grid gap-4 lg:grid-cols-4'>
+                <Field label='报告模板'>
+                  <Select
+                    value={form.reportTemplateId}
+                    onValueChange={(value) =>
+                      updateForm({ ...form, reportTemplateId: value })
+                    }
+                  >
+                    <SelectTrigger className='w-full'>
+                      <SelectValue placeholder='选择报告模板' />
+                    </SelectTrigger>
+                    <SelectContent>
+                      <SelectGroup>
+                        {reportTemplates.map((template) => (
+                          <SelectItem key={template.id} value={template.id}>
+                            {template.name}
+                            {template.isDefault ? ' · 默认' : ''}
+                          </SelectItem>
+                        ))}
+                      </SelectGroup>
+                    </SelectContent>
+                  </Select>
+                </Field>
+                <Field label={`采样率：预计运行 ${estimatedRunCount} 条`}>
+                  <Input
+                    type='number'
+                    min={1}
+                    max={100}
+                    value={form.sampleRate}
+                    onChange={(event) =>
                       updateForm({
                         ...form,
-                        badcase: { ...form.badcase, enabled: checked },
+                        sampleRate: Number(event.target.value),
                       })
                     }
                   />
-                  <span className='text-sm'>启用</span>
-                </div>
-              </Field>
-              <Field label='Badcase 阈值'>
-                <Input
-                  type='number'
-                  step='0.01'
-                  disabled={!form.badcase.enabled}
-                  value={form.badcase.threshold ?? ''}
-                  onChange={(event) =>
-                    updateForm({
-                      ...form,
-                      badcase: {
-                        ...form.badcase,
-                        threshold:
-                          event.target.value === ''
-                            ? null
-                            : Number(event.target.value),
-                      },
-                    })
-                  }
-                />
-              </Field>
+                </Field>
+                <Field label='Badcase' tooltip='关闭后不再生成 Badcase。'>
+                  <div className='flex h-9 items-center gap-2 rounded-md border px-3'>
+                    <Switch
+                      checked={form.badcase.enabled}
+                      onCheckedChange={(checked) =>
+                        updateForm({
+                          ...form,
+                          badcase: { ...form.badcase, enabled: checked },
+                        })
+                      }
+                    />
+                    <span className='text-sm'>启用</span>
+                  </div>
+                </Field>
+                <Field label='Badcase 阈值'>
+                  <Input
+                    type='number'
+                    step='0.01'
+                    disabled={!form.badcase.enabled}
+                    value={form.badcase.threshold ?? ''}
+                    onChange={(event) =>
+                      updateForm({
+                        ...form,
+                        badcase: {
+                          ...form.badcase,
+                          threshold:
+                            event.target.value === ''
+                              ? null
+                              : Number(event.target.value),
+                        },
+                      })
+                    }
+                  />
+                </Field>
+              </div>
             </div>
           </div>
         </section>
@@ -987,6 +1213,14 @@ export function AutoEvaluationTaskForm({
               }}
             >
               下一步
+            </Button>
+          ) : form.runMode === 'SCHEDULED' ? (
+            <Button
+              type='button'
+              disabled={submittingMode !== null}
+              onClick={() => void handleSubmit('create')}
+            >
+              {submittingMode === 'create' ? '保存中...' : '保存定时任务'}
             </Button>
           ) : (
             <>
@@ -1202,6 +1436,7 @@ function getStepError(
     }
     if (
       form.dataSource.type === 'TRACE_FILTER' &&
+      form.runMode !== 'SCHEDULED' &&
       form.dataSource.estimatedCount === 0
     ) {
       return 'Trace 命中数量为 0，请调整过滤条件'
@@ -1227,6 +1462,44 @@ function getEstimatedRunCount(sampleCount: number, sampleRate: number) {
   return Math.ceil((sampleCount * sampleRate) / 100)
 }
 
+function formatScheduleHour(hour: number) {
+  return `${String(hour).padStart(2, '0')}:00`
+}
+
+function getEffectiveTraceFilter(
+  form: AutoEvaluationTaskFormInput,
+  schedule: NonNullable<AutoEvaluationTaskFormInput['schedule']>
+): AutoEvaluationTraceFilterInput | null {
+  if (form.dataSource.type !== 'TRACE_FILTER') {
+    return null
+  }
+
+  if (form.runMode !== 'SCHEDULED') {
+    return form.dataSource
+  }
+
+  return {
+    ...form.dataSource,
+    timeRange: '',
+    createdAtRange: createSchedulePreviewTraceDateTimeRange(schedule),
+  }
+}
+
+function getSubmissionDataSource(
+  form: AutoEvaluationTaskFormInput,
+  runMode: NonNullable<AutoEvaluationTaskFormInput['runMode']>
+): AutoEvaluationTaskFormInput['dataSource'] {
+  if (runMode !== 'SCHEDULED' || form.dataSource.type !== 'TRACE_FILTER') {
+    return form.dataSource
+  }
+
+  return {
+    ...form.dataSource,
+    timeRange: '',
+    createdAtRange: [],
+  }
+}
+
 function createDefaultTraceFilter(): Extract<
   AutoEvaluationTaskFormInput['dataSource'],
   { type: 'TRACE_FILTER' }
@@ -1246,10 +1519,7 @@ function createDefaultTraceFilter(): Extract<
 }
 
 function getTraceFilterKey(
-  traceFilter: Extract<
-    AutoEvaluationTaskFormInput['dataSource'],
-    { type: 'TRACE_FILTER' }
-  >
+  traceFilter: AutoEvaluationTraceFilterInput
 ) {
   return JSON.stringify({
     type: 'TRACE_FILTER',
@@ -1264,10 +1534,7 @@ function getTraceFilterKey(
 
 function parseTraceFilterKey(
   key: string
-): Extract<
-  AutoEvaluationTaskFormInput['dataSource'],
-  { type: 'TRACE_FILTER' }
-> {
+): AutoEvaluationTraceFilterInput {
   const parsed = JSON.parse(key) as Omit<
     Extract<
       AutoEvaluationTaskFormInput['dataSource'],
@@ -1289,6 +1556,70 @@ function createTraceDateTimeRange(
   const end = new Date()
   const start = new Date(end)
   start.setDate(end.getDate() - days)
+  return [toDateTimeLocalValue(start), toDateTimeLocalValue(end)]
+}
+
+function createScheduleWindowForFrequency(
+  frequency: AutoEvaluationScheduleFrequency
+): NonNullable<AutoEvaluationTaskFormInput['schedule']>['window'] {
+  if (frequency === 'HALF_HOURLY') {
+    return { mode: 'rolling_interval', intervalMinutes: 30 }
+  }
+  if (frequency === 'HOURLY') {
+    return { mode: 'rolling_interval', intervalMinutes: 60 }
+  }
+  return { mode: 'previous_day', startHour: 0, endHour: 0 }
+}
+
+function getScheduleTraceWindowDescription(
+  schedule: NonNullable<AutoEvaluationTaskFormInput['schedule']>
+) {
+  if (schedule.frequency === 'HALF_HOURLY') {
+    return '每次触发只评测触发前 30 分钟的增量 Trace。'
+  }
+  if (schedule.frequency === 'HOURLY') {
+    return '每次触发只评测触发前 1 小时的增量 Trace。'
+  }
+  return '每天触发时评测上一自然日 00:00 到当天 00:00 的 Trace。'
+}
+
+function getScheduleTraceWindowSummary(
+  schedule: NonNullable<AutoEvaluationTaskFormInput['schedule']>
+) {
+  if (schedule.frequency === 'HALF_HOURLY') {
+    return '触发前 30 分钟'
+  }
+  if (schedule.frequency === 'HOURLY') {
+    return '触发前 1 小时'
+  }
+  return `上一自然日 00:00 - 当天 00:00，${formatScheduleHour(
+    schedule.executionHour
+  )} 触发`
+}
+
+function createSchedulePreviewTraceDateTimeRange(
+  schedule: NonNullable<AutoEvaluationTaskFormInput['schedule']>
+) {
+  if (schedule.frequency === 'HALF_HOURLY') {
+    return createRollingPreviewRange(30)
+  }
+  if (schedule.frequency === 'HOURLY') {
+    return createRollingPreviewRange(60)
+  }
+
+  const end = new Date()
+  end.setHours(0, 0, 0, 0)
+
+  const start = new Date(end)
+  start.setDate(end.getDate() - 1)
+
+  return [toDateTimeLocalValue(start), toDateTimeLocalValue(end)]
+}
+
+function createRollingPreviewRange(intervalMinutes: number) {
+  const end = new Date()
+  const start = new Date(end)
+  start.setMinutes(end.getMinutes() - intervalMinutes)
   return [toDateTimeLocalValue(start), toDateTimeLocalValue(end)]
 }
 

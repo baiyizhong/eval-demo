@@ -10,11 +10,23 @@ import psycopg
 from fastapi import APIRouter, BackgroundTasks, Depends, Query
 from psycopg.rows import dict_row
 from psycopg.types.json import Jsonb
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, model_validator
 
 from app.auth_context import CurrentUserContext, get_current_user_context
+from app.auto_evaluation_schedules import (
+    RetryPolicy,
+    ScheduleFrequency,
+    ScheduleWindowConfig,
+    build_schedule_cron_expression,
+    compute_next_fire_at,
+    compute_schedule_window,
+)
 from app.config import Settings, get_settings
-from app.errors import BusinessError
+from app.errors import BusinessError, LangfuseUpstreamError
+from app.langfuse_clickhouse import (
+    LangfuseClickHouseReader,
+    get_langfuse_clickhouse_reader,
+)
 from app.langfuse_db import LangfuseDatabaseConfigError, PROJECT_ACCESS_EXISTS_SQL
 from app.response import success
 
@@ -48,6 +60,72 @@ DEFAULT_REPORT_TEMPLATE = {
     "risks": ["当前报告由工作流后台运行生成，工作流输出质量会影响评分稳定性。"],
 }
 
+DEFAULT_TASK_DATA_SOURCE = {
+    "type": "TRACE_FILTER",
+    "name": "Trace 过滤",
+    "sampleCount": 0,
+}
+
+DEFAULT_EXECUTION_STATS = {
+    "pending": 0,
+    "running": 0,
+    "completed": 0,
+    "failed": 0,
+    "cancelled": 0,
+}
+
+DEFAULT_SCHEDULE_WINDOW = {
+    "mode": "previous_day",
+    "startHour": 0,
+    "endHour": 0,
+}
+
+DEFAULT_SCHEDULE_RETRY = {
+    "maxAttempts": 3,
+    "backoffMinutes": [10, 30, 60],
+}
+
+
+def _schedule_window_config_payload(window: ScheduleWindowConfig) -> dict[str, Any]:
+    if window.mode == "rolling_interval":
+        return {
+            "mode": "rolling_interval",
+            "intervalMinutes": window.intervalMinutes,
+        }
+    return {
+        "mode": "previous_day",
+        "startHour": window.startHour,
+        "endHour": window.endHour,
+    }
+
+
+class ScheduleConfig(BaseModel):
+    frequency: ScheduleFrequency = Field(default="DAILY")
+    execution_hour: int = Field(default=1, alias="executionHour", ge=0, le=23)
+    timezone: str = Field(default="Asia/Shanghai", min_length=1)
+    window: ScheduleWindowConfig = Field(default_factory=ScheduleWindowConfig)
+    retry: RetryPolicy = Field(default_factory=RetryPolicy)
+
+    @model_validator(mode="after")
+    def derive_window_from_frequency(self) -> "ScheduleConfig":
+        if self.frequency == "HALF_HOURLY":
+            self.window = ScheduleWindowConfig(
+                mode="rolling_interval",
+                intervalMinutes=30,
+            )
+        elif self.frequency == "HOURLY":
+            self.window = ScheduleWindowConfig(
+                mode="rolling_interval",
+                intervalMinutes=60,
+            )
+        else:
+            self.window = ScheduleWindowConfig(
+                mode="previous_day",
+                startHour=0,
+                endHour=0,
+            )
+        return self
+
 
 class CreateAutoEvaluationPayload(BaseModel):
     name: str = Field(min_length=1, max_length=120)
@@ -72,6 +150,18 @@ class CreateAutoEvaluationPayload(BaseModel):
         default=None,
         alias="reportTemplateSnapshot",
     )
+    run_mode: str = Field(
+        default="IMMEDIATE",
+        alias="runMode",
+        pattern="^(IMMEDIATE|SCHEDULED)$",
+    )
+    schedule: ScheduleConfig | None = None
+
+    @model_validator(mode="after")
+    def default_scheduled_config(self) -> "CreateAutoEvaluationPayload":
+        if self.run_mode == "SCHEDULED" and self.schedule is None:
+            self.schedule = ScheduleConfig()
+        return self
 
 
 class ReportTemplatePayload(BaseModel):
@@ -268,8 +358,6 @@ async def _list_trace_generation_samples(
         conditions = [
             f"t.project_id = {_clickhouse_quote(project_id)}",
             "t.is_deleted = 0",
-            "o.is_deleted = 0",
-            "o.type = 'GENERATION'",
         ]
         time_condition = _trace_time_condition(data_source_payload)
         if trace_name:
@@ -308,9 +396,11 @@ async def _list_trace_generation_samples(
             o.start_time AS observation_start_time,
             o.created_at AS observation_created_at
         FROM traces t
-        INNER JOIN observations o
+        LEFT JOIN observations o
             ON o.trace_id = t.id
            AND o.project_id = t.project_id
+           AND o.is_deleted = 0
+           AND o.type = 'GENERATION'
         WHERE {where_clause}
           {time_condition}
         ORDER BY o.start_time DESC, t.timestamp DESC, t.id DESC
@@ -347,11 +437,11 @@ async def _list_trace_generation_samples(
                 o.start_time AS observation_start_time,
                 o.created_at AS observation_created_at
             FROM traces t
-            JOIN observations o
+            LEFT JOIN observations o
               ON o.trace_id = t.id
              AND o.project_id = t.project_id
+             AND o.type = 'GENERATION'
             WHERE t.project_id = %(project_id)s
-              AND o.type = 'GENERATION'
               AND (%(trace_name)s = '' OR t.name ILIKE %(trace_name_like)s)
               AND (%(user_id)s = '' OR t.user_id ILIKE %(user_id_like)s)
               AND (%(session_id)s = '' OR t.session_id ILIKE %(session_id_like)s)
@@ -526,7 +616,10 @@ async def _query_clickhouse_json_each_row(
     settings: Settings,
     query: str,
 ) -> list[dict[str, Any]]:
-    async with httpx.AsyncClient(timeout=settings.pa_eval_api_timeout) as client:
+    async with httpx.AsyncClient(
+        timeout=settings.pa_eval_api_timeout,
+        trust_env=False,
+    ) as client:
         response = await client.post(
             settings.langfuse_clickhouse_url,
             content=query,
@@ -584,6 +677,7 @@ def _to_trace_generation_sample(row: dict[str, Any]) -> dict[str, Any]:
         else {}
     )
     trace_input = _parse_json_object(row.get("trace_input"))
+    trace_output = _parse_json_object(row.get("trace_output"))
     context = trace_input.get(
         "context",
         trace_metadata.get("context", observation_metadata.get("context", "")),
@@ -597,10 +691,15 @@ def _to_trace_generation_sample(row: dict[str, Any]) -> dict[str, Any]:
         "dataset_id": "",
         "input": {
             "input": _stringify_value(
-                trace_input.get("input", row.get("observation_input"))
+                trace_input.get("input", row.get("observation_input") or row.get("trace_input"))
             ),
             "output": _stringify_value(
-                trace_input.get("output", row.get("observation_output"))
+                trace_input.get(
+                    "output",
+                    row.get("observation_output")
+                    or trace_output.get("output")
+                    or row.get("trace_output"),
+                )
             ),
             "context": _stringify_value(context),
         },
@@ -723,7 +822,10 @@ async def _run_dify_evaluator(
         "response_mode": "blocking",
         "user": "pa-eval",
     }
-    async with httpx.AsyncClient(timeout=settings.pa_eval_api_timeout) as client:
+    async with httpx.AsyncClient(
+        timeout=settings.pa_eval_api_timeout,
+        trust_env=False,
+    ) as client:
         response = await client.post(
             str(endpoint_url),
             json=request_payload,
@@ -766,7 +868,10 @@ async def _run_workflow_evaluator(
             }
         )
 
-    async with httpx.AsyncClient(timeout=settings.pa_eval_api_timeout) as client:
+    async with httpx.AsyncClient(
+        timeout=settings.pa_eval_api_timeout,
+        trust_env=False,
+    ) as client:
         response = await client.post(
             str(endpoint_url),
             json=request_payload,
@@ -1314,6 +1419,7 @@ async def create_auto_evaluation(
     now = datetime.now(timezone.utc)
     task_id = _new_id("paautoeval")
     run_id = _new_id("parun")
+    schedule_id = _new_id("paschedule")
 
     async with await _connect(settings) as connection:
         async with connection.cursor() as cursor:
@@ -1322,13 +1428,6 @@ async def create_auto_evaluation(
                 cursor,
                 payload.evaluator_id,
                 current_user.user_id,
-            )
-            data_source, samples = await _resolve_auto_evaluation_samples(
-                cursor,
-                project_id,
-                payload,
-                current_user.user_id,
-                settings,
             )
             report_template_snapshot = await _resolve_report_template_snapshot(
                 cursor,
@@ -1340,6 +1439,55 @@ async def create_auto_evaluation(
                     "report_template_id": report_template_snapshot["id"],
                     "report_template_snapshot": report_template_snapshot,
                 }
+            )
+            if payload.run_mode == "SCHEDULED":
+                await _insert_scheduled_auto_evaluation(
+                    cursor,
+                    task_id=task_id,
+                    schedule_id=schedule_id,
+                    project_id=project_id,
+                    payload=payload,
+                    evaluator=evaluator,
+                    report_template_snapshot=report_template_snapshot,
+                    create_by=current_user.email,
+                    now=now,
+                )
+                return success(
+                    {
+                        "id": task_id,
+                        "projectId": project_id,
+                        "name": payload.name,
+                        "description": payload.description,
+                        "scoreName": payload.score_name,
+                        "status": "DRAFT",
+                        "evaluator": {
+                            "id": evaluator["id"],
+                            "name": evaluator["name"],
+                            "type": evaluator["type"],
+                            "version": f"v{evaluator['version']}",
+                        },
+                        "dataSource": payload.data_source,
+                        "sampleRate": payload.sample_rate,
+                        "executionStats": {
+                            "pending": 0,
+                            "running": 0,
+                            "completed": 0,
+                            "failed": 0,
+                            "cancelled": 0,
+                        },
+                        "badcaseCount": 0,
+                        "createdBy": current_user.email,
+                        "createdAt": _format_datetime(now),
+                        "lastRunAt": None,
+                        "updatedAt": _format_datetime(now),
+                    }
+                )
+            data_source, samples = await _resolve_auto_evaluation_samples(
+                cursor,
+                project_id,
+                payload,
+                current_user.user_id,
+                settings,
             )
             sample_count = len(samples)
             execution_stats = {
@@ -1412,17 +1560,168 @@ async def count_trace_generation_samples(
     payload: TraceCountPayload,
     current_user: CurrentUserContext = Depends(get_current_user_context),
     settings: Settings = Depends(get_settings),
+    trace_reader: LangfuseClickHouseReader = Depends(get_langfuse_clickhouse_reader),
 ) -> dict[str, Any]:
     async with await _connect(settings) as connection:
         async with connection.cursor() as cursor:
             await _ensure_project_access(cursor, project_id, current_user.user_id)
-            count = await _count_trace_generation_samples(
-                cursor,
-                project_id,
-                payload.trace_filter,
-                settings,
-            )
+    try:
+        count = await trace_reader.count_traces(
+            project_id,
+            **_trace_count_filter_kwargs(payload.trace_filter),
+        )
+    except LangfuseUpstreamError:
+        logger.warning("Trace count unavailable; returning zero", exc_info=True)
+        count = 0
     return success({"count": count})
+
+
+def _trace_count_filter_kwargs(trace_filter: dict[str, Any]) -> dict[str, Any]:
+    time_range = _stringify_value(trace_filter.get("timeRange")).strip() or None
+    created_at_range = trace_filter.get("createdAtRange")
+    normalized_created_at_range = (
+        [str(value) for value in created_at_range if str(value).strip()]
+        if isinstance(created_at_range, list)
+        else None
+    )
+    if normalized_created_at_range and len(normalized_created_at_range) >= 2:
+        time_range = None
+    else:
+        normalized_created_at_range = None
+
+    environments = trace_filter.get("environments")
+    normalized_environments = (
+        [str(value) for value in environments if str(value).strip()]
+        if isinstance(environments, list)
+        else None
+    )
+
+    return {
+        "keyword": None,
+        "statuses": None,
+        "environments": normalized_environments or None,
+        "session_id": _stringify_value(trace_filter.get("sessionId")).strip() or None,
+        "user_id": _stringify_value(trace_filter.get("userId")).strip() or None,
+        "latency_min": None,
+        "latency_max": None,
+        "metadata_key": None,
+        "metadata_value": None,
+        "metadata_filters": None,
+        "created_at_range": normalized_created_at_range,
+        "time_range": time_range,
+    }
+
+
+async def _start_auto_evaluation_schedule(
+    cursor: psycopg.AsyncCursor[dict[str, Any]],
+    project_id: str,
+    task_id: str,
+    user_id: str,
+    now: datetime | None = None,
+) -> None:
+    current_time = now or datetime.now(timezone.utc)
+    await cursor.execute(
+        """
+        SELECT cron_expression, timezone
+        FROM pa_auto_evaluation_schedules
+        WHERE project_id = %(project_id)s
+          AND task_id = %(task_id)s
+        LIMIT 1
+        """,
+        {
+            "project_id": project_id,
+            "task_id": task_id,
+        },
+    )
+    schedule = await cursor.fetchone()
+    if schedule is None:
+        raise BusinessError(4005, "自动评测调度不存在", 404)
+
+    next_run_at = compute_next_fire_at(
+        schedule["cron_expression"],
+        schedule["timezone"],
+        current_time,
+    )
+    await cursor.execute(
+        """
+        UPDATE pa_auto_evaluation_schedules
+        SET status = 'ACTIVE',
+            next_run_at = %(next_run_at)s,
+            update_by = %(update_by)s,
+            update_date = %(update_date)s
+        WHERE project_id = %(project_id)s
+          AND task_id = %(task_id)s
+        RETURNING id
+        """,
+        {
+            "project_id": project_id,
+            "task_id": task_id,
+            "next_run_at": next_run_at,
+            "update_by": user_id,
+            "update_date": current_time,
+        },
+    )
+    if await cursor.fetchone() is None:
+        raise BusinessError(4005, "自动评测调度不存在", 404)
+
+
+async def _pause_auto_evaluation_schedule(
+    cursor: psycopg.AsyncCursor[dict[str, Any]],
+    project_id: str,
+    task_id: str,
+    user_id: str,
+) -> None:
+    update_date = datetime.now(timezone.utc)
+    await cursor.execute(
+        """
+        UPDATE pa_auto_evaluation_schedules
+        SET status = 'PAUSED',
+            update_by = %(update_by)s,
+            update_date = %(update_date)s
+        WHERE project_id = %(project_id)s
+          AND task_id = %(task_id)s
+        RETURNING id
+        """,
+        {
+            "project_id": project_id,
+            "task_id": task_id,
+            "update_by": user_id,
+            "update_date": update_date,
+        },
+    )
+    if await cursor.fetchone() is None:
+        raise BusinessError(4005, "自动评测调度不存在", 404)
+
+
+async def _list_due_auto_evaluation_schedules(
+    cursor: psycopg.AsyncCursor[dict[str, Any]],
+    now: datetime,
+) -> list[dict[str, Any]]:
+    await cursor.execute(
+        """
+        SELECT
+            s.*,
+            t.name AS task_name,
+            t.description AS task_description,
+            t.score_name,
+            t.evaluator_id,
+            t.data_source,
+            t.sample_rate,
+            t.report_template_id,
+            t.report_template_snapshot
+        FROM pa_auto_evaluation_schedules s
+        JOIN pa_auto_evaluation_tasks t
+          ON t.project_id = s.project_id
+         AND t.id = s.task_id
+        WHERE s.status = 'ACTIVE'
+          AND s.next_run_at <= %(now)s
+        ORDER BY s.next_run_at ASC, s.id ASC
+        LIMIT 50
+        FOR UPDATE OF s SKIP LOCKED
+        """,
+        {"now": now},
+    )
+    return list(await cursor.fetchall())
 
 
 async def _resolve_auto_evaluation_samples(
@@ -1571,6 +1870,13 @@ async def _insert_running_auto_evaluation(
     report_template_snapshot: dict[str, Any],
     create_by: str,
     now: datetime | None,
+    trigger_source: str = "MANUAL",
+    window_start: datetime | None = None,
+    window_end: datetime | None = None,
+    scheduled_fire_at: datetime | None = None,
+    attempt_no: int = 1,
+    parent_run_id: str | None = None,
+    run_config_snapshot: dict[str, Any] | None = None,
 ) -> None:
     current_time = now or datetime.now(timezone.utc)
     execution_stats = {
@@ -1635,11 +1941,15 @@ async def _insert_running_auto_evaluation(
         INSERT INTO pa_auto_evaluation_runs (
             id, project_id, task_id, status, sample_count, completed_count,
             failed_count, badcase_count, started_at, ended_at, duration_text,
+            trigger_source, window_start, window_end, scheduled_fire_at,
+            attempt_no, parent_run_id, run_config_snapshot,
             create_by, create_date, update_by, update_date
         )
         VALUES (
             %(id)s, %(project_id)s, %(task_id)s, %(status)s, %(sample_count)s, 0,
             0, 0, %(started_at)s, %(ended_at)s, %(duration_text)s,
+            %(trigger_source)s, %(window_start)s, %(window_end)s, %(scheduled_fire_at)s,
+            %(attempt_no)s, %(parent_run_id)s, %(run_config_snapshot)s,
             %(create_by)s, %(create_date)s, %(update_by)s, %(update_date)s
         )
         """,
@@ -1652,6 +1962,120 @@ async def _insert_running_auto_evaluation(
             "started_at": current_time,
             "ended_at": None,
             "duration_text": "运行中",
+            "trigger_source": trigger_source,
+            "window_start": window_start,
+            "window_end": window_end,
+            "scheduled_fire_at": scheduled_fire_at,
+            "attempt_no": attempt_no,
+            "parent_run_id": parent_run_id,
+            "run_config_snapshot": Jsonb(run_config_snapshot or {}),
+            "create_by": create_by,
+            "create_date": current_time,
+            "update_by": create_by,
+            "update_date": current_time,
+        },
+    )
+
+
+async def _insert_scheduled_auto_evaluation(
+    cursor: psycopg.AsyncCursor[dict[str, Any]],
+    *,
+    task_id: str,
+    schedule_id: str,
+    project_id: str,
+    payload: CreateAutoEvaluationPayload,
+    evaluator: dict[str, Any],
+    report_template_snapshot: dict[str, Any],
+    create_by: str,
+    now: datetime | None,
+) -> None:
+    current_time = now or datetime.now(timezone.utc)
+    schedule = payload.schedule or ScheduleConfig()
+    data_source = payload.data_source or {"type": "TRACE_FILTER"}
+    execution_stats = {
+        "pending": 0,
+        "running": 0,
+        "completed": 0,
+        "failed": 0,
+        "cancelled": 0,
+    }
+    compat_fields = _task_compat_fields(
+        data_source,
+        evaluator_id=evaluator["id"],
+        sample_rate=payload.sample_rate,
+        report_template_id=payload.report_template_id,
+    )
+    await cursor.execute(
+        """
+        INSERT INTO pa_auto_evaluation_tasks (
+            id, project_id, name, description, score_name, status,
+            data_source_type, dataset_id, trace_query, evaluator_ids, run_config, report_config,
+            evaluator_id, evaluator_name, evaluator_type, evaluator_version,
+            data_source, sample_rate, execution_stats, badcase_count,
+            latest_report_id, report_template_id, report_template_snapshot,
+            create_by, last_run_at, create_date, update_by, update_date
+        )
+        VALUES (
+            %(id)s, %(project_id)s, %(name)s, %(description)s, %(score_name)s, %(status)s,
+            %(data_source_type)s, %(dataset_id)s, %(trace_query)s, %(evaluator_ids)s, %(run_config)s, %(report_config)s,
+            %(evaluator_id)s, %(evaluator_name)s, %(evaluator_type)s, %(evaluator_version)s,
+            %(data_source)s, %(sample_rate)s, %(execution_stats)s, 0,
+            %(latest_report_id)s, %(report_template_id)s, %(report_template_snapshot)s,
+            %(create_by)s, %(last_run_at)s, %(create_date)s, %(update_by)s, %(update_date)s
+        )
+        """,
+        {
+            "id": task_id,
+            "project_id": project_id,
+            "name": payload.name,
+            "description": payload.description,
+            "score_name": payload.score_name,
+            "status": "DRAFT",
+            "evaluator_id": evaluator["id"],
+            "evaluator_name": evaluator["name"],
+            "evaluator_type": evaluator["type"],
+            "evaluator_version": f"v{evaluator['version']}",
+            "data_source": Jsonb(data_source),
+            "sample_rate": payload.sample_rate,
+            "execution_stats": Jsonb(execution_stats),
+            "latest_report_id": None,
+            "report_template_id": payload.report_template_id,
+            "report_template_snapshot": Jsonb(report_template_snapshot),
+            "create_by": create_by,
+            "last_run_at": None,
+            "create_date": current_time,
+            "update_by": create_by,
+            "update_date": current_time,
+            **compat_fields,
+        },
+    )
+    await cursor.execute(
+        """
+        INSERT INTO pa_auto_evaluation_schedules (
+            create_by, update_by, create_date, update_date,
+            id, project_id, task_id, status, cron_expression, timezone,
+            window_config, retry_policy, next_run_at, last_scheduled_at,
+            last_window_start, last_window_end
+        )
+        VALUES (
+            %(create_by)s, %(update_by)s, %(create_date)s, %(update_date)s,
+            %(id)s, %(project_id)s, %(task_id)s, %(status)s, %(cron_expression)s, %(timezone)s,
+            %(window_config)s, %(retry_policy)s, NULL, NULL,
+            NULL, NULL
+        )
+        """,
+        {
+            "id": schedule_id,
+            "project_id": project_id,
+            "task_id": task_id,
+            "status": "DRAFT",
+            "cron_expression": build_schedule_cron_expression(
+                schedule.frequency,
+                schedule.execution_hour,
+            ),
+            "timezone": schedule.timezone,
+            "window_config": Jsonb(_schedule_window_config_payload(schedule.window)),
+            "retry_policy": Jsonb(schedule.retry.model_dump(by_alias=True)),
             "create_by": create_by,
             "create_date": current_time,
             "update_by": create_by,
@@ -1675,6 +2099,13 @@ async def _insert_rerun_auto_evaluation(
     report_template_snapshot: dict[str, Any],
     updated_by: str,
     now: datetime | None,
+    trigger_source: str = "MANUAL",
+    window_start: datetime | None = None,
+    window_end: datetime | None = None,
+    scheduled_fire_at: datetime | None = None,
+    attempt_no: int = 1,
+    parent_run_id: str | None = None,
+    run_config_snapshot: dict[str, Any] | None = None,
 ) -> None:
     current_time = now or datetime.now(timezone.utc)
     compat_fields = _task_compat_fields(
@@ -1724,11 +2155,15 @@ async def _insert_rerun_auto_evaluation(
         INSERT INTO pa_auto_evaluation_runs (
             id, project_id, task_id, status, sample_count, completed_count,
             failed_count, badcase_count, started_at, ended_at, duration_text,
+            trigger_source, window_start, window_end, scheduled_fire_at,
+            attempt_no, parent_run_id, run_config_snapshot,
             create_by, create_date, update_by, update_date
         )
         VALUES (
             %(id)s, %(project_id)s, %(task_id)s, 'RUNNING', %(sample_count)s, 0,
             0, 0, %(started_at)s, NULL, '运行中',
+            %(trigger_source)s, %(window_start)s, %(window_end)s, %(scheduled_fire_at)s,
+            %(attempt_no)s, %(parent_run_id)s, %(run_config_snapshot)s,
             %(create_by)s, %(create_date)s, %(update_by)s, %(update_date)s
         )
         """,
@@ -1738,6 +2173,13 @@ async def _insert_rerun_auto_evaluation(
             "task_id": task_id,
             "sample_count": sample_count,
             "started_at": current_time,
+            "trigger_source": trigger_source,
+            "window_start": window_start,
+            "window_end": window_end,
+            "scheduled_fire_at": scheduled_fire_at,
+            "attempt_no": attempt_no,
+            "parent_run_id": parent_run_id,
+            "run_config_snapshot": Jsonb(run_config_snapshot or {}),
             "create_by": updated_by,
             "create_date": current_time,
             "update_by": updated_by,
@@ -2293,11 +2735,22 @@ async def list_auto_evaluations(
             total = (await cursor.fetchone() or {}).get("total", 0)
             await cursor.execute(
                 """
-                SELECT *
-                FROM pa_auto_evaluation_tasks
-                WHERE project_id = %(project_id)s
-                  AND (%(keyword)s = '' OR name ILIKE %(like)s OR description ILIKE %(like)s)
-                ORDER BY update_date DESC, id DESC
+                SELECT
+                    t.*,
+                    s.status AS schedule_status,
+                    s.cron_expression,
+                    s.timezone AS schedule_timezone,
+                    s.next_run_at,
+                    s.last_scheduled_at,
+                    s.window_config,
+                    s.retry_policy
+                FROM pa_auto_evaluation_tasks t
+                LEFT JOIN pa_auto_evaluation_schedules s
+                  ON s.project_id = t.project_id
+                 AND s.task_id = t.id
+                WHERE t.project_id = %(project_id)s
+                  AND (%(keyword)s = '' OR t.name ILIKE %(like)s OR t.description ILIKE %(like)s)
+                ORDER BY t.update_date DESC, t.id DESC
                 LIMIT %(limit)s OFFSET %(offset)s
                 """,
                 {
@@ -2364,10 +2817,21 @@ async def rerun_auto_evaluation(
             await _ensure_project_access(cursor, project_id, current_user.user_id)
             await cursor.execute(
                 """
-                SELECT *
-                FROM pa_auto_evaluation_tasks
-                WHERE project_id = %(project_id)s
-                  AND id = %(task_id)s
+                SELECT
+                    t.*,
+                    s.status AS schedule_status,
+                    s.cron_expression,
+                    s.timezone AS schedule_timezone,
+                    s.next_run_at,
+                    s.last_scheduled_at,
+                    s.window_config,
+                    s.retry_policy
+                FROM pa_auto_evaluation_tasks t
+                LEFT JOIN pa_auto_evaluation_schedules s
+                  ON s.project_id = t.project_id
+                 AND s.task_id = t.id
+                WHERE t.project_id = %(project_id)s
+                  AND t.id = %(task_id)s
                 LIMIT 1
                 """,
                 {"project_id": project_id, "task_id": task_id},
@@ -2394,6 +2858,32 @@ async def rerun_auto_evaluation(
                 reportTemplateId=task_row.get("report_template_id"),
                 reportTemplateSnapshot=task_row.get("report_template_snapshot") or {},
             )
+            window_start: datetime | None = None
+            window_end: datetime | None = None
+            scheduled_fire_at: datetime | None = None
+            if task_row.get("schedule_status") and payload.data_source.get("type") == "TRACE_FILTER":
+                schedule_window = compute_schedule_window(
+                    now,
+                    task_row.get("schedule_timezone") or "Asia/Shanghai",
+                    ScheduleWindowConfig.model_validate(
+                        _normalize_schedule_window(task_row.get("window_config"))
+                    ),
+                )
+                window_start = schedule_window.start
+                window_end = schedule_window.end
+                scheduled_fire_at = now
+                payload = payload.model_copy(
+                    update={
+                        "data_source": {
+                            **payload.data_source,
+                            "timeRange": "",
+                            "createdAtRange": [
+                                window_start.isoformat(timespec="seconds"),
+                                window_end.isoformat(timespec="seconds"),
+                            ],
+                        }
+                    }
+                )
             data_source, samples = await _resolve_auto_evaluation_samples(
                 cursor,
                 project_id,
@@ -2433,6 +2923,9 @@ async def rerun_auto_evaluation(
                 report_template_snapshot=report_template_snapshot,
                 updated_by=current_user.email,
                 now=now,
+                window_start=window_start,
+                window_end=window_end,
+                scheduled_fire_at=scheduled_fire_at,
             )
 
     background_tasks.add_task(
@@ -2464,6 +2957,44 @@ async def rerun_auto_evaluation(
             "latestReport": None,
         }
     )
+
+
+@router.post("/auto-evaluations/{task_id}/schedule/start")
+async def start_auto_evaluation_schedule(
+    project_id: str,
+    task_id: str,
+    current_user: CurrentUserContext = Depends(get_current_user_context),
+    settings: Settings = Depends(get_settings),
+) -> dict[str, Any]:
+    async with await _connect(settings) as connection:
+        async with connection.cursor() as cursor:
+            await _ensure_project_access(cursor, project_id, current_user.user_id)
+            await _start_auto_evaluation_schedule(
+                cursor,
+                project_id,
+                task_id,
+                current_user.email,
+            )
+    return success({"id": task_id})
+
+
+@router.post("/auto-evaluations/{task_id}/schedule/pause")
+async def pause_auto_evaluation_schedule(
+    project_id: str,
+    task_id: str,
+    current_user: CurrentUserContext = Depends(get_current_user_context),
+    settings: Settings = Depends(get_settings),
+) -> dict[str, Any]:
+    async with await _connect(settings) as connection:
+        async with connection.cursor() as cursor:
+            await _ensure_project_access(cursor, project_id, current_user.user_id)
+            await _pause_auto_evaluation_schedule(
+                cursor,
+                project_id,
+                task_id,
+                current_user.email,
+            )
+    return success({"id": task_id})
 
 
 @router.get("/auto-evaluations/{task_id}")
@@ -3492,11 +4023,32 @@ async def _delete_auto_evaluation_task(
         DELETE FROM pa_auto_evaluation_tasks
         WHERE project_id = %(project_id)s
           AND id = %(task_id)s
+          AND NOT EXISTS (
+              SELECT 1
+              FROM pa_auto_evaluation_runs r
+              WHERE r.project_id = %(project_id)s
+                AND r.task_id = %(task_id)s
+                AND r.status IN ('PENDING', 'RUNNING')
+          )
         RETURNING id
         """,
         {"project_id": project_id, "task_id": task_id},
     )
-    if await cursor.fetchone() is None:
+    deleted_task = await cursor.fetchone()
+    if deleted_task is None:
+        await cursor.execute(
+            """
+            SELECT COUNT(*)::int AS active_count
+            FROM pa_auto_evaluation_runs
+            WHERE project_id = %(project_id)s
+              AND task_id = %(task_id)s
+              AND status IN ('PENDING', 'RUNNING')
+            """,
+            {"project_id": project_id, "task_id": task_id},
+        )
+        active_run_count = (await cursor.fetchone() or {}).get("active_count", 0)
+        if active_run_count > 0:
+            raise BusinessError(4009, "任务正在运行中，无法删除", 409)
         raise BusinessError(4005, "自动评测任务不存在", 404)
 
     await cursor.execute(
@@ -3566,10 +4118,21 @@ async def _fetch_task(
             await _ensure_project_access(cursor, project_id, user_id)
             await cursor.execute(
                 """
-                SELECT *
-                FROM pa_auto_evaluation_tasks
-                WHERE project_id = %(project_id)s
-                  AND id = %(task_id)s
+                SELECT
+                    t.*,
+                    s.status AS schedule_status,
+                    s.cron_expression,
+                    s.timezone AS schedule_timezone,
+                    s.next_run_at,
+                    s.last_scheduled_at,
+                    s.window_config,
+                    s.retry_policy
+                FROM pa_auto_evaluation_tasks t
+                LEFT JOIN pa_auto_evaluation_schedules s
+                  ON s.project_id = t.project_id
+                 AND s.task_id = t.id
+                WHERE t.project_id = %(project_id)s
+                  AND t.id = %(task_id)s
                 LIMIT 1
                 """,
                 {"project_id": project_id, "task_id": task_id},
@@ -3605,13 +4168,102 @@ async def _fetch_task(
             return task
 
 
+def _normalize_task_data_source(value: Any) -> dict[str, Any]:
+    data_source = value.copy() if isinstance(value, dict) else {}
+    normalized = {**DEFAULT_TASK_DATA_SOURCE, **data_source}
+    if not normalized.get("type"):
+        normalized["type"] = DEFAULT_TASK_DATA_SOURCE["type"]
+    if not normalized.get("name"):
+        normalized["name"] = DEFAULT_TASK_DATA_SOURCE["name"]
+    sample_count = normalized.get("sampleCount")
+    normalized["sampleCount"] = sample_count if isinstance(sample_count, int) else 0
+    return normalized
+
+
+def _normalize_execution_stats(value: Any) -> dict[str, Any]:
+    stats = value.copy() if isinstance(value, dict) else {}
+    normalized = {**stats}
+    for key, default_value in DEFAULT_EXECUTION_STATS.items():
+        if not isinstance(normalized.get(key), int):
+            normalized[key] = default_value
+    return normalized
+
+
+def _normalize_schedule_window(value: Any) -> dict[str, Any]:
+    window = value.copy() if isinstance(value, dict) else {}
+    if window.get("mode") == "rolling_interval":
+        interval_minutes = window.get("intervalMinutes")
+        if not isinstance(interval_minutes, int) or interval_minutes <= 0:
+            interval_minutes = 60
+        return {
+            "mode": "rolling_interval",
+            "intervalMinutes": interval_minutes,
+        }
+
+    normalized = {**DEFAULT_SCHEDULE_WINDOW, **window, "mode": "previous_day"}
+    for key in ("startHour", "endHour"):
+        if not isinstance(normalized.get(key), int):
+            normalized[key] = DEFAULT_SCHEDULE_WINDOW[key]
+    return normalized
+
+
+def _derive_schedule_frequency(
+    cron_expression: str | None,
+    window: dict[str, Any],
+) -> ScheduleFrequency:
+    if window.get("mode") == "rolling_interval":
+        interval_minutes = window.get("intervalMinutes")
+        if interval_minutes == 30 or cron_expression == "*/30 * * * *":
+            return "HALF_HOURLY"
+        return "HOURLY"
+    return "DAILY"
+
+
+def _normalize_schedule_retry(value: Any) -> dict[str, Any]:
+    retry = value.copy() if isinstance(value, dict) else {}
+    normalized = {**DEFAULT_SCHEDULE_RETRY, **retry}
+    if not isinstance(normalized.get("maxAttempts"), int):
+        normalized["maxAttempts"] = DEFAULT_SCHEDULE_RETRY["maxAttempts"]
+    backoff_minutes = normalized.get("backoffMinutes")
+    if (
+        not isinstance(backoff_minutes, list)
+        or not backoff_minutes
+        or any(not isinstance(minutes, int) for minutes in backoff_minutes)
+    ):
+        normalized["backoffMinutes"] = list(DEFAULT_SCHEDULE_RETRY["backoffMinutes"])
+    return normalized
+
+
 def _to_task(row: dict[str, Any]) -> dict[str, Any]:
+    schedule = None
+    if row.get("schedule_status"):
+        window = _normalize_schedule_window(row.get("window_config"))
+        schedule = {
+            "status": row.get("schedule_status"),
+            "frequency": _derive_schedule_frequency(
+                row.get("cron_expression"),
+                window,
+            ),
+            "cronExpression": row.get("cron_expression") or "",
+            "timezone": row.get("schedule_timezone") or "",
+            "nextRunAt": _format_datetime(row["next_run_at"])
+            if row.get("next_run_at")
+            else None,
+            "lastScheduledAt": _format_datetime(row["last_scheduled_at"])
+            if row.get("last_scheduled_at")
+            else None,
+            "window": window,
+            "retry": _normalize_schedule_retry(row.get("retry_policy")),
+        }
+
     return {
         "id": row["id"],
         "projectId": row["project_id"],
         "name": row["name"],
         "description": row["description"],
         "scoreName": row["score_name"],
+        "runMode": "SCHEDULED" if schedule else "IMMEDIATE",
+        "schedule": schedule,
         "status": row["status"],
         "evaluator": {
             "id": row["evaluator_id"],
@@ -3619,9 +4271,9 @@ def _to_task(row: dict[str, Any]) -> dict[str, Any]:
             "type": row["evaluator_type"],
             "version": row["evaluator_version"],
         },
-        "dataSource": row.get("data_source") or {},
+        "dataSource": _normalize_task_data_source(row.get("data_source")),
         "sampleRate": row["sample_rate"],
-        "executionStats": row.get("execution_stats") or {},
+        "executionStats": _normalize_execution_stats(row.get("execution_stats")),
         "badcaseCount": row["badcase_count"],
         "createdBy": row["create_by"],
         "createdAt": _format_datetime(row["create_date"]),
@@ -3638,6 +4290,18 @@ def _to_run(row: dict[str, Any]) -> dict[str, Any]:
         "projectId": row["project_id"],
         "taskId": row["task_id"],
         "status": row["status"],
+        "triggerSource": row.get("trigger_source"),
+        "windowStart": _format_datetime(row["window_start"])
+        if row.get("window_start")
+        else None,
+        "windowEnd": _format_datetime(row["window_end"])
+        if row.get("window_end")
+        else None,
+        "scheduledFireAt": _format_datetime(row["scheduled_fire_at"])
+        if row.get("scheduled_fire_at")
+        else None,
+        "attemptNo": row.get("attempt_no"),
+        "parentRunId": row.get("parent_run_id"),
         "sampleCount": row["sample_count"],
         "completedCount": row["completed_count"],
         "failedCount": row["failed_count"],

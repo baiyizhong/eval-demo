@@ -6,16 +6,17 @@
 
 当前 PA 自动评测支持创建任务后立即执行一次，也支持手动重跑。Trace 数据源已经具备按时间范围筛选和预览的能力，前端时间控件使用 `datetime-local`，可以支持小时级选择。
 
-本设计在现有自动评测能力上增加“定时评测”。定时评测不作为独立业务模块，而是自动评测任务的一种运行模式，但调度配置独立存放，避免影响现有立即执行链路。第一阶段默认按天执行，默认评测窗口为“上一天 00:00 到当天 00:00”的 Trace 数据，同时保留失败重试和手动重复执行能力，避免一次失败后任务长期停滞。
+本设计在现有自动评测能力上增加“定时评测”。定时评测不作为独立业务模块，而是自动评测任务的一种运行模式，但调度配置独立存放，避免影响现有立即执行链路。调度频率和 Trace 数据窗口强联动：分钟级、小时级任务每次只评测本次触发前一个执行间隔内的增量 Trace；日级任务兼容现有“上一自然日 00:00 到当天 00:00”的批处理窗口。同时保留失败重试和手动重复执行能力，避免一次失败后任务长期停滞。
 
 Langfuse 原生 `cron_jobs` 表只适合作为内部全局任务的 checkpoint 和锁，不承载 PA 自动评测所需的 project、评估器、Trace 过滤、时区、启停、删除、运行历史等业务字段。因此本设计不复用 `cron_jobs` 作为定时评测任务表，也不修改 Langfuse 原生表结构。
 
 ## 目标
 
 - 在自动评测任务中支持“立即执行”和“定时执行”两种运行模式。
-- 定时执行默认每天触发一次，内部用 cron 表达式描述调度规则。
-- 定时任务默认选择上一天 00:00 到当天 00:00 的 Trace 数据。
-- Trace 时间窗口支持小时级配置，边界语义为 `[start, end)`。
+- 定时执行支持固定频率：每 30 分钟、每小时、每天，内部用 cron 表达式描述调度规则。
+- 执行频率和 Trace 数据窗口联动，避免配置出触发频率与评测窗口不一致的任务。
+- 每 30 分钟和每小时任务默认评测本次触发前一个执行间隔的增量 Trace。
+- 每天任务默认选择上一自然日 00:00 到当天 00:00 的 Trace 数据。
 - 创建定时任务后默认不自动执行，需要用户显式启动。
 - 支持任务启动、停止、物理删除和手动重复执行。
 - 支持失败重试，重试策略独立于 cron 调度。
@@ -25,7 +26,7 @@ Langfuse 原生 `cron_jobs` 表只适合作为内部全局任务的 checkpoint �
 ## 非目标
 
 - 第一阶段不开放完整 cron 表达式编辑器给普通用户。
-- 第一阶段不支持分钟级时间窗口。
+- 第一阶段不支持执行频率和 Trace 窗口分离配置，例如“每小时执行但回看 2 小时”。
 - 第一阶段不支持复杂日历规则，例如工作日、节假日、每月最后一天。
 - 不把 PA 定时评测任务写入 Langfuse `cron_jobs`、`job_configurations` 或 `job_executions`。
 - 不实现跨项目共享调度任务。
@@ -84,7 +85,7 @@ Langfuse 原生 `cron_jobs` 表只适合作为内部全局任务的 checkpoint �
 
 这个方案更适合当前诉求：创建后不自动执行、支持物理删除、尽量不影响已有立即执行功能，并且后续如果要支持一个任务多个调度计划，不需要再次迁移调度字段。
 
-底层调度规则统一使用 cron 表达式，便于后续扩展每小时、每周、自定义周期。前端第一阶段不直接暴露 cron 输入，而是提供“每天几点执行”的简单控件，保存时转换为 cron，例如每天 01:00 执行保存为 `0 1 * * *`。
+底层调度规则统一使用 cron 表达式，便于后续扩展每周、自定义周期。前端第一阶段不直接暴露 cron 输入，而是提供“执行频率”的简单控件，保存时转换为 cron，例如每 30 分钟保存为 `*/30 * * * *`，每小时保存为 `0 * * * *`，每天保存为 `0 1 * * *`。
 
 失败重试不依赖 cron 表达式，而是使用独立的 `retry_policy`。cron 负责“何时产生一次计划执行”，retry 负责“这次计划执行失败后如何补救”。手动重复执行也独立于 cron，可对某个历史窗口重新生成一条 run。
 
@@ -105,7 +106,7 @@ Langfuse 原生 `cron_jobs` 表只适合作为内部全局任务的 checkpoint �
 
 ### 时间窗口
 
-默认窗口为上一天 00:00 到当天 00:00，使用任务配置的 timezone 计算。
+定时任务的 Trace 时间窗口由执行频率自动推导，不作为独立可编辑项。
 
 边界语义：
 
@@ -113,13 +114,26 @@ Langfuse 原生 `cron_jobs` 表只适合作为内部全局任务的 checkpoint �
 window_start <= trace.timestamp < window_end
 ```
 
-示例：任务在 `Asia/Shanghai` 每天 01:00 触发，2026-07-09 01:00 的默认窗口为：
+分钟级、小时级频率使用滚动增量窗口：
+
+```text
+window_end = scheduled_fire_at
+window_start = scheduled_fire_at - interval_minutes
+```
+
+示例：任务在 `Asia/Shanghai` 每小时触发，2026-07-09 13:00 的窗口为：
+
+```text
+2026-07-09 12:00:00 <= trace.timestamp < 2026-07-09 13:00:00
+```
+
+日级频率保留自然日窗口，使用任务配置的 timezone 计算。示例：任务在 `Asia/Shanghai` 每天 01:00 触发，2026-07-09 01:00 的窗口为：
 
 ```text
 2026-07-08 00:00:00 <= trace.timestamp < 2026-07-09 00:00:00
 ```
 
-第一阶段窗口支持小时级偏移，例如上一天 02:00 到当天 02:00。前端沿用 Trace 选择能力中的时间控件和预览接口。
+立即执行任务仍使用用户在 Trace 筛选中选择的固定时间范围，不使用定时任务的动态滚动窗口。定时任务的“立即执行一次”默认使用当前调度频率预览出的窗口，并在创建 run 时固化 `window_start/window_end`。
 
 ### 启动、停止、删除
 
@@ -166,9 +180,8 @@ last_window_end     timestamptz 最近一次调度窗口结束时间
 ```json
 {
   "windowConfig": {
-    "mode": "previous_day",
-    "startHour": 0,
-    "endHour": 0
+    "mode": "rolling_interval",
+    "intervalMinutes": 60
   },
   "retryPolicy": {
     "maxAttempts": 3,
@@ -178,6 +191,15 @@ last_window_end     timestamptz 最近一次调度窗口结束时间
 ```
 
 数据库变更必须通过 Alembic 实现，支持 downgrade，并补充表注释和字段注释。
+
+`window_config.mode` 支持：
+
+```text
+rolling_interval    滚动增量窗口，intervalMinutes 来自执行频率
+previous_day        上一自然日窗口，用于兼容日级批处理
+```
+
+现有日级任务可以继续保存为 `previous_day`；新增的 30 分钟和每小时任务保存为 `rolling_interval`。如果需要更直接地查询和展示执行频率，可以在调度表增加 `interval_minutes` 字段；否则第一阶段可由 `cron_expression` 和 `window_config.intervalMinutes` 共同表达。
 
 ### `pa_auto_evaluation_tasks` 调整
 
@@ -219,9 +241,9 @@ next_run_at <= now()
 扫描到任务后：
 
 1. 获取任务级锁，防止多实例重复触发。
-2. 根据 cron、timezone 和 window 配置计算本次 `window_start/window_end`。
+2. 根据 cron、timezone、执行频率和 window 配置计算本次 `window_start/window_end`。
 3. 做幂等检查，避免同一窗口重复创建计划 run。
-4. 创建 `SCHEDULED` run，并复用现有自动评测执行逻辑。
+4. 创建 `SCHEDULED` run，将 `window_start/window_end` 覆盖到 `data_source.createdAtRange`，并复用现有自动评测执行逻辑。
 5. 计算并更新下一次 `next_run_at`。
 
 锁可以第一阶段使用数据库行级锁或应用层 advisory lock。可以借鉴 Langfuse `cron_jobs` 的 checkpoint/锁思路，但不复用其表承载 PA 业务任务。
@@ -273,10 +295,13 @@ GET    /projects/{projectId}/auto-evaluation-tasks/{taskId}/runs
 
 选择定时执行后展示：
 
-- 执行频率：第一阶段固定为“每天”。
-- 执行时间：小时级选择，例如 01:00。
+- 执行频率：每 30 分钟、每小时、每天。
+- 执行时间：仅每天频率展示小时级选择，例如 01:00；分钟级和小时级使用固定整点/半点规则。
 - 时区：默认 `Asia/Shanghai`，后续可跟随项目设置。
-- Trace 时间窗口：默认上一天 00:00 到当天 00:00，支持小时级调整。
+- Trace 数据范围：只读联动说明，不提供独立编辑。
+  - 每 30 分钟：每次取触发前 30 分钟 Trace。
+  - 每小时：每次取触发前 1 小时 Trace。
+  - 每天：每次取上一自然日 00:00 到当天 00:00 Trace。
 - 失败重试：默认开启，最多 3 次，间隔 10、30、60 分钟。
 
 点击“保存”后只创建任务和调度配置，不自动执行。保存成功后列表状态显示为“草稿”，用户需要点击“启动”后才进入定时调度。
@@ -316,8 +341,9 @@ GET    /projects/{projectId}/auto-evaluation-tasks/{taskId}/runs
 
 - 创建定时任务 payload 包含 `runMode` 和 schedule 配置。
 - 创建成功后状态显示为草稿，不展示为运行中。
-- 默认时间窗口显示为上一天 00:00 到当天 00:00。
-- 小时级窗口调整后 payload 正确。
+- 执行频率切换时，Trace 数据范围说明同步变化。
+- 每 30 分钟和每小时 payload 使用 `rolling_interval`，并携带对应 `intervalMinutes`。
+- 每天 payload 使用 `previous_day`，详情显示上一自然日窗口。
 - 列表操作按钮在不同状态下显示和禁用正确。
 - 详情页运行记录展示 `MANUAL`、`SCHEDULED`、`RETRY`。
 
@@ -325,7 +351,7 @@ GET    /projects/{projectId}/auto-evaluation-tasks/{taskId}/runs
 
 1. 后端 Alembic 新增 `pa_auto_evaluation_schedules`，并给运行记录增加触发来源、窗口和重试字段。
 2. 后端扩展自动评测任务 schema、创建、编辑、删除和运行接口，支持事务内创建 task + schedule。
-3. 后端实现时间窗口计算、cron 解析、幂等和重试策略。
+3. 后端实现滚动增量窗口、自然日窗口、cron 解析、幂等和重试策略。
 4. 后端增加调度循环或调度入口，扫描 schedule 表。
 5. 前端扩展自动评测创建/编辑表单，保存后默认草稿。
 6. 前端扩展列表、详情和运行记录展示。
@@ -334,7 +360,8 @@ GET    /projects/{projectId}/auto-evaluation-tasks/{taskId}/runs
 ## 待后续扩展
 
 - 高级 cron 编辑器和 cron 预览。
-- 每小时、每周、每月等更多频率。
+- 每周、每月等更多频率。
+- 高级 lookback 配置，例如每小时执行但回看 2 小时。
 - 任务漏跑窗口补跑。
 - 多实例调度器的更强租约和监控页面。
 - 调度事件审计表，例如 `pa_auto_evaluation_schedule_events`。

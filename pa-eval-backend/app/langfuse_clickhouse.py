@@ -68,6 +68,51 @@ class LangfuseClickHouseReader:
             "datas": [self._to_trace_row(row) for row in filtered[start : start + page_size]],
         }
 
+    async def count_traces(
+        self,
+        project_id: str,
+        *,
+        keyword: str | None = None,
+        statuses: list[str] | None = None,
+        environments: list[str] | None = None,
+        session_id: str | None = None,
+        user_id: str | None = None,
+        latency_min: int | None = None,
+        latency_max: int | None = None,
+        metadata_key: str | None = None,
+        metadata_value: str | None = None,
+        metadata_filters: list[dict[str, Any]] | None = None,
+        created_at_range: list[str] | None = None,
+        time_range: str | None = "1d",
+    ) -> int:
+        start_time, end_time = _resolve_time_window(
+            time_range=time_range,
+            created_at_range=created_at_range,
+        )
+        rows = await self._fetch_trace_rows(
+            project_id,
+            start_time=start_time,
+            end_time=end_time,
+            environments=_normalize_environments(environments),
+        )
+        return sum(
+            1
+            for row in rows
+            if _matches_trace(
+                row,
+                keyword=keyword,
+                statuses=statuses,
+                environments=environments,
+                session_id=session_id,
+                user_id=user_id,
+                latency_min=latency_min,
+                latency_max=latency_max,
+                metadata_key=metadata_key,
+                metadata_value=metadata_value,
+                metadata_filters=metadata_filters,
+            )
+        )
+
     async def get_trace_metrics(
         self,
         project_id: str,

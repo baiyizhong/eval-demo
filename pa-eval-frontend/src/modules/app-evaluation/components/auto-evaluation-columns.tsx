@@ -15,12 +15,27 @@ import { formatDateTime } from './format'
 type CreateAutoEvaluationColumnsOptions = {
   projectId: string
   onRerun: (task: AutoEvaluationTaskRecord) => void
+  onStartSchedule: (task: AutoEvaluationTaskRecord) => void
+  onPauseSchedule: (task: AutoEvaluationTaskRecord) => void
   onDelete: (task: AutoEvaluationTaskRecord) => void
 }
+
+const runModeLabels = {
+  IMMEDIATE: '立即执行',
+  SCHEDULED: '定时执行',
+} as const
+
+const scheduleStatusLabels = {
+  DRAFT: '未启动',
+  ACTIVE: '运行中',
+  PAUSED: '已停止',
+} as const
 
 export function createAutoEvaluationColumns({
   projectId,
   onRerun,
+  onStartSchedule,
+  onPauseSchedule,
   onDelete,
 }: CreateAutoEvaluationColumnsOptions): ColumnDef<AutoEvaluationTaskRecord>[] {
   return [
@@ -93,6 +108,41 @@ export function createAutoEvaluationColumns({
       cell: ({ row }) => `${row.original.sampleRate}%`,
     },
     {
+      accessorKey: 'runMode',
+      header: ({ column }) => (
+        <DataTableColumnHeader column={column} title='运行方式' />
+      ),
+      cell: ({ row }) =>
+        runModeLabels[row.original.runMode ?? 'IMMEDIATE'] ?? '-',
+    },
+    {
+      id: 'scheduleStatus',
+      header: ({ column }) => (
+        <DataTableColumnHeader column={column} title='调度状态' />
+      ),
+      cell: ({ row }) => {
+        const schedule = row.original.schedule
+        if (!schedule) return '-'
+        return (
+          <Badge variant={schedule.status === 'ACTIVE' ? 'default' : 'outline'}>
+            {scheduleStatusLabels[schedule.status]}
+          </Badge>
+        )
+      },
+      enableSorting: false,
+    },
+    {
+      id: 'nextRunAt',
+      header: ({ column }) => (
+        <DataTableColumnHeader column={column} title='下次执行' />
+      ),
+      cell: ({ row }) =>
+        row.original.schedule?.nextRunAt
+          ? formatDateTime(row.original.schedule.nextRunAt)
+          : '-',
+      enableSorting: false,
+    },
+    {
       id: 'executionResult',
       header: '执行结果',
       cell: ({ row }) => {
@@ -140,6 +190,8 @@ export function createAutoEvaluationColumns({
           row={row}
           projectId={projectId}
           onRerun={onRerun}
+          onStartSchedule={onStartSchedule}
+          onPauseSchedule={onPauseSchedule}
           onDelete={onDelete}
         />
       ),

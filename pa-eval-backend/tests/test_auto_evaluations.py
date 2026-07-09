@@ -1,6 +1,9 @@
+from datetime import datetime, timezone
+
 import httpx
 import pytest
 
+from app.auth_context import CurrentUserContext
 from app.auto_evaluations import (
     _build_dify_inputs_from_dataset_item,
     _build_report_from_template,
@@ -10,12 +13,20 @@ from app.auto_evaluations import (
     _create_report_flowback,
     _count_trace_generation_samples,
     _ensure_report_exists,
+    _fetch_task,
     _get_path_value,
     _get_pa_evaluator,
+    _insert_scheduled_auto_evaluation,
     _insert_running_auto_evaluation,
+    _insert_rerun_auto_evaluation,
+    _list_due_auto_evaluation_schedules,
     _list_trace_generation_samples,
     _normalize_dataset_item_sample,
+    _pause_auto_evaluation_schedule,
+    _start_auto_evaluation_schedule,
     _to_trace_generation_sample,
+    _to_task,
+    _to_run,
     _parse_workflow_result,
     _preview_report_flowback,
     _resolve_mapping_template,
@@ -25,8 +36,12 @@ from app.auto_evaluations import (
     _update_auto_evaluation_progress,
     _sample_dataset_items,
     _delete_auto_evaluation_task,
+    rerun_auto_evaluation,
+    count_trace_generation_samples,
+    create_auto_evaluation,
     CreateAutoEvaluationPayload,
     EvaluationReportFlowbackPayload,
+    TraceCountPayload,
 )
 import app.auto_evaluations as auto_evaluations
 from app.errors import BusinessError
@@ -72,15 +87,282 @@ class SequentialCursor:
         return []
 
 
+class FakeCursorContext:
+    def __init__(self, cursor):
+        self.cursor = cursor
+
+    async def __aenter__(self):
+        return self.cursor
+
+    async def __aexit__(self, exc_type, exc, tb):
+        return None
+
+
+class FakeConnection:
+    def __init__(self, cursor):
+        self.cursor_instance = cursor
+
+    async def __aenter__(self):
+        return self
+
+    async def __aexit__(self, exc_type, exc, tb):
+        return None
+
+    def cursor(self):
+        return FakeCursorContext(self.cursor_instance)
+
+
+class FakeBackgroundTasks:
+    def __init__(self):
+        self.tasks = []
+
+    def add_task(self, *args, **kwargs):
+        self.tasks.append((args, kwargs))
+
+
+class FakeTraceReader:
+    def __init__(self, total: int = 0) -> None:
+        self.total = total
+        self.project_id = None
+        self.kwargs = None
+
+    async def count_traces(self, project_id: str, **kwargs):
+        self.project_id = project_id
+        self.kwargs = kwargs
+        return self.total
+
+
 def _jsonb_value(value):
     return getattr(value, "obj", value)
+
+
+def test_to_task_maps_schedule_metadata() -> None:
+    task = _to_task(
+        {
+            "id": "task-1",
+            "project_id": "project-1",
+            "name": "每日评测",
+            "description": "daily",
+            "score_name": "quality",
+            "status": "READY",
+            "evaluator_id": "eval-1",
+            "evaluator_name": "Dify 评分器",
+            "evaluator_type": "WORKFLOW",
+            "evaluator_version": "v1",
+            "data_source": {"type": "TRACE_FILTER", "name": "Trace", "sampleCount": 10},
+            "sample_rate": 100,
+            "execution_stats": {"completed": 0, "failed": 0},
+            "badcase_count": 0,
+            "create_by": "admin@163.com",
+            "create_date": datetime(2026, 7, 9, 1, 0, tzinfo=timezone.utc),
+            "last_run_at": None,
+            "update_date": datetime(2026, 7, 9, 1, 5, tzinfo=timezone.utc),
+            "schedule_status": "ACTIVE",
+            "cron_expression": "0 1 * * *",
+            "schedule_timezone": "Asia/Shanghai",
+            "next_run_at": datetime(2026, 7, 10, 1, 0, tzinfo=timezone.utc),
+            "last_scheduled_at": datetime(2026, 7, 9, 1, 0, tzinfo=timezone.utc),
+            "window_config": {"mode": "previous_day", "startHour": 0, "endHour": 0},
+            "retry_policy": {"maxAttempts": 3, "backoffMinutes": [10, 30, 60]},
+        }
+    )
+
+    assert task["runMode"] == "SCHEDULED"
+    assert task["schedule"] == {
+        "status": "ACTIVE",
+        "frequency": "DAILY",
+        "cronExpression": "0 1 * * *",
+        "timezone": "Asia/Shanghai",
+        "nextRunAt": "2026-07-10T01:00:00.000Z",
+        "lastScheduledAt": "2026-07-09T01:00:00.000Z",
+        "window": {"mode": "previous_day", "startHour": 0, "endHour": 0},
+        "retry": {"maxAttempts": 3, "backoffMinutes": [10, 30, 60]},
+    }
+
+
+def test_to_task_defaults_immediate_without_schedule_columns() -> None:
+    task = _to_task(
+        {
+            "id": "task-1",
+            "project_id": "project-1",
+            "name": "手动评测",
+            "description": "",
+            "score_name": "quality",
+            "status": "READY",
+            "evaluator_id": "eval-1",
+            "evaluator_name": "Dify 评分器",
+            "evaluator_type": "WORKFLOW",
+            "evaluator_version": "v1",
+            "data_source": {},
+            "sample_rate": 100,
+            "execution_stats": {},
+            "badcase_count": 0,
+            "create_by": "admin@163.com",
+            "create_date": datetime(2026, 7, 9, 1, 0, tzinfo=timezone.utc),
+            "last_run_at": None,
+            "update_date": datetime(2026, 7, 9, 1, 5, tzinfo=timezone.utc),
+        }
+    )
+
+    assert task["runMode"] == "IMMEDIATE"
+    assert task["schedule"] is None
+    assert task["dataSource"] == {
+        "type": "TRACE_FILTER",
+        "name": "Trace 过滤",
+        "sampleCount": 0,
+    }
+    assert task["executionStats"] == {
+        "pending": 0,
+        "running": 0,
+        "completed": 0,
+        "failed": 0,
+        "cancelled": 0,
+    }
+
+
+def test_to_task_normalizes_empty_schedule_json_defaults() -> None:
+    task = _to_task(
+        {
+            "id": "task-1",
+            "project_id": "project-1",
+            "name": "每日评测",
+            "description": "",
+            "score_name": "quality",
+            "status": "DRAFT",
+            "evaluator_id": "eval-1",
+            "evaluator_name": "Dify 评分器",
+            "evaluator_type": "WORKFLOW",
+            "evaluator_version": "v1",
+            "data_source": {},
+            "sample_rate": 100,
+            "execution_stats": {},
+            "badcase_count": 0,
+            "create_by": "admin@163.com",
+            "create_date": datetime(2026, 7, 9, 1, 0, tzinfo=timezone.utc),
+            "last_run_at": None,
+            "update_date": datetime(2026, 7, 9, 1, 5, tzinfo=timezone.utc),
+            "schedule_status": "DRAFT",
+            "cron_expression": "0 1 * * *",
+            "schedule_timezone": "Asia/Shanghai",
+            "next_run_at": None,
+            "last_scheduled_at": None,
+            "window_config": {},
+            "retry_policy": {},
+        }
+    )
+
+    assert task["runMode"] == "SCHEDULED"
+    assert task["schedule"]["window"] == {
+        "mode": "previous_day",
+        "startHour": 0,
+        "endHour": 0,
+    }
+    assert task["schedule"]["retry"] == {
+        "maxAttempts": 3,
+        "backoffMinutes": [10, 30, 60],
+    }
+    assert task["dataSource"]["sampleCount"] == 0
+    assert task["executionStats"]["completed"] == 0
+    assert task["executionStats"]["failed"] == 0
+
+
+def test_to_run_maps_schedule_run_metadata() -> None:
+    run = _to_run(
+        {
+            "id": "run-1",
+            "project_id": "project-1",
+            "task_id": "task-1",
+            "status": "COMPLETED",
+            "trigger_source": "SCHEDULED",
+            "window_start": datetime(2026, 7, 8, 0, 0, tzinfo=timezone.utc),
+            "window_end": datetime(2026, 7, 9, 0, 0, tzinfo=timezone.utc),
+            "scheduled_fire_at": datetime(2026, 7, 9, 1, 0, tzinfo=timezone.utc),
+            "attempt_no": 2,
+            "parent_run_id": "run-parent",
+            "sample_count": 10,
+            "completed_count": 10,
+            "failed_count": 0,
+            "badcase_count": 1,
+            "started_at": datetime(2026, 7, 9, 1, 0, tzinfo=timezone.utc),
+            "ended_at": datetime(2026, 7, 9, 1, 2, tzinfo=timezone.utc),
+            "duration_text": "2 分 0 秒",
+            "error_message": None,
+        }
+    )
+
+    assert run["triggerSource"] == "SCHEDULED"
+    assert run["windowStart"] == "2026-07-08T00:00:00.000Z"
+    assert run["windowEnd"] == "2026-07-09T00:00:00.000Z"
+    assert run["scheduledFireAt"] == "2026-07-09T01:00:00.000Z"
+    assert run["attemptNo"] == 2
+    assert run["parentRunId"] == "run-parent"
+
+
+@pytest.mark.anyio
+async def test_fetch_task_joins_schedule_metadata(monkeypatch) -> None:
+    task_row = {
+        "id": "task-1",
+        "project_id": "project-1",
+        "name": "每日评测",
+        "description": "daily",
+        "score_name": "quality",
+        "status": "READY",
+        "evaluator_id": "eval-1",
+        "evaluator_name": "Dify 评分器",
+        "evaluator_type": "WORKFLOW",
+        "evaluator_version": "v1",
+        "data_source": {"type": "TRACE_FILTER", "name": "Trace", "sampleCount": 10},
+        "sample_rate": 100,
+        "execution_stats": {"completed": 0, "failed": 0},
+        "badcase_count": 0,
+        "create_by": "admin@163.com",
+        "create_date": datetime(2026, 7, 9, 1, 0, tzinfo=timezone.utc),
+        "last_run_at": None,
+        "update_date": datetime(2026, 7, 9, 1, 5, tzinfo=timezone.utc),
+        "latest_report_id": None,
+        "schedule_status": "ACTIVE",
+        "cron_expression": "0 1 * * *",
+        "schedule_timezone": "Asia/Shanghai",
+        "next_run_at": datetime(2026, 7, 10, 1, 0, tzinfo=timezone.utc),
+        "last_scheduled_at": None,
+        "window_config": {"mode": "previous_day", "startHour": 0, "endHour": 0},
+        "retry_policy": {"maxAttempts": 3, "backoffMinutes": [10, 30, 60]},
+    }
+    cursor = SequentialCursor(
+        rows_by_fetchone=[
+            {"id": "project-1", "name": "项目"},
+            task_row,
+        ]
+    )
+
+    async def fake_connect(settings):
+        return FakeConnection(cursor)
+
+    monkeypatch.setattr(auto_evaluations, "_connect", fake_connect)
+
+    task = await _fetch_task(
+        project_id="project-1",
+        task_id="task-1",
+        user_id="user-1",
+        settings=object(),  # type: ignore[arg-type]
+    )
+
+    task_sql, task_params = cursor.executions[1]
+    assert "LEFT JOIN pa_auto_evaluation_schedules s" in task_sql
+    assert "s.status AS schedule_status" in task_sql
+    assert "s.timezone AS schedule_timezone" in task_sql
+    assert task_params == {"project_id": "project-1", "task_id": "task-1"}
+    assert task["runMode"] == "SCHEDULED"
+    assert task["schedule"]["status"] == "ACTIVE"
+    assert task["schedule"]["frequency"] == "DAILY"
+    assert task["schedule"]["cronExpression"] == "0 1 * * *"
 
 
 @pytest.mark.anyio
 async def test_delete_auto_evaluation_task_physically_deletes_task_and_reports() -> (
     None
 ):
-    cursor = FakeCursor({"id": "task-1"})
+    cursor = SequentialCursor(rows_by_fetchone=[{"id": "task-1"}])
 
     await _delete_auto_evaluation_task(
         cursor,  # type: ignore[arg-type]
@@ -91,11 +373,154 @@ async def test_delete_auto_evaluation_task_physically_deletes_task_and_reports()
     task_sql, task_params = cursor.executions[0]
     report_sql, report_params = cursor.executions[1]
     assert "DELETE FROM pa_auto_evaluation_tasks" in task_sql
+    assert "NOT EXISTS" in task_sql
+    assert "FROM pa_auto_evaluation_runs r" in task_sql
+    assert "r.status IN ('PENDING', 'RUNNING')" in task_sql
     assert "RETURNING id" in task_sql
     assert task_params == {"project_id": "project-1", "task_id": "task-1"}
     assert "DELETE FROM pa_evaluation_reports" in report_sql
     assert "source_task_id = %(task_id)s" in report_sql
     assert report_params == {"project_id": "project-1", "task_id": "task-1"}
+
+
+@pytest.mark.anyio
+async def test_delete_auto_evaluation_task_rejects_active_run() -> None:
+    cursor = SequentialCursor(rows_by_fetchone=[None, {"active_count": 1}])
+
+    with pytest.raises(BusinessError) as exc:
+        await _delete_auto_evaluation_task(
+            cursor,  # type: ignore[arg-type]
+            project_id="project-1",
+            task_id="task-1",
+        )
+
+    assert exc.value.code == 4009
+    assert exc.value.status_code == 409
+    assert exc.value.message == "任务正在运行中，无法删除"
+    assert len(cursor.executions) == 2
+    assert "NOT EXISTS" in cursor.executions[0][0]
+    assert "FROM pa_auto_evaluation_runs" in cursor.executions[1][0]
+
+
+@pytest.mark.anyio
+async def test_start_schedule_sets_active_and_next_run_at() -> None:
+    cursor = SequentialCursor(
+        rows_by_fetchone=[
+            {"cron_expression": "0 1 * * *", "timezone": "Asia/Shanghai"},
+            {"id": "schedule-1"},
+        ]
+    )
+    now = datetime(2026, 7, 9, 0, 0, tzinfo=timezone.utc)
+
+    await _start_auto_evaluation_schedule(
+        cursor,  # type: ignore[arg-type]
+        project_id="project-1",
+        task_id="task-1",
+        user_id="admin@163.com",
+        now=now,
+    )
+
+    select_sql, select_params = cursor.executions[0]
+    update_sql, update_params = cursor.executions[1]
+    assert "SELECT cron_expression, timezone" in select_sql
+    assert select_params == {"project_id": "project-1", "task_id": "task-1"}
+    assert "UPDATE pa_auto_evaluation_schedules" in update_sql
+    assert "status = 'ACTIVE'" in update_sql
+    assert "next_run_at = %(next_run_at)s" in update_sql
+    assert "RETURNING id" in update_sql
+    assert update_params == {
+        "project_id": "project-1",
+        "task_id": "task-1",
+        "next_run_at": datetime(
+            2026,
+            7,
+            10,
+            1,
+            0,
+            tzinfo=update_params["next_run_at"].tzinfo,
+        ),
+        "update_by": "admin@163.com",
+        "update_date": now,
+    }
+    assert update_params["next_run_at"].isoformat() == "2026-07-10T01:00:00+08:00"
+
+
+@pytest.mark.anyio
+async def test_start_schedule_raises_not_found_when_schedule_missing() -> None:
+    cursor = SequentialCursor(rows_by_fetchone=[None])
+
+    with pytest.raises(BusinessError) as exc:
+        await _start_auto_evaluation_schedule(
+            cursor,  # type: ignore[arg-type]
+            project_id="project-1",
+            task_id="task-1",
+            user_id="admin@163.com",
+            now=datetime(2026, 7, 9, 0, 0, tzinfo=timezone.utc),
+        )
+
+    assert exc.value.code == 4005
+    assert exc.value.status_code == 404
+    assert exc.value.message == "自动评测调度不存在"
+    assert len(cursor.executions) == 1
+
+
+@pytest.mark.anyio
+async def test_pause_schedule_sets_paused() -> None:
+    cursor = FakeCursor({"id": "schedule-1"})
+
+    await _pause_auto_evaluation_schedule(
+        cursor,  # type: ignore[arg-type]
+        project_id="project-1",
+        task_id="task-1",
+        user_id="admin@163.com",
+    )
+
+    assert "UPDATE pa_auto_evaluation_schedules" in cursor.sql
+    assert "status = 'PAUSED'" in cursor.sql
+    assert "RETURNING id" in cursor.sql
+    assert cursor.params["project_id"] == "project-1"
+    assert cursor.params["task_id"] == "task-1"
+    assert cursor.params["update_by"] == "admin@163.com"
+    assert isinstance(cursor.params["update_date"], datetime)
+
+
+@pytest.mark.anyio
+async def test_pause_schedule_raises_not_found_when_schedule_missing() -> None:
+    cursor = FakeCursor(None)
+
+    with pytest.raises(BusinessError) as exc:
+        await _pause_auto_evaluation_schedule(
+            cursor,  # type: ignore[arg-type]
+            project_id="project-1",
+            task_id="task-1",
+            user_id="admin@163.com",
+        )
+
+    assert exc.value.code == 4005
+    assert exc.value.status_code == 404
+    assert exc.value.message == "自动评测调度不存在"
+    assert "UPDATE pa_auto_evaluation_schedules" in cursor.sql
+
+
+@pytest.mark.anyio
+async def test_list_due_auto_evaluation_schedules_queries_active_due_schedules() -> None:
+    now = datetime(2026, 7, 9, 0, 0, tzinfo=timezone.utc)
+    rows = [{"id": "schedule-1", "task_id": "task-1"}]
+    cursor = FakeCursor(rows=rows)
+
+    result = await _list_due_auto_evaluation_schedules(
+        cursor,  # type: ignore[arg-type]
+        now,
+    )
+
+    assert result == rows
+    assert "FROM pa_auto_evaluation_schedules s" in cursor.sql
+    assert "JOIN pa_auto_evaluation_tasks t" in cursor.sql
+    assert "s.status = 'ACTIVE'" in cursor.sql
+    assert "s.next_run_at <= %(now)s" in cursor.sql
+    assert "LIMIT 50" in cursor.sql
+    assert "FOR UPDATE OF s SKIP LOCKED" in cursor.sql
+    assert cursor.params == {"now": now}
 
 
 @pytest.mark.anyio
@@ -273,6 +698,185 @@ async def test_count_trace_generation_samples_returns_zero_when_clickhouse_unava
 
 
 @pytest.mark.anyio
+async def test_auto_evaluation_clickhouse_query_disables_environment_proxy(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    captured: dict[str, object] = {}
+
+    class FakeResponse:
+        text = ""
+
+        def raise_for_status(self) -> None:
+            return None
+
+    class FakeAsyncClient:
+        def __init__(self, **kwargs) -> None:
+            captured["client_kwargs"] = kwargs
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, exc_type, exc, tb) -> None:
+            return None
+
+        async def post(self, *args, **kwargs) -> FakeResponse:
+            return FakeResponse()
+
+    monkeypatch.setattr(auto_evaluations.httpx, "AsyncClient", FakeAsyncClient)
+
+    await auto_evaluations._query_clickhouse_json_each_row(
+        auto_evaluations.Settings(),
+        "SELECT 1 FORMAT JSONEachRow",
+    )
+
+    assert captured["client_kwargs"]["trust_env"] is False
+
+
+@pytest.mark.anyio
+async def test_workflow_evaluator_disables_environment_proxy(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    captured: dict[str, object] = {}
+
+    class FakeResponse:
+        status_code = 200
+
+        def json(self) -> dict[str, object]:
+            return {"score": 1, "passed": True, "reason": "ok"}
+
+    class FakeAsyncClient:
+        def __init__(self, **kwargs) -> None:
+            captured["client_kwargs"] = kwargs
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, exc_type, exc, tb) -> None:
+            return None
+
+        async def post(self, *args, **kwargs) -> FakeResponse:
+            return FakeResponse()
+
+    monkeypatch.setattr(auto_evaluations.httpx, "AsyncClient", FakeAsyncClient)
+
+    await auto_evaluations._run_workflow_evaluator(
+        {
+            "provider": "N8N",
+            "config": {
+                "endpointUrl": "http://localhost/v1/workflows/run",
+                "authType": "BEARER",
+                "authToken": "token",
+            },
+        },
+        {"input": "ping"},
+        auto_evaluations.Settings(),
+    )
+
+    assert captured["client_kwargs"]["trust_env"] is False
+
+
+@pytest.mark.anyio
+async def test_dify_evaluator_disables_environment_proxy(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    captured: dict[str, object] = {}
+
+    class FakeResponse:
+        status_code = 200
+
+        def json(self) -> dict[str, object]:
+            return {
+                "data": {
+                    "outputs": {
+                        "score": 1,
+                        "passed": True,
+                        "reason": "ok",
+                    }
+                }
+            }
+
+    class FakeAsyncClient:
+        def __init__(self, **kwargs) -> None:
+            captured["client_kwargs"] = kwargs
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, exc_type, exc, tb) -> None:
+            return None
+
+        async def post(self, *args, **kwargs) -> FakeResponse:
+            return FakeResponse()
+
+    monkeypatch.setattr(auto_evaluations.httpx, "AsyncClient", FakeAsyncClient)
+
+    await auto_evaluations._run_dify_evaluator(
+        {
+            "config": {
+                "endpointUrl": "http://localhost/v1/workflows/run",
+                "authToken": "token",
+            },
+        },
+        {"input": "ping"},
+        auto_evaluations.Settings(),
+    )
+
+    assert captured["client_kwargs"]["trust_env"] is False
+
+
+@pytest.mark.anyio
+async def test_count_trace_endpoint_counts_all_clickhouse_traces_with_preview_filters(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    cursor = SequentialCursor(rows_by_fetchone=[{"id": "project-1", "name": "项目"}])
+    trace_reader = FakeTraceReader(total=48)
+
+    async def fake_connect(settings):
+        return FakeConnection(cursor)
+
+    monkeypatch.setattr(auto_evaluations, "_connect", fake_connect)
+
+    response = await count_trace_generation_samples(
+        "project-1",
+        TraceCountPayload.model_validate(
+            {
+                "traceFilter": {
+                    "type": "TRACE_FILTER",
+                    "timeRange": "",
+                    "createdAtRange": [
+                        "2026-07-06T13:51",
+                        "2026-07-09T13:51",
+                    ],
+                    "userId": "user-1",
+                    "sessionId": "session-1",
+                    "environments": ["default"],
+                },
+            }
+        ),
+        CurrentUserContext(user_id="user-1", email="admin@163.com"),
+        object(),  # type: ignore[arg-type]
+        trace_reader,  # type: ignore[arg-type]
+    )
+
+    assert response["data"]["count"] == 48
+    assert trace_reader.project_id == "project-1"
+    assert trace_reader.kwargs == {
+        "keyword": None,
+        "statuses": None,
+        "environments": ["default"],
+        "session_id": "session-1",
+        "user_id": "user-1",
+        "latency_min": None,
+        "latency_max": None,
+        "metadata_key": None,
+        "metadata_value": None,
+        "metadata_filters": None,
+        "created_at_range": ["2026-07-06T13:51", "2026-07-09T13:51"],
+        "time_range": None,
+    }
+
+
+@pytest.mark.anyio
 async def test_resolve_auto_evaluation_samples_returns_business_error_when_trace_query_unavailable(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -447,6 +1051,41 @@ async def test_list_trace_generation_samples_queries_last_generation_with_filter
     assert cursor.params["user_id_like"] == "%user-1%"
     assert cursor.params["session_id_like"] == "%session-1%"
     assert cursor.params["tags"] == ["refund"]
+
+
+@pytest.mark.anyio
+async def test_list_trace_generation_samples_keeps_traces_without_generation() -> None:
+    cursor = FakeCursor(
+        rows=[
+            {
+                "trace_id": "trace-1",
+                "project_id": "project-1",
+                "trace_input": '{"input":"用户问题"}',
+                "trace_output": '{"output":"候选回答"}',
+                "trace_metadata": {"context": "业务上下文"},
+                "observation_id": None,
+                "observation_input": None,
+                "observation_output": None,
+                "observation_metadata": None,
+            }
+        ]
+    )
+
+    samples = await _list_trace_generation_samples(
+        cursor,  # type: ignore[arg-type]
+        project_id="project-1",
+        data_source_payload={"timeRange": "3d"},
+    )
+
+    assert len(samples) == 1
+    assert "LEFT JOIN observations o" in cursor.sql
+    assert "AND o.type = 'GENERATION'" in cursor.sql
+    assert samples[0]["input"] == {
+        "input": "用户问题",
+        "output": "候选回答",
+        "context": "业务上下文",
+    }
+    assert samples[0]["source_observation_id"] == ""
 
 
 @pytest.mark.anyio
@@ -853,15 +1492,371 @@ async def test_insert_running_auto_evaluation_returns_before_report_generation()
         "cancelled": 0,
     }
     assert "INSERT INTO pa_auto_evaluation_runs" in run_sql
+    assert "trigger_source" in run_sql
+    assert "window_start" in run_sql
+    assert "window_end" in run_sql
+    assert "scheduled_fire_at" in run_sql
+    assert "attempt_no" in run_sql
+    assert "parent_run_id" in run_sql
+    assert "run_config_snapshot" in run_sql
     assert "create_by" in run_sql
     assert "create_date" in run_sql
     assert "update_by" in run_sql
     assert "update_date" in run_sql
     assert run_params["status"] == "RUNNING"
     assert run_params["sample_count"] == 10
+    assert run_params["trigger_source"] == "MANUAL"
+    assert run_params["window_start"] is None
+    assert run_params["window_end"] is None
+    assert run_params["scheduled_fire_at"] is None
+    assert run_params["attempt_no"] == 1
+    assert run_params["parent_run_id"] is None
+    assert _jsonb_value(run_params["run_config_snapshot"]) == {}
     assert run_params["ended_at"] is None
     assert run_params["create_by"] == "admin@163.com"
     assert run_params["update_by"] == "admin@163.com"
+
+
+@pytest.mark.anyio
+async def test_insert_scheduled_auto_evaluation_creates_task_and_schedule_only() -> None:
+    cursor = FakeCursor(None)
+
+    payload = CreateAutoEvaluationPayload.model_validate(
+        {
+            "name": "每日客服评测",
+            "scoreName": "quality",
+            "evaluatorId": "evaluator-1",
+            "runMode": "SCHEDULED",
+            "sampleRate": 50,
+            "dataSource": {
+                "type": "TRACE_FILTER",
+                "traceFilter": {"traceName": "chat"},
+            },
+            "schedule": {
+                "executionHour": 3,
+                "timezone": "Asia/Shanghai",
+                "window": {"mode": "previous_day", "startHour": 0, "endHour": 0},
+                "retry": {"maxAttempts": 2, "backoffMinutes": [15]},
+            },
+        }
+    )
+
+    await _insert_scheduled_auto_evaluation(
+        cursor,  # type: ignore[arg-type]
+        task_id="task-1",
+        schedule_id="schedule-1",
+        project_id="project-1",
+        payload=payload,
+        evaluator={
+            "id": "evaluator-1",
+            "name": "Dify 评估器",
+            "type": "WORKFLOW",
+            "version": 1,
+        },
+        report_template_snapshot={"id": "default", "name": "系统默认模板"},
+        create_by="admin@163.com",
+        now=None,
+    )
+
+    assert len(cursor.executions) == 2
+    task_sql, task_params = cursor.executions[0]
+    schedule_sql, schedule_params = cursor.executions[1]
+    sql_text = "\n".join(sql for sql, _ in cursor.executions)
+    assert "INSERT INTO pa_auto_evaluation_tasks" in task_sql
+    assert "INSERT INTO pa_auto_evaluation_schedules" in schedule_sql
+    assert "INSERT INTO pa_auto_evaluation_runs" not in sql_text
+    assert task_params["status"] == "DRAFT"
+    assert task_params["last_run_at"] is None
+    assert _jsonb_value(task_params["execution_stats"]) == {
+        "pending": 0,
+        "running": 0,
+        "completed": 0,
+        "failed": 0,
+        "cancelled": 0,
+    }
+    assert _jsonb_value(task_params["data_source"]) == payload.data_source
+    assert schedule_params["status"] == "DRAFT"
+    assert schedule_params["cron_expression"] == "0 3 * * *"
+    assert schedule_params["timezone"] == "Asia/Shanghai"
+    assert _jsonb_value(schedule_params["window_config"]) == {
+        "mode": "previous_day",
+        "startHour": 0,
+        "endHour": 0,
+    }
+    assert _jsonb_value(schedule_params["retry_policy"]) == {
+        "maxAttempts": 2,
+        "backoffMinutes": [15],
+    }
+
+
+@pytest.mark.anyio
+async def test_insert_scheduled_auto_evaluation_unifies_hourly_frequency_window() -> None:
+    cursor = FakeCursor(None)
+
+    payload = CreateAutoEvaluationPayload.model_validate(
+        {
+            "name": "小时增量评测",
+            "scoreName": "quality",
+            "evaluatorId": "evaluator-1",
+            "runMode": "SCHEDULED",
+            "dataSource": {"type": "TRACE_FILTER"},
+            "schedule": {
+                "frequency": "HOURLY",
+                "executionHour": 3,
+                "timezone": "Asia/Shanghai",
+                "window": {"mode": "previous_day", "startHour": 0, "endHour": 0},
+            },
+        }
+    )
+
+    await _insert_scheduled_auto_evaluation(
+        cursor,  # type: ignore[arg-type]
+        task_id="task-1",
+        schedule_id="schedule-1",
+        project_id="project-1",
+        payload=payload,
+        evaluator={
+            "id": "evaluator-1",
+            "name": "Dify 评估器",
+            "type": "WORKFLOW",
+            "version": 1,
+        },
+        report_template_snapshot={"id": "default", "name": "系统默认模板"},
+        create_by="admin@163.com",
+        now=None,
+    )
+
+    schedule_params = cursor.executions[1][1]
+    assert schedule_params["cron_expression"] == "0 * * * *"
+    assert _jsonb_value(schedule_params["window_config"]) == {
+        "mode": "rolling_interval",
+        "intervalMinutes": 60,
+    }
+
+
+@pytest.mark.anyio
+async def test_insert_rerun_auto_evaluation_includes_run_metadata() -> None:
+    cursor = FakeCursor(None)
+
+    await _insert_rerun_auto_evaluation(
+        cursor,  # type: ignore[arg-type]
+        project_id="project-1",
+        task_id="task-1",
+        run_id="run-2",
+        evaluator_id="evaluator-1",
+        sample_rate=100,
+        sample_count=3,
+        execution_stats={
+            "pending": 3,
+            "running": 0,
+            "completed": 0,
+            "failed": 0,
+            "cancelled": 0,
+        },
+        data_source={"type": "TRACE_FILTER", "sampleCount": 3},
+        report_template_id="default",
+        report_template_snapshot={"id": "default", "name": "系统默认模板"},
+        updated_by="admin@163.com",
+        now=None,
+        trigger_source="SCHEDULED",
+        attempt_no=2,
+        parent_run_id="run-1",
+        run_config_snapshot={"sampleRate": 100},
+    )
+
+    run_sql, run_params = cursor.executions[1]
+    assert "INSERT INTO pa_auto_evaluation_runs" in run_sql
+    assert "trigger_source" in run_sql
+    assert "window_start" in run_sql
+    assert "window_end" in run_sql
+    assert "scheduled_fire_at" in run_sql
+    assert "attempt_no" in run_sql
+    assert "parent_run_id" in run_sql
+    assert "run_config_snapshot" in run_sql
+    assert run_params["trigger_source"] == "SCHEDULED"
+    assert run_params["attempt_no"] == 2
+    assert run_params["parent_run_id"] == "run-1"
+    assert _jsonb_value(run_params["run_config_snapshot"]) == {"sampleRate": 100}
+
+
+@pytest.mark.anyio
+async def test_rerun_scheduled_auto_evaluation_uses_frequency_window(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    task_row = {
+        "id": "task-1",
+        "project_id": "project-1",
+        "name": "小时增量评测",
+        "description": "",
+        "score_name": "quality",
+        "status": "READY",
+        "evaluator_id": "evaluator-1",
+        "evaluator_name": "Dify 评估器",
+        "evaluator_type": "WORKFLOW",
+        "evaluator_version": "v1",
+        "data_source": {
+            "type": "TRACE_FILTER",
+            "createdAtRange": [],
+            "sampleCount": 0,
+        },
+        "sample_rate": 100,
+        "execution_stats": {},
+        "badcase_count": 0,
+        "create_by": "admin@163.com",
+        "create_date": datetime(2026, 7, 9, 1, 0, tzinfo=timezone.utc),
+        "last_run_at": None,
+        "update_date": datetime(2026, 7, 9, 1, 5, tzinfo=timezone.utc),
+        "latest_report_id": None,
+        "report_template_id": "default",
+        "report_template_snapshot": {},
+        "schedule_status": "ACTIVE",
+        "cron_expression": "0 * * * *",
+        "schedule_timezone": "Asia/Shanghai",
+        "next_run_at": None,
+        "last_scheduled_at": None,
+        "window_config": {"mode": "rolling_interval", "intervalMinutes": 60},
+        "retry_policy": {"maxAttempts": 3, "backoffMinutes": [10, 30, 60]},
+    }
+    cursor = SequentialCursor(
+        rows_by_fetchone=[
+            {"id": "project-1", "name": "项目"},
+            task_row,
+            {
+                "id": "evaluator-1",
+                "name": "Dify 评估器",
+                "type": "WORKFLOW",
+                "provider": "DIFY",
+                "version": 1,
+                "variables": [],
+                "config": {},
+            },
+        ]
+    )
+    captured = {}
+
+    async def fake_connect(settings):
+        return FakeConnection(cursor)
+
+    async def fake_resolve_samples(cursor, project_id, payload, user_id, settings):
+        created_at_range = payload.data_source["createdAtRange"]
+        start = datetime.fromisoformat(created_at_range[0])
+        end = datetime.fromisoformat(created_at_range[1])
+        captured["minutes"] = (end - start).total_seconds() / 60
+        return (
+            {**payload.data_source, "sampleCount": 1},
+            [{"id": "sample-1", "input": "in", "output": "out"}],
+        )
+
+    async def fake_run_background(*args, **kwargs):
+        return None
+
+    monkeypatch.setattr(auto_evaluations, "_connect", fake_connect)
+    monkeypatch.setattr(
+        auto_evaluations,
+        "_resolve_auto_evaluation_samples",
+        fake_resolve_samples,
+    )
+    monkeypatch.setattr(
+        auto_evaluations,
+        "_run_auto_evaluation_background",
+        fake_run_background,
+    )
+
+    background_tasks = FakeBackgroundTasks()
+    await rerun_auto_evaluation(
+        "project-1",
+        "task-1",
+        background_tasks,  # type: ignore[arg-type]
+        CurrentUserContext(user_id="user-1", email="admin@163.com"),
+        object(),  # type: ignore[arg-type]
+    )
+
+    assert captured["minutes"] == 60
+    run_params = next(
+        params
+        for sql, params in cursor.executions
+        if "INSERT INTO pa_auto_evaluation_runs" in sql
+    )
+    assert run_params["window_start"] is not None
+    assert run_params["window_end"] is not None
+    assert run_params["scheduled_fire_at"] is not None
+
+
+@pytest.mark.anyio
+async def test_create_scheduled_auto_evaluation_does_not_resolve_samples_or_enqueue(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    cursor = SequentialCursor(
+        rows_by_fetchone=[
+            {"id": "project-1", "name": "项目"},
+            {
+                "id": "evaluator-1",
+                "name": "Dify 评估器",
+                "type": "WORKFLOW",
+                "provider": "DIFY",
+                "version": 1,
+                "variables": [],
+                "config": {},
+            },
+        ]
+    )
+    background_tasks = FakeBackgroundTasks()
+
+    async def fake_connect(settings):
+        return FakeConnection(cursor)
+
+    async def fail_resolve_samples(*args, **kwargs):
+        raise AssertionError("scheduled creation must not resolve samples")
+
+    monkeypatch.setattr(auto_evaluations, "_connect", fake_connect)
+    monkeypatch.setattr(
+        auto_evaluations,
+        "_resolve_auto_evaluation_samples",
+        fail_resolve_samples,
+    )
+
+    payload = CreateAutoEvaluationPayload.model_validate(
+        {
+            "name": "每日客服评测",
+            "scoreName": "quality",
+            "evaluatorId": "evaluator-1",
+            "runMode": "SCHEDULED",
+            "reportTemplateId": "default",
+            "dataSource": {"type": "TRACE_FILTER", "traceFilter": {"tags": ["chat"]}},
+        }
+    )
+
+    response = await create_auto_evaluation(
+        "project-1",
+        payload,
+        background_tasks,  # type: ignore[arg-type]
+        CurrentUserContext(user_id="user-1", email="admin@163.com"),
+        object(),  # type: ignore[arg-type]
+    )
+
+    sql_text = "\n".join(sql for sql, _ in cursor.executions)
+    assert response["data"]["status"] == "DRAFT"
+    assert response["data"]["lastRunAt"] is None
+    assert "INSERT INTO pa_auto_evaluation_tasks" in sql_text
+    assert "INSERT INTO pa_auto_evaluation_schedules" in sql_text
+    assert "INSERT INTO pa_auto_evaluation_runs" not in sql_text
+    schedule_params = next(
+        params
+        for sql, params in cursor.executions
+        if "INSERT INTO pa_auto_evaluation_schedules" in sql
+    )
+    assert schedule_params["cron_expression"] == "0 1 * * *"
+    assert schedule_params["timezone"] == "Asia/Shanghai"
+    assert _jsonb_value(schedule_params["window_config"]) == {
+        "mode": "previous_day",
+        "startHour": 0,
+        "endHour": 0,
+    }
+    assert _jsonb_value(schedule_params["retry_policy"]) == {
+        "maxAttempts": 3,
+        "backoffMinutes": [10, 30, 60],
+    }
+    assert background_tasks.tasks == []
 
 
 @pytest.mark.anyio

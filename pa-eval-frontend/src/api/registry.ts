@@ -333,6 +333,14 @@ export const apiRegistry = {
     method: 'POST',
     url: '/projects/:projectId/auto-evaluations/:taskId/rerun',
   },
+  startAutoEvaluationSchedule: {
+    method: 'POST',
+    url: '/projects/:projectId/auto-evaluations/:taskId/schedule/start',
+  },
+  pauseAutoEvaluationSchedule: {
+    method: 'POST',
+    url: '/projects/:projectId/auto-evaluations/:taskId/schedule/pause',
+  },
   getAutoEvaluationLatestReport: {
     method: 'GET',
     url: '/projects/:projectId/auto-evaluations/:taskId/latest-report',

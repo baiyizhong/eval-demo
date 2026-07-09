@@ -336,6 +336,49 @@ export type AutoEvaluationEvaluatorType = 'LLM_AS_JUDGE' | 'CODE' | 'WORKFLOW'
 
 export type AutoEvaluationDataSourceType = 'DATASET' | 'TRACE_FILTER'
 
+export type AutoEvaluationRunMode = 'IMMEDIATE' | 'SCHEDULED'
+
+export type AutoEvaluationScheduleStatus = 'DRAFT' | 'ACTIVE' | 'PAUSED'
+
+export type AutoEvaluationRunTriggerSource = 'MANUAL' | 'SCHEDULED' | 'RETRY'
+
+export type AutoEvaluationScheduleFrequency = 'HALF_HOURLY' | 'HOURLY' | 'DAILY'
+
+export type AutoEvaluationScheduleWindow =
+  | {
+      mode: 'rolling_interval'
+      intervalMinutes: number
+    }
+  | {
+      mode: 'previous_day'
+      startHour: number
+      endHour: number
+    }
+
+export type AutoEvaluationScheduleRetry = {
+  maxAttempts: number
+  backoffMinutes: number[]
+}
+
+export type AutoEvaluationScheduleConfig = {
+  frequency: AutoEvaluationScheduleFrequency
+  executionHour: number
+  timezone: string
+  window: AutoEvaluationScheduleWindow
+  retry: AutoEvaluationScheduleRetry
+}
+
+export type AutoEvaluationScheduleRecord = {
+  status: AutoEvaluationScheduleStatus
+  frequency: AutoEvaluationScheduleFrequency
+  cronExpression: string
+  timezone: string
+  nextRunAt: string | null
+  lastScheduledAt: string | null
+  window: AutoEvaluationScheduleWindow
+  retry: AutoEvaluationScheduleRetry
+}
+
 export type EvaluationReportSourceType = 'AUTO_EVAL' | 'MANUAL_ANNOTATION'
 
 export type EvaluationReportStatus = 'GENERATING' | 'READY' | 'FAILED'
@@ -415,6 +458,8 @@ export type AutoEvaluationTaskRecord = {
   name: string
   description: string
   scoreName: string
+  runMode?: AutoEvaluationRunMode
+  schedule?: AutoEvaluationScheduleRecord | null
   status: AutoEvaluationTaskStatus
   evaluator: AutoEvaluationEvaluatorSummary
   dataSource: AutoEvaluationDataSourceSummary
@@ -449,6 +494,12 @@ export type AutoEvaluationRunRecord = {
   projectId: string
   taskId: string
   status: Exclude<AutoEvaluationTaskStatus, 'DRAFT' | 'READY'>
+  triggerSource?: AutoEvaluationRunTriggerSource
+  windowStart?: string | null
+  windowEnd?: string | null
+  scheduledFireAt?: string | null
+  attemptNo?: number
+  parentRunId?: string | null
   sampleCount: number
   completedCount: number
   failedCount: number
@@ -464,6 +515,8 @@ export type AutoEvaluationTaskFormInput = {
   description: string
   scoreName: string
   evaluatorId: string
+  runMode?: AutoEvaluationRunMode
+  schedule?: AutoEvaluationScheduleConfig | null
   variableMapping: Record<string, string>
   reportTemplateId: string
   dataSource:
