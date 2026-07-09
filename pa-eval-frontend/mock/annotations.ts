@@ -1,17 +1,62 @@
 import { db } from './_data.ts'
 import { body, id, keywordIncludes, nowIso, paginate, pathParam, success } from './_utils.ts'
 
+type MockRecord = Record<string, any>
+
 const projectId = (req: any) => pathParam(req, 'projectId')
 const queueId = (req: any) => pathParam(req, 'queueId')
 
 const hydrateQueue = (queue: any) => {
-  const queueItems = db.annotationItems.filter((item) => item.queueId === queue.id)
+  const queueItems = db.annotationItems.filter(
+    (item: MockRecord) => item.queueId === queue.id
+  )
   return {
     ...queue,
-    completedCount: queueItems.filter((item) => item.status === 'COMPLETED').length,
-    pendingCount: queueItems.filter((item) => item.status !== 'COMPLETED').length,
-    scoreConfigs: db.scoreConfigs.filter((item) => queue.scoreConfigIds.includes(item.id)),
-    assignees: db.users.filter((user) => queue.assigneeIds.includes(user.id)),
+    completedCount: queueItems.filter(
+      (item: MockRecord) => item.status === 'COMPLETED'
+    ).length,
+    pendingCount: queueItems.filter(
+      (item: MockRecord) => item.status !== 'COMPLETED'
+    ).length,
+    scoreConfigs: db.scoreConfigs.filter((item: MockRecord) =>
+      queue.scoreConfigIds.includes(item.id)
+    ),
+    assignees: db.users.filter((user: MockRecord) =>
+      queue.assigneeIds.includes(user.id)
+    ),
+  }
+}
+
+const hydrateAnnotationItem = (item: any) => {
+  const objectId = item.objectId ?? item.traceId ?? item.id
+  const objectType = item.objectType ?? 'TRACE'
+  const trace = db.traces.find(
+    (trace: MockRecord) =>
+      trace.projectId === item.projectId &&
+      (trace.traceId === objectId || trace.id === objectId)
+  )
+
+  return {
+    ...item,
+    objectId,
+    objectType,
+    completedAt: item.completedAt ?? '',
+    completedBy: item.completedBy ?? null,
+    source: item.source ?? {
+      objectId,
+      objectType,
+      title: trace?.name ?? objectId,
+      input: trace?.input ?? item.input ?? {},
+      output: trace?.output ?? item.output ?? {},
+      metadata: trace?.metadata ?? {},
+      traceId: trace?.traceId ?? item.traceId ?? objectId,
+      observationId: item.observationId ?? '',
+      sessionId: trace?.sessionId ?? '',
+      userId: trace?.userId ?? '',
+      latencyMs: trace?.latency ?? 0,
+      costUsd: trace?.costUsd ?? 0,
+      createdAt: trace?.createdAt ?? item.createdAt ?? nowIso(),
+    },
   }
 }
 
@@ -36,7 +81,9 @@ export default [
     method: 'post',
     response: (req: any) =>
       success(
-        db.scoreConfigs.find((item) => item.projectId === projectId(req)) ??
+        db.scoreConfigs.find(
+          (item: MockRecord) => item.projectId === projectId(req)
+        ) ??
           db.scoreConfigs[0]
       ),
   },
@@ -44,7 +91,11 @@ export default [
     url: '/api/projects/:projectId/score-configs',
     method: 'get',
     response: (req: any) =>
-      success(db.scoreConfigs.filter((item) => item.projectId === projectId(req))),
+      success(
+        db.scoreConfigs.filter(
+          (item: MockRecord) => item.projectId === projectId(req)
+        )
+      ),
   },
   {
     url: '/api/projects/:projectId/score-configs',
@@ -76,7 +127,8 @@ export default [
     method: 'post',
     response: (req: any) => {
       const index = db.annotationItems.findIndex(
-        (item) => item.id === pathParam(req, 'itemId') && item.queueId === queueId(req)
+        (item: MockRecord) =>
+          item.id === pathParam(req, 'itemId') && item.queueId === queueId(req)
       )
       if (index >= 0) {
         db.annotationItems[index] = {
@@ -88,7 +140,11 @@ export default [
           updatedAt: nowIso(),
         }
       }
-      return success(db.annotationItems[index] ?? { id: pathParam(req, 'itemId') })
+      return success(
+        hydrateAnnotationItem(
+          db.annotationItems[index] ?? { id: pathParam(req, 'itemId') }
+        )
+      )
     },
   },
   {
@@ -96,7 +152,9 @@ export default [
     method: 'post',
     response: (req: any) => {
       const input = body(req)
-      const source = db.annotationItems.find((item) => item.id === pathParam(req, 'itemId'))
+      const source = db.annotationItems.find(
+        (item: MockRecord) => item.id === pathParam(req, 'itemId')
+      )
       const datasetItem = {
         id: id('item'),
         projectId: projectId(req),
@@ -119,9 +177,13 @@ export default [
     method: 'get',
     response: (req: any) =>
       success(
-        db.annotationItems.find(
-          (item) => item.id === pathParam(req, 'itemId') && item.queueId === queueId(req)
-        ) ?? db.annotationItems[0]
+        hydrateAnnotationItem(
+          db.annotationItems.find(
+            (item: MockRecord) =>
+              item.id === pathParam(req, 'itemId') &&
+              item.queueId === queueId(req)
+          ) ?? db.annotationItems[0]
+        )
       ),
   },
   {
@@ -147,8 +209,12 @@ export default [
     url: '/api/projects/:projectId/annotation-queues/:queueId/metrics',
     method: 'get',
     response: (req: any) => {
-      const rows = db.annotationItems.filter((item) => item.queueId === queueId(req))
-      const completed = rows.filter((item) => item.status === 'COMPLETED').length
+      const rows = db.annotationItems.filter(
+        (item: MockRecord) => item.queueId === queueId(req)
+      )
+      const completed = rows.filter(
+        (item: MockRecord) => item.status === 'COMPLETED'
+      ).length
       return success({
         total: rows.length,
         completed,
@@ -166,10 +232,11 @@ export default [
         paginate(
           db.annotationItems
             .filter(
-              (item) =>
+              (item: MockRecord) =>
                 item.projectId === projectId(req) && item.queueId === queueId(req)
             )
-            .filter((item) => keywordIncludes(item, req.query?.keyword)),
+            .map(hydrateAnnotationItem)
+            .filter((item: MockRecord) => keywordIncludes(item, req.query?.keyword)),
           req.query,
           20
         )
@@ -184,16 +251,20 @@ export default [
         id: id('ann_item'),
         projectId: projectId(req),
         queueId: queueId(req),
+        objectId: input.objectId ?? input.traceId ?? '',
+        objectType: input.objectType ?? 'TRACE',
         status: 'PENDING',
         traceId: input.traceId ?? '',
         input: input.input ?? {},
         output: input.output ?? {},
         scores: [],
+        completedAt: '',
+        completedBy: null,
         createdAt: nowIso(),
         updatedAt: nowIso(),
       }
       db.annotationItems.unshift(item)
-      return success(item)
+      return success(hydrateAnnotationItem(item))
     },
   },
   {
@@ -201,7 +272,9 @@ export default [
     method: 'delete',
     response: (req: any) => {
       const itemIds = body(req).itemIds ?? body(req).ids ?? []
-      db.annotationItems = db.annotationItems.filter((item) => !itemIds.includes(item.id))
+      db.annotationItems = db.annotationItems.filter(
+        (item: MockRecord) => !itemIds.includes(item.id)
+      )
       return success({ ids: itemIds })
     },
   },
@@ -212,7 +285,8 @@ export default [
       success(
         hydrateQueue(
           db.annotationQueues.find(
-            (queue) => queue.projectId === projectId(req) && queue.id === queueId(req)
+            (queue: MockRecord) =>
+              queue.projectId === projectId(req) && queue.id === queueId(req)
           ) ?? db.annotationQueues[0]
         )
       ),
@@ -221,7 +295,9 @@ export default [
     url: '/api/projects/:projectId/annotation-queues/:queueId',
     method: 'patch',
     response: (req: any) => {
-      const index = db.annotationQueues.findIndex((queue) => queue.id === queueId(req))
+      const index = db.annotationQueues.findIndex(
+        (queue: MockRecord) => queue.id === queueId(req)
+      )
       if (index >= 0) {
         db.annotationQueues[index] = {
           ...db.annotationQueues[index],
@@ -237,8 +313,12 @@ export default [
     method: 'delete',
     response: (req: any) => {
       const qid = queueId(req)
-      db.annotationQueues = db.annotationQueues.filter((queue) => queue.id !== qid)
-      db.annotationItems = db.annotationItems.filter((item) => item.queueId !== qid)
+      db.annotationQueues = db.annotationQueues.filter(
+        (queue: MockRecord) => queue.id !== qid
+      )
+      db.annotationItems = db.annotationItems.filter(
+        (item: MockRecord) => item.queueId !== qid
+      )
       return success({ id: qid })
     },
   },
@@ -249,8 +329,10 @@ export default [
       success(
         paginate(
           db.annotationQueues
-            .filter((queue) => queue.projectId === projectId(req))
-            .filter((queue) => keywordIncludes(queue, req.query?.keyword))
+            .filter((queue: MockRecord) => queue.projectId === projectId(req))
+            .filter((queue: MockRecord) =>
+              keywordIncludes(queue, req.query?.keyword)
+            )
             .map(hydrateQueue),
           req.query,
           10
@@ -282,7 +364,8 @@ export default [
 
 function updateScoreConfig(req: any, patch: Record<string, any>) {
   const index = db.scoreConfigs.findIndex(
-    (item) => item.id === pathParam(req, 'configId') && item.projectId === projectId(req)
+    (item: MockRecord) =>
+      item.id === pathParam(req, 'configId') && item.projectId === projectId(req)
   )
   if (index >= 0) {
     db.scoreConfigs[index] = { ...db.scoreConfigs[index], ...patch, updatedAt: nowIso() }

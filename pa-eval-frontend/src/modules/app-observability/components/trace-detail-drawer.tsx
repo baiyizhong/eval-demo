@@ -10,9 +10,8 @@ import { useAPI } from '@/hooks/use-api'
 import { Button } from '@/components/ui/button'
 import { LLMTraceChain } from '@/components/business/llm-trace-chain'
 import { Drawer } from '@/components/common/drawer'
-import { JsonEditorPanel } from '@/components/common/json-editor'
 import { Loading } from '@/components/common/loading'
-import { MarkdownEditorPanel } from '@/components/common/markdown-editor'
+import { MixEditor } from '@/components/common/MixEditor'
 import {
   addProjectTracesToDatasetTarget,
   type TraceDatasetTargetInput,
@@ -26,7 +25,6 @@ import {
   TraceDatasetDialog,
   type TraceDatasetSubmitValues,
 } from './trace-dataset-dialog'
-import { TRACE_METADATA_JSON_EDITOR_CONFIG } from './trace-detail-drawer-config'
 
 const TRACE_CHAIN_DRAWER_WIDTH = 500
 const TRACE_CHAIN_COLLAPSED_WIDTH = 40
@@ -46,7 +44,7 @@ export function TraceDetailDrawer({
 }: TraceDetailDrawerProps) {
   const $api = useAPI()
   const queryClient = useQueryClient()
-  const [traceChainCollapsed, setTraceChainCollapsed] = useState(false)
+  const [traceChainCollapsed, setTraceChainCollapsed] = useState(true)
   const [traceChainWidth, setTraceChainWidth] = useState(
     TRACE_CHAIN_DRAWER_WIDTH
   )
@@ -195,26 +193,17 @@ export function TraceDetailDrawer({
               summary={{ duration: formatLatency(detail.latency) }}
             />
             <div className='min-w-0 flex h-full flex-col gap-3'>
-              <MarkdownEditorPanel
+              <MixEditor
                 title='Input'
                 value={detail.input}
-                mode='preview'
                 readOnly
-                height={180}
               />
-              <MarkdownEditorPanel
+              <MixEditor
                 title='Output'
                 value={detail.output}
-                mode='preview'
                 readOnly
-                height={180}
               />
-              <JsonEditorPanel
-                {...TRACE_METADATA_JSON_EDITOR_CONFIG}
-                data={detail.metadata}
-                readOnly
-                height={220}
-              />
+              <MixEditor title='Metadata' value={detail.metadata} readOnly />
             </div>
           </div>
         </div>

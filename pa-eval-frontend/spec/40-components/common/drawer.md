@@ -95,6 +95,7 @@ type DrawerProps = React.ComponentProps<typeof Sheet> & {
 - `resizable` 开启时，用户可拖拽抽屉左侧边缘调整宽度；开始拖拽后宽度会切换为像素值，最小宽度为 `360px`，小屏下不超过当前视口宽度。
 - 拖拽后的宽度会在关闭动画期间保持，避免关闭时抽屉跳回默认宽度造成抖动。
 - `showOverlay={false}` 时不会渲染遮罩层，并默认禁用 Radix Dialog 的 modal 行为，抽屉下方页面内容可直接点击；`enhanced` 模式默认采用该行为。
+- 抽屉打开且未拖拽调整宽度时，双击抽屉内容外会关闭抽屉；`showOverlay={false}` 时可双击底层页面区域关闭，`showOverlay={true}` 时可双击遮罩层关闭，双击抽屉内容内部不会关闭。
 - `resizable` 开启时，点击遮罩层不会关闭抽屉；需要通过取消按钮、业务操作或外部受控状态关闭。
 
 ```tsx

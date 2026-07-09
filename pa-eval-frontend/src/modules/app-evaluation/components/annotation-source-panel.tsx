@@ -1,5 +1,4 @@
 import { useState, type ReactNode } from 'react'
-import type { JsonData } from 'json-edit-react'
 import { cn } from '@/lib/utils'
 import { Button } from '@/components/ui/button'
 import {
@@ -7,7 +6,7 @@ import {
   CollapsibleContent,
   CollapsibleTrigger,
 } from '@/components/ui/collapsible'
-import { JsonEditorPanel } from '@/components/common/json-editor'
+import { MixEditor } from '@/components/common/MixEditor'
 import type { AnnotationQueueItemRecord, AnnotationScoreRecord } from '../types'
 import { AnnotationObjectTypeBadge } from './annotation-object-type-badge'
 import { AnnotationStatusBadge } from './annotation-status-badge'
@@ -97,31 +96,22 @@ export function AnnotationSourcePanel({ item }: AnnotationSourcePanelProps) {
           }
         >
           <CollapsibleContent className='min-h-0 flex-1'>
-            <div className='grid min-h-0 grid-cols-1 gap-3 px-3 pb-3 md:grid-cols-2'>
-              <JsonEditorPanel
-                data={item.source.input as JsonData}
+            <div className='grid min-h-0 grid-cols-1 gap-3 px-3 py-3 pb-3 md:grid-cols-2'>
+              <MixEditor
+                value={item.source.input}
                 readOnly
-                searchable={false}
                 title='Input'
-                rootName='input'
-                height={256}
               />
-              <JsonEditorPanel
-                data={item.source.output as JsonData}
+              <MixEditor
+                value={item.source.output}
                 readOnly
-                searchable={false}
                 title='Output'
-                rootName='output'
-                height={256}
               />
-              <JsonEditorPanel
+              <MixEditor
                 className='md:col-span-2'
-                data={item.source.metadata as JsonData}
+                value={item.source.metadata}
                 readOnly
-                searchable={false}
                 title='Metadata'
-                rootName='metadata'
-                height={160}
               />
             </div>
           </CollapsibleContent>

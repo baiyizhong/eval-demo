@@ -1,4 +1,4 @@
-import { Circle, CircleCheck, CircleHelp, CircleX, Plus, Tags, Trash2 } from 'lucide-react'
+import { Circle, CircleCheck, CircleHelp, CircleX, Plus, Trash2 } from 'lucide-react'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
 import {
@@ -67,10 +67,21 @@ export const traceLogToolbarFilters: DataTableToolbarFilter[] = [
 
 export const traceLogFilterGroups: FilterGroup[] = [
   {
-    id: 'basic',
-    label: '普通筛选',
+    id: 'trace',
+    label: '筛选条件',
     defaultOpen: true,
     fields: [
+      {
+        id: 'metadataFilters',
+        type: 'custom',
+        label: 'Metadata',
+        render: ({ value, setValue }) => (
+          <MetadataFilterEditor
+            value={value}
+            onChange={(nextValue) => setValue(nextValue, 'metadataFilters')}
+          />
+        ),
+      },
       {
         id: 'createdAtRange',
         type: 'dateRange',
@@ -84,31 +95,6 @@ export const traceLogFilterGroups: FilterGroup[] = [
         label: 'Session ID',
         placeholder: '输入 Session ID',
       },
-    ],
-  },
-  {
-    id: 'advanced',
-    label: '高级筛选',
-    icon: <Tags className='size-4' />,
-    fields: [
-      {
-        id: 'latencyMin',
-        type: 'input',
-        label: '最小延迟 ms',
-        placeholder: '例如 1000',
-      },
-      {
-        id: 'latencyMax',
-        type: 'input',
-        label: '最大延迟 ms',
-        placeholder: '例如 5000',
-      },
-      {
-        id: 'userId',
-        type: 'input',
-        label: '用户标识',
-        placeholder: '输入 userId',
-      },
       {
         id: 'businessId',
         type: 'input',
@@ -116,16 +102,23 @@ export const traceLogFilterGroups: FilterGroup[] = [
         placeholder: '输入 businessId',
       },
       {
-        id: 'metadataFilters',
-        type: 'custom',
-        label: 'Metadata',
-        render: ({ value, setValue }) => (
-          <MetadataFilterEditor
-            value={value}
-            onChange={(nextValue) => setValue(nextValue, 'metadataFilters')}
-          />
-        ),
+        id: 'userId',
+        type: 'input',
+        label: '用户标识',
+        placeholder: '输入 userId',
       },
+      // {
+      //   id: 'latencyMin',
+      //   type: 'input',
+      //   label: '最小延迟 ms',
+      //   placeholder: '例如 1000',
+      // },
+      // {
+      //   id: 'latencyMax',
+      //   type: 'input',
+      //   label: '最大延迟 ms',
+      //   placeholder: '例如 5000',
+      // },
     ],
   },
 ]
@@ -154,48 +147,56 @@ function MetadataFilterEditor({
   return (
     <div className='flex flex-col gap-2'>
       {filters.map((filter, index) => (
-        <div key={index} className='grid grid-cols-[1fr_120px_1fr_auto] gap-2'>
-          <Input
-            value={filter.key}
-            onChange={(event) => updateFilter(index, { key: event.target.value })}
-            placeholder='key'
-          />
-          <Select
-            value={filter.operator}
-            onValueChange={(operator) =>
-              updateFilter(index, {
-                operator: operator as TraceMetadataFilter['operator'],
-              })
-            }
-          >
-            <SelectTrigger>
-              <SelectValue />
-            </SelectTrigger>
-            <SelectContent>
-              <SelectItem value='contains'>包含</SelectItem>
-              <SelectItem value='equals'>等于</SelectItem>
-              <SelectItem value='exists'>存在</SelectItem>
-            </SelectContent>
-          </Select>
-          <Input
-            value={filter.value ?? ''}
-            disabled={filter.operator === 'exists'}
-            onChange={(event) =>
-              updateFilter(index, { value: event.target.value })
-            }
-            placeholder='value'
-          />
-          <Button
-            type='button'
-            variant='ghost'
-            size='icon'
-            onClick={() =>
-              onChange(filters.filter((_, currentIndex) => currentIndex !== index))
-            }
-          >
-            <Trash2 className='size-4' />
-            <span className='sr-only'>删除 Metadata 条件</span>
-          </Button>
+        <div key={index} className='flex flex-col gap-2 rounded-md border p-2'>
+          <div className='grid grid-cols-[minmax(0,1fr)_auto] gap-2'>
+            <Input
+              value={filter.key}
+              onChange={(event) =>
+                updateFilter(index, { key: event.target.value })
+              }
+              placeholder='key'
+            />
+            <Button
+              type='button'
+              variant='ghost'
+              size='sm'
+              onClick={() =>
+                onChange(
+                  filters.filter((_, currentIndex) => currentIndex !== index)
+                )
+              }
+            >
+              <Trash2 data-icon='inline-start' />
+              删除
+            </Button>
+          </div>
+          <div className='grid grid-cols-[72px_minmax(0,1fr)] gap-2'>
+            <Select
+              value={filter.operator}
+              onValueChange={(operator) =>
+                updateFilter(index, {
+                  operator: operator as TraceMetadataFilter['operator'],
+                })
+              }
+            >
+              <SelectTrigger className='w-full'>
+                <SelectValue />
+              </SelectTrigger>
+              <SelectContent>
+                <SelectItem value='contains'>包含</SelectItem>
+                <SelectItem value='equals'>等于</SelectItem>
+                <SelectItem value='exists'>存在</SelectItem>
+              </SelectContent>
+            </Select>
+            <Input
+              value={filter.value ?? ''}
+              disabled={filter.operator === 'exists'}
+              onChange={(event) =>
+                updateFilter(index, { value: event.target.value })
+              }
+              placeholder='value'
+            />
+          </div>
         </div>
       ))}
       <Button

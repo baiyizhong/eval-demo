@@ -1,5 +1,4 @@
 import { z } from 'zod'
-import type { JsonData } from 'json-edit-react'
 import { toast } from 'sonner'
 import {
   FormField,
@@ -9,7 +8,7 @@ import {
 } from '@/components/ui/form'
 import { BaseForm } from '@/components/common/base-form'
 import { Drawer } from '@/components/common/drawer'
-import { JsonEditorPanel } from '@/components/common/json-editor'
+import { MixEditor } from '@/components/common/MixEditor'
 import {
   type JsonObject,
   type DatasetItemFormInput,
@@ -83,12 +82,12 @@ export function DatasetItemFormDrawer({
               render={({ field }) => (
                 <FormItem>
                   <FormLabel>Input</FormLabel>
-                  <JsonEditorPanel
-                    data={field.value as JsonData}
-                    onDataChange={(nextData) => field.onChange(nextData)}
-                    rootName='input'
+                  <MixEditor
+                    value={field.value}
+                    onValueChange={field.onChange}
                     title='Input'
-                    height={260}
+                    defaultEditing
+                    showEditActions={false}
                   />
                   <FormMessage />
                 </FormItem>
@@ -100,12 +99,12 @@ export function DatasetItemFormDrawer({
               render={({ field }) => (
                 <FormItem>
                   <FormLabel>Expected Output</FormLabel>
-                  <JsonEditorPanel
-                    data={field.value as JsonData}
-                    onDataChange={(nextData) => field.onChange(nextData)}
-                    rootName='expectedOutput'
+                  <MixEditor
+                    value={field.value}
+                    onValueChange={field.onChange}
                     title='Expected Output'
-                    height={260}
+                    defaultEditing
+                    showEditActions={false}
                   />
                   <FormMessage />
                 </FormItem>
@@ -117,12 +116,12 @@ export function DatasetItemFormDrawer({
               render={({ field }) => (
                 <FormItem>
                   <FormLabel>Metadata</FormLabel>
-                  <JsonEditorPanel
-                    data={field.value as JsonData}
-                    onDataChange={(nextData) => field.onChange(nextData)}
-                    rootName='metadata'
+                  <MixEditor
+                    value={field.value}
+                    onValueChange={field.onChange}
                     title='Metadata'
-                    height={220}
+                    defaultEditing
+                    showEditActions={false}
                   />
                   <FormMessage />
                 </FormItem>

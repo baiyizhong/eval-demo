@@ -15,6 +15,14 @@ function shouldCloseDrawerOnInteractOutside(isResizable: boolean): boolean {
   return !isResizable
 }
 
+function shouldCloseDrawerOnOutsideDoubleClick(
+  open: boolean | undefined,
+  _showOverlay: boolean,
+  isResizing: boolean
+): boolean {
+  return Boolean(open) && !isResizing
+}
+
 function shouldShowDrawerOverlay(
   mode: DrawerMode,
   showOverlay?: boolean
@@ -58,6 +66,7 @@ export {
   getResizableDrawerWidth,
   getResizableDrawerWidthResetKey,
   shouldCloseDrawerOnInteractOutside,
+  shouldCloseDrawerOnOutsideDoubleClick,
   shouldEnableResizableDrawer,
   shouldShowDrawerOverlay,
   shouldUseModalDrawer,

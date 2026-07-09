@@ -12,6 +12,7 @@ import {
   getResizableDrawerWidth,
   getResizableDrawerWidthResetKey,
   shouldCloseDrawerOnInteractOutside,
+  shouldCloseDrawerOnOutsideDoubleClick,
   shouldEnableResizableDrawer,
   shouldShowDrawerOverlay,
   shouldUseModalDrawer,
@@ -81,6 +82,7 @@ function Drawer({
     width?: number
   }>({ key: widthResetKey })
   const [isResizing, setIsResizing] = React.useState(false)
+  const drawerContentId = React.useId().replace(/[^a-zA-Z0-9_-]/g, '')
   const isResizable = shouldEnableResizableDrawer(mode, resizable)
   const resizedWidth =
     resizedState.key === widthResetKey ? resizedState.width : undefined
@@ -127,6 +129,42 @@ function Drawer({
       window.removeEventListener('pointercancel', handlePointerUp)
     }
   }, [isResizing, widthResetKey])
+
+  React.useEffect(() => {
+    if (
+      !shouldCloseDrawerOnOutsideDoubleClick(
+        open,
+        resolvedShowOverlay,
+        isResizing
+      )
+    ) {
+      return
+    }
+
+    const handleDocumentDoubleClick = (event: MouseEvent) => {
+      const target = event.target
+
+      if (!(target instanceof Node)) {
+        return
+      }
+
+      const contentElement = document.querySelector(
+        `[data-drawer-content-id="${drawerContentId}"]`
+      )
+
+      if (contentElement?.contains(target)) {
+        return
+      }
+
+      onOpenChange?.(false)
+    }
+
+    document.addEventListener('dblclick', handleDocumentDoubleClick)
+
+    return () => {
+      document.removeEventListener('dblclick', handleDocumentDoubleClick)
+    }
+  }, [drawerContentId, isResizing, onOpenChange, open, resolvedShowOverlay])
 
   const handleCancel = () => {
     onCancel?.()
@@ -195,6 +233,7 @@ function Drawer({
           ...contentStyle,
         }}
         {...restContentProps}
+        data-drawer-content-id={drawerContentId}
         onInteractOutside={handleInteractOutside}
         showOverlay={resolvedShowOverlay}
       >

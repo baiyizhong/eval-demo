@@ -1,5 +1,4 @@
 import { z } from 'zod'
-import type { JsonData } from 'json-edit-react'
 import { toast } from 'sonner'
 import {
   FormControl,
@@ -20,7 +19,7 @@ import {
 import { Textarea } from '@/components/ui/textarea'
 import { BaseForm } from '@/components/common/base-form'
 import { Drawer } from '@/components/common/drawer'
-import { JsonEditorPanel } from '@/components/common/json-editor'
+import { MixEditor } from '@/components/common/MixEditor'
 import {
   datasetTypeLabels,
   type DatasetFormInput,
@@ -182,12 +181,10 @@ function JsonTextareaField({
       render={({ field }) => (
         <FormItem>
           <FormLabel>{label}</FormLabel>
-          <JsonEditorPanel
-            data={field.value as JsonData}
-            onDataChange={(nextData) => field.onChange(nextData)}
-            rootName={label}
+          <MixEditor
+            value={field.value}
+            onValueChange={field.onChange}
             title={label}
-            height={240}
           />
           <FormMessage />
         </FormItem>

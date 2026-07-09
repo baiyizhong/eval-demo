@@ -52,6 +52,7 @@ import {
 import { Drawer } from '@/components/common/drawer'
 import { Loading } from '@/components/common/loading'
 import { LongText } from '@/components/common/long-text'
+import { MixEditor } from '@/components/common/MixEditor'
 import { Page } from '@/components/common/page'
 import {
   createTaskEvaluator,
@@ -81,6 +82,12 @@ const evaluatorProviderLabels: Record<TaskEvaluatorRecord['provider'], string> =
     N8N: 'n8n',
     OPENJUDGE: 'OpenJudge',
   }
+
+function stringifyEditorValue(value: unknown) {
+  return typeof value === 'string'
+    ? value
+    : JSON.stringify(value ?? null, null, 2)
+}
 
 const createEvaluatorSchema = z
   .object({
@@ -513,23 +520,33 @@ export function TaskEvaluators({ navigation = 'tasks' }: TaskEvaluatorsProps) {
                       )}
                     />
                   </div>
-                  <FormField
-                    control={form.control}
-                    name='prompt'
-                    render={({ field }) => (
-                      <FormItem>
-                        <FormLabel>Prompt</FormLabel>
-                        <FormControl>
-                          <Textarea
-                            placeholder='使用 {{input}}、{{output}} 等变量编写评估提示词'
-                            className='min-h-28 resize-y'
-                            {...field}
-                          />
-                        </FormControl>
-                        <FormMessage />
-                      </FormItem>
-                    )}
-                  />
+	                  <FormField
+	                    control={form.control}
+	                    name='prompt'
+	                    render={({ field }) => (
+	                      <FormItem>
+	                        <div className='flex flex-wrap items-baseline gap-2'>
+	                          <FormLabel>Prompt</FormLabel>
+	                          <span className='text-muted-foreground text-xs'>
+	                            使用 {'{{input}}'}、{'{{output}}'} 等变量编写评估提示词
+	                          </span>
+	                        </div>
+	                        <FormControl>
+	                          <MixEditor
+	                            title='Prompt'
+	                            value={field.value}
+	                            onValueChange={(nextValue) =>
+	                              field.onChange(String(nextValue ?? ''))
+	                            }
+	                            forceTextMode
+	                            defaultEditing
+	                            showEditActions={false}
+	                          />
+	                        </FormControl>
+	                        <FormMessage />
+	                      </FormItem>
+	                    )}
+	                  />
                   <FormField
                     control={form.control}
                     name='outputMapping'
@@ -537,7 +554,15 @@ export function TaskEvaluators({ navigation = 'tasks' }: TaskEvaluatorsProps) {
                       <FormItem>
                         <FormLabel>输出定义 JSON</FormLabel>
                         <FormControl>
-                          <Textarea className='min-h-20 font-mono' {...field} />
+                          <MixEditor
+                            title='请输入JSON'
+                            value={field.value}
+                            onValueChange={(nextValue) =>
+                              field.onChange(stringifyEditorValue(nextValue))
+                            }
+                            defaultEditing
+                            showEditActions={false}
+                          />
                         </FormControl>
                         <FormMessage />
                       </FormItem>

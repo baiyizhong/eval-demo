@@ -6,6 +6,7 @@ import {
   getResizableDrawerWidth,
   shouldShowDrawerOverlay,
   shouldCloseDrawerOnInteractOutside,
+  shouldCloseDrawerOnOutsideDoubleClick,
   shouldEnableResizableDrawer,
   shouldUseModalDrawer,
 } from '../../components/common/drawer/drawer-resizable.ts'
@@ -40,6 +41,13 @@ test('drawer uses non-modal behavior when overlay is hidden', () => {
 test('resizable drawer does not close on overlay interaction', () => {
   assert.equal(shouldCloseDrawerOnInteractOutside(true), false)
   assert.equal(shouldCloseDrawerOnInteractOutside(false), true)
+})
+
+test('drawer closes on outside double click when open and not resizing', () => {
+  assert.equal(shouldCloseDrawerOnOutsideDoubleClick(true, false, false), true)
+  assert.equal(shouldCloseDrawerOnOutsideDoubleClick(true, true, false), true)
+  assert.equal(shouldCloseDrawerOnOutsideDoubleClick(false, false, false), false)
+  assert.equal(shouldCloseDrawerOnOutsideDoubleClick(true, false, true), false)
 })
 
 test('resizable drawer width is clamped to the viewport', () => {
