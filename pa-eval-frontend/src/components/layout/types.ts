@@ -1,3 +1,4 @@
+import type { PermissionScope } from '@/types/permission'
 import { type LinkProps } from 'react-router'
 import { type ActiveMatch } from '@/lib/nav'
 
@@ -23,6 +24,8 @@ type BaseNavItem = {
   access?: string | string[]
   /** 仅超管可访问 */
   superAccess?: boolean
+  /** 权限作用域 */
+  scope?: PermissionScope
   /** 项目 ID，用于多项目权限场景 */
   projectId?: string
 }

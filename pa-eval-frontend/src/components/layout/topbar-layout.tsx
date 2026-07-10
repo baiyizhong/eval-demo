@@ -1,6 +1,8 @@
 import type { MouseEvent } from 'react'
 import { Outlet, useLocation, useNavigate } from 'react-router'
+import { useSessionStore } from '@/stores/session.store'
 import { getRouteActiveState } from '@/lib/nav'
+import { matchPermission } from '@/lib/permission'
 import { cn } from '@/lib/utils'
 import { SearchProvider } from '@/context/search-provider'
 import {
@@ -25,12 +27,30 @@ export function TopbarLayout({
 }: TopbarLayoutProps) {
   const navigate = useNavigate()
   const { pathname } = useLocation()
+  const { superAdmin, getPermissionsForScope } = useSessionStore()
   const navigationWithActiveItems: TopNavProps = {
     ...navigation,
-    items: navigation.items.map((item) => ({
-      ...item,
-      active: getRouteActiveState(pathname, item),
-    })),
+    items: navigation.items
+      .filter((item) => {
+        if (item.superAccess && !superAdmin) {
+          return false
+        }
+
+        if (!item.access) {
+          return true
+        }
+
+        const accessCodes = Array.isArray(item.access)
+          ? item.access
+          : [item.access]
+        const effectiveCodes = getPermissionsForScope(item.scope)
+
+        return accessCodes.some((code) => matchPermission(code, effectiveCodes))
+      })
+      .map((item) => ({
+        ...item,
+        active: getRouteActiveState(pathname, item),
+      })),
   }
 
   const handleNavigate = (

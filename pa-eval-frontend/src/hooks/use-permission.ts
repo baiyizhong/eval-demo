@@ -1,13 +1,18 @@
 import { useCallback } from 'react'
-import { usePermissionStore } from '@/stores/permission.store'
+import type { PermissionScope } from '@/types/permission'
+import { useSessionStore } from '@/stores/session.store'
 import { matchPermission } from '@/lib/permission'
 
-export function usePermission(projectId?: string) {
-  const getPermissionsForProject = usePermissionStore(
-    (s) => s.getPermissionsForProject
+export function usePermission(scope?: PermissionScope | string) {
+  const getPermissionsForScope = useSessionStore(
+    (s) => s.getPermissionsForScope
   )
 
-  const effectiveCodes = projectId ? getPermissionsForProject(projectId) : []
+  const effectiveScope =
+    typeof scope === 'string'
+      ? { type: 'project' as const, projectId: scope }
+      : scope
+  const effectiveCodes = getPermissionsForScope(effectiveScope)
 
   const can = useCallback(
     (code: string) => matchPermission(code, effectiveCodes),

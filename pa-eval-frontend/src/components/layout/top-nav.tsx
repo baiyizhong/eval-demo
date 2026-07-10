@@ -1,4 +1,5 @@
 import type { MouseEvent, ReactNode } from 'react'
+import type { PermissionScope } from '@/types/permission'
 import type { LucideIcon } from 'lucide-react'
 import type { ActiveMatch } from '@/lib/nav'
 import { cn } from '@/lib/utils'
@@ -19,6 +20,9 @@ export type TopNavItem = {
   activeMatch?: ActiveMatch
   active?: boolean
   highlighted?: boolean
+  access?: string | string[]
+  superAccess?: boolean
+  scope?: PermissionScope
 }
 
 export type TopNavAction = {

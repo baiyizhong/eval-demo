@@ -70,7 +70,7 @@ export function createAppRouter() {
 
 `src/main.tsx` 的启动流程：
 
-1. 请求 `/api/permissions` 初始化权限 store。
+1. 请求 `/api/user/session` 初始化 session store。
 2. 权限请求失败时写入默认最小权限。
 3. 调用 `createAppRouter()` 创建 router。
 4. 渲染 `NavigationProgress` 和 `RouterProvider`。

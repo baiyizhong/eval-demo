@@ -4,14 +4,19 @@ from app.config import get_settings
 from app.main import app
 
 
-def test_get_permissions_returns_default_admin_context() -> None:
-    response = TestClient(app).get("/api/permissions")
+def test_get_user_session_returns_default_admin_context() -> None:
+    response = TestClient(app).get("/api/user/session")
 
     assert response.status_code == 200
     body = response.json()
     assert body["code"] == 0
-    assert body["data"]["user"]["name"] == get_settings().pa_eval_default_owner_email
+    assert body["data"]["user"] == {
+        "id": 1,
+        "name": get_settings().pa_eval_default_owner_email,
+        "email": get_settings().pa_eval_default_owner_email,
+    }
     assert body["data"]["superAdmin"] is True
+    assert body["data"]["permissions"] == []
     assert body["data"]["orgs"] == []
 
 

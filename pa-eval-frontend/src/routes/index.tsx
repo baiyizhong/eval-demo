@@ -55,6 +55,7 @@ import { BookOpen, ShieldCheck } from 'lucide-react'
 import { Navigate } from 'react-router'
 import { useAuthProfileMenu } from '@/hooks/use-auth-profile-menu'
 import { RootErrorBoundary } from '@/components/common/error-boundary/root-error-boundary'
+import { ProjectRouteGuard, RouteGuard } from '@/components/common/route-guard'
 import { RootLayout } from '@/components/layout/root-layout'
 import { SidebarLayout } from '@/components/layout/sidebar-layout'
 import { type TopNavProps } from '@/components/layout/top-nav'
@@ -67,24 +68,36 @@ const appsTopbarNavigation: TopNavProps = {
     ariaLabel: '智能评测系统',
   },
   items: [
-    { id: 'apps', label: '项目管理', href: '/apps', activeMatch: 'prefix' },
+    {
+      id: 'apps',
+      label: '项目管理',
+      href: '/apps',
+      activeMatch: 'prefix',
+      access: 'org:project:view',
+      scope: { type: 'org' },
+    },
     {
       id: 'org',
       label: '组织管理',
       href: '/settings',
       activeMatch: 'prefix',
+      access: ['org:organization:view', 'org:member:view'],
+      scope: { type: 'org' },
     },
     {
       id: 'audit',
       label: '操作审计',
       href: '/audit',
       activeMatch: 'prefix',
+      access: 'system:audit:view',
+      scope: { type: 'system' },
     },
     {
       id: 'backend',
       label: '后台管理',
       href: '/backend',
       activeMatch: 'prefix',
+      superAccess: true,
     },
   ],
   inlineActions: [
@@ -153,8 +166,22 @@ export const routes = [
                 element: <AppObservability />,
                 children: [
                   { index: true, element: <AppObservabilityIndexRedirect /> },
-                  { path: 'traces/dashboard', element: <TraceDashboard /> },
-                  { path: 'traces/logs', element: <TraceLogs /> },
+                  {
+                    path: 'traces/dashboard',
+                    element: (
+                      <ProjectRouteGuard access='project:trace:view'>
+                        <TraceDashboard />
+                      </ProjectRouteGuard>
+                    ),
+                  },
+                  {
+                    path: 'traces/logs',
+                    element: (
+                      <ProjectRouteGuard access='project:trace:view'>
+                        <TraceLogs />
+                      </ProjectRouteGuard>
+                    ),
+                  },
                 ],
               },
               {
@@ -162,71 +189,165 @@ export const routes = [
                 element: <AppEvaluation />,
                 children: [
                   { index: true, element: <AppEvaluationIndexRedirect /> },
-                  { path: 'datasets', element: <ProjectDatasets /> },
+                  {
+                    path: 'datasets',
+                    element: (
+                      <ProjectRouteGuard access='project:dataset:view'>
+                        <ProjectDatasets />
+                      </ProjectRouteGuard>
+                    ),
+                  },
                   {
                     path: 'datasets/:datasetId',
-                    element: <ProjectDatasetDetail />,
+                    element: (
+                      <ProjectRouteGuard access='project:dataset:view'>
+                        <ProjectDatasetDetail />
+                      </ProjectRouteGuard>
+                    ),
                   },
                   {
                     path: 'evaluators',
-                    element: <TaskEvaluators navigation='project-evaluation' />,
+                    element: (
+                      <ProjectRouteGuard access='project:evaluator:view'>
+                        <TaskEvaluators navigation='project-evaluation' />
+                      </ProjectRouteGuard>
+                    ),
                   },
                   {
                     path: 'annotation-queues',
-                    element: <ProjectAnnotationQueues />,
+                    element: (
+                      <ProjectRouteGuard access='project:annotation:view'>
+                        <ProjectAnnotationQueues />
+                      </ProjectRouteGuard>
+                    ),
                   },
                   {
                     path: 'annotation-queues/:queueId',
-                    element: <ProjectAnnotationQueueDetail />,
+                    element: (
+                      <ProjectRouteGuard access='project:annotation:view'>
+                        <ProjectAnnotationQueueDetail />
+                      </ProjectRouteGuard>
+                    ),
                   },
                   {
                     path: 'annotation-queues/:queueId/batch-annotate',
-                    element: <ProjectAnnotationBatch />,
+                    element: (
+                      <ProjectRouteGuard access='project:annotation:edit'>
+                        <ProjectAnnotationBatch />
+                      </ProjectRouteGuard>
+                    ),
                   },
                   {
                     path: 'annotation-queues/:queueId/items/:itemId/annotate',
-                    element: <ProjectAnnotationItemAnnotate />,
+                    element: (
+                      <ProjectRouteGuard access='project:annotation:edit'>
+                        <ProjectAnnotationItemAnnotate />
+                      </ProjectRouteGuard>
+                    ),
                   },
                   {
                     path: 'manual-annotations/:queueId/batch',
-                    element: <ProjectAnnotationBatch />,
+                    element: (
+                      <ProjectRouteGuard access='project:annotation:edit'>
+                        <ProjectAnnotationBatch />
+                      </ProjectRouteGuard>
+                    ),
                   },
                   {
                     path: 'auto-evaluations',
-                    element: <ProjectAutoEvaluations />,
+                    element: (
+                      <ProjectRouteGuard access='project:auto-evaluation:view'>
+                        <ProjectAutoEvaluations />
+                      </ProjectRouteGuard>
+                    ),
                   },
                   {
                     path: 'auto-evaluations/new',
-                    element: <ProjectAutoEvaluationNew />,
+                    element: (
+                      <ProjectRouteGuard access='project:auto-evaluation:edit'>
+                        <ProjectAutoEvaluationNew />
+                      </ProjectRouteGuard>
+                    ),
                   },
                   {
                     path: 'auto-evaluations/:taskId',
-                    element: <ProjectAutoEvaluationDetail />,
+                    element: (
+                      <ProjectRouteGuard access='project:auto-evaluation:view'>
+                        <ProjectAutoEvaluationDetail />
+                      </ProjectRouteGuard>
+                    ),
                   },
-                  { path: 'reports', element: <ProjectEvaluationReports /> },
+                  {
+                    path: 'reports',
+                    element: (
+                      <ProjectRouteGuard access='project:evaluation-report:view'>
+                        <ProjectEvaluationReports />
+                      </ProjectRouteGuard>
+                    ),
+                  },
                   {
                     path: 'reports/:reportId',
-                    element: <ProjectEvaluationReportDetail />,
+                    element: (
+                      <ProjectRouteGuard access='project:evaluation-report:view'>
+                        <ProjectEvaluationReportDetail />
+                      </ProjectRouteGuard>
+                    ),
                   },
                 ],
               },
               {
                 path: 'projects/:projectId/scheduled-jobs',
-                element: <ScheduledJobs />,
+                element: (
+                  <ProjectRouteGuard access='project:scheduled-job:view'>
+                    <ScheduledJobs />
+                  </ProjectRouteGuard>
+                ),
               },
               {
                 path: 'projects/:projectId/settings',
                 element: <ProjectSettings />,
                 children: [
                   { index: true, element: <ProjectSettingsIndexRedirect /> },
-                  { path: 'general', element: <ProjectGeneralSettings /> },
+                  {
+                    path: 'general',
+                    element: (
+                      <ProjectRouteGuard access='project:settings:view'>
+                        <ProjectGeneralSettings />
+                      </ProjectRouteGuard>
+                    ),
+                  },
                   {
                     path: 'score-configs',
-                    element: <ProjectScoreConfigsSettings />,
+                    element: (
+                      <ProjectRouteGuard access='project:score-config:view'>
+                        <ProjectScoreConfigsSettings />
+                      </ProjectRouteGuard>
+                    ),
                   },
-                  { path: 'members', element: <ProjectMembersSettings /> },
-                  { path: 'models', element: <ProjectModelsSettings /> },
-                  { path: 'api-keys', element: <ProjectApiKeysSettings /> },
+                  {
+                    path: 'members',
+                    element: (
+                      <ProjectRouteGuard access='project:member:view'>
+                        <ProjectMembersSettings />
+                      </ProjectRouteGuard>
+                    ),
+                  },
+                  {
+                    path: 'models',
+                    element: (
+                      <ProjectRouteGuard access='project:model:view'>
+                        <ProjectModelsSettings />
+                      </ProjectRouteGuard>
+                    ),
+                  },
+                  {
+                    path: 'api-keys',
+                    element: (
+                      <ProjectRouteGuard access='project:api-key:view'>
+                        <ProjectApiKeysSettings />
+                      </ProjectRouteGuard>
+                    ),
+                  },
                 ],
               },
             ],
@@ -235,9 +356,40 @@ export const routes = [
             path: '',
             element: <AppsTopbarLayout />,
             children: [
-              { path: 'apps', element: <Apps /> },
-              { path: 'audit', element: <OperationAudit /> },
-              { path: 'backend', element: <BackendManagement /> },
+              {
+                path: 'apps',
+                element: (
+                  <RouteGuard
+                    accessConfig={{
+                      scope: { type: 'org' },
+                      access: 'org:project:view',
+                    }}
+                  >
+                    <Apps />
+                  </RouteGuard>
+                ),
+              },
+              {
+                path: 'audit',
+                element: (
+                  <RouteGuard
+                    accessConfig={{
+                      scope: { type: 'system' },
+                      access: 'system:audit:view',
+                    }}
+                  >
+                    <OperationAudit />
+                  </RouteGuard>
+                ),
+              },
+              {
+                path: 'backend',
+                element: (
+                  <RouteGuard accessConfig={{ superAccess: true }}>
+                    <BackendManagement />
+                  </RouteGuard>
+                ),
+              },
               { path: 'help', element: <HelpDocs /> },
               { path: 'permissions', element: <PermissionRequest /> },
               {
@@ -245,8 +397,32 @@ export const routes = [
                 element: <Settings />,
                 children: [
                   { index: true, element: <Navigate to='info' replace /> },
-                  { path: 'info', element: <SettingsOrganizationInfo /> },
-                  { path: 'members', element: <SettingsOrganizationMembers /> },
+                  {
+                    path: 'info',
+                    element: (
+                      <RouteGuard
+                        accessConfig={{
+                          scope: { type: 'org' },
+                          access: 'org:organization:view',
+                        }}
+                      >
+                        <SettingsOrganizationInfo />
+                      </RouteGuard>
+                    ),
+                  },
+                  {
+                    path: 'members',
+                    element: (
+                      <RouteGuard
+                        accessConfig={{
+                          scope: { type: 'org' },
+                          access: 'org:member:view',
+                        }}
+                      >
+                        <SettingsOrganizationMembers />
+                      </RouteGuard>
+                    ),
+                  },
                 ],
               },
             ],

@@ -8,9 +8,9 @@ export const apiRegistry = {
   ...observabilityApi,
   ...organizationApi,
   ...systemManagementApi,
-  getPermissions: {
+  getSession: {
     method: 'GET',
-    url: '/permissions',
+    url: '/user/session',
   },
   getProjects: {
     method: 'GET',

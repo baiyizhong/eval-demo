@@ -137,7 +137,7 @@ test('buildSidebarDataFromProjects only shows project scoped entries inside proj
 
   assert.deepEqual(
     items.map((item) => item.title),
-    ['应用观测', '应用评测', '项目设置']
+    ['应用观测', '应用评测', '定时任务', '项目设置']
   )
   assert.equal(
     items.some((item) =>

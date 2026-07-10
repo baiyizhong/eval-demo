@@ -8,16 +8,18 @@ from app.response import success
 router = APIRouter(prefix="/api", tags=["system"])
 
 
-@router.get("/permissions")
-async def get_permissions() -> dict[str, Any]:
+@router.get("/user/session")
+async def get_user_session() -> dict[str, Any]:
     owner_email = get_settings().pa_eval_default_owner_email
     return success(
         {
             "user": {
                 "id": 1,
                 "name": owner_email,
+                "email": owner_email,
             },
             "superAdmin": True,
+            "permissions": [],
             "orgs": [],
         }
     )

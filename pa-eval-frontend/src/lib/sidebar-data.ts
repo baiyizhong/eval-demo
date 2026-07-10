@@ -96,12 +96,16 @@ function buildPlatformNavItems(): NavItem[] {
       url: '/apps',
       icon: 'Package',
       activeMatch: 'prefix',
+      access: 'org:project:view',
+      scope: { type: 'org' },
     },
     {
       title: '组织管理',
       url: '/settings/info',
       icon: 'Users',
       activeMatch: 'prefix',
+      access: 'org:organization:view',
+      scope: { type: 'org' },
     },
   ]
 }
@@ -114,24 +118,32 @@ function buildProjectNavItems(projectId: string): NavItem[] {
       url: `/projects/${encodedProjectId}/observability`,
       icon: 'Monitor',
       activeMatch: 'prefix',
+      access: 'project:trace:view',
+      scope: { type: 'project', projectId },
     },
     {
       title: '应用评测',
       url: `/projects/${encodedProjectId}/evaluation`,
       icon: 'Database',
       activeMatch: 'prefix',
+      access: 'project:dataset:view',
+      scope: { type: 'project', projectId },
     },
     {
       title: '定时任务',
       url: `/projects/${encodedProjectId}/scheduled-jobs`,
       icon: 'CalendarClock',
       activeMatch: 'prefix',
+      access: 'project:scheduled-job:view',
+      scope: { type: 'project', projectId },
     },
     {
       title: '项目设置',
       url: `/projects/${encodedProjectId}/settings/general`,
       icon: 'Settings',
       activeMatch: 'prefix',
+      access: 'project:settings:view',
+      scope: { type: 'project', projectId },
     },
   ]
 }
