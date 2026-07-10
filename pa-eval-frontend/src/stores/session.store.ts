@@ -1,6 +1,32 @@
 import type { SessionState, UserSessionPayload } from '@/types/permission'
 import { create } from 'zustand'
 
+function uniquePermissions(permissions: string[]) {
+  return Array.from(new Set(permissions))
+}
+
+function findProjectOrgId(state: SessionState, projectId: string) {
+  return state.orgs.find((org) =>
+    org.projects.some((project) => project.id === projectId)
+  )?.id
+}
+
+function selectInitialOrg(orgs: UserSessionPayload['orgs']) {
+  return (
+    orgs.find((org) => (org.permissions ?? []).length > 0) ??
+    orgs.find((org) =>
+      (org.projects ?? []).some((project) => {
+        if ('permissions' in project) {
+          return (project.permissions ?? []).length > 0
+        }
+
+        return (org.permissions ?? []).length > 0
+      })
+    ) ??
+    orgs[0]
+  )
+}
+
 export const useSessionStore = create<SessionState>((set, get) => ({
   user: null,
   superAdmin: false,
@@ -9,7 +35,7 @@ export const useSessionStore = create<SessionState>((set, get) => ({
   currentOrgId: null,
   currentProjectId: null,
   setSession: (payload: UserSessionPayload) => {
-    const firstOrg = payload.orgs[0]
+    const firstOrg = selectInitialOrg(payload.orgs)
     const firstProject = firstOrg?.projects[0]
 
     set({
@@ -21,8 +47,28 @@ export const useSessionStore = create<SessionState>((set, get) => ({
       currentProjectId: firstProject?.id ?? null,
     })
   },
-  setCurrentOrgId: (currentOrgId) => set({ currentOrgId }),
-  setCurrentProjectId: (currentProjectId) => set({ currentProjectId }),
+  setCurrentOrgId: (currentOrgId) =>
+    set((state) => ({
+      currentOrgId,
+      currentProjectId:
+        state.currentOrgId === currentOrgId ? state.currentProjectId : null,
+    })),
+  setCurrentProjectId: (currentProjectId) =>
+    set((state) => ({
+      currentOrgId: currentProjectId
+        ? (findProjectOrgId(state, currentProjectId) ?? state.currentOrgId)
+        : state.currentOrgId,
+      currentProjectId,
+    })),
+  setCurrentProjectContext: (currentProjectId, orgId) =>
+    set((state) => ({
+      currentOrgId: currentProjectId
+        ? (orgId ??
+          findProjectOrgId(state, currentProjectId) ??
+          state.currentOrgId)
+        : (orgId ?? state.currentOrgId),
+      currentProjectId,
+    })),
   getPermissionsForOrg: (orgId?: string) => {
     const { superAdmin, orgs, currentOrgId } = get()
 
@@ -82,10 +128,38 @@ export const useSessionStore = create<SessionState>((set, get) => ({
     const state = get()
 
     if (scope.type === 'org') {
+      if (scope.all) {
+        if (state.superAdmin) {
+          return ['*']
+        }
+
+        return uniquePermissions(
+          state.orgs.flatMap((org) => org.permissions ?? [])
+        )
+      }
+
       return state.getPermissionsForOrg(scope.orgId)
     }
 
     if (scope.type === 'project') {
+      if (scope.all) {
+        if (state.superAdmin) {
+          return ['*']
+        }
+
+        return uniquePermissions(
+          state.orgs.flatMap((org) =>
+            (org.projects ?? []).flatMap((project) => {
+              if ('permissions' in project) {
+                return project.permissions ?? []
+              }
+
+              return org.permissions ?? []
+            })
+          )
+        )
+      }
+
       return state.getPermissionsForProject(scope.projectId)
     }
 

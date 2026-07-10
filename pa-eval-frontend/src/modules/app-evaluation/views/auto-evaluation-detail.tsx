@@ -5,6 +5,7 @@ import { useNavigate, useParams } from 'react-router'
 import { toast } from 'sonner'
 import { confirm } from '@/lib/confirm'
 import { useAPI } from '@/hooks/use-api'
+import { usePermission } from '@/hooks/use-permission'
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card'
 import { Loading } from '@/components/common/loading'
 import { Page } from '@/components/common/page'
@@ -26,6 +27,8 @@ export function ProjectAutoEvaluationDetail() {
   const $api = useAPI()
   const navigate = useNavigate()
   const queryClient = useQueryClient()
+  const { can } = usePermission({ type: 'project', projectId })
+  const canEditAutoEvaluation = can('project:auto-evaluation:edit')
 
   const taskQuery = useQuery({
     queryKey: ['project-auto-evaluation', $api, projectId, taskId],
@@ -95,6 +98,7 @@ export function ProjectAutoEvaluationDetail() {
   }
 
   const handleRerun = async () => {
+    if (!canEditAutoEvaluation) return
     if (!task) return
     if (task.status === 'RUNNING') {
       toast.warning('任务已在运行中')
@@ -112,6 +116,7 @@ export function ProjectAutoEvaluationDetail() {
   }
 
   const handleDelete = async () => {
+    if (!canEditAutoEvaluation) return
     if (!task) return
     if (task.status === 'RUNNING') {
       toast.warning('任务运行中，暂不支持删除')
@@ -149,26 +154,30 @@ export function ProjectAutoEvaluationDetail() {
                 size: 'sm',
                 onClick: () => void handleRefresh(),
               },
-              {
-                id: 'rerun',
-                label: '重新运行',
-                icon: RotateCcw,
-                iconPosition: 'start',
-                variant: 'outline',
-                size: 'sm',
-                disabled: !task || task.status === 'RUNNING',
-                onClick: () => void handleRerun(),
-              },
-              {
-                id: 'delete',
-                label: '删除',
-                icon: Trash2,
-                iconPosition: 'start',
-                variant: 'destructive',
-                size: 'sm',
-                disabled: !task,
-                onClick: () => void handleDelete(),
-              },
+              ...(canEditAutoEvaluation
+                ? [
+                    {
+                      id: 'rerun',
+                      label: '重新运行',
+                      icon: RotateCcw,
+                      iconPosition: 'start' as const,
+                      variant: 'outline' as const,
+                      size: 'sm' as const,
+                      disabled: !task || task.status === 'RUNNING',
+                      onClick: () => void handleRerun(),
+                    },
+                    {
+                      id: 'delete',
+                      label: '删除',
+                      icon: Trash2,
+                      iconPosition: 'start' as const,
+                      variant: 'destructive' as const,
+                      size: 'sm' as const,
+                      disabled: !task,
+                      onClick: () => void handleDelete(),
+                    },
+                  ]
+                : []),
             ],
           }}
         />

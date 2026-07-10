@@ -466,6 +466,19 @@ def test_project_member_create_allows_project_only_member_without_access() -> No
     )
 
 
+def test_project_create_rejects_non_manager_organization_role() -> None:
+    with pytest.raises(BusinessError) as exc_info:
+        LangfuseDatabaseReader._ensure_project_can_be_created({"role": "MEMBER"})
+
+    assert exc_info.value.code == 1026
+    assert exc_info.value.status_code == 403
+    assert exc_info.value.message == "当前角色不能创建项目"
+
+
+def test_project_create_allows_manager_organization_role() -> None:
+    LangfuseDatabaseReader._ensure_project_can_be_created({"role": "ADMIN"})
+
+
 def test_deletes_project_settings_member() -> None:
     fake_reader = FakeDatabaseReader()
     override_reader(fake_reader)

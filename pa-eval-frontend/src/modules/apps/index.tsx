@@ -6,6 +6,10 @@ import {
   restoreProject,
   type ProjectPayload,
 } from '@/modules/apps/api/project-api'
+import {
+  shouldShowProjectsEmpty,
+  shouldShowProjectsLoading,
+} from '@/modules/apps/apps-state'
 import { ProjectFormDrawer } from '@/modules/apps/components/project-form-drawer'
 import { getProjectEntryPath } from '@/modules/apps/project-routes'
 import { useOrganizations } from '@/modules/organization-management/hooks/use-organizations'
@@ -14,6 +18,7 @@ import { useNavigate } from 'react-router'
 import { toast } from 'sonner'
 import { confirm } from '@/lib/confirm'
 import { useAPI } from '@/hooks/use-api'
+import { usePermission } from '@/hooks/use-permission'
 import { Alert, AlertDescription, AlertTitle } from '@/components/ui/alert'
 import type { AppCardListItem } from '@/components/business/app-card-list'
 import { AppList } from '@/components/business/app-list'
@@ -74,9 +79,17 @@ export function Apps() {
   const navigate = useNavigate()
   const queryClient = useQueryClient()
   const [formOpen, setFormOpen] = useState(false)
-  const { currentOrganization, isPending: organizationsPending } =
-    useOrganizations()
+  const {
+    currentOrganization,
+    isLoaded: organizationsLoaded,
+    isPending: organizationsPending,
+  } = useOrganizations()
   const currentOrganizationId = currentOrganization?.id ?? null
+  const { can } = usePermission({
+    type: 'org',
+    orgId: currentOrganizationId ?? undefined,
+  })
+  const canEditProjects = can('org:project:edit')
   const invalidateProjects = () =>
     queryClient.invalidateQueries({ queryKey: projectsQueryKey })
   const projectsQuery = useQuery({
@@ -93,6 +106,21 @@ export function Apps() {
   })
 
   const projectCards = (projectsQuery.data?.datas ?? []).map(toProjectCard)
+  const showProjectsLoading = shouldShowProjectsLoading({
+    currentOrganizationId,
+    organizationLoaded: organizationsLoaded,
+    organizationPending: organizationsPending,
+    projectPending: projectsQuery.isPending || projectsQuery.isFetching,
+  })
+  const showProjectsEmpty = shouldShowProjectsEmpty({
+    currentOrganizationId,
+    organizationLoaded: organizationsLoaded,
+    organizationPending: organizationsPending,
+    projectCount: projectCards.length,
+    projectError: projectsQuery.isError,
+    projectFetched: projectsQuery.isFetched,
+    projectPending: projectsQuery.isPending || projectsQuery.isFetching,
+  })
   const openProject = (project: AppCardListItem) => {
     const projectCard = project as ProjectCardItem
     navigate(getProjectEntryPath(projectCard.id))
@@ -158,7 +186,7 @@ export function Apps() {
   return (
     <>
       <Main fixed>
-        {organizationsPending || projectsQuery.isLoading ? (
+        {showProjectsLoading ? (
           <div className='text-muted-foreground flex h-40 items-center justify-center text-sm'>
             加载项目中...
           </div>
@@ -172,24 +200,26 @@ export function Apps() {
             </AlertDescription>
           </Alert>
         ) : null}
-        {!projectsQuery.isLoading &&
-        !projectsQuery.isError &&
-        projectCards.length === 0 ? (
-          <div className='text-muted-foreground flex h-40 flex-col items-center justify-center gap-2 rounded-lg border text-sm'>
-            <FolderKanban className='size-5' />
-            暂无项目
-          </div>
-        ) : null}
-        {!projectsQuery.isLoading && !projectsQuery.isError ? (
+        {!showProjectsLoading && !projectsQuery.isError ? (
           <AppList
             apps={projectCards}
             onActionClick={openProject}
             onCardClick={openProject}
-            onAddClick={openCreateProject}
+            onAddClick={canEditProjects ? openCreateProject : undefined}
             onEditClick={undefined}
-            onDeleteClick={(project) => void handleArchiveProject(project)}
+            onDeleteClick={
+              canEditProjects
+                ? (project) => void handleArchiveProject(project)
+                : undefined
+            }
             onSettingsClick={openProjectSettings}
           />
+        ) : null}
+        {showProjectsEmpty ? (
+          <div className='text-muted-foreground flex h-40 flex-col items-center justify-center gap-2 rounded-lg border text-sm'>
+            <FolderKanban className='size-5' />
+            暂无项目
+          </div>
         ) : null}
         <ProjectFormDrawer
           open={formOpen}

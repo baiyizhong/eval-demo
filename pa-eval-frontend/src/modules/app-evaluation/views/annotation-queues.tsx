@@ -5,6 +5,7 @@ import { useParams } from 'react-router'
 import { toast } from 'sonner'
 import { confirm } from '@/lib/confirm'
 import { useAPI } from '@/hooks/use-api'
+import { usePermission } from '@/hooks/use-permission'
 import { DataTable } from '@/components/common/data-table'
 import { Loading } from '@/components/common/loading'
 import { Page } from '@/components/common/page'
@@ -30,6 +31,8 @@ export function ProjectAnnotationQueues() {
   const { projectId = 'project_customer_agent' } = useParams()
   const $api = useAPI()
   const queryClient = useQueryClient()
+  const { can } = usePermission({ type: 'project', projectId })
+  const canEditAnnotation = can('project:annotation:edit')
   const [formOpen, setFormOpen] = useState(false)
   const [editingQueue, setEditingQueue] =
     useState<AnnotationQueueRecord | null>(null)
@@ -46,15 +49,18 @@ export function ProjectAnnotationQueues() {
     () =>
       createAnnotationQueueColumns({
         projectId,
+        readOnly: !canEditAnnotation,
         onEdit: (queue) => {
+          if (!canEditAnnotation) return
           setEditingQueue(queue)
           setFormOpen(true)
         },
         onDelete: (queue) => {
+          if (!canEditAnnotation) return
           void handleDeleteQueue($api, projectId, queue, invalidateQueues)
         },
       }),
-    [$api, invalidateQueues, projectId]
+    [$api, canEditAnnotation, invalidateQueues, projectId]
   )
 
   const scoreConfigsQuery = useQuery({
@@ -72,6 +78,8 @@ export function ProjectAnnotationQueues() {
   )
 
   const handleSubmitQueue = async (input: AnnotationQueueFormInput) => {
+    if (!canEditAnnotation) return
+
     if (editingQueue) {
       await updateProjectAnnotationQueue(
         $api,
@@ -92,19 +100,21 @@ export function ProjectAnnotationQueues() {
       <div className='flex min-h-0 flex-1 flex-col gap-4'>
         <EvaluationPageNav
           buttonGroups={{
-            buttons: [
-              {
-                id: 'create',
-                label: '新建人工标注任务',
-                icon: Plus,
-                iconPosition: 'start',
-                size: 'sm',
-                onClick: () => {
-                  setEditingQueue(null)
-                  setFormOpen(true)
-                },
-              },
-            ],
+            buttons: canEditAnnotation
+              ? [
+                  {
+                    id: 'create',
+                    label: '新建人工标注任务',
+                    icon: Plus,
+                    iconPosition: 'start',
+                    size: 'sm',
+                    onClick: () => {
+                      setEditingQueue(null)
+                      setFormOpen(true)
+                    },
+                  },
+                ]
+              : [],
           }}
         />
         <section className='bg-card text-card-foreground flex min-h-0 min-w-0 flex-1 flex-col rounded-lg border p-4'>
@@ -151,7 +161,7 @@ export function ProjectAnnotationQueues() {
         </section>
       </div>
       <AnnotationQueueFormDrawer
-        open={formOpen}
+        open={canEditAnnotation && formOpen}
         queue={editingQueue}
         scoreConfigs={scoreConfigsQuery.data ?? []}
         users={usersQuery.data ?? []}

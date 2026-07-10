@@ -1,6 +1,7 @@
 import { buildProjectSwitchPath } from '@/modules/project-context/project-context-utils'
 import { Check, ChevronsUpDown } from 'lucide-react'
-import { useLocation, useNavigate, useParams } from 'react-router'
+import { useNavigate } from 'react-router'
+import { useSessionStore } from '@/stores/session.store'
 import { cn } from '@/lib/utils'
 import {
   DropdownMenu,
@@ -20,6 +21,7 @@ import { resolveIcon } from './icon-map'
 type ProjectSwitcherProps = {
   projects: {
     id?: string
+    organizationId?: string
     name: string
     logo: string
     plan: string
@@ -28,9 +30,10 @@ type ProjectSwitcherProps = {
 
 export function ProjectSwitcher({ projects }: ProjectSwitcherProps) {
   const { isMobile, setOpenMobile } = useSidebar()
-  const { projectId } = useParams()
-  const location = useLocation()
   const navigate = useNavigate()
+  const setCurrentProjectContext = useSessionStore(
+    (state) => state.setCurrentProjectContext
+  )
   const activeProject = projects?.[0]
 
   if (!activeProject) {
@@ -84,14 +87,11 @@ export function ProjectSwitcher({ projects }: ProjectSwitcherProps) {
                       return
                     }
 
+                    setCurrentProjectContext(project.id, project.organizationId)
                     navigate(
-                      projectId
-                        ? buildProjectSwitchPath({
-                            pathname: location.pathname,
-                            currentProjectId: projectId,
-                            nextProjectId: project.id,
-                          })
-                        : `/projects/${encodeURIComponent(project.id)}/evaluation`
+                      buildProjectSwitchPath({
+                        nextProjectId: project.id,
+                      })
                     )
                     setOpenMobile(false)
                   }}

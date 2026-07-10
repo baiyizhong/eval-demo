@@ -28,6 +28,7 @@ type Props = {
   onFlowback: (report: EvaluationReportRecord) => void
   onViewUnavailable: (report: EvaluationReportRecord) => void
   onDelete: (report: EvaluationReportRecord) => void
+  canEdit?: boolean
 }
 
 export function EvaluationReportRowActions({
@@ -38,6 +39,7 @@ export function EvaluationReportRowActions({
   onFlowback,
   onViewUnavailable,
   onDelete,
+  canEdit,
 }: Props) {
   const report = row.original
   const ready = report.status === 'READY'
@@ -70,25 +72,29 @@ export function EvaluationReportRowActions({
             <Download data-icon='inline-start' />
             导出
           </DropdownMenuItem>
-          <DropdownMenuItem onSelect={() => onRegenerate(report)}>
-            <RotateCcw data-icon='inline-start' />
-            重新生成
-          </DropdownMenuItem>
-          <DropdownMenuItem
-            disabled={!ready}
-            onSelect={() => onFlowback(report)}
-          >
-            <Send data-icon='inline-start' />
-            回流数据
-          </DropdownMenuItem>
-          <DropdownMenuSeparator />
-          <DropdownMenuItem
-            variant='destructive'
-            onSelect={() => onDelete(report)}
-          >
-            <Trash2 data-icon='inline-start' />
-            删除
-          </DropdownMenuItem>
+          {canEdit ? (
+            <>
+              <DropdownMenuItem onSelect={() => onRegenerate(report)}>
+                <RotateCcw data-icon='inline-start' />
+                重新生成
+              </DropdownMenuItem>
+              <DropdownMenuItem
+                disabled={!ready}
+                onSelect={() => onFlowback(report)}
+              >
+                <Send data-icon='inline-start' />
+                回流数据
+              </DropdownMenuItem>
+              <DropdownMenuSeparator />
+              <DropdownMenuItem
+                variant='destructive'
+                onSelect={() => onDelete(report)}
+              >
+                <Trash2 data-icon='inline-start' />
+                删除
+              </DropdownMenuItem>
+            </>
+          ) : null}
         </DropdownMenuGroup>
       </DropdownMenuContent>
     </DropdownMenu>

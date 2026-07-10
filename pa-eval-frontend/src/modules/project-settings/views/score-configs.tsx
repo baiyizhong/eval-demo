@@ -12,6 +12,7 @@ import { Plus } from 'lucide-react'
 import { useParams } from 'react-router'
 import { toast } from 'sonner'
 import { useAPI } from '@/hooks/use-api'
+import { usePermission } from '@/hooks/use-permission'
 import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
 import {
@@ -92,6 +93,8 @@ export function ProjectScoreConfigsSettings() {
   const { projectId = '' } = useParams()
   const $api = useAPI()
   const queryClient = useQueryClient()
+  const { can } = usePermission({ type: 'project', projectId })
+  const canEditScoreConfigs = can('project:score-config:edit')
   const [editingConfig, setEditingConfig] = useState<ScoreConfig | null>(null)
   const [formOpen, setFormOpen] = useState(false)
   const configsQuery = useQuery({
@@ -148,11 +151,13 @@ export function ProjectScoreConfigsSettings() {
     [configsQuery.data]
   )
   const openCreate = () => {
+    if (!canEditScoreConfigs) return
     setEditingConfig(null)
     setFormOpen(true)
   }
 
   const openEdit = (config: ScoreConfig) => {
+    if (!canEditScoreConfigs) return
     setEditingConfig(config)
     setFormOpen(true)
   }
@@ -163,12 +168,14 @@ export function ProjectScoreConfigsSettings() {
       desc='查看项目内 Score Configs，支持数值、分类、布尔和文本类型。'
     >
       <div className='flex flex-col gap-4'>
-        <div className='flex justify-end gap-2'>
-          <Button onClick={openCreate}>
-            <Plus data-icon='inline-start' />
-            新增指标
-          </Button>
-        </div>
+        {canEditScoreConfigs ? (
+          <div className='flex justify-end gap-2'>
+            <Button onClick={openCreate}>
+              <Plus data-icon='inline-start' />
+              新增指标
+            </Button>
+          </div>
+        ) : null}
         {configsQuery.isLoading ? (
           <Loading text='加载评分指标中...' className='min-h-24' />
         ) : null}
@@ -187,7 +194,9 @@ export function ProjectScoreConfigsSettings() {
                   <TableHead>范围/选项</TableHead>
                   <TableHead>状态</TableHead>
                   <TableHead>更新时间</TableHead>
-                  <TableHead className='text-end'>操作</TableHead>
+                    {canEditScoreConfigs ? (
+                      <TableHead className='text-end'>操作</TableHead>
+                    ) : null}
                 </TableRow>
               </TableHeader>
               <TableBody>
@@ -215,33 +224,35 @@ export function ProjectScoreConfigsSettings() {
                         ? formatDateTime(config.updatedAt)
                         : '-'}
                     </TableCell>
-                    <TableCell>
-                      <div className='flex justify-end gap-2'>
-                        <Button
-                          type='button'
-                          variant='outline'
-                          size='sm'
-                          onClick={() => openEdit(config)}
-                        >
-                          编辑
-                        </Button>
-                        <Button
-                          type='button'
-                          variant='outline'
-                          size='sm'
-                          disabled={archiveMutation.isPending}
-                          onClick={() => archiveMutation.mutate(config)}
-                        >
-                          {config.isArchived ? '恢复' : '归档'}
-                        </Button>
-                      </div>
-                    </TableCell>
+                    {canEditScoreConfigs ? (
+                      <TableCell>
+                        <div className='flex justify-end gap-2'>
+                          <Button
+                            type='button'
+                            variant='outline'
+                            size='sm'
+                            onClick={() => openEdit(config)}
+                          >
+                            编辑
+                          </Button>
+                          <Button
+                            type='button'
+                            variant='outline'
+                            size='sm'
+                            disabled={archiveMutation.isPending}
+                            onClick={() => archiveMutation.mutate(config)}
+                          >
+                            {config.isArchived ? '恢复' : '归档'}
+                          </Button>
+                        </div>
+                      </TableCell>
+                    ) : null}
                   </TableRow>
                 ))}
                 {sortedConfigs.length === 0 ? (
                   <TableRow>
                     <TableCell
-                      colSpan={6}
+                      colSpan={canEditScoreConfigs ? 6 : 5}
                       className='text-muted-foreground h-24 text-center'
                     >
                       当前项目暂无评分指标
@@ -254,7 +265,7 @@ export function ProjectScoreConfigsSettings() {
         ) : null}
         <ScoreConfigDialog
           key={formOpen ? (editingConfig?.id ?? 'new') : 'closed'}
-          open={formOpen}
+          open={canEditScoreConfigs && formOpen}
           config={editingConfig}
           saving={saveMutation.isPending}
           onOpenChange={(open) => {

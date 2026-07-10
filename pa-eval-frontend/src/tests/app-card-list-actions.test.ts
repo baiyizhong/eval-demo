@@ -15,3 +15,13 @@ test('AppCardList only renders icon actions with click handlers', () => {
   )
   assert.match(source, /renderableIconActions\.map/)
 })
+
+test('AppList hides add project action when no add handler is provided', () => {
+  const source = readFileSync('src/components/business/app-list.tsx', 'utf8')
+
+  assert.match(source, /const canAdd = Boolean\(/)
+  assert.match(
+    source,
+    /canAdd\s*\?\s*\(\s*<Button[\s\S]*?新增项目[\s\S]*?<\/Button>\s*\)\s*:\s*null/
+  )
+})

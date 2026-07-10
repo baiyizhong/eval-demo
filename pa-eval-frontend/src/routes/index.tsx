@@ -45,7 +45,9 @@ import { ProjectScoreConfigsSettings } from '@/modules/project-settings/views/sc
 import { ScheduledJobs } from '@/modules/scheduled-jobs'
 import { Settings } from '@/modules/settings'
 import {
+  BackendOverview,
   BackendManagement,
+  BackendUsers,
   HelpDocs,
   OperationAudit,
   PermissionRequest,
@@ -73,8 +75,10 @@ const appsTopbarNavigation: TopNavProps = {
       label: '项目管理',
       href: '/apps',
       activeMatch: 'prefix',
-      access: 'org:project:view',
-      scope: { type: 'org' },
+      accessRules: [
+        { scope: { type: 'org', all: true }, access: 'org:project:view' },
+        { scope: { type: 'project', all: true }, anyPermission: true },
+      ],
     },
     {
       id: 'org',
@@ -361,8 +365,16 @@ export const routes = [
                 element: (
                   <RouteGuard
                     accessConfig={{
-                      scope: { type: 'org' },
-                      access: 'org:project:view',
+                      accessRules: [
+                        {
+                          scope: { type: 'org', all: true },
+                          access: 'org:project:view',
+                        },
+                        {
+                          scope: { type: 'project', all: true },
+                          anyPermission: true,
+                        },
+                      ],
                     }}
                   >
                     <Apps />
@@ -389,6 +401,11 @@ export const routes = [
                     <BackendManagement />
                   </RouteGuard>
                 ),
+                children: [
+                  { index: true, element: <Navigate to='overview' replace /> },
+                  { path: 'overview', element: <BackendOverview /> },
+                  { path: 'users', element: <BackendUsers /> },
+                ],
               },
               { path: 'help', element: <HelpDocs /> },
               { path: 'permissions', element: <PermissionRequest /> },
@@ -416,7 +433,7 @@ export const routes = [
                       <RouteGuard
                         accessConfig={{
                           scope: { type: 'org' },
-                          access: 'org:member:view',
+                          access: ['org:organization:view', 'org:member:view'],
                         }}
                       >
                         <SettingsOrganizationMembers />

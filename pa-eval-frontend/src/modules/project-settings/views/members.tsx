@@ -6,9 +6,9 @@ import { MoreHorizontal, Plus } from 'lucide-react'
 import { useParams } from 'react-router'
 import { toast } from 'sonner'
 import type { ApiErrorPayload } from '@/api/types'
-import { useAuthStore } from '@/stores/auth-store'
-import { parseAuthTokenPayload } from '@/lib/auth-token'
+import { useSessionStore } from '@/stores/session.store'
 import { useAPI } from '@/hooks/use-api'
+import { usePermission } from '@/hooks/use-permission'
 import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
 import {
@@ -171,14 +171,10 @@ function paginate<T>(items: T[], page: number, pageSize: number) {
 
 function resolveActorRole(
   members: ProjectUserRecord[],
-  accessToken: string
+  currentUser: { email?: string } | null
 ): ProjectRole {
-  const currentUser = parseAuthTokenPayload(accessToken)
-  const userId = currentUser?.langfuseUserId?.trim()
   const email = normalizeEmail(currentUser?.email)
-  const actor =
-    members.find((member) => Boolean(userId) && member.id === userId) ??
-    members.find((member) => normalizeEmail(member.email) === email)
+  const actor = members.find((member) => normalizeEmail(member.email) === email)
 
   return actor ? getEffectiveRole(actor) : 'NONE'
 }
@@ -209,7 +205,9 @@ export function ProjectMembersSettings() {
   const { projectId = '' } = useParams()
   const $api = useAPI()
   const queryClient = useQueryClient()
-  const accessToken = useAuthStore((state) => state.auth.accessToken)
+  const { can } = usePermission({ type: 'project', projectId })
+  const canEditProjectMembers = can('project:member:edit')
+  const currentUser = useSessionStore((state) => state.user)
   const [dialogOpen, setDialogOpen] = useState(false)
   const [editingMember, setEditingMember] = useState<ProjectUserRecord | null>(
     null
@@ -224,8 +222,8 @@ export function ProjectMembersSettings() {
         path: { projectId },
       }),
   })
-  const actorRole = resolveActorRole(membersMetaQuery.data ?? [], accessToken)
-  const canManage = canManageProjectMembers(actorRole)
+  const actorRole = resolveActorRole(membersMetaQuery.data ?? [], currentUser)
+  const canManage = canEditProjectMembers && canManageProjectMembers(actorRole)
 
   const invalidateMembers = () =>
     Promise.all([
@@ -368,7 +366,7 @@ export function ProjectMembersSettings() {
           const hasProjectOverride =
             normalizeRole(member.projectRole) !== 'NONE'
 
-          if (!canManageProjectMembers(actorRole)) {
+          if (!canEditProjectMembers || !canManageProjectMembers(actorRole)) {
             return (
               <span className='text-muted-foreground text-xs'>
                 当前角色不能管理
@@ -415,7 +413,7 @@ export function ProjectMembersSettings() {
         },
       },
     ],
-    [actorRole]
+    [actorRole, canEditProjectMembers]
   )
 
   return (

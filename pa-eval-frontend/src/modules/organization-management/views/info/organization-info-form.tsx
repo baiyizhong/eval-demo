@@ -12,6 +12,7 @@ import { Save } from 'lucide-react'
 import { toast } from 'sonner'
 import { useOrganizationStore } from '@/stores/organization.store'
 import { useAPI } from '@/hooks/use-api'
+import { usePermission } from '@/hooks/use-permission'
 import { Button } from '@/components/ui/button'
 import {
   Form,
@@ -41,6 +42,8 @@ export function OrganizationInfoForm({
 }: OrganizationInfoFormProps) {
   const $api = useAPI()
   const queryClient = useQueryClient()
+  const { can } = usePermission({ type: 'org', orgId: organization.id })
+  const canEditOrganization = can('org:organization:edit')
   const upsertOrganization = useOrganizationStore(
     (state) => state.upsertOrganization
   )
@@ -82,6 +85,8 @@ export function OrganizationInfoForm({
   })
 
   const onSubmit = async (values: OrganizationInfoFormValues) => {
+    if (!canEditOrganization) return
+
     await updateOrganizationMutation.mutateAsync({
       ...values,
       subsystem: values.subsystem || undefined,
@@ -101,7 +106,11 @@ export function OrganizationInfoForm({
             <FormItem>
               <FormLabel>组织名称</FormLabel>
               <FormControl>
-                <Input placeholder='输入组织名称' {...field} />
+                <Input
+                  placeholder='输入组织名称'
+                  disabled={!canEditOrganization}
+                  {...field}
+                />
               </FormControl>
               <FormMessage />
             </FormItem>
@@ -114,7 +123,11 @@ export function OrganizationInfoForm({
             <FormItem>
               <FormLabel>所属子系统</FormLabel>
               <FormControl>
-                <Input placeholder='输入所属子系统' {...field} />
+                <Input
+                  placeholder='输入所属子系统'
+                  disabled={!canEditOrganization}
+                  {...field}
+                />
               </FormControl>
               <FormMessage />
             </FormItem>
@@ -130,6 +143,7 @@ export function OrganizationInfoForm({
                 <Textarea
                   placeholder='输入组织描述'
                   className='min-h-28 resize-none'
+                  disabled={!canEditOrganization}
                   {...field}
                 />
               </FormControl>
@@ -137,12 +151,17 @@ export function OrganizationInfoForm({
             </FormItem>
           )}
         />
-        <div className='flex justify-end'>
-          <Button type='submit' disabled={updateOrganizationMutation.isPending}>
-            <Save data-icon='inline-start' />
-            保存
-          </Button>
-        </div>
+        {canEditOrganization ? (
+          <div className='flex justify-end'>
+            <Button
+              type='submit'
+              disabled={updateOrganizationMutation.isPending}
+            >
+              <Save data-icon='inline-start' />
+              保存
+            </Button>
+          </div>
+        ) : null}
       </form>
     </Form>
   )

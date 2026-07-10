@@ -5,8 +5,10 @@ import { useQuery, useQueryClient } from '@tanstack/react-query'
 import type { ColumnDef } from '@tanstack/react-table'
 import { EvaluationPageNav } from '@/modules/app-evaluation/components/evaluation-page-nav'
 import { Eye, MoreHorizontal, Plus, Trash2 } from 'lucide-react'
+import { useParams } from 'react-router'
 import { toast } from 'sonner'
 import { useAPI } from '@/hooks/use-api'
+import { usePermission } from '@/hooks/use-permission'
 import {
   AlertDialog,
   AlertDialogAction,
@@ -179,6 +181,9 @@ type TaskEvaluatorsProps = {
 
 export function TaskEvaluators({ navigation = 'tasks' }: TaskEvaluatorsProps) {
   const $api = useAPI()
+  const { projectId = '' } = useParams()
+  const { can } = usePermission({ type: 'project', projectId })
+  const canEditEvaluators = can('project:evaluator:edit')
   const queryClient = useQueryClient()
   const [createOpen, setCreateOpen] = useState(false)
   const [detailOpen, setDetailOpen] = useState(false)
@@ -238,12 +243,14 @@ export function TaskEvaluators({ navigation = 'tasks' }: TaskEvaluatorsProps) {
     () =>
       createEvaluatorColumns({
         onViewDetail: handleViewDetail,
-        onDelete: setDeletingEvaluator,
+        onDelete: canEditEvaluators ? setDeletingEvaluator : undefined,
       }),
-    [handleViewDetail]
+    [canEditEvaluators, handleViewDetail]
   )
 
   const handleCreate = async (values: CreateTaskEvaluatorFormValues) => {
+    if (!canEditEvaluators) return
+
     try {
       await createTaskEvaluator($api, values)
       await queryClient.invalidateQueries({ queryKey: evaluatorQueryKey })
@@ -267,7 +274,10 @@ export function TaskEvaluators({ navigation = 'tasks' }: TaskEvaluatorsProps) {
                   icon: Plus,
                   iconPosition: 'start',
                   size: 'sm',
-                  onClick: () => setCreateOpen(true),
+                  onClick: canEditEvaluators
+                    ? () => setCreateOpen(true)
+                    : undefined,
+                  disabled: !canEditEvaluators,
                 },
               ],
             }}
@@ -276,7 +286,9 @@ export function TaskEvaluators({ navigation = 'tasks' }: TaskEvaluatorsProps) {
           <TasksPageHeader
             showImport={false}
             createLabel='新建评估器'
-            onCreateClick={() => setCreateOpen(true)}
+            onCreateClick={
+              canEditEvaluators ? () => setCreateOpen(true) : undefined
+            }
           />
         )}
         <section className='bg-card text-card-foreground flex min-h-0 min-w-0 flex-1 flex-col rounded-lg border p-4'>
@@ -315,7 +327,7 @@ export function TaskEvaluators({ navigation = 'tasks' }: TaskEvaluatorsProps) {
         </section>
       </div>
       <Drawer
-        open={createOpen}
+        open={canEditEvaluators && createOpen}
         onOpenChange={setCreateOpen}
         title='新建评估器'
         mode='enhanced'
@@ -729,7 +741,7 @@ function createEvaluatorColumns({
   onDelete,
 }: {
   onViewDetail: (evaluator: TaskEvaluatorRecord) => void
-  onDelete: (evaluator: TaskEvaluatorRecord) => void
+  onDelete?: (evaluator: TaskEvaluatorRecord) => void
 }): ColumnDef<TaskEvaluatorRecord>[] {
   return [
     {
@@ -827,14 +839,16 @@ function createEvaluatorColumns({
                   <Eye data-icon='inline-start' />
                   查看详情
                 </DropdownMenuItem>
-                <DropdownMenuItem
-                  disabled={!canDelete}
-                  variant='destructive'
-                  onSelect={() => onDelete(evaluator)}
-                >
-                  <Trash2 data-icon='inline-start' />
-                  删除评估器
-                </DropdownMenuItem>
+                {onDelete ? (
+                  <DropdownMenuItem
+                    disabled={!canDelete}
+                    variant='destructive'
+                    onSelect={() => onDelete(evaluator)}
+                  >
+                    <Trash2 data-icon='inline-start' />
+                    删除评估器
+                  </DropdownMenuItem>
+                ) : null}
               </DropdownMenuGroup>
             </DropdownMenuContent>
           </DropdownMenu>

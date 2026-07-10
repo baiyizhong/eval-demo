@@ -1,32 +1,51 @@
 import assert from 'node:assert/strict'
 import { test } from 'node:test'
+import { checkRouteAccess } from '../components/common/route-access.ts'
 import { buildSidebarDataFromProjects } from '../lib/sidebar-data.ts'
 import { useSessionStore } from '../stores/session.store.ts'
 import type { UserSessionPayload } from '../types/permission.ts'
 
 const payload: UserSessionPayload = {
-  user: { id: 0, name: 'Guest', email: '' },
+  user: { name: 'Guest', email: '' },
   superAdmin: false,
   permissions: ['system:audit:view'],
   orgs: [
     {
       id: 'org-1',
       name: '组织一',
+      role: 'OWNER',
       permissions: ['org:project:view', 'project:dataset:view'],
       projects: [
         {
           id: 'project-inherits',
           name: '继承组织权限项目',
+          role: 'OWNER',
         },
         {
           id: 'project-explicit-empty',
           name: '显式空权限项目',
+          role: 'VIEWER',
           permissions: [],
         },
         {
           id: 'project-explicit',
           name: '显式项目权限',
+          role: 'MEMBER',
           permissions: ['project:evaluator:view'],
+        },
+      ],
+    },
+    {
+      id: 'org-2',
+      name: '组织二',
+      role: 'MEMBER',
+      permissions: [],
+      projects: [
+        {
+          id: 'project-second-org',
+          name: '第二组织项目',
+          role: 'ADMIN',
+          permissions: [],
         },
       ],
     },
@@ -91,15 +110,88 @@ test('session store returns wildcard permissions for super admins', () => {
   assert.deepEqual(store.getPermissionsForProject('missing-project'), ['*'])
 })
 
+test('session store keeps organization and project context synchronized', () => {
+  resetSession()
+  const store = useSessionStore.getState()
+
+  assert.equal(store.currentOrgId, 'org-1')
+  assert.equal(store.currentProjectId, 'project-inherits')
+
+  store.setCurrentOrgId('org-2')
+  assert.equal(useSessionStore.getState().currentOrgId, 'org-2')
+  assert.equal(useSessionStore.getState().currentProjectId, null)
+
+  useSessionStore.getState().setCurrentProjectContext('project-second-org')
+  assert.equal(useSessionStore.getState().currentOrgId, 'org-2')
+  assert.equal(
+    useSessionStore.getState().currentProjectId,
+    'project-second-org'
+  )
+})
+
+test('apps access passes when current org has no permissions but another org or project is accessible', () => {
+  resetSession({
+    user: { name: '项目成员', email: 'member@example.com' },
+    superAdmin: false,
+    permissions: [],
+    orgs: [
+      {
+        id: 'org-none',
+        name: '无组织权限',
+        role: 'NONE',
+        permissions: [],
+        projects: [],
+      },
+      {
+        id: 'org-project',
+        name: '项目权限组织',
+        role: 'NONE',
+        permissions: [],
+        projects: [
+          {
+            id: 'project-visible',
+            name: '可见项目',
+            role: 'MEMBER',
+            permissions: ['project:trace:view'],
+          },
+        ],
+      },
+    ],
+  })
+
+  assert.equal(
+    checkRouteAccess({
+      accessRules: [
+        { scope: { type: 'org', all: true }, access: 'org:project:view' },
+        { scope: { type: 'project', all: true }, anyPermission: true },
+      ],
+    }),
+    true
+  )
+})
+
 test('sidebar data carries permission scope for platform and project entries', () => {
   const platformSidebar = buildSidebarDataFromProjects([])
   const platformItems = platformSidebar.menuGroups[0]?.items ?? []
 
   assert.deepEqual(
-    platformItems.map((item) => [item.title, item.access, item.scope]),
+    platformItems.map((item) => [
+      item.title,
+      item.access,
+      item.scope,
+      item.accessRules,
+    ]),
     [
-      ['项目管理', 'org:project:view', { type: 'org' }],
-      ['组织管理', 'org:organization:view', { type: 'org' }],
+      [
+        '项目管理',
+        undefined,
+        undefined,
+        [
+          { scope: { type: 'org', all: true }, access: 'org:project:view' },
+          { scope: { type: 'project', all: true }, anyPermission: true },
+        ],
+      ],
+      ['组织管理', 'org:organization:view', { type: 'org' }, undefined],
     ]
   )
 

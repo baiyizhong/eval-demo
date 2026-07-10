@@ -13,7 +13,7 @@ export default [
           email: db.users[0].email,
         },
         superAdmin: false,
-        permissions: ['system:audit:view'],
+        permissions: [],
         orgs: db.organizations.map((org) => ({
           id: org.id,
           name: org.name,

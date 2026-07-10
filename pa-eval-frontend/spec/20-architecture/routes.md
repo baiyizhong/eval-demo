@@ -154,7 +154,7 @@ export const routes = [
 2. 在 `src/routes/index.tsx` 顶部导入页面组件。
 3. 根据页面布局选择挂入 `SidebarLayout` 或 `TopbarLayout` 分支。
 4. 如需路由级权限，用 `RouteGuard` 包裹页面元素。
-5. 如需侧边栏入口，同步更新 `/sidebar` 数据来源或 mock 数据。
+5. 如需侧边栏入口，同步更新 `src/lib/sidebar-data.ts` 中的本地菜单构造逻辑。
 6. 如需顶部栏入口，同步更新传给 `TopbarLayout` 的 `navigation.items`。
 7. 如果新增的是某个模块入口下的子页面，例如 `/tasks/auto-evaluation` 挂在 `/tasks` 下，必须检查对应侧边栏菜单或顶部导航入口是否需要设置 `activeMatch: 'prefix'`，否则进入子页面时父级菜单不会高亮。
 

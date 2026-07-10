@@ -22,6 +22,7 @@ import { ScheduledJobStatusBadge } from './scheduled-job-status-badge'
 
 type ScheduledJobTableProps = {
   request: DataTableProps<ScheduledJobTask>['request']
+  readOnly?: boolean
   onEdit: (task: ScheduledJobTask) => void
   onPause: (task: ScheduledJobTask) => void
   onResume: (task: ScheduledJobTask) => void
@@ -45,6 +46,7 @@ function formatDateTime(value: string | null) {
 
 export function ScheduledJobTable({
   request,
+  readOnly,
   onEdit,
   onPause,
   onResume,
@@ -52,8 +54,8 @@ export function ScheduledJobTable({
   onTriggerJob,
   onDelete,
 }: ScheduledJobTableProps) {
-  const columns = useMemo<ColumnDef<ScheduledJobTask>[]>(
-    () => [
+  const columns = useMemo<ColumnDef<ScheduledJobTask>[]>(() => {
+    const baseColumns: ColumnDef<ScheduledJobTask>[] = [
       {
         accessorKey: 'name',
         header: ({ column }) => (
@@ -123,7 +125,10 @@ export function ScheduledJobTable({
           className: 'min-w-28',
         },
       },
-      {
+    ]
+
+    if (!readOnly) {
+      baseColumns.push({
         id: 'actions',
         header: '操作',
         cell: ({ row }) => {
@@ -175,10 +180,19 @@ export function ScheduledJobTable({
           className: 'w-20 text-right',
           thClassName: 'text-right',
         },
-      },
-    ],
-    [onDelete, onEdit, onPause, onResume, onRunManually, onTriggerJob]
-  )
+      })
+    }
+
+    return baseColumns
+  }, [
+    onDelete,
+    onEdit,
+    onPause,
+    onResume,
+    onRunManually,
+    onTriggerJob,
+    readOnly,
+  ])
 
   return (
     <DataTable<ScheduledJobTask>

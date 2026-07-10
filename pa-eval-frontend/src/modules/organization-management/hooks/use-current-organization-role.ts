@@ -5,9 +5,8 @@ import {
   type PaginatedResult,
 } from '@/modules/organization-management/data/schema'
 import { resolveCurrentOrganizationRole } from '@/modules/organization-management/data/current-organization-role'
-import { useAuthStore } from '@/stores/auth-store'
+import { useSessionStore } from '@/stores/session.store'
 import { useAPI } from '@/hooks/use-api'
-import { parseAuthTokenPayload } from '@/lib/auth-token'
 
 type UseCurrentOrganizationRoleResult = {
   actorRole: OrganizationRole | null
@@ -18,10 +17,9 @@ export function useCurrentOrganizationRole(
   organizationId: string | null
 ): UseCurrentOrganizationRoleResult {
   const $api = useAPI()
-  const accessToken = useAuthStore((state) => state.auth.accessToken)
-  const currentUser = parseAuthTokenPayload(accessToken)
+  const currentUser = useSessionStore((state) => state.user)
   const actorMembersQuery = useQuery({
-    queryKey: ['organization-members-actor', organizationId, currentUser?.langfuseUserId, currentUser?.email, $api],
+    queryKey: ['organization-members-actor', organizationId, currentUser?.email, $api],
     enabled: Boolean(organizationId),
     queryFn: () => {
       if (!organizationId) {

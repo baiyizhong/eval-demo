@@ -4,6 +4,7 @@ import { useParams, useSearchParams } from 'react-router'
 import { toast } from 'sonner'
 import { confirm } from '@/lib/confirm'
 import { useAPI } from '@/hooks/use-api'
+import { usePermission } from '@/hooks/use-permission'
 import type { DataTableQueryState } from '@/components/common/data-table'
 import { Page } from '@/components/common/page'
 import {
@@ -74,6 +75,8 @@ function ScheduledJobsProject({
 }: ScheduledJobsProjectProps) {
   const $api = useAPI()
   const queryClient = useQueryClient()
+  const { can } = usePermission({ type: 'project', projectId })
+  const canEditScheduledJobs = can('project:scheduled-job:edit')
   const [drawerOpen, setDrawerOpen] = useState(false)
   const [editingTask, setEditingTask] = useState<ScheduledJobTask | null>(null)
   const [drawerFormKey, setDrawerFormKey] = useState(0)
@@ -168,12 +171,16 @@ function ScheduledJobsProject({
   }, [invalidateScheduledJobs])
 
   const handleCreateTask = () => {
+    if (!canEditScheduledJobs) return
+
     setEditingTask(null)
     setDrawerFormKey((key) => key + 1)
     setDrawerOpen(true)
   }
 
   const handleEditTask = (task: ScheduledJobTask) => {
+    if (!canEditScheduledJobs) return
+
     setEditingTask(task)
     setDrawerFormKey((key) => key + 1)
     setDrawerOpen(true)
@@ -194,6 +201,8 @@ function ScheduledJobsProject({
   }
 
   const handleSaveTask = (task: ScheduledJobTask) => {
+    if (!canEditScheduledJobs) return
+
     const isExisting = Boolean(editingTask)
     void saveScheduledJob($api, projectId, task, isExisting).then(async () => {
       await invalidateScheduledJobs()
@@ -202,6 +211,8 @@ function ScheduledJobsProject({
   }
 
   const handlePauseTask = (task: ScheduledJobTask) => {
+    if (!canEditScheduledJobs) return
+
     void pauseProjectScheduledJob($api, projectId, task.id).then(async () => {
       await invalidateScheduledJobs()
       toast.success('定时任务已暂停')
@@ -209,6 +220,8 @@ function ScheduledJobsProject({
   }
 
   const handleResumeTask = (task: ScheduledJobTask) => {
+    if (!canEditScheduledJobs) return
+
     void resumeProjectScheduledJob($api, projectId, task.id).then(async () => {
       await invalidateScheduledJobs()
       toast.success('定时任务已恢复')
@@ -216,6 +229,8 @@ function ScheduledJobsProject({
   }
 
   const handleRunManually = (task: ScheduledJobTask) => {
+    if (!canEditScheduledJobs) return
+
     void runProjectScheduledJob($api, projectId, task.id).then(async () => {
       await invalidateScheduledJobs()
       setActiveTab('logs')
@@ -224,6 +239,8 @@ function ScheduledJobsProject({
   }
 
   const handleTriggerJob = (task: ScheduledJobTask) => {
+    if (!canEditScheduledJobs) return
+
     void triggerProjectScheduledJob($api, projectId, task.id).then(async () => {
       await invalidateScheduledJobs()
       setActiveTab('logs')
@@ -232,6 +249,8 @@ function ScheduledJobsProject({
   }
 
   const handleDeleteTask = (task: ScheduledJobTask) => {
+    if (!canEditScheduledJobs) return
+
     void confirm({
       title: '删除定时任务',
       desc: `删除后将移除「${task.name}」的调度配置，已生成的自动评测任务和报告仍保留。确定继续吗？`,
@@ -248,16 +267,18 @@ function ScheduledJobsProject({
   return (
     <Page fluid className='flex min-h-[calc(100svh-3.5rem)] flex-col'>
       <div className='flex min-h-0 flex-1 flex-col gap-4'>
-        <ScheduledJobsPageNav
-          activeTab={activeTab}
-          basePath={basePath}
-          onCreate={handleCreateTask}
-          onRefresh={refresh}
-        />
+          <ScheduledJobsPageNav
+            activeTab={activeTab}
+            basePath={basePath}
+            canCreate={canEditScheduledJobs}
+            onCreate={handleCreateTask}
+            onRefresh={refresh}
+          />
         <section className='bg-card text-card-foreground flex min-h-0 min-w-0 flex-1 flex-col rounded-lg border p-4'>
           {activeTab === 'tasks' ? (
             <ScheduledJobTable
               request={taskTableRequest}
+              readOnly={!canEditScheduledJobs}
               onEdit={handleEditTask}
               onPause={handlePauseTask}
               onResume={handleResumeTask}
@@ -272,7 +293,7 @@ function ScheduledJobsProject({
         <ScheduledJobDrawer
           key={drawerFormKey}
           projectId={projectId}
-          open={drawerOpen}
+          open={canEditScheduledJobs && drawerOpen}
           task={editingTask}
           evaluators={evaluatorsQuery.data}
           datasets={datasetsQuery.data}

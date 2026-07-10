@@ -10,16 +10,18 @@ import { formatDateTime } from './format'
 
 type CreateAnnotationQueueColumnsOptions = {
   projectId: string
+  readOnly?: boolean
   onEdit: (queue: AnnotationQueueRecord) => void
   onDelete: (queue: AnnotationQueueRecord) => void
 }
 
 export function createAnnotationQueueColumns({
   projectId,
+  readOnly,
   onEdit,
   onDelete,
 }: CreateAnnotationQueueColumnsOptions): ColumnDef<AnnotationQueueRecord>[] {
-  return [
+  const columns: ColumnDef<AnnotationQueueRecord>[] = [
     {
       accessorKey: 'name',
       header: ({ column }) => (
@@ -110,7 +112,10 @@ export function createAnnotationQueueColumns({
       ),
       enableHiding: false,
     },
-    {
+  ]
+
+  if (!readOnly) {
+    columns.push({
       id: 'actions',
       enableHiding: false,
       cell: ({ row }) => (
@@ -120,6 +125,8 @@ export function createAnnotationQueueColumns({
           onDelete={onDelete}
         />
       ),
-    },
-  ]
+    })
+  }
+
+  return columns
 }

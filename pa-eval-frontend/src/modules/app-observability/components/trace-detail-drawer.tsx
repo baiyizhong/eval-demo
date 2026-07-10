@@ -7,6 +7,7 @@ import {
 import type { AnnotationQueueFormInput } from '@/modules/app-evaluation/types'
 import { toast } from 'sonner'
 import { useAPI } from '@/hooks/use-api'
+import { usePermission } from '@/hooks/use-permission'
 import { Button } from '@/components/ui/button'
 import { LLMTraceChain } from '@/components/business/llm-trace-chain'
 import { Drawer } from '@/components/common/drawer'
@@ -44,6 +45,8 @@ export function TraceDetailDrawer({
 }: TraceDetailDrawerProps) {
   const $api = useAPI()
   const queryClient = useQueryClient()
+  const { can } = usePermission({ type: 'project', projectId })
+  const canEditTrace = can('project:trace:edit')
   const [traceChainCollapsed, setTraceChainCollapsed] = useState(true)
   const [traceChainWidth, setTraceChainWidth] = useState(
     TRACE_CHAIN_DRAWER_WIDTH
@@ -67,6 +70,7 @@ export function TraceDetailDrawer({
   }
 
   const handleAddToDataset = async (values: TraceDatasetSubmitValues) => {
+    if (!canEditTrace) return
     if (!detail) return
     const input: TraceDatasetTargetInput =
       values.mode === 'existing'
@@ -88,6 +92,7 @@ export function TraceDetailDrawer({
   }
 
   const handleCreateAnnotationTask = async (queueId: string) => {
+    if (!canEditTrace) return
     if (!detail) return
     const result = await createTraceAnnotationTask($api, projectId, [
       detail.traceId,
@@ -103,6 +108,7 @@ export function TraceDetailDrawer({
   const handleCreateAnnotationQueueAndTask = async (
     input: AnnotationQueueFormInput
   ) => {
+    if (!canEditTrace) return
     if (!detail) return
     const queue = await createProjectAnnotationQueue($api, projectId, input)
     const result = await createTraceAnnotationTask($api, projectId, [
@@ -130,24 +136,28 @@ export function TraceDetailDrawer({
       cancelText='关闭'
       actions={
         <div className='flex items-center gap-2'>
-          <Button
-            type='button'
-            size='sm'
-            variant='outline'
-            disabled={!detail}
-            onClick={() => setDatasetDialogOpen(true)}
-          >
-            加入数据集
-          </Button>
-          <Button
-            type='button'
-            size='sm'
-            variant='outline'
-            disabled={!detail}
-            onClick={() => setAnnotationDialogOpen(true)}
-          >
-            加入标注任务
-          </Button>
+          {canEditTrace ? (
+            <>
+              <Button
+                type='button'
+                size='sm'
+                variant='outline'
+                disabled={!detail}
+                onClick={() => setDatasetDialogOpen(true)}
+              >
+                加入数据集
+              </Button>
+              <Button
+                type='button'
+                size='sm'
+                variant='outline'
+                disabled={!detail}
+                onClick={() => setAnnotationDialogOpen(true)}
+              >
+                加入标注任务
+              </Button>
+            </>
+          ) : null}
           <Button
             type='button'
             size='sm'
@@ -211,7 +221,7 @@ export function TraceDetailDrawer({
       {detail ? (
         <>
           <TraceDatasetDialog
-            open={datasetDialogOpen}
+            open={canEditTrace && datasetDialogOpen}
             projectId={projectId}
             projectName={detail.projectName || projectId}
             traces={[detail]}
@@ -219,7 +229,7 @@ export function TraceDetailDrawer({
             onSubmit={handleAddToDataset}
           />
           <TraceAnnotationDialog
-            open={annotationDialogOpen}
+            open={canEditTrace && annotationDialogOpen}
             projectId={projectId}
             projectName={detail.projectName || projectId}
             traces={[detail]}

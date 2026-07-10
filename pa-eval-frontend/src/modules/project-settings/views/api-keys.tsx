@@ -4,6 +4,7 @@ import { Copy, KeyRound, Pencil, Plus, Trash2 } from 'lucide-react'
 import { useParams } from 'react-router'
 import { toast } from 'sonner'
 import { useAPI } from '@/hooks/use-api'
+import { usePermission } from '@/hooks/use-permission'
 import {
   AlertDialog,
   AlertDialogAction,
@@ -74,6 +75,8 @@ export function ProjectApiKeysSettings() {
   const $api = useAPI()
   const queryClient = useQueryClient()
   const { projectId = DEFAULT_PROJECT_ID } = useParams()
+  const { can } = usePermission({ type: 'project', projectId })
+  const canEditApiKeys = can('project:api-key:edit')
   const [dialogOpen, setDialogOpen] = useState(false)
   const [editingKey, setEditingKey] = useState<ProjectApiKey | null>(null)
   const [deletingKey, setDeletingKey] = useState<ProjectApiKey | null>(null)
@@ -130,12 +133,16 @@ export function ProjectApiKeysSettings() {
   })
 
   const openCreateDialog = () => {
+    if (!canEditApiKeys) return
+
     setEditingKey(null)
     setNote('')
     setDialogOpen(true)
   }
 
   const openEditDialog = (apiKey: ProjectApiKey) => {
+    if (!canEditApiKeys) return
+
     setEditingKey(apiKey)
     setNote(apiKey.note)
     setDialogOpen(true)
@@ -143,6 +150,8 @@ export function ProjectApiKeysSettings() {
 
   const handleSubmit = (event: FormEvent<HTMLFormElement>) => {
     event.preventDefault()
+    if (!canEditApiKeys) return
+
     const trimmedNote = note.trim() || '未命名 Key'
 
     if (editingKey) {
@@ -157,6 +166,8 @@ export function ProjectApiKeysSettings() {
   }
 
   const handleDelete = () => {
+    if (!canEditApiKeys) return
+
     if (!deletingKey) {
       return
     }
@@ -209,12 +220,14 @@ export function ProjectApiKeysSettings() {
           </div>
         ) : null}
 
-        <div className='flex justify-end'>
-          <Button onClick={openCreateDialog}>
-            <Plus data-icon='inline-start' />
-            新增 Key
-          </Button>
-        </div>
+        {canEditApiKeys ? (
+          <div className='flex justify-end'>
+            <Button onClick={openCreateDialog}>
+              <Plus data-icon='inline-start' />
+              新增 Key
+            </Button>
+          </div>
+        ) : null}
 
         <div className='rounded-lg border'>
           <Table>
@@ -225,14 +238,16 @@ export function ProjectApiKeysSettings() {
                 <TableHead>LANGFUSE_SECRET_KEY</TableHead>
                 <TableHead>更新人</TableHead>
                 <TableHead>更新时间</TableHead>
-                <TableHead className='text-end'>操作</TableHead>
+                {canEditApiKeys ? (
+                  <TableHead className='text-end'>操作</TableHead>
+                ) : null}
               </TableRow>
             </TableHeader>
             <TableBody>
               {apiKeysQuery.isLoading ? (
                 <TableRow>
                   <TableCell
-                    colSpan={6}
+                    colSpan={canEditApiKeys ? 6 : 5}
                     className='text-muted-foreground h-24 text-center'
                   >
                     正在加载项目 API Keys
@@ -242,7 +257,7 @@ export function ProjectApiKeysSettings() {
               {!apiKeysQuery.isLoading && apiKeys.length === 0 ? (
                 <TableRow>
                   <TableCell
-                    colSpan={6}
+                    colSpan={canEditApiKeys ? 6 : 5}
                     className='text-muted-foreground h-24 text-center'
                   >
                     当前项目暂无 API Keys
@@ -271,35 +286,40 @@ export function ProjectApiKeysSettings() {
                   </TableCell>
                   <TableCell>{apiKey.updatedBy || '-'}</TableCell>
                   <TableCell>{formatDateTime(apiKey.updatedAt)}</TableCell>
-                  <TableCell>
-                    <div className='flex justify-end gap-2'>
-                      <Button
-                        type='button'
-                        variant='outline'
-                        size='sm'
-                        onClick={() => openEditDialog(apiKey)}
-                      >
-                        <Pencil data-icon='inline-start' />
-                        描述
-                      </Button>
-                      <Button
-                        type='button'
-                        variant='outline'
-                        size='sm'
-                        onClick={() => setDeletingKey(apiKey)}
-                      >
-                        <Trash2 data-icon='inline-start' />
-                        删除
-                      </Button>
-                    </div>
-                  </TableCell>
+                  {canEditApiKeys ? (
+                    <TableCell>
+                      <div className='flex justify-end gap-2'>
+                        <Button
+                          type='button'
+                          variant='outline'
+                          size='sm'
+                          onClick={() => openEditDialog(apiKey)}
+                        >
+                          <Pencil data-icon='inline-start' />
+                          描述
+                        </Button>
+                        <Button
+                          type='button'
+                          variant='outline'
+                          size='sm'
+                          onClick={() => setDeletingKey(apiKey)}
+                        >
+                          <Trash2 data-icon='inline-start' />
+                          删除
+                        </Button>
+                      </div>
+                    </TableCell>
+                  ) : null}
                 </TableRow>
               ))}
             </TableBody>
           </Table>
         </div>
 
-        <Dialog open={dialogOpen} onOpenChange={setDialogOpen}>
+        <Dialog
+          open={canEditApiKeys && dialogOpen}
+          onOpenChange={setDialogOpen}
+        >
           <DialogContent>
             <DialogHeader>
               <DialogTitle>
@@ -341,7 +361,7 @@ export function ProjectApiKeysSettings() {
         </Dialog>
 
         <AlertDialog
-          open={Boolean(deletingKey)}
+          open={canEditApiKeys && Boolean(deletingKey)}
           onOpenChange={(open) => {
             if (!open) {
               setDeletingKey(null)

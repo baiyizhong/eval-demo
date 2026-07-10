@@ -8,6 +8,7 @@ import {
   type PaginatedSidebarProjects,
 } from '@/lib/sidebar-data'
 import { useAPI } from '@/hooks/use-api'
+import { checkPermissionAccessRule } from '@/components/common/route-access'
 import type { SidebarData, NavItem, NavGroup } from '@/components/layout/types'
 
 function filterNavItemsByPermission(
@@ -21,7 +22,15 @@ function filterNavItemsByPermission(
         return null
       }
 
-      if (item.access) {
+      if (item.accessRules?.length) {
+        const allowed = item.accessRules.some((rule) =>
+          checkPermissionAccessRule(rule)
+        )
+
+        if (!allowed) {
+          return null
+        }
+      } else if (item.access) {
         const codes = Array.isArray(item.access) ? item.access : [item.access]
         const effectiveCodes = getPermissionsForScope(item.scope)
         const allowed = codes.some((code) =>

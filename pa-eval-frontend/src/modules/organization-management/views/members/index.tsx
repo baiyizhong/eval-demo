@@ -17,6 +17,7 @@ import { MoreHorizontal, Plus } from 'lucide-react'
 import { toast } from 'sonner'
 import { useOrganizationStore } from '@/stores/organization.store'
 import { useAPI } from '@/hooks/use-api'
+import { usePermission } from '@/hooks/use-permission'
 import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
 import {
@@ -180,6 +181,11 @@ export function SettingsOrganizationMembers() {
     effectiveOrganizations[0] ??
     null
   const organizationId = effectiveCurrentOrganization?.id ?? null
+  const { can } = usePermission({
+    type: 'org',
+    orgId: organizationId ?? undefined,
+  })
+  const canEditOrgMembers = can('org:member:edit')
   const isLoading = organizationsPending || (!isLoaded && !queryOrganizations)
   const isEmpty = !isLoading && effectiveOrganizations.length === 0
 
@@ -208,7 +214,8 @@ export function SettingsOrganizationMembers() {
     actorMembersQuery.data?.datas.filter(
       (member) => member.status !== 'INVITED' && member.role === 'OWNER'
     ).length ?? 0
-  const canManage = actorRole ? canManageMembers(actorRole) : false
+  const canManage =
+    canEditOrgMembers && actorRole ? canManageMembers(actorRole) : false
 
   const deleteMutation = useMutation({
     mutationFn: (member: OrganizationMember) =>
@@ -310,17 +317,16 @@ export function SettingsOrganizationMembers() {
             )
           }
 
-          const editBlockedReason = getEditBlockedReason(
-            actorRole,
-            member,
-            ownerCount
-          )
-          const removeResult = actorRole
-            ? canRemoveMember(actorRole, member.role, ownerCount)
-            : {
-                allowed: false,
-                reason: '当前角色不能删除成员',
-              }
+          const editBlockedReason = canEditOrgMembers
+            ? getEditBlockedReason(actorRole, member, ownerCount)
+            : '当前角色不能管理成员'
+          const removeResult =
+            canEditOrgMembers && actorRole
+              ? canRemoveMember(actorRole, member.role, ownerCount)
+              : {
+                  allowed: false,
+                  reason: '当前角色不能删除成员',
+                }
           const hasAnyAction = !editBlockedReason || removeResult.allowed
 
           if (!hasAnyAction) {
@@ -359,7 +365,7 @@ export function SettingsOrganizationMembers() {
         },
       },
     ],
-    [actorRole, ownerCount]
+    [actorRole, canEditOrgMembers, ownerCount]
   )
 
   return (

@@ -1,8 +1,10 @@
 import { useState } from 'react'
 import { CreateOrganizationDrawer } from '@/modules/organization-management/components/create-organization-drawer'
+import { shouldShowCreateOrganization } from '@/modules/organization-management/data/create-permission'
 import { useOrganizations } from '@/modules/organization-management/hooks/use-organizations'
 import { Check, ChevronsUpDown, Plus, Building2 } from 'lucide-react'
 import { useOrganizationStore } from '@/stores/organization.store'
+import { useSessionStore } from '@/stores/session.store'
 import { cn } from '@/lib/utils'
 import { Button } from '@/components/ui/button'
 import {
@@ -17,9 +19,15 @@ import {
 export function OrganizationSwitcher() {
   const [drawerOpen, setDrawerOpen] = useState(false)
   const { organizations, currentOrganization, isFetching } = useOrganizations()
+  const superAdmin = useSessionStore((state) => state.superAdmin)
   const setCurrentOrganizationId = useOrganizationStore(
     (state) => state.setCurrentOrganizationId
   )
+  const setCurrentOrgId = useSessionStore((state) => state.setCurrentOrgId)
+  const switchOrganization = (organizationId: string) => {
+    setCurrentOrganizationId(organizationId)
+    setCurrentOrgId(organizationId)
+  }
 
   return (
     <>
@@ -51,7 +59,7 @@ export function OrganizationSwitcher() {
                 <DropdownMenuItem
                   key={organization.id}
                   className='gap-2'
-                  onClick={() => setCurrentOrganizationId(organization.id)}
+                  onClick={() => switchOrganization(organization.id)}
                 >
                   <Check
                     className={cn(isActive ? 'opacity-100' : 'opacity-0')}
@@ -70,14 +78,18 @@ export function OrganizationSwitcher() {
               {isFetching ? '加载中...' : '暂无组织'}
             </DropdownMenuItem>
           )}
-          <DropdownMenuSeparator />
-          <DropdownMenuItem
-            className='gap-2'
-            onClick={() => setDrawerOpen(true)}
-          >
-            <Plus />
-            <span>创建组织</span>
-          </DropdownMenuItem>
+          {shouldShowCreateOrganization(superAdmin) ? (
+            <>
+              <DropdownMenuSeparator />
+              <DropdownMenuItem
+                className='gap-2'
+                onClick={() => setDrawerOpen(true)}
+              >
+                <Plus />
+                <span>创建组织</span>
+              </DropdownMenuItem>
+            </>
+          ) : null}
         </DropdownMenuContent>
       </DropdownMenu>
       <CreateOrganizationDrawer

@@ -1,4 +1,4 @@
-import { createElement } from 'react'
+import { createElement, type ReactElement } from 'react'
 import {
   ActivitySquare,
   Bot,
@@ -7,12 +7,23 @@ import {
   Settings,
   Users,
 } from 'lucide-react'
+import type { PermissionCode, PermissionScope } from '@/types/permission'
+
+export type ProjectSettingsNavigationItem = {
+  title: string
+  href: string
+  icon: ReactElement
+  access: PermissionCode | PermissionCode[]
+  scope: PermissionScope
+}
 
 export function getProjectSettingsBasePath(projectId: string) {
   return `/projects/${projectId}/settings`
 }
 
-export function getProjectSettingsNavigationItems(projectId: string) {
+export function getProjectSettingsNavigationItems(
+  projectId: string
+): ProjectSettingsNavigationItem[] {
   const basePath = getProjectSettingsBasePath(projectId)
 
   return [
@@ -20,26 +31,36 @@ export function getProjectSettingsNavigationItems(projectId: string) {
       title: '通用设置',
       href: `${basePath}/general`,
       icon: createElement(Settings, { size: 18 }),
+      access: 'project:settings:view',
+      scope: { type: 'project', projectId },
     },
     {
       title: '评分指标',
       href: `${basePath}/score-configs`,
       icon: createElement(ActivitySquare, { size: 18 }),
+      access: 'project:score-config:view',
+      scope: { type: 'project', projectId },
     },
     {
       title: '项目成员',
       href: `${basePath}/members`,
       icon: createElement(Users, { size: 18 }),
+      access: 'project:member:view',
+      scope: { type: 'project', projectId },
     },
     {
       title: '模型设置',
       href: `${basePath}/models`,
       icon: createElement(Bot, { size: 18 }),
+      access: 'project:model:view',
+      scope: { type: 'project', projectId },
     },
     {
       title: 'API Keys',
       href: `${basePath}/api-keys`,
       icon: createElement(KeyRound, { size: 18 }),
+      access: 'project:api-key:view',
+      scope: { type: 'project', projectId },
     },
   ]
 }

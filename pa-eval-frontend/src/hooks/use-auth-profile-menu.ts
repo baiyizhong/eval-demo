@@ -1,25 +1,37 @@
 import { type MouseEvent, useMemo } from 'react'
 import { useNavigate } from 'react-router'
 import { useAuthStore } from '@/stores/auth-store'
+import { useSessionStore } from '@/stores/session.store'
 import { useEnvironmentStore } from '@/stores/environment-store'
 import { authMenuActions } from '@/lib/auth-menu'
-import { getDisplayUserFromAccessToken } from '@/lib/auth-token'
 
 type AuthMenuEvent = MouseEvent<HTMLAnchorElement | HTMLButtonElement>
 type AuthMenuCompatibleAction = {
   id: string
 }
 
+function getInitial(value: string) {
+  return value.trim().charAt(0).toUpperCase()
+}
+
 export function useAuthProfileMenu() {
   const navigate = useNavigate()
-  const { auth } = useAuthStore()
+  const resetAuth = useAuthStore((state) => state.auth.reset)
+  const sessionUser = useSessionStore((state) => state.user)
   const resetEnvironment = useEnvironmentStore(
     (state) => state.resetEnvironment
   )
-  const user = useMemo(
-    () => getDisplayUserFromAccessToken(auth.accessToken),
-    [auth.accessToken]
-  )
+  const user = useMemo(() => {
+    if (!sessionUser) {
+      return null
+    }
+
+    return {
+      name: sessionUser.name,
+      email: sessionUser.email,
+      initials: getInitial(sessionUser.name || sessionUser.email),
+    }
+  }, [sessionUser])
 
   const handleAuthMenuAction = (
     action: AuthMenuCompatibleAction,
@@ -30,7 +42,7 @@ export function useAuthProfileMenu() {
     }
 
     event.preventDefault()
-    auth.reset()
+    resetAuth()
     resetEnvironment()
     navigate('/login', { replace: true })
   }

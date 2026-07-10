@@ -5,6 +5,7 @@ import { getRouteActiveState } from '@/lib/nav'
 import { matchPermission } from '@/lib/permission'
 import { cn } from '@/lib/utils'
 import { SearchProvider } from '@/context/search-provider'
+import { checkPermissionAccessRule } from '@/components/common/route-access'
 import {
   TopNav,
   type TopNavAction,
@@ -37,7 +38,16 @@ export function TopbarLayout({
         }
 
         if (!item.access) {
-          return true
+          return (
+            !item.accessRules?.length ||
+            item.accessRules.some((rule) => checkPermissionAccessRule(rule))
+          )
+        }
+
+        if (item.accessRules?.length) {
+          return item.accessRules.some((rule) =>
+            checkPermissionAccessRule(rule)
+          )
         }
 
         const accessCodes = Array.isArray(item.access)

@@ -10,7 +10,7 @@ import { NavigationProgress } from '@/components/common/navigation-progress'
 import './styles/index.css'
 
 const defaultSession: UserSessionPayload = {
-  user: { id: 0, name: 'Guest', email: '' },
+  user: { name: 'Guest', email: '' },
   superAdmin: false,
   permissions: [],
   orgs: [],

@@ -14,16 +14,18 @@ import { formatDateTime } from './format'
 
 type CreateAutoEvaluationColumnsOptions = {
   projectId: string
+  readOnly?: boolean
   onRerun: (task: AutoEvaluationTaskRecord) => void
   onDelete: (task: AutoEvaluationTaskRecord) => void
 }
 
 export function createAutoEvaluationColumns({
   projectId,
+  readOnly,
   onRerun,
   onDelete,
 }: CreateAutoEvaluationColumnsOptions): ColumnDef<AutoEvaluationTaskRecord>[] {
-  return [
+  const columns: ColumnDef<AutoEvaluationTaskRecord>[] = [
     {
       accessorKey: 'name',
       header: ({ column }) => (
@@ -132,7 +134,10 @@ export function createAutoEvaluationColumns({
       ),
       cell: ({ row }) => row.original.createdBy,
     },
-    {
+  ]
+
+  if (!readOnly) {
+    columns.push({
       id: 'actions',
       enableHiding: false,
       cell: ({ row }) => (
@@ -143,6 +148,8 @@ export function createAutoEvaluationColumns({
           onDelete={onDelete}
         />
       ),
-    },
-  ]
+    })
+  }
+
+  return columns
 }

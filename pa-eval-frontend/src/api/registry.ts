@@ -1,10 +1,8 @@
 import { observabilityApi } from '@/modules/app-observability/api'
-import { layoutApi } from '@/modules/layout/api'
 import { organizationApi } from '@/modules/organization-management/api'
 import { systemManagementApi } from '@/modules/system-pages/api'
 
 export const apiRegistry = {
-  ...layoutApi,
   ...observabilityApi,
   ...organizationApi,
   ...systemManagementApi,

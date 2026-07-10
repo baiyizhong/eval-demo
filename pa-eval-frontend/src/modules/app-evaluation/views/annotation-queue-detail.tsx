@@ -5,6 +5,7 @@ import { useNavigate, useParams, useSearchParams } from 'react-router'
 import { toast } from 'sonner'
 import { confirm } from '@/lib/confirm'
 import { useAPI } from '@/hooks/use-api'
+import { usePermission } from '@/hooks/use-permission'
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card'
 import {
   DataTable,
@@ -40,6 +41,8 @@ export function ProjectAnnotationQueueDetail() {
   const queryClient = useQueryClient()
   const [searchParams] = useSearchParams()
   const { projectId = 'project_customer_agent', queueId = '' } = useParams()
+  const { can } = usePermission({ type: 'project', projectId })
+  const canEditAnnotation = can('project:annotation:edit')
 
   const queryState = useMemo<DataTableQueryState>(
     () => ({
@@ -96,17 +99,20 @@ export function ProjectAnnotationQueueDetail() {
       createAnnotationQueueItemColumns({
         projectId,
         queueId,
-        onDelete: (item) => {
-          void handleDeleteItem(
-            $api,
-            projectId,
-            queueId,
-            item,
-            invalidateDetail
-          )
-        },
+        canEdit: canEditAnnotation,
+        onDelete: canEditAnnotation
+          ? (item) => {
+              void handleDeleteItem(
+                $api,
+                projectId,
+                queueId,
+                item,
+                invalidateDetail
+              )
+            }
+          : undefined,
       }),
-    [$api, invalidateDetail, projectId, queueId]
+    [$api, canEditAnnotation, invalidateDetail, projectId, queueId]
   )
   const toolbarFilters = useMemo(
     () => createItemToolbarFilters(usersQuery.data ?? []),
@@ -126,18 +132,22 @@ export function ProjectAnnotationQueueDetail() {
           }
           buttonGroups={{
             buttons: [
-              {
-                id: 'batch-annotate',
-                label: '批量标注',
-                icon: ListChecks,
-                iconPosition: 'start',
-                size: 'sm',
-                onClick: () => {
-                  navigate(
-                    `/projects/${projectId}/evaluation/annotation-queues/${queueId}/batch-annotate`
-                  )
-                },
-              },
+              ...(canEditAnnotation
+                ? [
+                    {
+                      id: 'batch-annotate',
+                      label: '批量标注',
+                      icon: ListChecks,
+                      iconPosition: 'start' as const,
+                      size: 'sm' as const,
+                      onClick: () => {
+                        navigate(
+                          `/projects/${projectId}/evaluation/annotation-queues/${queueId}/batch-annotate`
+                        )
+                      },
+                    },
+                  ]
+                : []),
               {
                 id: 'export',
                 label: '全量导出',
@@ -225,9 +235,10 @@ export function ProjectAnnotationQueueDetail() {
               <AnnotationQueueItemBulkActions
                 table={table}
                 api={$api}
-                projectId={projectId}
-                queueId={queueId}
-                onChanged={invalidateDetail}
+                  projectId={projectId}
+                  queueId={queueId}
+                  canEdit={canEditAnnotation}
+                  onChanged={invalidateDetail}
               />
             )}
             loadingText={

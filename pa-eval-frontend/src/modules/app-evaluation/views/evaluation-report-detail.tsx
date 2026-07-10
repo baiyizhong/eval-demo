@@ -5,6 +5,7 @@ import { useNavigate, useParams, useSearchParams } from 'react-router'
 import { toast } from 'sonner'
 import { confirm } from '@/lib/confirm'
 import { useAPI } from '@/hooks/use-api'
+import { usePermission } from '@/hooks/use-permission'
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs'
 import { Loading } from '@/components/common/loading'
 import { Page } from '@/components/common/page'
@@ -30,6 +31,8 @@ import type {
 export function ProjectEvaluationReportDetail() {
   const { projectId = 'project_customer_agent', reportId = '' } = useParams()
   const $api = useAPI()
+  const { can } = usePermission({ type: 'project', projectId })
+  const canEditReport = can('project:evaluation-report:edit')
   const [searchParams, setSearchParams] = useSearchParams()
   const navigate = useNavigate()
   const queryClient = useQueryClient()
@@ -86,6 +89,8 @@ export function ProjectEvaluationReportDetail() {
     range: EvaluationReportFlowbackInput['range'],
     ids: string[] = []
   ) => {
+    if (!canEditReport) return
+
     setFlowbackType(type)
     setDefaultRange(range)
     setSelectedFlowbackIds(ids)
@@ -111,6 +116,7 @@ export function ProjectEvaluationReportDetail() {
   }
 
   const handleRegenerate = async () => {
+    if (!canEditReport) return
     if (!report) return
     const confirmed = await confirm({
       title: '重新生成评测报告',
@@ -140,35 +146,40 @@ export function ProjectEvaluationReportDetail() {
                 disabled: !report || report.status !== 'READY',
                 onClick: () => void handleExport(),
               },
-              {
-                id: 'regenerate',
-                label: '重新生成',
-                icon: RefreshCw,
-                iconPosition: 'start',
-                variant: 'outline',
-                size: 'sm',
-                disabled: !report,
-                onClick: () => void handleRegenerate(),
-              },
-              {
-                id: 'badcase-flowback',
-                label: '回流 Badcase',
-                icon: Send,
-                iconPosition: 'start',
-                size: 'sm',
-                disabled: !report || report.status !== 'READY' || !showBadcases,
-                onClick: () => openFlowback('BADCASE', 'BADCASE_ONLY'),
-              },
-              {
-                id: 'data-flowback',
-                label: '回流评测数据',
-                icon: Send,
-                iconPosition: 'start',
-                variant: 'outline',
-                size: 'sm',
-                disabled: !report || report.status !== 'READY' || !showItems,
-                onClick: () => openFlowback('EVALUATION_DATA', 'ALL'),
-              },
+              ...(canEditReport
+                ? [
+                    {
+                      id: 'regenerate',
+                      label: '重新生成',
+                      icon: RefreshCw,
+                      iconPosition: 'start' as const,
+                      variant: 'outline' as const,
+                      size: 'sm' as const,
+                      disabled: !report,
+                      onClick: () => void handleRegenerate(),
+                    },
+                    {
+                      id: 'badcase-flowback',
+                      label: '回流 Badcase',
+                      icon: Send,
+                      iconPosition: 'start' as const,
+                      size: 'sm' as const,
+                      disabled:
+                        !report || report.status !== 'READY' || !showBadcases,
+                      onClick: () => openFlowback('BADCASE', 'BADCASE_ONLY'),
+                    },
+                    {
+                      id: 'data-flowback',
+                      label: '回流评测数据',
+                      icon: Send,
+                      iconPosition: 'start' as const,
+                      variant: 'outline' as const,
+                      size: 'sm' as const,
+                      disabled: !report || report.status !== 'READY' || !showItems,
+                      onClick: () => openFlowback('EVALUATION_DATA', 'ALL'),
+                    },
+                  ]
+                : []),
             ],
           }}
         />
@@ -213,6 +224,7 @@ export function ProjectEvaluationReportDetail() {
                 <EvaluationReportBadcaseTable
                   projectId={projectId}
                   reportId={reportId}
+                  canEdit={canEditReport}
                   onFlowback={(ids) =>
                     openFlowback(
                       'BADCASE',
@@ -226,6 +238,7 @@ export function ProjectEvaluationReportDetail() {
                 <EvaluationReportItemTable
                   projectId={projectId}
                   reportId={reportId}
+                  canEdit={canEditReport}
                   onFlowback={(ids) =>
                     openFlowback(
                       'EVALUATION_DATA',

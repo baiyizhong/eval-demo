@@ -87,10 +87,10 @@
 
 侧边栏数据通过 `useSidebarData()` 读取：
 
-- API alias 定义在 `src/modules/layout/api/index.ts`，名称为 `getSidebar`。
-- `useSidebarData` 通过 `useAPI()` 调用 `$api.getSidebar<SidebarData>()`。
-- 返回数据类型见 `src/components/layout/types.ts`，核心字段为 `user`、`teams`、`menuGroups`。
-- mock 数据示例见 `mock/sidebar.ts`。
+- `useSidebarData` 通过 `useAPI()` 调用 `$api.getProjects()` 获取项目列表。
+- `src/lib/sidebar-data.ts` 根据项目列表和当前 URL 中的 `projectId` 在前端本地构造侧边栏数据。
+- 返回数据类型见 `src/components/layout/types.ts`，核心字段为 `teams`、`menuGroups`。
+- mock 项目数据来自项目列表相关 mock，不再维护单独的 `/api/sidebar` mock。
 
 `menuGroups` 在渲染前会经过权限过滤：
 

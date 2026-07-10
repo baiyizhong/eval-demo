@@ -14,7 +14,6 @@ const mockRoot = new URL('../../mock', import.meta.url)
 const sourceRoot = new URL('../', import.meta.url)
 const apiDefinitionFiles = [
   'api/registry.ts',
-  'modules/layout/api/index.ts',
   'modules/organization-management/api/index.ts',
   'modules/system-pages/api/index.ts',
   'modules/app-observability/api/index.ts',

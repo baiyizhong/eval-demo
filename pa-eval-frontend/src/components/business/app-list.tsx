@@ -132,6 +132,8 @@ function AppListToolbar({
   onSortChange,
   onAddClick,
 }: AppListToolbarProps) {
+  const canAdd = Boolean(onAddClick)
+
   return (
     <div className='my-4 flex items-end justify-between sm:my-0 sm:items-center'>
       <div className='flex flex-col gap-4 sm:my-4 sm:flex-row'>
@@ -179,10 +181,12 @@ function AppListToolbar({
       </div>
 
       <div className='flex items-center gap-2'>
-        <Button type='button' size='sm' onClick={onAddClick}>
-          <Plus size={16} />
-          新增项目
-        </Button>
+        {canAdd ? (
+          <Button type='button' size='sm' onClick={onAddClick}>
+            <Plus size={16} />
+            新增项目
+          </Button>
+        ) : null}
       </div>
     </div>
   )
@@ -294,6 +298,7 @@ export function AppList({
   const [appStatus, setAppStatus] = useState(status)
   const [searchTerm, setSearchTerm] = useState(filter)
   const [addDialogOpen, setAddDialogOpen] = useState(false)
+  const canAdd = Boolean(onAddClick || onAddSubmit || addDialogContent)
 
   const filteredApps = [...apps]
     .sort((a, b) =>
@@ -373,7 +378,7 @@ export function AppList({
         onSearch={handleSearch}
         onStatusChange={handleStatusChange}
         onSortChange={handleSortChange}
-        onAddClick={handleAddClick}
+        onAddClick={canAdd ? handleAddClick : undefined}
       />
       <Separator className='shadow-sm' />
       <AppCardList

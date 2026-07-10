@@ -2,7 +2,7 @@ import assert from 'node:assert/strict'
 import { test } from 'node:test'
 import { resolveCurrentOrganizationRole } from '../../modules/organization-management/data/current-organization-role.ts'
 
-test('resolves organization owner role from the logged-in Langfuse user id', () => {
+test('resolves organization owner role from the session user email', () => {
   const role = resolveCurrentOrganizationRole(
     [
       {
@@ -18,7 +18,6 @@ test('resolves organization owner role from the logged-in Langfuse user id', () 
       },
     ],
     {
-      langfuseUserId: 'real-owner-user',
       email: 'owner@example.com',
     }
   )
@@ -26,7 +25,7 @@ test('resolves organization owner role from the logged-in Langfuse user id', () 
   assert.equal(role, 'OWNER')
 })
 
-test('falls back to email when an older token does not contain Langfuse user id', () => {
+test('matches organization role with case-insensitive session email', () => {
   const role = resolveCurrentOrganizationRole(
     [
       {

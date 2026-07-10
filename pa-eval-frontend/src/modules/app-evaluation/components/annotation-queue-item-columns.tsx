@@ -12,12 +12,14 @@ import { formatDateTime } from './format'
 type CreateAnnotationQueueItemColumnsOptions = {
   projectId: string
   queueId: string
-  onDelete: (item: AnnotationQueueItemRecord) => void
+  canEdit?: boolean
+  onDelete?: (item: AnnotationQueueItemRecord) => void
 }
 
 export function createAnnotationQueueItemColumns({
   projectId,
   queueId,
+  canEdit,
   onDelete,
 }: CreateAnnotationQueueItemColumnsOptions): ColumnDef<AnnotationQueueItemRecord>[] {
   return [
@@ -48,14 +50,17 @@ export function createAnnotationQueueItemColumns({
       header: ({ column }) => (
         <DataTableColumnHeader column={column} title='数据 ID' />
       ),
-      cell: ({ row }) => (
-        <Link
-          to={`/projects/${projectId}/evaluation/annotation-queues/${queueId}/items/${row.original.id}/annotate`}
-          className='font-mono text-xs underline-offset-4 hover:underline'
-        >
-          {row.original.id}
-        </Link>
-      ),
+      cell: ({ row }) =>
+        canEdit ? (
+          <Link
+            to={`/projects/${projectId}/evaluation/annotation-queues/${queueId}/items/${row.original.id}/annotate`}
+            className='font-mono text-xs underline-offset-4 hover:underline'
+          >
+            {row.original.id}
+          </Link>
+        ) : (
+          <span className='font-mono text-xs'>{row.original.id}</span>
+        ),
       enableHiding: false,
     },
     {
@@ -118,21 +123,25 @@ export function createAnnotationQueueItemColumns({
       enableHiding: false,
       cell: ({ row }) => (
         <div className='flex items-center justify-end gap-2'>
-          <Button asChild size='sm' variant='outline'>
-            <Link
-              to={`/projects/${projectId}/evaluation/annotation-queues/${queueId}/items/${row.original.id}/annotate`}
+          {canEdit ? (
+            <Button asChild size='sm' variant='outline'>
+              <Link
+                to={`/projects/${projectId}/evaluation/annotation-queues/${queueId}/items/${row.original.id}/annotate`}
+              >
+                {row.original.status === 'COMPLETED' ? '查看/编辑' : '标注'}
+              </Link>
+            </Button>
+          ) : null}
+          {onDelete ? (
+            <Button
+              type='button'
+              size='sm'
+              variant='ghost'
+              onClick={() => onDelete(row.original)}
             >
-              {row.original.status === 'COMPLETED' ? '查看/编辑' : '标注'}
-            </Link>
-          </Button>
-          <Button
-            type='button'
-            size='sm'
-            variant='ghost'
-            onClick={() => onDelete(row.original)}
-          >
-            删除
-          </Button>
+              删除
+            </Button>
+          ) : null}
         </div>
       ),
     },

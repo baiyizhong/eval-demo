@@ -1,15 +1,10 @@
-import type { PermissionScope } from '@/types/permission'
+import type { PermissionAccessRule, PermissionScope } from '@/types/permission'
 import { type LinkProps } from 'react-router'
 import { type ActiveMatch } from '@/lib/nav'
 
-type User = {
-  name: string
-  email: string
-  avatar: string
-}
-
 type Team = {
   id?: string
+  organizationId?: string
   name: string
   logo: string
   plan: string
@@ -22,6 +17,8 @@ type BaseNavItem = {
   activeMatch?: ActiveMatch
   /** 权限码，匹配任意一个即有权限 */
   access?: string | string[]
+  /** 多组权限规则，匹配任意一组即有权限 */
+  accessRules?: PermissionAccessRule[]
   /** 仅超管可访问 */
   superAccess?: boolean
   /** 权限作用域 */
@@ -48,7 +45,6 @@ type NavGroup = {
 }
 
 type SidebarData = {
-  user: User
   teams: Team[]
   menuGroups: NavGroup[]
 }

@@ -5,6 +5,7 @@ import { Save } from 'lucide-react'
 import { useParams } from 'react-router'
 import { toast } from 'sonner'
 import { useAPI } from '@/hooks/use-api'
+import { usePermission } from '@/hooks/use-permission'
 import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
@@ -35,6 +36,8 @@ export function ProjectGeneralSettings() {
   const { projectId = '' } = useParams()
   const $api = useAPI()
   const queryClient = useQueryClient()
+  const { can } = usePermission({ type: 'project', projectId })
+  const canEditSettings = can('project:settings:edit')
   const projectQuery = useQuery({
     queryKey: ['project-settings-info', $api, projectId],
     queryFn: async () => {
@@ -76,6 +79,7 @@ export function ProjectGeneralSettings() {
           <ProjectGeneralSettingsForm
             key={currentProject.id}
             initialProject={currentProject}
+            readOnly={!canEditSettings}
             submitting={updateMutation.isPending}
             onSubmit={(input) => updateMutation.mutateAsync(input)}
           />
@@ -92,10 +96,12 @@ export function ProjectGeneralSettings() {
 
 function ProjectGeneralSettingsForm({
   initialProject,
+  readOnly,
   submitting,
   onSubmit,
 }: {
   initialProject: ProjectInfo
+  readOnly?: boolean
   submitting: boolean
   onSubmit: (input: {
     name: string
@@ -112,6 +118,8 @@ function ProjectGeneralSettingsForm({
 
   const handleSubmit = async (event: FormEvent<HTMLFormElement>) => {
     event.preventDefault()
+    if (readOnly) return
+
     const nextProject = {
       name: name.trim() || project.name,
       description: description.trim(),
@@ -132,6 +140,7 @@ function ProjectGeneralSettingsForm({
         <Input
           id='project-name'
           value={name}
+          disabled={readOnly}
           onChange={(event) => setName(event.target.value)}
           placeholder='输入项目名称'
         />
@@ -141,6 +150,7 @@ function ProjectGeneralSettingsForm({
         <Textarea
           id='project-description'
           value={description}
+          disabled={readOnly}
           onChange={(event) => setDescription(event.target.value)}
           placeholder='输入项目描述'
           rows={4}
@@ -178,6 +188,7 @@ function ProjectGeneralSettingsForm({
           min={1}
           max={30}
           value={retentionDays}
+          disabled={readOnly}
           onChange={(event) => setRetentionDays(event.target.value)}
           placeholder='1-30'
         />
@@ -185,12 +196,14 @@ function ProjectGeneralSettingsForm({
           支持自定义 1-30 天，超出范围会自动按边界值保存。
         </p>
       </div>
-      <div>
-        <Button type='submit' disabled={submitting}>
-          <Save data-icon='inline-start' />
-          保存设置
-        </Button>
-      </div>
+      {!readOnly ? (
+        <div>
+          <Button type='submit' disabled={submitting}>
+            <Save data-icon='inline-start' />
+            保存设置
+          </Button>
+        </div>
+      ) : null}
     </form>
   )
 }

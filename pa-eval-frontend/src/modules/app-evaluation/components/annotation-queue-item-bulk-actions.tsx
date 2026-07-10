@@ -16,6 +16,7 @@ type AnnotationQueueItemBulkActionsProps = {
   api: Parameters<typeof deleteProjectAnnotationQueueItems>[0]
   projectId: string
   queueId: string
+  canEdit?: boolean
   onChanged: () => Promise<unknown>
 }
 
@@ -24,6 +25,7 @@ export function AnnotationQueueItemBulkActions({
   api,
   projectId,
   queueId,
+  canEdit,
   onChanged,
 }: AnnotationQueueItemBulkActionsProps) {
   const selectedRows = table.getFilteredSelectedRowModel().rows
@@ -44,6 +46,8 @@ export function AnnotationQueueItemBulkActions({
   }
 
   const handleDelete = async () => {
+    if (!canEdit) return
+
     const confirmed = await confirm({
       title: '删除选中标注数据',
       desc: `将仅移除 ${itemIds.length} 条队列数据，不删除源对象、历史评分或数据集项。确定继续吗？`,
@@ -72,17 +76,19 @@ export function AnnotationQueueItemBulkActions({
         <Download data-icon='inline-start' />
         导出选中
       </Button>
-      <Button
-        type='button'
-        size='sm'
-        variant='destructive'
-        onClick={() => {
-          void handleDelete()
-        }}
-      >
-        <Trash2 data-icon='inline-start' />
-        删除选中
-      </Button>
+      {canEdit ? (
+        <Button
+          type='button'
+          size='sm'
+          variant='destructive'
+          onClick={() => {
+            void handleDelete()
+          }}
+        >
+          <Trash2 data-icon='inline-start' />
+          删除选中
+        </Button>
+      ) : null}
     </DataTableBulkActions>
   )
 }

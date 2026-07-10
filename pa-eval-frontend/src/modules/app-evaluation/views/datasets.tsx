@@ -4,6 +4,7 @@ import { Plus, RefreshCw } from 'lucide-react'
 import { useParams } from 'react-router'
 import { toast } from 'sonner'
 import { useAPI } from '@/hooks/use-api'
+import { usePermission } from '@/hooks/use-permission'
 import { Tabs, TabsList, TabsTrigger } from '@/components/ui/tabs'
 import { ConfirmDialog } from '@/components/common/confirm-dialog'
 import {
@@ -40,6 +41,8 @@ export function ProjectDatasets() {
   const { projectId = 'project_customer_agent' } = useParams()
   const $api = useAPI()
   const queryClient = useQueryClient()
+  const { can } = usePermission({ type: 'project', projectId })
+  const canEditDatasets = can('project:dataset:edit')
   const [activeType, setActiveType] = useState<DatasetTypeFilter>('all')
   const [createOpen, setCreateOpen] = useState(false)
   const [editingDataset, setEditingDataset] = useState<DatasetRecord | null>(
@@ -92,10 +95,11 @@ export function ProjectDatasets() {
     () =>
       createDatasetColumns({
         projectId,
-        onEdit: setEditingDataset,
-        onDelete: setDeletingDataset,
+        readOnly: !canEditDatasets,
+        onEdit: canEditDatasets ? setEditingDataset : undefined,
+        onDelete: canEditDatasets ? setDeletingDataset : undefined,
       }),
-    [projectId]
+    [canEditDatasets, projectId]
   )
 
   const handleRefresh = async () => {
@@ -104,6 +108,8 @@ export function ProjectDatasets() {
   }
 
   const handleSubmitDataset = async (input: DatasetFormInput) => {
+    if (!canEditDatasets) return
+
     if (editingDataset) {
       await updateMutation.mutateAsync({
         datasetId: editingDataset.id,
@@ -118,6 +124,7 @@ export function ProjectDatasets() {
   }
 
   const handleDeleteDataset = async () => {
+    if (!canEditDatasets) return
     if (!deletingDataset) return
     await deleteMutation.mutateAsync(deletingDataset.id)
   }
@@ -128,14 +135,18 @@ export function ProjectDatasets() {
         <EvaluationPageNav
           buttonGroups={{
             buttons: [
-              {
-                id: 'create',
-                label: '新建数据集',
-                icon: Plus,
-                iconPosition: 'start',
-                size: 'sm',
-                onClick: () => setCreateOpen(true),
-              },
+              ...(canEditDatasets
+                ? [
+                    {
+                      id: 'create',
+                      label: '新建数据集',
+                      icon: Plus,
+                      iconPosition: 'start' as const,
+                      size: 'sm' as const,
+                      onClick: () => setCreateOpen(true),
+                    },
+                  ]
+                : []),
               {
                 id: 'refresh',
                 label: '刷新',

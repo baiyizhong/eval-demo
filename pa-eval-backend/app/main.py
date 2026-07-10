@@ -7,6 +7,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 
 from app.annotations import router as annotations_router
+from app.admin_users import router as admin_users_router
 from app.audit import (
     admin_router,
     audit_http_request,
@@ -26,7 +27,7 @@ from app.scheduled_jobs import (
     router as scheduled_jobs_router,
     start_scheduled_job_scheduler,
 )
-from app.system import router as system_router
+from app.users import router as user_router
 
 
 def create_app() -> FastAPI:
@@ -60,8 +61,9 @@ def create_app() -> FastAPI:
     app.include_router(observability_router)
     app.include_router(scheduled_jobs_router)
     app.include_router(admin_router)
+    app.include_router(admin_users_router)
     app.include_router(audit_router)
-    app.include_router(system_router)
+    app.include_router(user_router)
 
     @app.middleware("http")
     async def audit_write_requests(request: Request, call_next: Any) -> Any:

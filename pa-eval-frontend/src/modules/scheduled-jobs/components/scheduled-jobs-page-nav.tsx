@@ -6,6 +6,7 @@ export type ScheduledJobsTab = 'tasks' | 'logs'
 type ScheduledJobsPageNavProps = {
   activeTab: ScheduledJobsTab
   basePath: string
+  canCreate?: boolean
   onCreate: () => void
   onRefresh: () => void
 }
@@ -13,6 +14,7 @@ type ScheduledJobsPageNavProps = {
 export function ScheduledJobsPageNav({
   activeTab,
   basePath,
+  canCreate = true,
   onCreate,
   onRefresh,
 }: ScheduledJobsPageNavProps) {
@@ -46,14 +48,18 @@ export function ScheduledJobsPageNav({
             size: 'sm',
             onClick: onRefresh,
           },
-          {
-            id: 'create',
-            label: '创建任务',
-            icon: Plus,
-            iconPosition: 'start',
-            size: 'sm',
-            onClick: onCreate,
-          },
+          ...(canCreate
+            ? [
+                {
+                  id: 'create',
+                  label: '创建任务',
+                  icon: Plus,
+                  iconPosition: 'start' as const,
+                  size: 'sm' as const,
+                  onClick: onCreate,
+                },
+              ]
+            : []),
         ],
       }}
     />

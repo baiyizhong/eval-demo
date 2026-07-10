@@ -23,11 +23,6 @@ export function buildSidebarDataFromProjects(
   const projectId = currentProjectId
 
   return {
-    user: {
-      name: 'PA Eval',
-      email: '',
-      avatar: '',
-    },
     teams: projectId
       ? buildProjectSwitcherItems(projects, projectId)
       : buildPlatformSwitcherItems(),
@@ -83,6 +78,7 @@ function buildProjectSwitcherItems(
 
   return orderedProjects.map((project) => ({
     id: project.id,
+    organizationId: project.organizationId,
     name: project.name,
     logo: 'Package',
     plan: project.organizationName,
@@ -96,8 +92,10 @@ function buildPlatformNavItems(): NavItem[] {
       url: '/apps',
       icon: 'Package',
       activeMatch: 'prefix',
-      access: 'org:project:view',
-      scope: { type: 'org' },
+      accessRules: [
+        { scope: { type: 'org', all: true }, access: 'org:project:view' },
+        { scope: { type: 'project', all: true }, anyPermission: true },
+      ],
     },
     {
       title: '组织管理',

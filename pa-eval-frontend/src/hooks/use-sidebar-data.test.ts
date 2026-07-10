@@ -18,7 +18,9 @@ const projects = [
 test('buildSidebarDataFromProjects uses current project in sidebar header and project evaluation route', () => {
   const sidebar = buildSidebarDataFromProjects(projects, 'project-real-1')
 
+  assert.equal('user' in sidebar, false)
   assert.equal(sidebar.teams[0]?.id, 'project-real-1')
+  assert.equal(sidebar.teams[0]?.organizationId, 'org-1')
   assert.equal(sidebar.teams[0]?.name, '真实评测项目')
   assert.equal(sidebar.teams[0]?.plan, '真实组织')
 

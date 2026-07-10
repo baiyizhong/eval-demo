@@ -1,4 +1,7 @@
+import { useMemo } from 'react'
 import { Navigate, Outlet, useParams } from 'react-router'
+import { matchPermission } from '@/lib/permission'
+import { useSessionStore } from '@/stores/session.store'
 import { Separator } from '@/components/ui/separator'
 import { Page } from '@/components/common/page'
 import { SidebarNav } from '@/components/common/sidebar-nav'
@@ -12,8 +15,31 @@ const DEFAULT_PROJECT_ID = 'project_customer_agent'
 
 export function ProjectSettings() {
   const { projectId = DEFAULT_PROJECT_ID } = useParams()
-  const navigationItems = getProjectSettingsNavigationItems(projectId)
+  const orgs = useSessionStore((state) => state.orgs)
+  const permissions = useSessionStore((state) => state.permissions)
+  const superAdmin = useSessionStore((state) => state.superAdmin)
+  const getPermissionsForScope = useSessionStore(
+    (state) => state.getPermissionsForScope
+  )
+  const navigationItems = useMemo(() => {
+    const effectiveCodes = getPermissionsForScope({
+      type: 'project',
+      projectId,
+    })
+
+    return getProjectSettingsNavigationItems(projectId).filter((item) => {
+      const accessCodes = Array.isArray(item.access)
+        ? item.access
+        : [item.access]
+
+      return accessCodes.some((code) => matchPermission(code, effectiveCodes))
+    })
+  }, [getPermissionsForScope, orgs, permissions, projectId, superAdmin])
   const pageLinks = getProjectSettingsPageLinks(projectId)
+  const defaultNavValue =
+    navigationItems.find(
+      (item) => item.href === `${getProjectSettingsBasePath(projectId)}/general`
+    )?.href ?? navigationItems[0]?.href
 
   return (
     <Page links={pageLinks} fixed>
@@ -30,7 +56,7 @@ export function ProjectSettings() {
         <aside className='top-0 lg:sticky lg:w-1/5'>
           <SidebarNav
             items={navigationItems}
-            defaultValue={`${getProjectSettingsBasePath(projectId)}/general`}
+            defaultValue={defaultNavValue}
             selectPlaceholder='项目设置分组'
           />
         </aside>

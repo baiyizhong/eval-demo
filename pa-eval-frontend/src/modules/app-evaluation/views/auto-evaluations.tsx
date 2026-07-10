@@ -5,6 +5,7 @@ import { useNavigate, useParams } from 'react-router'
 import { toast } from 'sonner'
 import { confirm } from '@/lib/confirm'
 import { useAPI } from '@/hooks/use-api'
+import { usePermission } from '@/hooks/use-permission'
 import { DataTable } from '@/components/common/data-table'
 import { Drawer } from '@/components/common/drawer'
 import { Loading } from '@/components/common/loading'
@@ -29,6 +30,8 @@ export function ProjectAutoEvaluations() {
   const $api = useAPI()
   const navigate = useNavigate()
   const queryClient = useQueryClient()
+  const { can } = usePermission({ type: 'project', projectId })
+  const canEditAutoEvaluation = can('project:auto-evaluation:edit')
   const [activeFilter, setActiveFilter] =
     useState<AutoEvaluationSummaryFilter>('all')
   const [createOpen, setCreateOpen] = useState(false)
@@ -56,14 +59,17 @@ export function ProjectAutoEvaluations() {
     () =>
       createAutoEvaluationColumns({
         projectId,
+        readOnly: !canEditAutoEvaluation,
         onRerun: (task) => {
+          if (!canEditAutoEvaluation) return
           void handleRerun($api, projectId, task, invalidateTasks)
         },
         onDelete: (task) => {
+          if (!canEditAutoEvaluation) return
           void handleDelete($api, projectId, task, invalidateTasks)
         },
       }),
-    [$api, invalidateTasks, projectId]
+    [$api, canEditAutoEvaluation, invalidateTasks, projectId]
   )
 
   const handleRefresh = async () => {
@@ -86,14 +92,18 @@ export function ProjectAutoEvaluations() {
                 size: 'sm',
                 onClick: () => void handleRefresh(),
               },
-              {
-                id: 'create',
-                label: '新建自动评测',
-                icon: Plus,
-                iconPosition: 'start',
-                size: 'sm',
-                onClick: () => setCreateOpen(true),
-              },
+              ...(canEditAutoEvaluation
+                ? [
+                    {
+                      id: 'create',
+                      label: '新建自动评测',
+                      icon: Plus,
+                      iconPosition: 'start' as const,
+                      size: 'sm' as const,
+                      onClick: () => setCreateOpen(true),
+                    },
+                  ]
+                : []),
             ],
           }}
         />
@@ -157,7 +167,7 @@ export function ProjectAutoEvaluations() {
         </section>
       </div>
       <Drawer
-        open={createOpen}
+        open={canEditAutoEvaluation && createOpen}
         onOpenChange={setCreateOpen}
         mode='enhanced'
         title='新建自动评测'

@@ -8,6 +8,7 @@ from fastapi import Depends
 from psycopg.rows import dict_row
 from psycopg.types.json import Jsonb
 
+from app.auth_context import CurrentUserContext
 from app.config import Settings, get_settings
 from app.errors import BusinessError
 
@@ -19,7 +20,6 @@ EXISTS (
     LEFT JOIN project_memberships pm
       ON pm.org_membership_id = om.id
      AND pm.project_id = p.id
-     AND pm.user_id = om.user_id
     WHERE om.org_id = p.org_id
       AND om.user_id = %(user_id)s
       AND (
@@ -44,6 +44,101 @@ ROLE_LEVELS = {
 }
 MANAGER_ROLE_LEVEL = ROLE_LEVELS["ADMIN"]
 
+SYSTEM_AUDIT_PERMISSION = "system:audit:view"
+
+ORG_ADMIN_PERMISSIONS = [
+    "org:project:view",
+    "org:project:edit",
+    "org:organization:view",
+    "org:organization:edit",
+    "org:member:view",
+    "org:member:edit",
+]
+ORG_READ_PERMISSIONS = [
+    "org:project:view",
+    "org:organization:view",
+]
+
+PROJECT_ADMIN_PERMISSIONS = [
+    "project:trace:view",
+    "project:trace:edit",
+    "project:dataset:view",
+    "project:dataset:edit",
+    "project:evaluator:view",
+    "project:evaluator:edit",
+    "project:annotation:view",
+    "project:annotation:edit",
+    "project:auto-evaluation:view",
+    "project:auto-evaluation:edit",
+    "project:evaluation-report:view",
+    "project:evaluation-report:edit",
+    "project:scheduled-job:view",
+    "project:scheduled-job:edit",
+    "project:settings:view",
+    "project:settings:edit",
+    "project:score-config:view",
+    "project:score-config:edit",
+    "project:member:view",
+    "project:member:edit",
+    "project:model:view",
+    "project:model:edit",
+    "project:api-key:view",
+    "project:api-key:edit",
+]
+PROJECT_MEMBER_PERMISSIONS = [
+    "project:trace:view",
+    "project:trace:edit",
+    "project:dataset:view",
+    "project:dataset:edit",
+    "project:evaluator:view",
+    "project:evaluator:edit",
+    "project:annotation:view",
+    "project:annotation:edit",
+    "project:auto-evaluation:view",
+    "project:auto-evaluation:edit",
+    "project:evaluation-report:view",
+    "project:evaluation-report:edit",
+    "project:scheduled-job:view",
+    "project:scheduled-job:edit",
+    "project:settings:view",
+    "project:score-config:view",
+]
+PROJECT_VIEWER_PERMISSIONS = [
+    "project:trace:view",
+    "project:dataset:view",
+    "project:evaluator:view",
+    "project:annotation:view",
+    "project:auto-evaluation:view",
+    "project:evaluation-report:view",
+    "project:scheduled-job:view",
+    "project:settings:view",
+    "project:score-config:view",
+]
+
+
+def map_system_permissions(is_super_admin: bool) -> list[str]:
+    if is_super_admin:
+        return [SYSTEM_AUDIT_PERMISSION]
+    return []
+
+
+def map_organization_permissions(role: str | None) -> list[str]:
+    if role in {"OWNER", "ADMIN"}:
+        return ORG_ADMIN_PERMISSIONS.copy()
+    if role in {"MEMBER", "VIEWER"}:
+        return ORG_READ_PERMISSIONS.copy()
+    return []
+
+
+def map_project_permissions(role: str | None) -> list[str]:
+    if role in {"OWNER", "ADMIN"}:
+        return PROJECT_ADMIN_PERMISSIONS.copy()
+    if role == "MEMBER":
+        return PROJECT_MEMBER_PERMISSIONS.copy()
+    if role == "VIEWER":
+        return PROJECT_VIEWER_PERMISSIONS.copy()
+    return []
+
 
 class LangfuseDatabaseConfigError(BusinessError):
     def __init__(self) -> None:
@@ -56,6 +151,7 @@ class LangfuseDatabaseConfigError(BusinessError):
 
 class LangfuseDatabaseReader:
     def __init__(self, settings: Settings) -> None:
+        self._settings = settings
         self._database_url = settings.langfuse_database_url
 
     async def list_organizations(self) -> list[dict[str, Any]]:
@@ -166,6 +262,101 @@ class LangfuseDatabaseReader:
         )
         return [self._to_project_payload(row) for row in rows]
 
+    async def get_user_session(
+        self,
+        current_user: CurrentUserContext,
+    ) -> dict[str, Any]:
+        organization_rows = await self._fetch_all(
+            """
+            SELECT
+                om.org_id AS organization_id,
+                o.name AS organization_name,
+                om.role::text AS organization_role
+            FROM organization_memberships om
+            JOIN organizations o ON o.id = om.org_id
+            WHERE om.user_id = %(user_id)s
+            ORDER BY o.created_at DESC, o.id DESC
+            """,
+            {"user_id": current_user.user_id},
+        )
+        project_rows = await self._fetch_all(
+            """
+            SELECT DISTINCT
+                p.id AS project_id,
+                p.name AS project_name,
+                p.org_id AS organization_id,
+                o.name AS organization_name,
+                om.role::text AS organization_role,
+                COALESCE(
+                    NULLIF(pm.role::text, 'NONE'),
+                    NULLIF(om.role::text, 'NONE')
+                ) AS role
+            FROM projects p
+            JOIN organizations o ON o.id = p.org_id
+            JOIN organization_memberships om
+              ON om.org_id = p.org_id
+             AND om.user_id = %(user_id)s
+            LEFT JOIN project_memberships pm
+              ON pm.org_membership_id = om.id
+             AND pm.project_id = p.id
+            WHERE p.deleted_at IS NULL
+              AND (
+                om.role::text <> 'NONE'
+                OR pm.role::text <> 'NONE'
+              )
+            ORDER BY o.name, p.name, p.id
+            """,
+            {"user_id": current_user.user_id},
+        )
+
+        orgs_by_id: dict[str, dict[str, Any]] = {}
+        for row in organization_rows:
+            role = row.get("organization_role")
+            orgs_by_id[row["organization_id"]] = {
+                "id": row["organization_id"],
+                "name": row["organization_name"],
+                "role": role,
+                "permissions": map_organization_permissions(role),
+                "projects": [],
+            }
+
+        for row in project_rows:
+            organization_id = row["organization_id"]
+            if organization_id not in orgs_by_id:
+                organization_role = row.get("organization_role")
+                orgs_by_id[organization_id] = {
+                    "id": organization_id,
+                    "name": row["organization_name"],
+                    "role": organization_role,
+                    "permissions": map_organization_permissions(organization_role),
+                    "projects": [],
+                }
+
+            role = row.get("role")
+            orgs_by_id[organization_id]["projects"].append(
+                {
+                    "id": row["project_id"],
+                    "name": row["project_name"],
+                    "role": role,
+                    "permissions": map_project_permissions(role),
+                }
+            )
+
+        is_super_admin = self._is_super_admin(current_user.email)
+
+        return {
+            "user": {
+                "email": current_user.email,
+                "name": current_user.name or current_user.email.split("@")[0],
+            },
+            "superAdmin": is_super_admin,
+            "permissions": map_system_permissions(is_super_admin),
+            "orgs": list(orgs_by_id.values()),
+        }
+
+    def _is_super_admin(self, email: str) -> bool:
+        return email.strip().lower() in self._settings.super_admin_emails
+
     async def get_project_for_user(
         self,
         project_id: str,
@@ -219,6 +410,7 @@ class LangfuseDatabaseReader:
                     organization_id,
                     user_id,
                 )
+                self._ensure_project_can_be_created(organization)
                 metadata = _merge_pa_eval_metadata(
                     None,
                     {
@@ -2016,7 +2208,6 @@ class LangfuseDatabaseReader:
             LEFT JOIN project_memberships pm
               ON pm.org_membership_id = om.id
              AND pm.project_id = p.id
-             AND pm.user_id = om.user_id
             JOIN users u ON u.id = om.user_id
             WHERE p.id = %(project_id)s
               AND p.deleted_at IS NULL
@@ -2367,7 +2558,6 @@ class LangfuseDatabaseReader:
             LEFT JOIN project_memberships pm
               ON pm.org_membership_id = om.id
              AND pm.project_id = p.id
-             AND pm.user_id = om.user_id
             JOIN users u ON u.id = om.user_id
             WHERE p.id = %(project_id)s
               AND u.id = %(member_id)s
@@ -2416,6 +2606,16 @@ class LangfuseDatabaseReader:
                 409,
             )
 
+    @classmethod
+    def _ensure_project_can_be_created(
+        cls,
+        organization: dict[str, Any],
+    ) -> None:
+        cls._ensure_manager_role(
+            organization.get("role"),
+            "当前角色不能创建项目",
+        )
+
     async def _get_actor_project_role_cursor(
         self,
         cursor: psycopg.AsyncCursor[dict[str, Any]],
@@ -2449,7 +2649,6 @@ class LangfuseDatabaseReader:
             LEFT JOIN project_memberships pm
               ON pm.org_membership_id = om.id
              AND pm.project_id = %(project_id)s
-             AND pm.user_id = om.user_id
             WHERE om.org_id = %(organization_id)s
               AND om.user_id = %(member_id)s
             LIMIT 1
@@ -4752,15 +4951,12 @@ class LangfuseDatabaseReader:
     ) -> dict[str, Any]:
         await cursor.execute(
             """
-            SELECT o.id, o.name
+            SELECT o.id, o.name, om.role::text AS role
             FROM organizations o
+            JOIN organization_memberships om
+              ON om.org_id = o.id
+             AND om.user_id = %(user_id)s
             WHERE o.id = %(organization_id)s
-              AND EXISTS (
-                SELECT 1
-                FROM organization_memberships om
-                WHERE om.org_id = o.id
-                  AND om.user_id = %(user_id)s
-              )
             LIMIT 1
             """,
             {"organization_id": organization_id, "user_id": user_id},

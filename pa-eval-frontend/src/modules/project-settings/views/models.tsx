@@ -5,6 +5,7 @@ import { useParams } from 'react-router'
 import { toast } from 'sonner'
 import { confirm } from '@/lib/confirm'
 import { useAPI } from '@/hooks/use-api'
+import { usePermission } from '@/hooks/use-permission'
 import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card'
@@ -92,6 +93,8 @@ export function ProjectModelsSettings() {
   const { projectId = '' } = useParams()
   const $api = useAPI()
   const queryClient = useQueryClient()
+  const { can } = usePermission({ type: 'project', projectId })
+  const canEditModels = can('project:model:edit')
   const queryKey = ['project-model-settings', $api, projectId] as const
   const settingsQuery = useQuery({
     queryKey,
@@ -200,6 +203,8 @@ export function ProjectModelsSettings() {
 
   const handleDefaultSubmit = async (event: FormEvent<HTMLFormElement>) => {
     event.preventDefault()
+    if (!canEditModels) return
+
     if (!defaultModel.llmConnectionId || !defaultModel.model) {
       toast.error('请选择 LLM 连接和模型')
       return
@@ -209,6 +214,8 @@ export function ProjectModelsSettings() {
 
   const handleLlmSubmit = async (event: FormEvent<HTMLFormElement>) => {
     event.preventDefault()
+    if (!canEditModels) return
+
     if (!llmForm.provider.trim()) {
       toast.error('请输入 Provider 名称')
       return
@@ -227,12 +234,16 @@ export function ProjectModelsSettings() {
   }
 
   const openCreateConnection = () => {
+    if (!canEditModels) return
+
     setEditingConnection(null)
     setLlmForm(emptyLlmForm)
     setLlmDialogOpen(true)
   }
 
   const openEditConnection = (connection: LlmConnection) => {
+    if (!canEditModels) return
+
     setEditingConnection(connection)
     setLlmForm({
       provider: connection.provider,
@@ -246,6 +257,8 @@ export function ProjectModelsSettings() {
   }
 
   const deleteConnection = async (connection: LlmConnection) => {
+    if (!canEditModels) return
+
     if (
       await confirm({
         title: '删除 LLM 连接',
@@ -260,6 +273,8 @@ export function ProjectModelsSettings() {
 
   const handleModelSubmit = async (event: FormEvent<HTMLFormElement>) => {
     event.preventDefault()
+    if (!canEditModels) return
+
     if (!modelForm.modelName.trim()) {
       toast.error('请输入模型名称')
       return
@@ -276,12 +291,16 @@ export function ProjectModelsSettings() {
   }
 
   const openCreateModel = () => {
+    if (!canEditModels) return
+
     setEditingModel(null)
     setModelForm(emptyModelForm)
     setModelDialogOpen(true)
   }
 
   const openEditModel = (model: ModelDefinition) => {
+    if (!canEditModels) return
+
     setEditingModel(model)
     setModelForm({
       modelName: model.modelName,
@@ -295,6 +314,8 @@ export function ProjectModelsSettings() {
   }
 
   const deleteModel = async (model: ModelDefinition) => {
+    if (!canEditModels) return
+
     if (
       await confirm({
         title: '删除模型定义',
@@ -336,6 +357,7 @@ export function ProjectModelsSettings() {
                     <Label>LLM 连接</Label>
                     <Select
                       value={defaultModel.llmConnectionId}
+                      disabled={!canEditModels}
                       onValueChange={(value) =>
                         setDefaultModelDraft((current) => ({
                           ...(current ?? defaultModel),
@@ -368,6 +390,7 @@ export function ProjectModelsSettings() {
                       <Label>模型</Label>
                       <Select
                         value={defaultModel.model}
+                        disabled={!canEditModels}
                         onValueChange={(value) =>
                           setDefaultModelDraft((current) => ({
                             ...(current ?? defaultModel),
@@ -394,6 +417,7 @@ export function ProjectModelsSettings() {
                       <Input
                         id='model-temperature'
                         value={defaultModel.temperature}
+                        disabled={!canEditModels}
                         onChange={(event) =>
                           setDefaultModelDraft((current) => ({
                             ...(current ?? defaultModel),
@@ -403,12 +427,14 @@ export function ProjectModelsSettings() {
                       />
                     </div>
                   </div>
-                  <div>
-                    <Button type='submit' disabled={defaultMutation.isPending}>
-                      <Save data-icon='inline-start' />
-                      保存默认模型
-                    </Button>
-                  </div>
+                  {canEditModels ? (
+                    <div>
+                      <Button type='submit' disabled={defaultMutation.isPending}>
+                        <Save data-icon='inline-start' />
+                        保存默认模型
+                      </Button>
+                    </div>
+                  ) : null}
                 </form>
               </CardContent>
             </Card>
@@ -417,14 +443,16 @@ export function ProjectModelsSettings() {
               <CardHeader>
                 <div className='flex items-start justify-between gap-4'>
                   <CardTitle>LLM 连接</CardTitle>
-                  <Button
-                    type='button'
-                    size='sm'
-                    onClick={openCreateConnection}
-                  >
-                    <Plus data-icon='inline-start' />
-                    新增连接
-                  </Button>
+                  {canEditModels ? (
+                    <Button
+                      type='button'
+                      size='sm'
+                      onClick={openCreateConnection}
+                    >
+                      <Plus data-icon='inline-start' />
+                      新增连接
+                    </Button>
+                  ) : null}
                 </div>
               </CardHeader>
               <CardContent>
@@ -436,7 +464,9 @@ export function ProjectModelsSettings() {
                         <TableHead>Adapter</TableHead>
                         <TableHead>Secret</TableHead>
                         <TableHead>模型</TableHead>
-                        <TableHead className='w-32 text-right'>操作</TableHead>
+                        {canEditModels ? (
+                          <TableHead className='w-32 text-right'>操作</TableHead>
+                        ) : null}
                       </TableRow>
                     </TableHeader>
                     <TableBody>
@@ -465,37 +495,39 @@ export function ProjectModelsSettings() {
                               ))}
                             </div>
                           </TableCell>
-                          <TableCell>
-                            <div className='flex justify-end gap-2'>
-                              <Button
-                                type='button'
-                                variant='ghost'
-                                size='icon'
-                                onClick={() => openEditConnection(connection)}
-                                aria-label='编辑 LLM 连接'
-                              >
-                                <Pencil />
-                              </Button>
-                              <Button
-                                type='button'
-                                variant='ghost'
-                                size='icon'
-                                disabled={deleteConnectionMutation.isPending}
-                                onClick={() =>
-                                  void deleteConnection(connection)
-                                }
-                                aria-label='删除 LLM 连接'
-                              >
-                                <Trash2 />
-                              </Button>
-                            </div>
-                          </TableCell>
+                          {canEditModels ? (
+                            <TableCell>
+                              <div className='flex justify-end gap-2'>
+                                <Button
+                                  type='button'
+                                  variant='ghost'
+                                  size='icon'
+                                  onClick={() => openEditConnection(connection)}
+                                  aria-label='编辑 LLM 连接'
+                                >
+                                  <Pencil />
+                                </Button>
+                                <Button
+                                  type='button'
+                                  variant='ghost'
+                                  size='icon'
+                                  disabled={deleteConnectionMutation.isPending}
+                                  onClick={() =>
+                                    void deleteConnection(connection)
+                                  }
+                                  aria-label='删除 LLM 连接'
+                                >
+                                  <Trash2 />
+                                </Button>
+                              </div>
+                            </TableCell>
+                          ) : null}
                         </TableRow>
                       ))}
                       {connections.length === 0 ? (
                         <TableRow>
                           <TableCell
-                            colSpan={5}
+                            colSpan={canEditModels ? 5 : 4}
                             className='text-muted-foreground h-24 text-center'
                           >
                             暂无 LLM 连接
@@ -512,10 +544,12 @@ export function ProjectModelsSettings() {
               <CardHeader>
                 <div className='flex items-start justify-between gap-4'>
                   <CardTitle>模型定义</CardTitle>
-                  <Button type='button' size='sm' onClick={openCreateModel}>
-                    <Plus data-icon='inline-start' />
-                    新增模型
-                  </Button>
+                  {canEditModels ? (
+                    <Button type='button' size='sm' onClick={openCreateModel}>
+                      <Plus data-icon='inline-start' />
+                      新增模型
+                    </Button>
+                  ) : null}
                 </div>
               </CardHeader>
               <CardContent>
@@ -527,7 +561,9 @@ export function ProjectModelsSettings() {
                         <TableHead>匹配规则</TableHead>
                         <TableHead>价格</TableHead>
                         <TableHead>Tokenizer</TableHead>
-                        <TableHead className='w-32 text-right'>操作</TableHead>
+                        {canEditModels ? (
+                          <TableHead className='w-32 text-right'>操作</TableHead>
+                        ) : null}
                       </TableRow>
                     </TableHeader>
                     <TableBody>
@@ -544,35 +580,37 @@ export function ProjectModelsSettings() {
                             </div>
                           </TableCell>
                           <TableCell>{model.tokenizerId || '-'}</TableCell>
-                          <TableCell>
-                            <div className='flex justify-end gap-2'>
-                              <Button
-                                type='button'
-                                variant='ghost'
-                                size='icon'
-                                onClick={() => openEditModel(model)}
-                                aria-label='编辑模型定义'
-                              >
-                                <Pencil />
-                              </Button>
-                              <Button
-                                type='button'
-                                variant='ghost'
-                                size='icon'
-                                disabled={deleteModelMutation.isPending}
-                                onClick={() => void deleteModel(model)}
-                                aria-label='删除模型定义'
-                              >
-                                <Trash2 />
-                              </Button>
-                            </div>
-                          </TableCell>
+                          {canEditModels ? (
+                            <TableCell>
+                              <div className='flex justify-end gap-2'>
+                                <Button
+                                  type='button'
+                                  variant='ghost'
+                                  size='icon'
+                                  onClick={() => openEditModel(model)}
+                                  aria-label='编辑模型定义'
+                                >
+                                  <Pencil />
+                                </Button>
+                                <Button
+                                  type='button'
+                                  variant='ghost'
+                                  size='icon'
+                                  disabled={deleteModelMutation.isPending}
+                                  onClick={() => void deleteModel(model)}
+                                  aria-label='删除模型定义'
+                                >
+                                  <Trash2 />
+                                </Button>
+                              </div>
+                            </TableCell>
+                          ) : null}
                         </TableRow>
                       ))}
                       {modelDefinitions.length === 0 ? (
                         <TableRow>
                           <TableCell
-                            colSpan={5}
+                            colSpan={canEditModels ? 5 : 4}
                             className='text-muted-foreground h-24 text-center'
                           >
                             暂无模型定义
@@ -587,7 +625,7 @@ export function ProjectModelsSettings() {
           </>
         ) : null}
         <Dialog
-          open={llmDialogOpen}
+          open={canEditModels && llmDialogOpen}
           onOpenChange={(open) => {
             setLlmDialogOpen(open)
             if (!open) {
@@ -716,7 +754,7 @@ export function ProjectModelsSettings() {
         </Dialog>
 
         <Dialog
-          open={modelDialogOpen}
+          open={canEditModels && modelDialogOpen}
           onOpenChange={(open) => {
             setModelDialogOpen(open)
             if (!open) {

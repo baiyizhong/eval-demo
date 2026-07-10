@@ -15,6 +15,7 @@ type Options = {
   onFlowback: (report: EvaluationReportRecord) => void
   onViewUnavailable: (report: EvaluationReportRecord) => void
   onDelete: (report: EvaluationReportRecord) => void
+  canEdit?: boolean
 }
 
 export function createEvaluationReportColumns({
@@ -24,6 +25,7 @@ export function createEvaluationReportColumns({
   onFlowback,
   onViewUnavailable,
   onDelete,
+  canEdit,
 }: Options): ColumnDef<EvaluationReportRecord>[] {
   return [
     {
@@ -95,6 +97,7 @@ export function createEvaluationReportColumns({
           onFlowback={onFlowback}
           onViewUnavailable={onViewUnavailable}
           onDelete={onDelete}
+          canEdit={canEdit}
         />
       ),
     },

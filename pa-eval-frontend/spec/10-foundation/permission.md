@@ -115,6 +115,7 @@ project:*:view
 project:dataset:*
 system:audit:view
 system:backend:*
+system:organization:create
 *
 ```
 
@@ -235,7 +236,7 @@ function ProjectRouteGuard({
 
 ### 菜单级
 
-侧边栏菜单数据来自 `useSidebarData()` 请求的 `/api/sidebar`。菜单项类型需支持 `access`、`superAccess`、`scope`：
+侧边栏菜单数据来自 `useSidebarData()` 请求的 `/api/projects`，再由前端本地构造 `teams` 和 `menuGroups`。菜单项类型需支持 `access`、`superAccess`、`scope`：
 
 ```ts
 {
@@ -369,8 +370,11 @@ if (canAll(['project:dataset:view', 'project:dataset:edit'])) {
 | --- | --- | --- | --- |
 | `/audit` 操作审计 | `system` | `system:audit:view` | 通常无 |
 | `/backend` 后台管理 | `system` 或 `superAccess` | `system:backend:view` | `system:backend:edit` |
+| 创建组织 | `system` 或 `superAccess` | 可不单独配置 | `system:organization:create` |
 
 `/backend` 如果只允许超管访问，优先使用 `superAccess: true`，不要额外配置普通权限码。若后续需要非超管后台管理员，再启用 `system:backend:view/edit`。
+
+创建组织不依赖已有组织 ID，权限码长期保留为 `system:organization:create`。当前版本仅允许超级管理员创建组织，前端入口优先使用 `superAdmin` / `superAccess` 控制；普通 Org Owner 暂不返回该权限码。
 
 ### 公共或弱权限页面
 

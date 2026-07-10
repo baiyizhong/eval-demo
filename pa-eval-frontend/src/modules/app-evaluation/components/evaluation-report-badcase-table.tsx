@@ -43,10 +43,12 @@ export function EvaluationReportBadcaseTable({
   projectId,
   reportId,
   onFlowback,
+  canEdit,
 }: {
   projectId: string
   reportId: string
   onFlowback: (ids: string[]) => void
+  canEdit?: boolean
 }) {
   const $api = useAPI()
 
@@ -55,22 +57,26 @@ export function EvaluationReportBadcaseTable({
       <DataTable<EvaluationReportBadcaseRecord>
         className='min-h-0 flex-1'
         columns={columns}
-        bulkActions={(table) => {
-          const ids = table
-            .getFilteredSelectedRowModel()
-            .rows.map((row) => row.original.id)
-          return (
-            <Button
-              type='button'
-              size='sm'
-              variant='outline'
-              disabled={!ids.length}
-              onClick={() => onFlowback(ids)}
-            >
-              回流已选择
-            </Button>
-          )
-        }}
+        bulkActions={
+          canEdit
+            ? (table) => {
+                const ids = table
+                  .getFilteredSelectedRowModel()
+                  .rows.map((row) => row.original.id)
+                return (
+                  <Button
+                    type='button'
+                    size='sm'
+                    variant='outline'
+                    disabled={!ids.length}
+                    onClick={() => onFlowback(ids)}
+                  >
+                    回流已选择
+                  </Button>
+                )
+              }
+            : undefined
+        }
         request={{
           queryKey: (state) => [
             'project-evaluation-report-badcases',

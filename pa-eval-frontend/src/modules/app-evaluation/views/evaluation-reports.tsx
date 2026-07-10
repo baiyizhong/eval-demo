@@ -5,6 +5,7 @@ import { useNavigate, useParams } from 'react-router'
 import { toast } from 'sonner'
 import { confirm } from '@/lib/confirm'
 import { useAPI } from '@/hooks/use-api'
+import { usePermission } from '@/hooks/use-permission'
 import { DataTable } from '@/components/common/data-table'
 import { Loading } from '@/components/common/loading'
 import { Page } from '@/components/common/page'
@@ -27,6 +28,8 @@ export function ProjectEvaluationReports() {
   const $api = useAPI()
   const navigate = useNavigate()
   const queryClient = useQueryClient()
+  const { can } = usePermission({ type: 'project', projectId })
+  const canEditReports = can('project:evaluation-report:edit')
   const [templateOpen, setTemplateOpen] = useState(false)
 
   const invalidateReports = useCallback(async () => {
@@ -51,6 +54,7 @@ export function ProjectEvaluationReports() {
     () =>
       createEvaluationReportColumns({
         projectId,
+        canEdit: canEditReports,
         onExport: (report) => void handleExport($api, projectId, report),
         onRegenerate: (report) =>
           void handleRegenerate(report, invalidateReports),
@@ -67,7 +71,7 @@ export function ProjectEvaluationReports() {
         onDelete: (report) =>
           void handleDelete($api, projectId, report, invalidateReports),
       }),
-    [$api, invalidateReports, navigate, projectId]
+    [$api, canEditReports, invalidateReports, navigate, projectId]
   )
 
   return (
@@ -75,17 +79,19 @@ export function ProjectEvaluationReports() {
       <div className='flex min-h-0 flex-1 flex-col gap-4'>
         <EvaluationPageNav
           buttonGroups={{
-            buttons: [
-              {
-                id: 'report-template',
-                label: '报告模板',
-                icon: FileSliders,
-                iconPosition: 'start',
-                variant: 'outline',
-                size: 'sm',
-                onClick: () => setTemplateOpen(true),
-              },
-            ],
+            buttons: canEditReports
+              ? [
+                  {
+                    id: 'report-template',
+                    label: '报告模板',
+                    icon: FileSliders,
+                    iconPosition: 'start',
+                    variant: 'outline',
+                    size: 'sm',
+                    onClick: () => setTemplateOpen(true),
+                  },
+                ]
+              : [],
           }}
         />
         <section className='bg-card text-card-foreground flex min-h-0 min-w-0 flex-1 flex-col rounded-lg border p-4'>
@@ -133,7 +139,7 @@ export function ProjectEvaluationReports() {
         </section>
       </div>
       <ReportTemplateDialog
-        open={templateOpen}
+        open={canEditReports && templateOpen}
         onOpenChange={setTemplateOpen}
         projectId={projectId}
       />

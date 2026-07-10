@@ -9,6 +9,7 @@ import type { AnnotationQueueFormInput } from '@/modules/app-evaluation/types'
 import { Database, Download, Tags } from 'lucide-react'
 import { toast } from 'sonner'
 import { useAPI } from '@/hooks/use-api'
+import { usePermission } from '@/hooks/use-permission'
 import { Button } from '@/components/ui/button'
 import { DataTableBulkActions } from '@/components/common/data-table'
 import {
@@ -33,6 +34,8 @@ export function TraceLogBulkActions({
 }: TraceLogBulkActionsProps) {
   const $api = useAPI()
   const queryClient = useQueryClient()
+  const { can } = usePermission({ type: 'project', projectId })
+  const canEditTrace = can('project:trace:edit')
   const [datasetDialogOpen, setDatasetDialogOpen] = useState(false)
   const [annotationDialogOpen, setAnnotationDialogOpen] = useState(false)
   const selectedRows = table.getFilteredSelectedRowModel().rows
@@ -163,26 +166,30 @@ export function TraceLogBulkActions({
           <Download data-icon='inline-start' />
           导出 JSON
         </Button>
-        <Button
-          type='button'
-          size='sm'
-          variant='outline'
-          onClick={() => setDatasetDialogOpen(true)}
-        >
-          <Database data-icon='inline-start' />
-          加入数据集
-        </Button>
-        <Button
-          type='button'
-          size='sm'
-          onClick={() => setAnnotationDialogOpen(true)}
-        >
-          <Tags data-icon='inline-start' />
-          人工标注
-        </Button>
+        {canEditTrace ? (
+          <>
+            <Button
+              type='button'
+              size='sm'
+              variant='outline'
+              onClick={() => setDatasetDialogOpen(true)}
+            >
+              <Database data-icon='inline-start' />
+              加入数据集
+            </Button>
+            <Button
+              type='button'
+              size='sm'
+              onClick={() => setAnnotationDialogOpen(true)}
+            >
+              <Tags data-icon='inline-start' />
+              人工标注
+            </Button>
+          </>
+        ) : null}
       </DataTableBulkActions>
       <TraceDatasetDialog
-        open={datasetDialogOpen}
+        open={canEditTrace && datasetDialogOpen}
         projectId={projectId}
         projectName={projectName}
         traces={selectedTraces}
@@ -190,7 +197,7 @@ export function TraceLogBulkActions({
         onSubmit={handleAddToDataset}
       />
       <TraceAnnotationDialog
-        open={annotationDialogOpen}
+        open={canEditTrace && annotationDialogOpen}
         projectId={projectId}
         projectName={projectName}
         traces={selectedTraces}

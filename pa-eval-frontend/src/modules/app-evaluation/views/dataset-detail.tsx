@@ -5,6 +5,7 @@ import { useNavigate, useParams } from 'react-router'
 import { toast } from 'sonner'
 import { confirm } from '@/lib/confirm'
 import { useAPI } from '@/hooks/use-api'
+import { usePermission } from '@/hooks/use-permission'
 import { Button } from '@/components/ui/button'
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card'
 import {
@@ -63,6 +64,8 @@ export function ProjectDatasetDetail() {
   const $api = useAPI()
   const queryClient = useQueryClient()
   const { projectId = 'project_customer_agent', datasetId = '' } = useParams()
+  const { can } = usePermission({ type: 'project', projectId })
+  const canEditDataset = can('project:dataset:edit')
   const [itemDrawerOpen, setItemDrawerOpen] = useState(false)
   const [editingItem, setEditingItem] = useState<DatasetItemRecord | null>(null)
   const [exportingFormat, setExportingFormat] =
@@ -127,17 +130,21 @@ export function ProjectDatasetDetail() {
   const archiveItem = archiveItemMutation.mutateAsync
 
   const handleCreateItem = useCallback(() => {
+    if (!canEditDataset) return
     setEditingItem(null)
     setItemDrawerOpen(true)
-  }, [])
+  }, [canEditDataset])
 
   const handleEditItem = useCallback((item: DatasetItemRecord) => {
+    if (!canEditDataset) return
     setEditingItem(item)
     setItemDrawerOpen(true)
-  }, [])
+  }, [canEditDataset])
 
   const handleArchiveItem = useCallback(
     async (item: DatasetItemRecord) => {
+      if (!canEditDataset) return
+
       if (
         await confirm({
           title: '归档数据项',
@@ -149,7 +156,7 @@ export function ProjectDatasetDetail() {
         await archiveItem(item)
       }
     },
-    [archiveItem]
+    [archiveItem, canEditDataset]
   )
 
   const handleExportDataset = useCallback(
@@ -202,12 +209,13 @@ export function ProjectDatasetDetail() {
   const columns = useMemo(
     () =>
       createDatasetItemColumns({
+        readOnly: !canEditDataset,
         onEdit: handleEditItem,
         onArchive: (item) => {
           void handleArchiveItem(item)
         },
       }),
-    [handleArchiveItem, handleEditItem]
+    [canEditDataset, handleArchiveItem, handleEditItem]
   )
 
   const dataset = datasetQuery.data
@@ -228,16 +236,18 @@ export function ProjectDatasetDetail() {
             />
           }
           buttonGroups={{
-            buttons: [
-              {
-                id: 'create-dataset-item',
-                label: '新增数据项',
-                icon: Plus,
-                iconPosition: 'start',
-                size: 'sm',
-                onClick: handleCreateItem,
-              },
-            ],
+            buttons: canEditDataset
+              ? [
+                  {
+                    id: 'create-dataset-item',
+                    label: '新增数据项',
+                    icon: Plus,
+                    iconPosition: 'start',
+                    size: 'sm',
+                    onClick: handleCreateItem,
+                  },
+                ]
+              : [],
           }}
         >
           {dataset ? (
@@ -324,13 +334,17 @@ export function ProjectDatasetDetail() {
                 createdAt: '创建时间',
               },
             }}
-            bulkActions={(table) => (
-              <DatasetItemBulkActions
-                table={table}
-                projectId={projectId}
-                datasetId={datasetId}
-              />
-            )}
+            bulkActions={
+              canEditDataset
+                ? (table) => (
+                    <DatasetItemBulkActions
+                      table={table}
+                      projectId={projectId}
+                      datasetId={datasetId}
+                    />
+                  )
+                : undefined
+            }
             loadingText={
               <Loading
                 text='加载数据项中...'
@@ -343,7 +357,7 @@ export function ProjectDatasetDetail() {
         </section>
       </div>
       <DatasetItemFormDrawer
-        open={itemDrawerOpen}
+        open={canEditDataset && itemDrawerOpen}
         item={editingItem}
         onOpenChange={(open) => {
           setItemDrawerOpen(open)
@@ -352,6 +366,7 @@ export function ProjectDatasetDetail() {
           }
         }}
         onSubmit={async (input) => {
+          if (!canEditDataset) return
           await saveItemMutation.mutateAsync(input)
         }}
       />
