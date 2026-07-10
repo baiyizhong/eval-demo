@@ -49,6 +49,7 @@ export function ProjectAnnotationQueues() {
     () =>
       createAnnotationQueueColumns({
         projectId,
+        canEdit: canEditAnnotation,
         readOnly: !canEditAnnotation,
         onEdit: (queue) => {
           if (!canEditAnnotation) return

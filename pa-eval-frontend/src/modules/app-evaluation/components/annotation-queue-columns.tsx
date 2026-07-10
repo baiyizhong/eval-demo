@@ -10,6 +10,7 @@ import { formatDateTime } from './format'
 
 type CreateAnnotationQueueColumnsOptions = {
   projectId: string
+  canEdit?: boolean
   readOnly?: boolean
   onEdit: (queue: AnnotationQueueRecord) => void
   onDelete: (queue: AnnotationQueueRecord) => void
@@ -17,6 +18,7 @@ type CreateAnnotationQueueColumnsOptions = {
 
 export function createAnnotationQueueColumns({
   projectId,
+  canEdit = false,
   readOnly,
   onEdit,
   onDelete,
@@ -96,7 +98,10 @@ export function createAnnotationQueueColumns({
       ),
       cell: ({ row }) => formatDateTime(row.original.createdAt),
     },
-    {
+  ]
+
+  if (canEdit) {
+    columns.push({
       id: 'process',
       header: '处理',
       cell: ({ row }) => (
@@ -111,8 +116,8 @@ export function createAnnotationQueueColumns({
         </div>
       ),
       enableHiding: false,
-    },
-  ]
+    })
+  }
 
   if (!readOnly) {
     columns.push({

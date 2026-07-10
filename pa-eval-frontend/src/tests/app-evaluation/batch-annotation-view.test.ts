@@ -17,6 +17,8 @@ test('annotation queue list exposes the batch annotation entry', () => {
   assert.match(queueColumnsSource, /开始标注/)
   assert.match(queueColumnsSource, /继续标注/)
   assert.match(queueColumnsSource, /completedCount >= 1/)
+  assert.match(queueColumnsSource, /canEdit\?: boolean/)
+  assert.match(queueColumnsSource, /if \(canEdit\)/)
   assert.match(queueColumnsSource, /annotation-queues/)
   assert.doesNotMatch(queueColumnsSource, /进入标注/)
   assert.doesNotMatch(queueColumnsSource, /数据管理/)
