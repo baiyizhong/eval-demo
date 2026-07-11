@@ -119,6 +119,16 @@ export type AnnotationItemStatus = 'PENDING' | 'COMPLETED'
 
 export type AnnotationAssignmentStrategy = 'average' | 'random' | 'weighted'
 
+export type AnnotationExportScope = 'filtered' | 'selected'
+
+export type AnnotationExportFormat = 'xlsx' | 'csv' | 'txt'
+
+export type AnnotationExportJobStatus =
+  | 'PENDING'
+  | 'RUNNING'
+  | 'SUCCEEDED'
+  | 'FAILED'
+
 export type ScoreDataType = 'NUMERIC' | 'CATEGORICAL' | 'BOOLEAN' | 'TEXT'
 
 export type ScoreConfigCategory = {
@@ -170,6 +180,38 @@ export type AnnotationQueueRecord = {
   assignees: ProjectUserRecord[]
   createdAt: string
   updatedAt: string
+}
+
+export type AnnotationExportPreviewRow = Record<string, string>
+
+export type AnnotationExportPreview = {
+  queue: AnnotationQueueRecord
+  metrics: {
+    total: number
+    completed: number
+    pending: number
+  }
+  scoreConfigs: ScoreConfigRecord[]
+  metadataKeys: string[]
+  previewItems: AnnotationExportPreviewRow[]
+}
+
+export type AnnotationExportJobRecord = {
+  id: string
+  projectId: string
+  queueId: string
+  scope: AnnotationExportScope
+  format: AnnotationExportFormat
+  status: AnnotationExportJobStatus
+  totalCount: number
+  exportedCount: number
+  fileName: string
+  fileSize: number
+  errorMessage: string
+  metadata: JsonObject
+  createdAt: string
+  updatedAt: string
+  expiresAt: string
 }
 
 export type AnnotationQueueFormInput = {

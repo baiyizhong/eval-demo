@@ -44,6 +44,7 @@ import {
   type DatasetRecord,
   type DatasetTypeFilter,
 } from '../types'
+import { downloadBlob } from '../components/format'
 
 const datasetTabs: { label: string; value: DatasetTypeFilter }[] = [
   { label: '全部', value: 'all' },
@@ -458,13 +459,4 @@ export function ProjectDatasets() {
       </div>
     </Page>
   )
-}
-
-function downloadBlob(blob: Blob, fileName: string) {
-  const url = URL.createObjectURL(blob)
-  const link = document.createElement('a')
-  link.href = url
-  link.download = fileName
-  link.click()
-  URL.revokeObjectURL(url)
 }

@@ -2019,6 +2019,185 @@ class LangfuseDatabaseReader:
             {"error_message": error_message[:1000]},
         )
 
+    async def create_annotation_export_job_for_user(
+        self,
+        project_id: str,
+        queue_id: str,
+        user_id: str,
+        *,
+        scope: str,
+        export_format: str,
+        filters: dict[str, Any],
+        item_ids: list[str],
+        split_metadata: bool,
+        file_name: str,
+    ) -> dict[str, Any]:
+        if not self._database_url:
+            raise LangfuseDatabaseConfigError()
+
+        job_id = _new_langfuse_id("paexport")
+        expires_at = datetime.now(timezone.utc) + timedelta(days=7)
+        metadata = {
+            "filters": filters,
+            "itemIds": item_ids,
+            "splitMetadata": split_metadata,
+            "defaultFileName": file_name,
+            "fileName": file_name,
+        }
+        async with await psycopg.AsyncConnection.connect(
+            self._database_url,
+            row_factory=dict_row,
+        ) as connection:
+            async with connection.cursor() as cursor:
+                await self._get_project_for_user(cursor, project_id, user_id)
+                await self._get_annotation_queue_row(cursor, project_id, queue_id)
+                await cursor.execute(
+                    """
+                    INSERT INTO pa_annotation_export_jobs (
+                        create_by,
+                        update_by,
+                        id,
+                        project_id,
+                        queue_id,
+                        scope,
+                        format,
+                        status,
+                        file_name,
+                        expires_at,
+                        metadata
+                    )
+                    VALUES (
+                        %(user_id)s,
+                        %(user_id)s,
+                        %(id)s,
+                        %(project_id)s,
+                        %(queue_id)s,
+                        %(scope)s,
+                        %(format)s,
+                        'PENDING',
+                        %(file_name)s,
+                        %(expires_at)s,
+                        %(metadata)s
+                    )
+                    """,
+                    {
+                        "id": job_id,
+                        "project_id": project_id,
+                        "queue_id": queue_id,
+                        "user_id": user_id,
+                        "scope": scope,
+                        "format": export_format,
+                        "file_name": file_name,
+                        "expires_at": expires_at,
+                        "metadata": Jsonb(metadata),
+                    },
+                )
+                return await self._get_annotation_export_job_payload_cursor(
+                    cursor,
+                    project_id,
+                    queue_id,
+                    job_id,
+                )
+
+    async def get_annotation_export_job_for_user(
+        self,
+        project_id: str,
+        queue_id: str,
+        job_id: str,
+        user_id: str,
+    ) -> dict[str, Any]:
+        if not self._database_url:
+            raise LangfuseDatabaseConfigError()
+
+        async with await psycopg.AsyncConnection.connect(
+            self._database_url,
+            row_factory=dict_row,
+        ) as connection:
+            async with connection.cursor() as cursor:
+                await self._get_project_for_user(cursor, project_id, user_id)
+                await self._get_annotation_queue_row(cursor, project_id, queue_id)
+                return await self._get_annotation_export_job_payload_cursor(
+                    cursor,
+                    project_id,
+                    queue_id,
+                    job_id,
+                )
+
+    async def mark_annotation_export_job_running(
+        self,
+        project_id: str,
+        queue_id: str,
+        job_id: str,
+    ) -> None:
+        await self._execute_annotation_export_job_update(
+            project_id,
+            queue_id,
+            job_id,
+            """
+            status = 'RUNNING',
+            started_at = COALESCE(started_at, NOW()),
+            update_date = NOW()
+            """,
+            {},
+            status_condition_sql="AND status = 'PENDING'",
+        )
+
+    async def mark_annotation_export_job_succeeded(
+        self,
+        project_id: str,
+        queue_id: str,
+        job_id: str,
+        *,
+        total_count: int,
+        file_name: str,
+        file_path: str,
+        file_size: int,
+    ) -> None:
+        await self._execute_annotation_export_job_update(
+            project_id,
+            queue_id,
+            job_id,
+            """
+            status = 'SUCCEEDED',
+            total_count = %(total_count)s,
+            exported_count = %(total_count)s,
+            file_name = %(file_name)s,
+            file_path = %(file_path)s,
+            file_size = %(file_size)s,
+            error_message = '',
+            completed_at = NOW(),
+            update_date = NOW()
+            """,
+            {
+                "total_count": total_count,
+                "file_name": file_name,
+                "file_path": file_path,
+                "file_size": file_size,
+            },
+            status_condition_sql="AND status IN ('PENDING', 'RUNNING')",
+        )
+
+    async def mark_annotation_export_job_failed(
+        self,
+        project_id: str,
+        queue_id: str,
+        job_id: str,
+        error_message: str,
+    ) -> None:
+        await self._execute_annotation_export_job_update(
+            project_id,
+            queue_id,
+            job_id,
+            """
+            status = 'FAILED',
+            error_message = %(error_message)s,
+            completed_at = NOW(),
+            update_date = NOW()
+            """,
+            {"error_message": error_message[:1000]},
+            status_condition_sql="AND status IN ('PENDING', 'RUNNING')",
+        )
+
     async def list_score_configs_for_user(
         self,
         project_id: str,
@@ -5463,6 +5642,104 @@ class LangfuseDatabaseReader:
                     },
                 )
 
+    async def _get_annotation_export_job_payload_cursor(
+        self,
+        cursor: psycopg.AsyncCursor[dict[str, Any]],
+        project_id: str,
+        queue_id: str,
+        job_id: str,
+    ) -> dict[str, Any]:
+        await cursor.execute(
+            """
+            SELECT
+                id,
+                project_id,
+                queue_id,
+                scope,
+                format,
+                status,
+                total_count,
+                exported_count,
+                file_name,
+                file_path,
+                file_size,
+                error_message,
+                metadata,
+                create_date,
+                update_date,
+                expires_at
+            FROM pa_annotation_export_jobs
+            WHERE project_id = %(project_id)s
+              AND queue_id = %(queue_id)s
+              AND id = %(job_id)s
+            LIMIT 1
+            """,
+            {
+                "project_id": project_id,
+                "queue_id": queue_id,
+                "job_id": job_id,
+            },
+        )
+        row = await cursor.fetchone()
+        if row is None:
+            raise BusinessError(1032, "标注导出任务不存在或无访问权限", 404)
+        return self._to_annotation_export_job_payload(row)
+
+    async def _execute_annotation_export_job_update(
+        self,
+        project_id: str,
+        queue_id: str,
+        job_id: str,
+        assignments_sql: str,
+        params: dict[str, Any],
+        *,
+        status_condition_sql: str = "",
+    ) -> None:
+        if not self._database_url:
+            raise LangfuseDatabaseConfigError()
+
+        async with await psycopg.AsyncConnection.connect(
+            self._database_url,
+            row_factory=dict_row,
+        ) as connection:
+            async with connection.cursor() as cursor:
+                await cursor.execute(
+                    f"""
+                    UPDATE pa_annotation_export_jobs
+                    SET {assignments_sql}
+                    WHERE project_id = %(project_id)s
+                      AND queue_id = %(queue_id)s
+                      AND id = %(job_id)s
+                      {status_condition_sql}
+                    """,
+                    {
+                        **params,
+                        "project_id": project_id,
+                        "queue_id": queue_id,
+                        "job_id": job_id,
+                    },
+                )
+                if cursor.rowcount == 0:
+                    if status_condition_sql:
+                        await cursor.execute(
+                            """
+                            SELECT 1
+                            FROM pa_annotation_export_jobs
+                            WHERE project_id = %(project_id)s
+                              AND queue_id = %(queue_id)s
+                              AND id = %(job_id)s
+                            LIMIT 1
+                            """,
+                            {
+                                "project_id": project_id,
+                                "queue_id": queue_id,
+                                "job_id": job_id,
+                            },
+                        )
+                        if await cursor.fetchone() is not None:
+                            return
+                    raise BusinessError(1032, "标注导出任务不存在或无访问权限", 404)
+
     @staticmethod
     async def _get_latest_evaluator_version(
         cursor: psycopg.AsyncCursor[dict[str, Any]],
@@ -6264,6 +6541,27 @@ class LangfuseDatabaseReader:
             "filePath": row.get("file_path") or "",
             "fileSize": row.get("file_size") or 0,
             "errorMessage": row.get("error_message") or "",
+            "createdAt": _format_datetime(row["create_date"]),
+            "updatedAt": _format_datetime(row["update_date"]),
+            "expiresAt": _format_datetime(row["expires_at"]),
+        }
+
+    @staticmethod
+    def _to_annotation_export_job_payload(row: dict[str, Any]) -> dict[str, Any]:
+        return {
+            "id": row["id"],
+            "projectId": row["project_id"],
+            "queueId": row["queue_id"],
+            "scope": row["scope"],
+            "format": row["format"],
+            "status": row["status"],
+            "totalCount": row.get("total_count") or 0,
+            "exportedCount": row.get("exported_count") or 0,
+            "fileName": row.get("file_name") or "",
+            "filePath": row.get("file_path") or "",
+            "fileSize": row.get("file_size") or 0,
+            "errorMessage": row.get("error_message") or "",
+            "metadata": row.get("metadata") or {},
             "createdAt": _format_datetime(row["create_date"]),
             "updatedAt": _format_datetime(row["update_date"]),
             "expiresAt": _format_datetime(row["expires_at"]),

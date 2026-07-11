@@ -1,12 +1,20 @@
 import json
+import logging
 import re
 from datetime import datetime, timezone
+from pathlib import Path
 from typing import Any, Literal
 
-from fastapi import APIRouter, Body, Depends, Query
+from fastapi import APIRouter, BackgroundTasks, Body, Depends, Query
+from fastapi.responses import FileResponse
 from pydantic import BaseModel, Field
 
+from app.annotation_exports import (
+    build_annotation_export_preview,
+    generate_annotation_export_archive,
+)
 from app.auth_context import CurrentUserContext, get_current_user_context
+from app.config import Settings, get_settings
 from app.errors import BusinessError
 from app.langfuse_clickhouse import (
     LangfuseClickHouseReader,
@@ -16,11 +24,14 @@ from app.langfuse_db import LangfuseDatabaseReader, get_langfuse_db_reader
 from app.response import success
 
 router = APIRouter(prefix="/api/projects/{project_id}", tags=["annotations"])
+logger = logging.getLogger(__name__)
 
 AnnotationObjectType = Literal["TRACE", "OBSERVATION", "SESSION"]
 AnnotationItemStatus = Literal["PENDING", "COMPLETED"]
 ScoreConfigDataType = Literal["NUMERIC", "CATEGORICAL", "BOOLEAN", "TEXT"]
 AnnotationAssignmentStrategy = Literal["average", "random", "weighted"]
+AnnotationExportScope = Literal["filtered", "selected"]
+AnnotationExportFormat = Literal["xlsx", "csv", "txt"]
 ANNOTATION_ITEM_STATUSES: tuple[AnnotationItemStatus, ...] = ("PENDING", "COMPLETED")
 ANNOTATION_OBJECT_TYPES: tuple[AnnotationObjectType, ...] = (
     "TRACE",
@@ -32,6 +43,7 @@ LANGFUSE_BOOLEAN_CATEGORIES = [
     {"label": "True", "value": 1},
     {"label": "False", "value": 0},
 ]
+MAX_EXPORT_BASE_NAME_LENGTH = 120
 
 
 class AnnotationQueuePayload(BaseModel):
@@ -154,6 +166,26 @@ class AnnotationBatchScorePayload(BaseModel):
     confirm_large_batch: bool = Field(default=False, alias="confirmLargeBatch")
 
 
+class AnnotationExportPreviewPayload(BaseModel):
+    scope: AnnotationExportScope = "filtered"
+    filters: AnnotationBatchFiltersPayload = Field(
+        default_factory=AnnotationBatchFiltersPayload
+    )
+    item_ids: list[str] = Field(default_factory=list, alias="itemIds")
+    preview_limit: int = Field(default=20, ge=1, le=100, alias="previewLimit")
+    split_metadata: bool = Field(default=False, alias="splitMetadata")
+
+
+class AnnotationExportJobPayload(BaseModel):
+    scope: AnnotationExportScope = "filtered"
+    format: AnnotationExportFormat
+    filters: AnnotationBatchFiltersPayload = Field(
+        default_factory=AnnotationBatchFiltersPayload
+    )
+    item_ids: list[str] = Field(default_factory=list, alias="itemIds")
+    split_metadata: bool = Field(default=False, alias="splitMetadata")
+
+
 class DeleteItemsPayload(BaseModel):
     item_ids: list[str] = Field(min_length=1, alias="itemIds")
 
@@ -168,6 +200,49 @@ class AddAnnotationItemToDatasetPayload(BaseModel):
     input: Any
     expected_output: Any = Field(alias="expectedOutput")
     metadata: dict[str, Any] = Field(default_factory=dict)
+
+
+def _to_public_annotation_export_job(job: dict[str, Any]) -> dict[str, Any]:
+    return {key: value for key, value in job.items() if key != "filePath"}
+
+
+def _safe_annotation_export_base_name(value: str) -> str:
+    sanitized = re.sub(r'[\\/:*?"<>|]+', "-", value)
+    sanitized = re.sub(r"\s+", " ", sanitized).strip(".- ")
+    return (
+        sanitized[:MAX_EXPORT_BASE_NAME_LENGTH].rstrip(".- ")
+        or "annotation-export"
+    )
+
+
+def _default_annotation_export_base_name(
+    queue: dict[str, Any],
+    total_count: int,
+) -> str:
+    exported_at = datetime.now(timezone.utc).strftime("%Y%m%d-%H%M%S")
+    queue_name = str(queue.get("name") or queue.get("id") or "annotation-export")
+    return _safe_annotation_export_base_name(
+        f"{queue_name}-{total_count}-{exported_at}"
+    )
+
+
+def _is_safe_annotation_export_path(
+    *,
+    file_path: Path,
+    settings: Settings,
+    project_id: str,
+) -> bool:
+    expected_root = (
+        Path(settings.pa_eval_export_storage_dir).expanduser().resolve()
+        / project_id
+        / "annotation-exports"
+    )
+    candidate = file_path.expanduser().resolve()
+    return (
+        candidate.is_file()
+        and candidate.suffix == ".zip"
+        and candidate.is_relative_to(expected_root)
+    )
 
 
 def _paginate(items: list[dict[str, Any]], page: int, page_size: int) -> dict[str, Any]:
@@ -554,6 +629,118 @@ def _filter_annotation_items(
     return filtered
 
 
+async def _get_scoped_annotation_export_items(
+    *,
+    project_id: str,
+    queue_id: str,
+    user_id: str,
+    scope: AnnotationExportScope,
+    filters: AnnotationBatchFiltersPayload,
+    item_ids: list[str],
+    reader: LangfuseDatabaseReader,
+    trace_reader: LangfuseClickHouseReader,
+) -> tuple[dict[str, Any], list[dict[str, Any]]]:
+    queue = await reader.get_annotation_queue_for_user(
+        project_id,
+        queue_id,
+        user_id,
+    )
+    items = await reader.list_annotation_queue_items_for_user(
+        project_id,
+        queue_id,
+        user_id,
+    )
+    enriched_items = await _enrich_annotation_items_with_trace_source(
+        project_id,
+        items,
+        trace_reader,
+    )
+    scoped_items = _filter_annotation_items(enriched_items, filters)
+    if scope == "selected":
+        selected_ids = set(item_ids)
+        scoped_items = [item for item in scoped_items if item["id"] in selected_ids]
+    return queue, scoped_items
+
+
+def _annotation_export_metrics(items: list[dict[str, Any]]) -> dict[str, int]:
+    completed = sum(1 for item in items if item.get("status") == "COMPLETED")
+    pending = len(items) - completed
+    return {"total": len(items), "completed": completed, "pending": pending}
+
+
+async def generate_annotation_export_file(
+    *,
+    reader: LangfuseDatabaseReader,
+    trace_reader: LangfuseClickHouseReader,
+    project_id: str,
+    queue_id: str,
+    job_id: str,
+    user_id: str,
+    scope: AnnotationExportScope,
+    export_format: AnnotationExportFormat,
+    filters: AnnotationBatchFiltersPayload,
+    item_ids: list[str],
+    split_metadata: bool,
+    base_file_name: str,
+    storage_dir: str,
+) -> None:
+    try:
+        await reader.mark_annotation_export_job_running(project_id, queue_id, job_id)
+        queue, scoped_items = await _get_scoped_annotation_export_items(
+            project_id=project_id,
+            queue_id=queue_id,
+            user_id=user_id,
+            scope=scope,
+            filters=filters,
+            item_ids=item_ids,
+            reader=reader,
+            trace_reader=trace_reader,
+        )
+        archive_path = generate_annotation_export_archive(
+            output_dir=Path(storage_dir) / project_id / "annotation-exports",
+            base_file_name=base_file_name,
+            export_format=export_format,
+            queue=queue,
+            metrics=_annotation_export_metrics(scoped_items),
+            score_configs=queue.get("scoreConfigs") or [],
+            items=scoped_items,
+            split_metadata=split_metadata,
+        )
+        await reader.mark_annotation_export_job_succeeded(
+            project_id,
+            queue_id,
+            job_id,
+            total_count=len(scoped_items),
+            file_name=archive_path.name,
+            file_path=str(archive_path),
+            file_size=archive_path.stat().st_size,
+        )
+    except Exception as exc:
+        logger.exception(
+            "Failed to generate annotation export file: project_id=%s queue_id=%s "
+            "job_id=%s error=%r",
+            project_id,
+            queue_id,
+            job_id,
+            exc,
+        )
+        try:
+            await reader.mark_annotation_export_job_failed(
+                project_id,
+                queue_id,
+                job_id,
+                "标注数据导出失败，请稍后重试",
+            )
+        except Exception:
+            logger.exception(
+                "Failed to mark annotation export job failed after generation "
+                "error: project_id=%s queue_id=%s job_id=%s",
+                project_id,
+                queue_id,
+                job_id,
+            )
+
+
 def _count_by_field(
     items: list[dict[str, Any]],
     field: str,
@@ -900,6 +1087,145 @@ async def get_annotation_queue_metrics(
         current_user.user_id,
     )
     return success(metrics)
+
+
+@router.post("/annotation-queues/{queue_id}/export-preview")
+async def preview_annotation_export(
+    project_id: str,
+    queue_id: str,
+    payload: AnnotationExportPreviewPayload,
+    current_user: CurrentUserContext = Depends(get_current_user_context),
+    reader: LangfuseDatabaseReader = Depends(get_langfuse_db_reader),
+    trace_reader: LangfuseClickHouseReader = Depends(get_langfuse_clickhouse_reader),
+) -> dict[str, Any]:
+    queue, scoped_items = await _get_scoped_annotation_export_items(
+        project_id=project_id,
+        queue_id=queue_id,
+        user_id=current_user.user_id,
+        scope=payload.scope,
+        filters=payload.filters,
+        item_ids=payload.item_ids,
+        reader=reader,
+        trace_reader=trace_reader,
+    )
+    preview = build_annotation_export_preview(
+        queue=queue,
+        items=scoped_items,
+        score_configs=queue.get("scoreConfigs") or [],
+        preview_limit=payload.preview_limit,
+        split_metadata=payload.split_metadata,
+    )
+    return success(preview)
+
+
+@router.post("/annotation-queues/{queue_id}/export-jobs")
+async def create_annotation_export_job(
+    project_id: str,
+    queue_id: str,
+    payload: AnnotationExportJobPayload,
+    background_tasks: BackgroundTasks,
+    current_user: CurrentUserContext = Depends(get_current_user_context),
+    reader: LangfuseDatabaseReader = Depends(get_langfuse_db_reader),
+    trace_reader: LangfuseClickHouseReader = Depends(get_langfuse_clickhouse_reader),
+    settings: Settings = Depends(get_settings),
+) -> dict[str, Any]:
+    if payload.scope == "selected" and not payload.item_ids:
+        raise BusinessError(1030, "请选择要导出的标注数据", 400)
+
+    queue, scoped_items = await _get_scoped_annotation_export_items(
+        project_id=project_id,
+        queue_id=queue_id,
+        user_id=current_user.user_id,
+        scope=payload.scope,
+        filters=payload.filters,
+        item_ids=payload.item_ids,
+        reader=reader,
+        trace_reader=trace_reader,
+    )
+    if not scoped_items:
+        raise BusinessError(1031, "当前范围无可导出数据", 400)
+
+    base_file_name = _default_annotation_export_base_name(queue, len(scoped_items))
+    filters_snapshot = payload.filters.model_dump(by_alias=True)
+    job = await reader.create_annotation_export_job_for_user(
+        project_id,
+        queue_id,
+        current_user.user_id,
+        scope=payload.scope,
+        export_format=payload.format,
+        filters=filters_snapshot,
+        item_ids=payload.item_ids,
+        split_metadata=payload.split_metadata,
+        file_name=base_file_name,
+    )
+    background_tasks.add_task(
+        generate_annotation_export_file,
+        reader=reader,
+        trace_reader=trace_reader,
+        project_id=project_id,
+        queue_id=queue_id,
+        job_id=job["id"],
+        user_id=current_user.user_id,
+        scope=payload.scope,
+        export_format=payload.format,
+        filters=payload.filters,
+        item_ids=payload.item_ids,
+        split_metadata=payload.split_metadata,
+        base_file_name=base_file_name,
+        storage_dir=settings.pa_eval_export_storage_dir,
+    )
+    return success(_to_public_annotation_export_job(job))
+
+
+@router.get("/annotation-queues/{queue_id}/export-jobs/{job_id}")
+async def get_annotation_export_job(
+    project_id: str,
+    queue_id: str,
+    job_id: str,
+    current_user: CurrentUserContext = Depends(get_current_user_context),
+    reader: LangfuseDatabaseReader = Depends(get_langfuse_db_reader),
+) -> dict[str, Any]:
+    job = await reader.get_annotation_export_job_for_user(
+        project_id,
+        queue_id,
+        job_id,
+        current_user.user_id,
+    )
+    return success(_to_public_annotation_export_job(job))
+
+
+@router.get("/annotation-queues/{queue_id}/export-jobs/{job_id}/download")
+async def download_annotation_export_job(
+    project_id: str,
+    queue_id: str,
+    job_id: str,
+    current_user: CurrentUserContext = Depends(get_current_user_context),
+    reader: LangfuseDatabaseReader = Depends(get_langfuse_db_reader),
+    settings: Settings = Depends(get_settings),
+) -> FileResponse:
+    job = await reader.get_annotation_export_job_for_user(
+        project_id,
+        queue_id,
+        job_id,
+        current_user.user_id,
+    )
+    if job["status"] != "SUCCEEDED":
+        raise BusinessError(1033, "标注导出任务尚未完成", 409)
+
+    file_path = Path(job.get("filePath") or "")
+    if not _is_safe_annotation_export_path(
+        file_path=file_path,
+        settings=settings,
+        project_id=project_id,
+    ):
+        raise BusinessError(1034, "标注导出文件不存在或已过期", 404)
+
+    resolved_file_path = file_path.expanduser().resolve()
+    return FileResponse(
+        resolved_file_path,
+        media_type="application/zip",
+        filename=job.get("fileName") or resolved_file_path.name,
+    )
 
 
 @router.get("/annotation-queues/{queue_id}/items/filter-counts")

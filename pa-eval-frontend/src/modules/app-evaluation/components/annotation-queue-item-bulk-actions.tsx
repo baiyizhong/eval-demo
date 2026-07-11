@@ -25,11 +25,9 @@ import {
 import { DataTableBulkActions } from '@/components/common/data-table'
 import {
   deleteProjectAnnotationQueueItems,
-  exportProjectAnnotationQueueItems,
   updateProjectAnnotationQueueItemAssignees,
 } from '../api/annotation-api'
 import type { AnnotationQueueItemRecord, ProjectUserRecord } from '../types'
-import { downloadJson } from './format'
 
 type AnnotationQueueItemBulkActionsProps = {
   table: Table<AnnotationQueueItemRecord>
@@ -39,6 +37,7 @@ type AnnotationQueueItemBulkActionsProps = {
   users: ProjectUserRecord[]
   canEdit?: boolean
   onChanged: () => Promise<unknown>
+  onExportSelected?: (itemIds: string[]) => void
 }
 
 export function AnnotationQueueItemBulkActions({
@@ -49,6 +48,7 @@ export function AnnotationQueueItemBulkActions({
   users,
   canEdit,
   onChanged,
+  onExportSelected,
 }: AnnotationQueueItemBulkActionsProps) {
   const [assigneeDialogOpen, setAssigneeDialogOpen] = useState(false)
   const [assigneeUserId, setAssigneeUserId] = useState('')
@@ -63,18 +63,8 @@ export function AnnotationQueueItemBulkActions({
   const pendingCount = selectedItems.length - completedCount
   const canUpdateAssignee = Boolean(canEdit && assignableUsers.length)
 
-  const handleExport = async () => {
-    const payload = await exportProjectAnnotationQueueItems(
-      api,
-      projectId,
-      queueId,
-      itemIds
-    )
-    downloadJson(
-      `annotation-items-${queueId}-${payload.items.length}-${Date.now()}.json`,
-      payload
-    )
-    toast.success(`已导出 ${payload.items.length} 条标注数据`)
+  const handleExport = () => {
+    onExportSelected?.(itemIds)
   }
 
   const handleDelete = async () => {
@@ -135,7 +125,7 @@ export function AnnotationQueueItemBulkActions({
           size='sm'
           variant='outline'
           onClick={() => {
-            void handleExport()
+            handleExport()
           }}
         >
           <Download data-icon='inline-start' />

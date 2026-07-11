@@ -9,6 +9,10 @@ import type {
   AnnotationBatchPreviewResult,
   AnnotationBatchSaveResult,
   AnnotationAssignmentStrategy,
+  AnnotationExportFormat,
+  AnnotationExportJobRecord,
+  AnnotationExportPreview,
+  AnnotationExportScope,
   AnnotationNavigationResult,
   AnnotationQueueExportPayload,
   AnnotationQueueFormInput,
@@ -41,6 +45,10 @@ type AnnotationApiClient = {
   getProjectAnnotationQueueItemFilterCounts: ApiMethod
   deleteProjectAnnotationQueueItems: ApiMethod
   updateProjectAnnotationQueueItemAssignees: ApiMethod
+  previewProjectAnnotationExport: ApiMethod
+  createProjectAnnotationExportJob: ApiMethod
+  getProjectAnnotationExportJob: ApiMethod
+  downloadProjectAnnotationExportJob: ApiMethod
   previewProjectAnnotationBatch: ApiMethod
   saveProjectAnnotationBatchScores: ApiMethod
   saveProjectAnnotationScores: ApiMethod
@@ -56,6 +64,47 @@ export type ScoreConfigInput = {
   minValue?: number | null
   maxValue?: number | null
   categories: ScoreConfigCategory[]
+}
+
+export type NonEmptyStringArray = [string, ...string[]]
+
+type AnnotationExportScopeInput =
+  | {
+      scope: 'filtered'
+      itemIds?: string[]
+    }
+  | {
+      scope: 'selected'
+      itemIds: NonEmptyStringArray
+    }
+
+type AnnotationExportBaseInput = AnnotationExportScopeInput & {
+  filters?: AnnotationBatchFiltersInput
+  splitMetadata?: boolean
+}
+
+export type AnnotationExportPreviewInput = AnnotationExportBaseInput & {
+  previewLimit?: number
+}
+
+export type AnnotationExportJobInput = AnnotationExportBaseInput & {
+  format: AnnotationExportFormat
+}
+
+export type AnnotationExportPreviewPayload = {
+  scope: AnnotationExportScope
+  filters: AnnotationBatchFiltersInput
+  itemIds: string[]
+  previewLimit: number
+  splitMetadata: boolean
+}
+
+export type AnnotationExportJobPayload = {
+  scope: AnnotationExportScope
+  format: AnnotationExportFormat
+  filters: AnnotationBatchFiltersInput
+  itemIds: string[]
+  splitMetadata: boolean
 }
 
 export function listProjectScoreConfigs(
@@ -332,6 +381,109 @@ export function getProjectAnnotationQueueItemFilterCounts(
       },
     }
   )
+}
+
+export function previewProjectAnnotationExport(
+  api: AnnotationApiClient,
+  projectId: string,
+  queueId: string,
+  input: AnnotationExportPreviewInput
+) {
+  return api.previewProjectAnnotationExport<
+    AnnotationExportPreview,
+    AnnotationExportPreviewPayload
+  >({
+    path: { projectId, queueId },
+    body: {
+      scope: input.scope,
+      filters: input.filters ?? {},
+      itemIds: input.itemIds ?? [],
+      previewLimit: input.previewLimit ?? 20,
+      splitMetadata: input.splitMetadata ?? false,
+    },
+  })
+}
+
+export function createProjectAnnotationExportJob(
+  api: AnnotationApiClient,
+  projectId: string,
+  queueId: string,
+  input: AnnotationExportJobInput
+) {
+  return api.createProjectAnnotationExportJob<
+    AnnotationExportJobRecord,
+    AnnotationExportJobPayload
+  >({
+    path: { projectId, queueId },
+    body: {
+      scope: input.scope,
+      format: input.format,
+      filters: input.filters ?? {},
+      itemIds: input.itemIds ?? [],
+      splitMetadata: input.splitMetadata ?? false,
+    },
+  })
+}
+
+export function getProjectAnnotationExportJob(
+  api: AnnotationApiClient,
+  projectId: string,
+  queueId: string,
+  jobId: string
+) {
+  return api.getProjectAnnotationExportJob<AnnotationExportJobRecord>({
+    path: { projectId, queueId, jobId },
+  })
+}
+
+export function downloadProjectAnnotationExportJob(
+  api: AnnotationApiClient,
+  projectId: string,
+  queueId: string,
+  jobId: string
+) {
+  return api.downloadProjectAnnotationExportJob<Blob>({
+    path: { projectId, queueId, jobId },
+  })
+}
+
+export async function pollAnnotationExportJob(
+  api: AnnotationApiClient,
+  projectId: string,
+  queueId: string,
+  jobId: string,
+  options: {
+    intervalMs?: number
+    timeoutMs?: number
+  } = {}
+) {
+  const intervalMs = options.intervalMs ?? 1200
+  const timeoutMs = options.timeoutMs ?? 120000
+  const startedAt = Date.now()
+
+  while (true) {
+    const job = await getProjectAnnotationExportJob(
+      api,
+      projectId,
+      queueId,
+      jobId
+    )
+
+    if (job.status === 'SUCCEEDED' || job.status === 'FAILED') {
+      return job
+    }
+
+    const remainingMs = timeoutMs - (Date.now() - startedAt)
+    if (remainingMs <= 0) {
+      break
+    }
+
+    await new Promise((resolve) =>
+      globalThis.setTimeout(resolve, Math.min(intervalMs, remainingMs))
+    )
+  }
+
+  throw new Error('导出任务仍在处理中，请稍后刷新后下载')
 }
 
 export async function getProjectAnnotationNavigation(

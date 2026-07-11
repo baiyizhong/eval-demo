@@ -12,16 +12,15 @@ import { Page } from '@/components/common/page'
 import {
   createProjectAnnotationQueue,
   deleteProjectAnnotationQueue,
-  exportProjectAnnotationQueue,
   listProjectScoreConfigsForAnnotation,
   listProjectAnnotationQueues,
   listProjectAnnotationUsers,
   updateProjectAnnotationQueue,
 } from '../api/annotation-api'
+import { AnnotationExportDialog } from '../components/annotation-export-dialog'
 import { createAnnotationQueueColumns } from '../components/annotation-queue-columns'
 import { AnnotationQueueFormDrawer } from '../components/annotation-queue-form-drawer'
 import { EvaluationPageNav } from '../components/evaluation-page-nav'
-import { downloadJson } from '../components/format'
 import type { AnnotationQueueFormInput, AnnotationQueueRecord } from '../types'
 import {
   buildQueueToolbarFilters,
@@ -37,6 +36,8 @@ export function ProjectAnnotationQueues() {
   const canEditAnnotation = can('project:annotation:edit')
   const [formOpen, setFormOpen] = useState(false)
   const [editingQueue, setEditingQueue] =
+    useState<AnnotationQueueRecord | null>(null)
+  const [exportingQueue, setExportingQueue] =
     useState<AnnotationQueueRecord | null>(null)
 
   const invalidateQueues = useCallback(
@@ -63,7 +64,7 @@ export function ProjectAnnotationQueues() {
           void handleDeleteQueue($api, projectId, queue, invalidateQueues)
         },
         onExport: (queue) => {
-          void handleExportQueue($api, projectId, queue)
+          setExportingQueue(queue)
         },
       }),
     [$api, canEditAnnotation, invalidateQueues, projectId]
@@ -192,6 +193,17 @@ export function ProjectAnnotationQueues() {
         onOpenChange={setFormOpen}
         onSubmit={handleSubmitQueue}
       />
+      <AnnotationExportDialog
+        open={Boolean(exportingQueue)}
+        onOpenChange={(open) => {
+          if (!open) setExportingQueue(null)
+        }}
+        api={$api}
+        projectId={projectId}
+        queueId={exportingQueue?.id ?? ''}
+        scope='filtered'
+        filters={{}}
+      />
     </Page>
   )
 }
@@ -214,25 +226,4 @@ async function handleDeleteQueue(
   await deleteProjectAnnotationQueue($api, projectId, queue.id)
   await onDeleted()
   toast.success(`已删除人工标注任务：${queue.name}`)
-}
-
-async function handleExportQueue(
-  $api: Parameters<typeof exportProjectAnnotationQueue>[0],
-  projectId: string,
-  queue: AnnotationQueueRecord
-) {
-  const payload = await exportProjectAnnotationQueue(
-    $api,
-    projectId,
-    queue.id,
-    {
-      page: 1,
-      pageSize: 10,
-      keyword: '',
-      filters: {},
-      sorting: [],
-    }
-  )
-  downloadJson(`annotation-queue-${queue.id}-${Date.now()}.json`, payload)
-  toast.success(`已导出 ${payload.items.length} 条标注数据`)
 }

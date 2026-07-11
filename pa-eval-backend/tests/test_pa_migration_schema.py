@@ -22,6 +22,7 @@ PA_TABLES = (
     "pa_scheduled_job_execution_logs",
     "pa_annotation_queue_settings",
     "pa_annotation_queue_item_assignments",
+    "pa_annotation_export_jobs",
 )
 
 
@@ -43,7 +44,46 @@ def test_pa_schema_migrations_are_defined_in_order() -> None:
         "20260708_0009_add_report_flowback_compat_columns.py",
         "20260709_0010_create_scheduled_jobs.py",
         "20260711_0011_create_annotation_assignment_tables.py",
+        "20260711_0012_create_pa_annotation_export_jobs.py",
     ]
+
+
+def test_annotation_export_jobs_table_is_defined_with_comments() -> None:
+    migration = MIGRATIONS_DIR / "20260711_0012_create_pa_annotation_export_jobs.py"
+    content = migration.read_text(encoding="utf-8")
+    business_columns = (
+        "id",
+        "project_id",
+        "queue_id",
+        "scope",
+        "format",
+        "status",
+        "total_count",
+        "exported_count",
+        "file_name",
+        "file_path",
+        "file_size",
+        "error_message",
+        "started_at",
+        "completed_at",
+        "expires_at",
+        "metadata",
+    )
+
+    assert "pa_annotation_export_jobs" in content
+    assert "COMMENT ON TABLE pa_annotation_export_jobs" in content
+    assert "'{}'::jsonb" in content
+    assert "pa_annotation_export_jobs_scope_check" in content
+    assert "pa_annotation_export_jobs_format_check" in content
+    assert "pa_annotation_export_jobs_status_check" in content
+    assert "pa_annotation_export_jobs_project_queue_idx" in content
+    assert "pa_annotation_export_jobs_project_update_idx" in content
+
+    for column in business_columns:
+        assert f'"{column}"' in content
+
+    for column in (*AUDIT_COLUMNS, *business_columns):
+        assert f"COMMENT ON COLUMN pa_annotation_export_jobs.{column}" in content
 
 
 def test_annotation_assignment_tables_are_defined_with_comments() -> None:

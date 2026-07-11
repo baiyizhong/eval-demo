@@ -251,6 +251,23 @@ export const apiRegistry = {
     method: 'GET',
     url: '/projects/:projectId/annotation-queues/:queueId/items/filter-counts',
   },
+  previewProjectAnnotationExport: {
+    method: 'POST',
+    url: '/projects/:projectId/annotation-queues/:queueId/export-preview',
+  },
+  createProjectAnnotationExportJob: {
+    method: 'POST',
+    url: '/projects/:projectId/annotation-queues/:queueId/export-jobs',
+  },
+  getProjectAnnotationExportJob: {
+    method: 'GET',
+    url: '/projects/:projectId/annotation-queues/:queueId/export-jobs/:jobId',
+  },
+  downloadProjectAnnotationExportJob: {
+    method: 'GET',
+    url: '/projects/:projectId/annotation-queues/:queueId/export-jobs/:jobId/download',
+    responseType: 'blob',
+  },
   createProjectAnnotationQueueItem: {
     method: 'POST',
     url: '/projects/:projectId/annotation-queues/:queueId/items',

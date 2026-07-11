@@ -1,6 +1,6 @@
-import { useCallback, useMemo } from 'react'
+import { useCallback, useMemo, useState } from 'react'
 import { useQuery, useQueryClient } from '@tanstack/react-query'
-import { ListChecks } from 'lucide-react'
+import { ListChecks, RefreshCw } from 'lucide-react'
 import { useNavigate, useParams, useSearchParams } from 'react-router'
 import { toast } from 'sonner'
 import { confirm } from '@/lib/confirm'
@@ -24,6 +24,7 @@ import {
   listProjectAnnotationQueueItems,
   listProjectAnnotationUsers,
 } from '../api/annotation-api'
+import { AnnotationExportDialog } from '../components/annotation-export-dialog'
 import { AnnotationQueueItemBulkActions } from '../components/annotation-queue-item-bulk-actions'
 import { createAnnotationQueueItemColumns } from '../components/annotation-queue-item-columns'
 import { formatDateTime } from '../components/format'
@@ -43,6 +44,11 @@ export function ProjectAnnotationQueueDetail() {
   const { projectId = 'project_customer_agent', queueId = '' } = useParams()
   const { can } = usePermission({ type: 'project', projectId })
   const canEditAnnotation = can('project:annotation:edit')
+  const [selectedExportDialogOpen, setSelectedExportDialogOpen] =
+    useState(false)
+  const [selectedExportItemIds, setSelectedExportItemIds] = useState<string[]>(
+    []
+  )
 
   const queryState = useMemo<DataTableQueryState>(
     () => ({
@@ -58,7 +64,6 @@ export function ProjectAnnotationQueueDetail() {
     }),
     [searchParams]
   )
-
   const queueQuery = useQuery({
     queryKey: ['project-annotation-queue', $api, projectId, queueId],
     queryFn: () => getProjectAnnotationQueue($api, projectId, queueId),
@@ -153,6 +158,11 @@ export function ProjectAnnotationQueueDetail() {
   const queue = queueQuery.data
   const metrics = metricQuery.data
 
+  const handleRefresh = async () => {
+    await invalidateDetail()
+    toast.success('人工标注任务详情已刷新')
+  }
+
   return (
     <Page fixed fluid className='flex min-h-[calc(100svh-3.5rem)] flex-col'>
       <div className='flex min-h-0 flex-1 flex-col gap-4'>
@@ -163,6 +173,15 @@ export function ProjectAnnotationQueueDetail() {
           }
           buttonGroups={{
             buttons: [
+              {
+                id: 'refresh',
+                label: '刷新',
+                icon: RefreshCw,
+                iconPosition: 'start',
+                variant: 'outline',
+                size: 'sm',
+                onClick: () => void handleRefresh(),
+              },
               ...(canEditAnnotation
                 ? [
                     {
@@ -259,6 +278,10 @@ export function ProjectAnnotationQueueDetail() {
                 users={usersQuery.data ?? []}
                 canEdit={canEditAnnotation}
                 onChanged={invalidateDetail}
+                onExportSelected={(ids) => {
+                  setSelectedExportItemIds(ids)
+                  setSelectedExportDialogOpen(true)
+                }}
               />
             )}
             loadingText={
@@ -271,6 +294,19 @@ export function ProjectAnnotationQueueDetail() {
             minTableWidth={1320}
           />
         </section>
+        <AnnotationExportDialog
+          open={selectedExportDialogOpen}
+          onOpenChange={(open) => {
+            setSelectedExportDialogOpen(open)
+            if (!open) setSelectedExportItemIds([])
+          }}
+          api={$api}
+          projectId={projectId}
+          queueId={queueId}
+          scope='selected'
+          filters={{ itemIds: selectedExportItemIds }}
+          itemIds={selectedExportItemIds}
+        />
       </div>
     </Page>
   )
