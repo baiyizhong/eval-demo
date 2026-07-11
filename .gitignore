@@ -39,3 +39,4 @@ pa-eval-frontend/mock/*.bundled_*.mjs
 *.sw?
 
 package-lock.json
+pa-eval-backend/.env

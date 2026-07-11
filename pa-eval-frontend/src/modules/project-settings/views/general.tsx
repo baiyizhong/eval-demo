@@ -6,7 +6,6 @@ import { useParams } from 'react-router'
 import { toast } from 'sonner'
 import { useAPI } from '@/hooks/use-api'
 import { usePermission } from '@/hooks/use-permission'
-import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
 import { Label } from '@/components/ui/label'
@@ -55,8 +54,7 @@ export function ProjectGeneralSettings() {
       name: string
       description: string
       retentionDays: number
-    }) =>
-      updateProject($api, projectId, input),
+    }) => updateProject($api, projectId, input),
     onSuccess: async () => {
       await Promise.all([
         queryClient.invalidateQueries({ queryKey: ['project-settings-info'] }),
@@ -156,31 +154,7 @@ function ProjectGeneralSettingsForm({
           rows={4}
         />
       </div>
-      <dl className='grid gap-4 rounded-lg border p-4 text-sm sm:grid-cols-2'>
-        <div className='flex min-w-0 flex-col gap-1'>
-          <dt className='text-muted-foreground'>项目 ID</dt>
-          <dd className='font-mono text-xs break-all'>{project.id}</dd>
-        </div>
-        <div className='flex min-w-0 flex-col gap-1'>
-          <dt className='text-muted-foreground'>所属组织</dt>
-          <dd className='break-words'>{project.organizationName}</dd>
-        </div>
-        <div className='flex flex-col gap-1'>
-          <dt className='text-muted-foreground'>数据保留</dt>
-          <dd>
-            <Badge variant='secondary'>{project.retentionDays} 天</Badge>
-          </dd>
-        </div>
-        <div className='flex flex-col gap-1'>
-          <dt className='text-muted-foreground'>创建时间</dt>
-          <dd>{formatDateTime(project.createdAt)}</dd>
-        </div>
-        <div className='flex flex-col gap-1 sm:col-span-2'>
-          <dt className='text-muted-foreground'>更新时间</dt>
-          <dd>{formatDateTime(project.updatedAt)}</dd>
-        </div>
-      </dl>
-      <div className='flex max-w-xs flex-col gap-2'>
+      <div className='flex max-w-md flex-col gap-2'>
         <Label htmlFor='project-retention-days'>项目数据保留天数</Label>
         <Input
           id='project-retention-days'
@@ -193,9 +167,29 @@ function ProjectGeneralSettingsForm({
           placeholder='1-30'
         />
         <p className='text-muted-foreground text-xs'>
-          支持自定义 1-30 天，超出范围会自动按边界值保存。
+          项目数据包括
+          traces、observations、scores、events，超过保留天数后会被后台清理，请谨慎修改。新建项目默认保留
+          14 天，支持自定义 1-30 天。
         </p>
       </div>
+      <dl className='grid gap-4 rounded-lg border p-4 text-sm sm:grid-cols-2'>
+        <div className='flex min-w-0 flex-col gap-1'>
+          <dt className='text-muted-foreground'>项目 ID</dt>
+          <dd className='font-mono text-xs break-all'>{project.id}</dd>
+        </div>
+        <div className='flex min-w-0 flex-col gap-1'>
+          <dt className='text-muted-foreground'>所属组织</dt>
+          <dd className='break-words'>{project.organizationName}</dd>
+        </div>
+        <div className='flex flex-col gap-1'>
+          <dt className='text-muted-foreground'>创建时间</dt>
+          <dd>{formatDateTime(project.createdAt)}</dd>
+        </div>
+        <div className='flex flex-col gap-1'>
+          <dt className='text-muted-foreground'>更新时间</dt>
+          <dd>{formatDateTime(project.updatedAt)}</dd>
+        </div>
+      </dl>
       {!readOnly ? (
         <div>
           <Button type='submit' disabled={submitting}>
@@ -210,6 +204,6 @@ function ProjectGeneralSettingsForm({
 
 function clampRetentionDays(value: string) {
   const parsed = Number(value)
-  if (!Number.isFinite(parsed)) return 30
+  if (!Number.isFinite(parsed)) return 14
   return Math.min(30, Math.max(1, Math.round(parsed)))
 }

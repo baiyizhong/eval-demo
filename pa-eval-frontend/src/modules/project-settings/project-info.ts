@@ -23,7 +23,7 @@ export function toProjectInfo(project: ProjectListItem): ProjectInfo {
     organizationName: project.organizationName,
     name: project.name,
     description: project.description ?? '',
-    retentionDays: project.retentionDays ?? 30,
+    retentionDays: project.retentionDays ?? 14,
     createdAt: project.createdAt,
     updatedAt: project.updatedAt,
   }

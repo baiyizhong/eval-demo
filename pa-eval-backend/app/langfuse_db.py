@@ -5622,7 +5622,7 @@ class LangfuseDatabaseReader:
             "organizationId": row["org_id"],
             "organizationName": organization_name,
             "description": description or f"所属组织：{organization_name}",
-            "retentionDays": retention_days or 30,
+            "retentionDays": retention_days or 14,
             "status": "archived" if row.get("deleted_at") else "active",
             "createdAt": _format_datetime(row["created_at"]),
             "updatedAt": _format_datetime(row["updated_at"]),
