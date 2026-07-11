@@ -98,6 +98,7 @@ const item = {
   ],
   completedAt: '',
   completedBy: null,
+  assignee: null,
   createdAt: '',
   updatedAt: '',
   source: {
@@ -212,9 +213,8 @@ test('annotation score submit payload clears stale fields by score type', () => 
 })
 
 test('categorical options expose Langfuse numeric values with display labels', async () => {
-  const { getCategoricalScoreOptions } = await import(
-    '../../modules/app-evaluation/components/annotation-score-values.ts'
-  )
+  const { getCategoricalScoreOptions } =
+    await import('../../modules/app-evaluation/components/annotation-score-values.ts')
 
   assert.deepEqual(getCategoricalScoreOptions(scoreConfigs[2]), [
     { value: '1', label: '工具' },

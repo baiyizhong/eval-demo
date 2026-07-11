@@ -33,7 +33,7 @@ import type { AnnotationQueueItemRecord, ProjectUserRecord } from '../types'
 const itemUrlFilters: DataTableFilterBinding[] = [
   { fieldId: 'status', type: 'array' },
   { fieldId: 'objectType', type: 'array' },
-  { fieldId: 'completedBy', type: 'array' },
+  { fieldId: 'assigneeIds', columnId: 'assignee', type: 'array' },
 ]
 
 export function ProjectAnnotationQueueDetail() {
@@ -53,7 +53,7 @@ export function ProjectAnnotationQueueDetail() {
       filters: {
         status: searchParams.getAll('status'),
         objectType: searchParams.getAll('objectType'),
-        completedBy: searchParams.getAll('completedBy'),
+        assigneeIds: searchParams.getAll('assigneeIds'),
       },
       sorting: [],
     }),
@@ -141,8 +141,10 @@ export function ProjectAnnotationQueueDetail() {
         users: usersQuery.data ?? [],
         statusCounts: filterCountsQuery.data?.status,
         objectTypeCounts: filterCountsQuery.data?.objectType,
+        assigneeCounts: filterCountsQuery.data?.assigneeIds,
       }),
     [
+      filterCountsQuery.data?.assigneeIds,
       filterCountsQuery.data?.objectType,
       filterCountsQuery.data?.status,
       usersQuery.data,
@@ -249,26 +251,26 @@ export function ProjectAnnotationQueueDetail() {
               filters: itemUrlFilters,
             }}
             toolbar={{
-              searchPlaceholder: '搜索数据 ID / 源对象 / JSON 内容',
+              searchPlaceholder: '搜索数据 ID / 源数据 ID / JSON 内容',
               filters: toolbarFilters,
               columnLabels: {
                 id: '数据 ID',
                 objectType: '类型',
-                'source.title': '源对象',
-                objectId: '源对象 ID',
+                objectId: '源数据 ID',
                 status: '状态',
                 completedAt: '完成时间',
-                completedBy: '完成人',
+                assignee: '处理人',
               },
             }}
             bulkActions={(table) => (
               <AnnotationQueueItemBulkActions
                 table={table}
                 api={$api}
-                  projectId={projectId}
-                  queueId={queueId}
-                  canEdit={canEditAnnotation}
-                  onChanged={invalidateDetail}
+                projectId={projectId}
+                queueId={queueId}
+                users={usersQuery.data ?? []}
+                canEdit={canEditAnnotation}
+                onChanged={invalidateDetail}
               />
             )}
             loadingText={
@@ -290,11 +292,17 @@ function createItemToolbarFilters({
   users,
   statusCounts,
   objectTypeCounts,
+  assigneeCounts: rawAssigneeCounts,
 }: {
   users: ProjectUserRecord[]
   statusCounts?: Record<string, number>
   objectTypeCounts?: Record<string, number>
+  assigneeCounts?: Record<string, number>
 }): DataTableToolbarFilter[] {
+  const assigneeCounts = Object.fromEntries(
+    users.map((user) => [user.id, rawAssigneeCounts?.[user.id] ?? 0])
+  )
+
   return [
     {
       columnId: 'status',
@@ -316,8 +324,9 @@ function createItemToolbarFilters({
       ],
     },
     {
-      columnId: 'completedBy',
-      title: '完成人',
+      columnId: 'assignee',
+      title: '处理人',
+      optionCounts: assigneeCounts,
       options: users.map((user) => ({
         label: user.name || user.email,
         value: user.id,

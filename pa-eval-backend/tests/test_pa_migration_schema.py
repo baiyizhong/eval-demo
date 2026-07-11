@@ -20,14 +20,14 @@ PA_TABLES = (
     "pa_dataset_export_jobs",
     "pa_scheduled_jobs",
     "pa_scheduled_job_execution_logs",
+    "pa_annotation_queue_settings",
+    "pa_annotation_queue_item_assignments",
 )
 
 
 def test_pa_schema_migrations_are_defined_in_order() -> None:
     migration_files = sorted(
-        path
-        for path in MIGRATIONS_DIR.glob("*.py")
-        if path.name != "__init__.py"
+        path for path in MIGRATIONS_DIR.glob("*.py") if path.name != "__init__.py"
     )
 
     assert [path.name for path in migration_files] == [
@@ -42,7 +42,28 @@ def test_pa_schema_migrations_are_defined_in_order() -> None:
         "20260708_0008_align_auto_eval_compat_columns.py",
         "20260708_0009_add_report_flowback_compat_columns.py",
         "20260709_0010_create_scheduled_jobs.py",
+        "20260711_0011_create_annotation_assignment_tables.py",
     ]
+
+
+def test_annotation_assignment_tables_are_defined_with_comments() -> None:
+    migration = MIGRATIONS_DIR / "20260711_0011_create_annotation_assignment_tables.py"
+    content = migration.read_text(encoding="utf-8")
+
+    assert "pa_annotation_queue_settings" in content
+    assert "pa_annotation_queue_item_assignments" in content
+    assert "assignment_strategy" in content
+    assert "assignment_weights" in content
+    assert "assignee_user_id" in content
+    assert "COMMENT ON TABLE pa_annotation_queue_settings" in content
+    assert "COMMENT ON TABLE pa_annotation_queue_item_assignments" in content
+    assert (
+        "COMMENT ON COLUMN pa_annotation_queue_settings.assignment_strategy" in content
+    )
+    assert (
+        "COMMENT ON COLUMN pa_annotation_queue_item_assignments.assignee_user_id"
+        in content
+    )
 
 
 def test_audit_action_normalization_migration_is_defined() -> None:
@@ -55,7 +76,9 @@ def test_audit_action_normalization_migration_is_defined() -> None:
 
 
 def test_langfuse_score_config_normalization_migration_is_defined() -> None:
-    migration = MIGRATIONS_DIR / "20260707_0007_normalize_langfuse_score_config_categories.py"
+    migration = (
+        MIGRATIONS_DIR / "20260707_0007_normalize_langfuse_score_config_categories.py"
+    )
     content = migration.read_text(encoding="utf-8")
 
     assert "UPDATE score_configs" in content
@@ -73,10 +96,10 @@ def test_pa_tables_use_physical_delete_and_uniform_audit_fields() -> None:
     content = "\n".join(contents)
 
     assert "deleted_at" not in content
-    assert "ON DELETE CASCADE" in content or "ondelete=\"CASCADE\"" in content
+    assert "ON DELETE CASCADE" in content or 'ondelete="CASCADE"' in content
 
     for column in AUDIT_COLUMNS:
-        assert f"\"{column}\"" in content
+        assert f'"{column}"' in content
 
     for table_name in PA_TABLES:
         table_block = _find_table_block(contents, table_name)
@@ -135,7 +158,9 @@ def test_final_migration_does_not_use_incremental_column_patches() -> None:
 
 def _find_table_block(contents: list[str], table_name: str) -> str:
     for content in contents:
-        marker = f"op.create_table(\n            \"{table_name}\""
+        marker = f'op.create_table(\n            "{table_name}"'
+        if marker not in content:
+            marker = f'op.create_table(\n        "{table_name}"'
         if marker not in content:
             continue
         table_start = content.index(marker)

@@ -9,6 +9,11 @@ from psycopg.rows import dict_row
 from psycopg.types.json import Jsonb
 
 from app.auth_context import CurrentUserContext
+from app.annotation_assignment import (
+    normalize_assignment_strategy,
+    normalize_assignment_weights,
+    plan_annotation_assignments,
+)
 from app.config import Settings, get_settings
 from app.errors import BusinessError
 
@@ -2927,6 +2932,13 @@ class LangfuseDatabaseReader:
                         queue_id,
                         payload.get("assigneeIds") or [],
                     )
+                    await self._upsert_annotation_queue_settings(
+                        cursor,
+                        project_id,
+                        queue_id,
+                        user_id,
+                        payload,
+                    )
         except psycopg.errors.UniqueViolation as exc:
             raise BusinessError(
                 code=1022,
@@ -2991,6 +3003,13 @@ class LangfuseDatabaseReader:
                         queue_id,
                         payload.get("assigneeIds") or [],
                     )
+                    await self._upsert_annotation_queue_settings(
+                        cursor,
+                        project_id,
+                        queue_id,
+                        user_id,
+                        payload,
+                    )
         except psycopg.errors.UniqueViolation as exc:
             raise BusinessError(
                 code=1022,
@@ -3026,6 +3045,22 @@ class LangfuseDatabaseReader:
                 await cursor.execute(
                     """
                     DELETE FROM annotation_queue_items
+                    WHERE project_id = %(project_id)s
+                      AND queue_id = %(queue_id)s
+                    """,
+                    {"project_id": project_id, "queue_id": queue_id},
+                )
+                await cursor.execute(
+                    """
+                    DELETE FROM pa_annotation_queue_item_assignments
+                    WHERE project_id = %(project_id)s
+                      AND queue_id = %(queue_id)s
+                    """,
+                    {"project_id": project_id, "queue_id": queue_id},
+                )
+                await cursor.execute(
+                    """
+                    DELETE FROM pa_annotation_queue_settings
                     WHERE project_id = %(project_id)s
                       AND queue_id = %(queue_id)s
                     """,
@@ -3185,6 +3220,13 @@ class LangfuseDatabaseReader:
                             "object_type": payload["objectType"],
                         },
                     )
+                    await self._assign_annotation_queue_items(
+                        cursor,
+                        project_id,
+                        queue_id,
+                        user_id,
+                        [item_id],
+                    )
 
         return await self.get_annotation_queue_item_for_user(
             project_id,
@@ -3225,8 +3267,138 @@ class LangfuseDatabaseReader:
                     },
                 )
                 rows = list(await cursor.fetchall())
+                deleted_ids = [row["id"] for row in rows]
+                if deleted_ids:
+                    await cursor.execute(
+                        """
+                        DELETE FROM pa_annotation_queue_item_assignments
+                        WHERE project_id = %(project_id)s
+                          AND queue_id = %(queue_id)s
+                          AND item_id = ANY(%(item_ids)s)
+                        """,
+                        {
+                            "project_id": project_id,
+                            "queue_id": queue_id,
+                            "item_ids": deleted_ids,
+                        },
+                    )
 
-        return [row["id"] for row in rows]
+        return deleted_ids
+
+    async def update_annotation_queue_item_assignees_for_user(
+        self,
+        project_id: str,
+        queue_id: str,
+        user_id: str,
+        item_ids: list[str],
+        assignee_user_id: str,
+    ) -> dict[str, Any]:
+        if not self._database_url:
+            raise LangfuseDatabaseConfigError()
+
+        unique_item_ids = list(dict.fromkeys(item_ids))
+        project_users = await self.list_project_users_for_user(project_id, user_id)
+        active_user_ids = {
+            user["id"]
+            for user in project_users
+            if user.get("status") != "pending"
+        }
+        if assignee_user_id not in active_user_ids:
+            raise BusinessError(
+                code=1025,
+                message="处理人不存在或无访问权限",
+                status_code=404,
+            )
+
+        async with await psycopg.AsyncConnection.connect(
+            self._database_url,
+            row_factory=dict_row,
+        ) as connection:
+            async with connection.cursor() as cursor:
+                await self._get_project_for_user(cursor, project_id, user_id)
+                await self._get_annotation_queue_row(cursor, project_id, queue_id)
+                await cursor.execute(
+                    """
+                    SELECT id, status::text AS status
+                    FROM annotation_queue_items
+                    WHERE project_id = %(project_id)s
+                      AND queue_id = %(queue_id)s
+                      AND id = ANY(%(item_ids)s)
+                    """,
+                    {
+                        "project_id": project_id,
+                        "queue_id": queue_id,
+                        "item_ids": unique_item_ids,
+                    },
+                )
+                rows_by_id = {row["id"]: row for row in await cursor.fetchall()}
+                updated_item_ids = [
+                    item_id
+                    for item_id in unique_item_ids
+                    if rows_by_id.get(item_id, {}).get("status") == "PENDING"
+                ]
+                skipped_item_ids = [
+                    item_id
+                    for item_id in unique_item_ids
+                    if rows_by_id.get(item_id, {}).get("status") == "COMPLETED"
+                ]
+
+                for item_id in updated_item_ids:
+                    await cursor.execute(
+                        """
+                        INSERT INTO pa_annotation_queue_item_assignments (
+                            create_by,
+                            update_by,
+                            id,
+                            project_id,
+                            queue_id,
+                            item_id,
+                            assignee_user_id
+                        )
+                        VALUES (
+                            %(user_id)s,
+                            %(user_id)s,
+                            %(id)s,
+                            %(project_id)s,
+                            %(queue_id)s,
+                            %(item_id)s,
+                            %(assignee_user_id)s
+                        )
+                        ON CONFLICT (project_id, queue_id, item_id)
+                        DO UPDATE SET
+                            update_by = EXCLUDED.update_by,
+                            update_date = NOW(),
+                            assignee_user_id = EXCLUDED.assignee_user_id
+                        """,
+                        {
+                            "user_id": user_id,
+                            "id": _new_langfuse_id("paannassign"),
+                            "project_id": project_id,
+                            "queue_id": queue_id,
+                            "item_id": item_id,
+                            "assignee_user_id": assignee_user_id,
+                        },
+                    )
+
+                if updated_item_ids:
+                    await cursor.execute(
+                        """
+                        UPDATE annotation_queues
+                        SET updated_at = NOW()
+                        WHERE project_id = %(project_id)s
+                          AND id = %(queue_id)s
+                        """,
+                        {"project_id": project_id, "queue_id": queue_id},
+                    )
+
+        return {
+            "assigneeUserId": assignee_user_id,
+            "requestedCount": len(unique_item_ids),
+            "updatedCount": len(updated_item_ids),
+            "skippedCount": len(skipped_item_ids),
+            "updatedItemIds": updated_item_ids,
+            "skippedItemIds": skipped_item_ids,
+        }
 
     async def create_trace_annotation_task_for_user(
         self,
@@ -3260,9 +3432,24 @@ class LangfuseDatabaseReader:
                         score_config_ids,
                         user_id,
                     )
+                if payload.get("assigneeIds"):
+                    await self._replace_annotation_assignments(
+                        cursor,
+                        project_id,
+                        queue_id,
+                        payload.get("assigneeIds") or [],
+                    )
+                    await self._upsert_annotation_queue_settings(
+                        cursor,
+                        project_id,
+                        queue_id,
+                        user_id,
+                        payload,
+                    )
 
                 created_count = 0
                 skipped_count = 0
+                created_item_ids: list[str] = []
                 for trace_id in trace_ids:
                     await cursor.execute(
                         """
@@ -3284,6 +3471,7 @@ class LangfuseDatabaseReader:
                         skipped_count += 1
                         continue
 
+                    item_id = _new_langfuse_id("annitem")
                     await cursor.execute(
                         """
                         INSERT INTO annotation_queue_items (
@@ -3308,13 +3496,22 @@ class LangfuseDatabaseReader:
                         )
                         """,
                         {
-                            "id": _new_langfuse_id("annitem"),
+                            "id": item_id,
                             "project_id": project_id,
                             "queue_id": queue_id,
                             "trace_id": trace_id,
                         },
                     )
+                    created_item_ids.append(item_id)
                     created_count += 1
+
+                await self._assign_annotation_queue_items(
+                    cursor,
+                    project_id,
+                    queue_id,
+                    user_id,
+                    created_item_ids,
+                )
 
                 await cursor.execute(
                     """
@@ -4793,6 +4990,8 @@ class LangfuseDatabaseReader:
                 COALESCE(counts.pending_count, 0)::int AS pending_count,
                 COALESCE(assignments.assignee_ids, ARRAY[]::text[]) AS assignee_ids,
                 COALESCE(assignments.assignees, '[]'::jsonb) AS assignees,
+                COALESCE(settings.assignment_strategy, 'average') AS assignment_strategy,
+                COALESCE(settings.assignment_weights, '{}'::jsonb) AS assignment_weights,
                 COALESCE(score_configs.score_configs, '[]'::jsonb) AS score_configs
             FROM annotation_queues aq
             LEFT JOIN LATERAL (
@@ -4822,6 +5021,9 @@ class LangfuseDatabaseReader:
                 WHERE aqa.project_id = aq.project_id
                   AND aqa.queue_id = aq.id
             ) assignments ON TRUE
+            LEFT JOIN pa_annotation_queue_settings settings
+              ON settings.project_id = aq.project_id
+             AND settings.queue_id = aq.id
             LEFT JOIN LATERAL (
                 SELECT JSONB_AGG(
                     JSONB_BUILD_OBJECT(
@@ -4859,6 +5061,9 @@ class LangfuseDatabaseReader:
                 completed_user.id AS completed_by_id,
                 completed_user.name AS completed_by_name,
                 completed_user.email AS completed_by_email,
+                assignee_user.id AS assignee_id,
+                assignee_user.name AS assignee_name,
+                assignee_user.email AS assignee_email,
                 COALESCE(scores.scores, '[]'::jsonb) AS scores,
                 CASE
                     WHEN aqi.object_type::text = 'TRACE' THEN COALESCE(t.name, t.id)
@@ -4895,6 +5100,11 @@ class LangfuseDatabaseReader:
                     AS source_created_at
             FROM annotation_queue_items aqi
             LEFT JOIN users completed_user ON completed_user.id = aqi.annotator_user_id
+            LEFT JOIN pa_annotation_queue_item_assignments assignment
+              ON assignment.project_id = aqi.project_id
+             AND assignment.queue_id = aqi.queue_id
+             AND assignment.item_id = aqi.id
+            LEFT JOIN users assignee_user ON assignee_user.id = assignment.assignee_user_id
             LEFT JOIN traces t
                 ON aqi.object_type::text = 'TRACE'
                AND t.project_id = aqi.project_id
@@ -5346,6 +5556,198 @@ class LangfuseDatabaseReader:
                     "user_id": assignee_id,
                 },
             )
+
+    @staticmethod
+    async def _upsert_annotation_queue_settings(
+        cursor: psycopg.AsyncCursor[dict[str, Any]],
+        project_id: str,
+        queue_id: str,
+        user_id: str,
+        payload: dict[str, Any],
+    ) -> None:
+        assignee_ids = list(dict.fromkeys(payload.get("assigneeIds") or []))
+        strategy = normalize_assignment_strategy(
+            assignee_ids,
+            payload.get("assignmentStrategy"),
+        )
+        weights = normalize_assignment_weights(
+            assignee_ids,
+            payload.get("assignmentWeights") or {},
+        )
+        await cursor.execute(
+            """
+            INSERT INTO pa_annotation_queue_settings (
+                create_by,
+                update_by,
+                queue_id,
+                project_id,
+                assignment_strategy,
+                assignment_weights
+            )
+            VALUES (
+                %(user_id)s,
+                %(user_id)s,
+                %(queue_id)s,
+                %(project_id)s,
+                %(assignment_strategy)s,
+                %(assignment_weights)s
+            )
+            ON CONFLICT (queue_id)
+            DO UPDATE SET
+                update_by = EXCLUDED.update_by,
+                update_date = NOW(),
+                project_id = EXCLUDED.project_id,
+                assignment_strategy = EXCLUDED.assignment_strategy,
+                assignment_weights = EXCLUDED.assignment_weights
+            """,
+            {
+                "user_id": user_id,
+                "project_id": project_id,
+                "queue_id": queue_id,
+                "assignment_strategy": strategy,
+                "assignment_weights": Jsonb(weights),
+            },
+        )
+
+    async def _assign_annotation_queue_items(
+        self,
+        cursor: psycopg.AsyncCursor[dict[str, Any]],
+        project_id: str,
+        queue_id: str,
+        user_id: str,
+        item_ids: list[str],
+    ) -> None:
+        if not item_ids:
+            return
+
+        assignee_ids = await self._get_annotation_queue_assignee_ids(
+            cursor,
+            project_id,
+            queue_id,
+        )
+        if not assignee_ids:
+            return
+
+        strategy, weights = await self._get_annotation_queue_assignment_settings(
+            cursor,
+            project_id,
+            queue_id,
+            assignee_ids,
+        )
+        existing_counts = await self._get_annotation_queue_assignment_counts(
+            cursor,
+            project_id,
+            queue_id,
+        )
+        assignments = plan_annotation_assignments(
+            item_ids=item_ids,
+            assignee_ids=assignee_ids,
+            strategy=strategy,
+            weights=weights,
+            existing_counts=existing_counts,
+        )
+        for item_id, assignee_id in assignments:
+            await cursor.execute(
+                """
+                INSERT INTO pa_annotation_queue_item_assignments (
+                    create_by,
+                    update_by,
+                    id,
+                    project_id,
+                    queue_id,
+                    item_id,
+                    assignee_user_id
+                )
+                VALUES (
+                    %(user_id)s,
+                    %(user_id)s,
+                    %(id)s,
+                    %(project_id)s,
+                    %(queue_id)s,
+                    %(item_id)s,
+                    %(assignee_user_id)s
+                )
+                ON CONFLICT (project_id, queue_id, item_id)
+                DO UPDATE SET
+                    update_by = EXCLUDED.update_by,
+                    update_date = NOW(),
+                    assignee_user_id = EXCLUDED.assignee_user_id
+                """,
+                {
+                    "user_id": user_id,
+                    "id": _new_langfuse_id("paannassign"),
+                    "project_id": project_id,
+                    "queue_id": queue_id,
+                    "item_id": item_id,
+                    "assignee_user_id": assignee_id,
+                },
+            )
+
+    @staticmethod
+    async def _get_annotation_queue_assignee_ids(
+        cursor: psycopg.AsyncCursor[dict[str, Any]],
+        project_id: str,
+        queue_id: str,
+    ) -> list[str]:
+        await cursor.execute(
+            """
+            SELECT user_id
+            FROM annotation_queue_assignments
+            WHERE project_id = %(project_id)s
+              AND queue_id = %(queue_id)s
+            ORDER BY created_at, user_id
+            """,
+            {"project_id": project_id, "queue_id": queue_id},
+        )
+        return [row["user_id"] for row in await cursor.fetchall()]
+
+    @staticmethod
+    async def _get_annotation_queue_assignment_settings(
+        cursor: psycopg.AsyncCursor[dict[str, Any]],
+        project_id: str,
+        queue_id: str,
+        assignee_ids: list[str],
+    ) -> tuple[str, dict[str, int]]:
+        await cursor.execute(
+            """
+            SELECT assignment_strategy, assignment_weights
+            FROM pa_annotation_queue_settings
+            WHERE project_id = %(project_id)s
+              AND queue_id = %(queue_id)s
+            LIMIT 1
+            """,
+            {"project_id": project_id, "queue_id": queue_id},
+        )
+        row = await cursor.fetchone()
+        strategy = normalize_assignment_strategy(
+            assignee_ids,
+            row.get("assignment_strategy") if row else None,
+        )
+        weights = normalize_assignment_weights(
+            assignee_ids,
+            row.get("assignment_weights") if row else {},
+        )
+        return strategy, weights
+
+    @staticmethod
+    async def _get_annotation_queue_assignment_counts(
+        cursor: psycopg.AsyncCursor[dict[str, Any]],
+        project_id: str,
+        queue_id: str,
+    ) -> dict[str, int]:
+        await cursor.execute(
+            """
+            SELECT assignee_user_id, COUNT(*)::int AS count
+            FROM pa_annotation_queue_item_assignments
+            WHERE project_id = %(project_id)s
+              AND queue_id = %(queue_id)s
+            GROUP BY assignee_user_id
+            """,
+            {"project_id": project_id, "queue_id": queue_id},
+        )
+        return {
+            row["assignee_user_id"]: row["count"] for row in await cursor.fetchall()
+        }
 
     @staticmethod
     async def _get_annotation_queue_row(
@@ -5939,6 +6341,8 @@ class LangfuseDatabaseReader:
             "description": row.get("description") or "",
             "scoreConfigIds": row.get("score_config_ids") or [],
             "assigneeIds": row.get("assignee_ids") or [],
+            "assignmentStrategy": row.get("assignment_strategy") or "average",
+            "assignmentWeights": row.get("assignment_weights") or {},
             "completedCount": row.get("completed_count") or 0,
             "pendingCount": row.get("pending_count") or 0,
             "scoreConfigs": score_configs,
@@ -5957,6 +6361,15 @@ class LangfuseDatabaseReader:
                 or row.get("completed_by_email")
                 or row["completed_by_id"],
                 "email": row.get("completed_by_email") or "",
+            }
+        assignee = None
+        if row.get("assignee_id"):
+            assignee = {
+                "id": row["assignee_id"],
+                "name": row.get("assignee_name")
+                or row.get("assignee_email")
+                or row["assignee_id"],
+                "email": row.get("assignee_email") or "",
             }
 
         return {
@@ -5989,6 +6402,7 @@ class LangfuseDatabaseReader:
             if row.get("completed_at")
             else "",
             "completedBy": completed_by,
+            "assignee": assignee,
             "createdAt": _format_datetime(row["created_at"]),
             "updatedAt": _format_datetime(row["updated_at"]),
         }

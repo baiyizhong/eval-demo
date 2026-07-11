@@ -3,7 +3,6 @@ import { Link } from 'react-router'
 import { Button } from '@/components/ui/button'
 import { Checkbox } from '@/components/ui/checkbox'
 import { DataTableColumnHeader } from '@/components/common/data-table'
-import { LongText } from '@/components/common/long-text'
 import type { AnnotationQueueItemRecord } from '../types'
 import { AnnotationObjectTypeBadge } from './annotation-object-type-badge'
 import { AnnotationStatusBadge } from './annotation-status-badge'
@@ -74,19 +73,9 @@ export function createAnnotationQueueItemColumns({
       filterFn: (row, id, value) => value.includes(row.getValue(id)),
     },
     {
-      accessorKey: 'source.title',
-      header: ({ column }) => (
-        <DataTableColumnHeader column={column} title='源对象' />
-      ),
-      cell: ({ row }) => (
-        <LongText className='max-w-64'>{row.original.source.title}</LongText>
-      ),
-      enableSorting: false,
-    },
-    {
       accessorKey: 'objectId',
       header: ({ column }) => (
-        <DataTableColumnHeader column={column} title='源对象 ID' />
+        <DataTableColumnHeader column={column} title='源数据 ID' />
       ),
       cell: ({ row }) => (
         <span className='font-mono text-xs'>{row.original.objectId}</span>
@@ -111,11 +100,11 @@ export function createAnnotationQueueItemColumns({
           : '-',
     },
     {
-      accessorKey: 'completedBy',
+      accessorKey: 'assignee',
       header: ({ column }) => (
-        <DataTableColumnHeader column={column} title='完成人' />
+        <DataTableColumnHeader column={column} title='处理人' />
       ),
-      cell: ({ row }) => row.original.completedBy?.name ?? '-',
+      cell: ({ row }) => row.original.assignee?.name ?? '-',
       enableSorting: false,
     },
     {

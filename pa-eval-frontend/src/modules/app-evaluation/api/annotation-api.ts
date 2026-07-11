@@ -8,9 +8,11 @@ import type {
   AnnotationBatchFiltersInput,
   AnnotationBatchPreviewResult,
   AnnotationBatchSaveResult,
+  AnnotationAssignmentStrategy,
   AnnotationNavigationResult,
   AnnotationQueueExportPayload,
   AnnotationQueueFormInput,
+  AnnotationQueueItemAssigneeUpdateResult,
   AnnotationQueueItemFilterCounts,
   AnnotationQueueItemRecord,
   AnnotationQueueMetricSummary,
@@ -38,6 +40,7 @@ type AnnotationApiClient = {
   getProjectAnnotationQueueItems: ApiMethod
   getProjectAnnotationQueueItemFilterCounts: ApiMethod
   deleteProjectAnnotationQueueItems: ApiMethod
+  updateProjectAnnotationQueueItemAssignees: ApiMethod
   previewProjectAnnotationBatch: ApiMethod
   saveProjectAnnotationBatchScores: ApiMethod
   saveProjectAnnotationScores: ApiMethod
@@ -221,6 +224,7 @@ export function listProjectAnnotationQueueItems(
   const status = query.filters.status as string[] | undefined
   const objectType = query.filters.objectType as string[] | undefined
   const completedBy = query.filters.completedBy as string[] | undefined
+  const assigneeIds = query.filters.assigneeIds as string[] | undefined
   const createdAtFrom = query.filters.createdAtFrom as string | undefined
   const createdAtTo = query.filters.createdAtTo as string | undefined
   const completedAtFrom = query.filters.completedAtFrom as string | undefined
@@ -230,14 +234,11 @@ export function listProjectAnnotationQueueItems(
   const metadataOperator = query.filters.metadataOperator as string | undefined
   const metadataValue = query.filters.metadataValue as string | undefined
   const metadataFilters = query.filters.metadataFilters as
-    | AnnotationBatchFiltersInput['metadataFilters']
-    | undefined
+    AnnotationBatchFiltersInput['metadataFilters'] | undefined
   const inputFilters = query.filters.inputFilters as
-    | AnnotationBatchFiltersInput['inputFilters']
-    | undefined
+    AnnotationBatchFiltersInput['inputFilters'] | undefined
   const outputFilters = query.filters.outputFilters as
-    | AnnotationBatchFiltersInput['outputFilters']
-    | undefined
+    AnnotationBatchFiltersInput['outputFilters'] | undefined
   const itemIds = query.filters.itemIds as string[] | undefined
 
   return api.getProjectAnnotationQueueItems<
@@ -251,6 +252,7 @@ export function listProjectAnnotationQueueItems(
       ...(status?.length ? { status } : {}),
       ...(objectType?.length ? { objectType } : {}),
       ...(completedBy?.length ? { completedBy } : {}),
+      ...(assigneeIds?.length ? { assigneeIds } : {}),
       ...(createdAtFrom ? { createdAtFrom } : {}),
       ...(createdAtTo ? { createdAtTo } : {}),
       ...(completedAtFrom ? { completedAtFrom } : {}),
@@ -283,6 +285,7 @@ export function getProjectAnnotationQueueItemFilterCounts(
   const status = query.filters.status as string[] | undefined
   const objectType = query.filters.objectType as string[] | undefined
   const completedBy = query.filters.completedBy as string[] | undefined
+  const assigneeIds = query.filters.assigneeIds as string[] | undefined
   const createdAtFrom = query.filters.createdAtFrom as string | undefined
   const createdAtTo = query.filters.createdAtTo as string | undefined
   const completedAtFrom = query.filters.completedAtFrom as string | undefined
@@ -292,45 +295,43 @@ export function getProjectAnnotationQueueItemFilterCounts(
   const metadataOperator = query.filters.metadataOperator as string | undefined
   const metadataValue = query.filters.metadataValue as string | undefined
   const metadataFilters = query.filters.metadataFilters as
-    | AnnotationBatchFiltersInput['metadataFilters']
-    | undefined
+    AnnotationBatchFiltersInput['metadataFilters'] | undefined
   const inputFilters = query.filters.inputFilters as
-    | AnnotationBatchFiltersInput['inputFilters']
-    | undefined
+    AnnotationBatchFiltersInput['inputFilters'] | undefined
   const outputFilters = query.filters.outputFilters as
-    | AnnotationBatchFiltersInput['outputFilters']
-    | undefined
+    AnnotationBatchFiltersInput['outputFilters'] | undefined
   const itemIds = query.filters.itemIds as string[] | undefined
 
-  return api.getProjectAnnotationQueueItemFilterCounts<
-    AnnotationQueueItemFilterCounts
-  >({
-    path: { projectId, queueId },
-    query: {
-      ...(keyword ? { keyword } : {}),
-      ...(status?.length ? { status } : {}),
-      ...(objectType?.length ? { objectType } : {}),
-      ...(completedBy?.length ? { completedBy } : {}),
-      ...(createdAtFrom ? { createdAtFrom } : {}),
-      ...(createdAtTo ? { createdAtTo } : {}),
-      ...(completedAtFrom ? { completedAtFrom } : {}),
-      ...(completedAtTo ? { completedAtTo } : {}),
-      ...(typeof hasScores === 'boolean' ? { hasScores } : {}),
-      ...(metadataKey ? { metadataKey } : {}),
-      ...(metadataOperator ? { metadataOperator } : {}),
-      ...(metadataValue ? { metadataValue } : {}),
-      ...(metadataFilters?.length
-        ? { metadataFilters: JSON.stringify(metadataFilters) }
-        : {}),
-      ...(inputFilters?.length
-        ? { inputFilters: JSON.stringify(inputFilters) }
-        : {}),
-      ...(outputFilters?.length
-        ? { outputFilters: JSON.stringify(outputFilters) }
-        : {}),
-      ...(itemIds?.length ? { itemIds } : {}),
-    },
-  })
+  return api.getProjectAnnotationQueueItemFilterCounts<AnnotationQueueItemFilterCounts>(
+    {
+      path: { projectId, queueId },
+      query: {
+        ...(keyword ? { keyword } : {}),
+        ...(status?.length ? { status } : {}),
+        ...(objectType?.length ? { objectType } : {}),
+        ...(completedBy?.length ? { completedBy } : {}),
+        ...(assigneeIds?.length ? { assigneeIds } : {}),
+        ...(createdAtFrom ? { createdAtFrom } : {}),
+        ...(createdAtTo ? { createdAtTo } : {}),
+        ...(completedAtFrom ? { completedAtFrom } : {}),
+        ...(completedAtTo ? { completedAtTo } : {}),
+        ...(typeof hasScores === 'boolean' ? { hasScores } : {}),
+        ...(metadataKey ? { metadataKey } : {}),
+        ...(metadataOperator ? { metadataOperator } : {}),
+        ...(metadataValue ? { metadataValue } : {}),
+        ...(metadataFilters?.length
+          ? { metadataFilters: JSON.stringify(metadataFilters) }
+          : {}),
+        ...(inputFilters?.length
+          ? { inputFilters: JSON.stringify(inputFilters) }
+          : {}),
+        ...(outputFilters?.length
+          ? { outputFilters: JSON.stringify(outputFilters) }
+          : {}),
+        ...(itemIds?.length ? { itemIds } : {}),
+      },
+    }
+  )
 }
 
 export async function getProjectAnnotationNavigation(
@@ -427,14 +428,11 @@ export function buildAnnotationBatchFilters(
     | undefined
   const metadataValue = query.filters.metadataValue as string | undefined
   const metadataFilters = query.filters.metadataFilters as
-    | AnnotationBatchFiltersInput['metadataFilters']
-    | undefined
+    AnnotationBatchFiltersInput['metadataFilters'] | undefined
   const inputFilters = query.filters.inputFilters as
-    | AnnotationBatchFiltersInput['inputFilters']
-    | undefined
+    AnnotationBatchFiltersInput['inputFilters'] | undefined
   const outputFilters = query.filters.outputFilters as
-    | AnnotationBatchFiltersInput['outputFilters']
-    | undefined
+    AnnotationBatchFiltersInput['outputFilters'] | undefined
   const itemIds = query.filters.itemIds as string[] | undefined
 
   return {
@@ -476,6 +474,22 @@ export function deleteProjectAnnotationQueueItems(
   return api.deleteProjectAnnotationQueueItems<{ ids: string[] }>({
     path: { projectId, queueId },
     body: { itemIds },
+  })
+}
+
+export function updateProjectAnnotationQueueItemAssignees(
+  api: AnnotationApiClient,
+  projectId: string,
+  queueId: string,
+  itemIds: string[],
+  assigneeUserId: string
+) {
+  return api.updateProjectAnnotationQueueItemAssignees<
+    AnnotationQueueItemAssigneeUpdateResult,
+    { itemIds: string[]; assigneeUserId: string }
+  >({
+    path: { projectId, queueId },
+    body: { itemIds, assigneeUserId },
   })
 }
 
@@ -540,6 +554,9 @@ export function createTraceAnnotationTask(
   options: {
     queueId?: string
     queueName?: string
+    assigneeIds?: string[]
+    assignmentStrategy?: AnnotationAssignmentStrategy
+    assignmentWeights?: Record<string, number>
   } = {}
 ) {
   return api.createTraceAnnotationTask<{

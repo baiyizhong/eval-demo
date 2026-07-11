@@ -117,6 +117,8 @@ export type AnnotationObjectType = 'TRACE' | 'OBSERVATION' | 'SESSION'
 
 export type AnnotationItemStatus = 'PENDING' | 'COMPLETED'
 
+export type AnnotationAssignmentStrategy = 'average' | 'random' | 'weighted'
+
 export type ScoreDataType = 'NUMERIC' | 'CATEGORICAL' | 'BOOLEAN' | 'TEXT'
 
 export type ScoreConfigCategory = {
@@ -160,6 +162,8 @@ export type AnnotationQueueRecord = {
   description: string
   scoreConfigIds: string[]
   assigneeIds: string[]
+  assignmentStrategy: AnnotationAssignmentStrategy
+  assignmentWeights: Record<string, number>
   completedCount: number
   pendingCount: number
   scoreConfigs: ScoreConfigRecord[]
@@ -173,6 +177,8 @@ export type AnnotationQueueFormInput = {
   description: string
   scoreConfigIds: string[]
   assigneeIds: string[]
+  assignmentStrategy: AnnotationAssignmentStrategy
+  assignmentWeights: Record<string, number>
 }
 
 export type AnnotationScoreRecord = {
@@ -215,6 +221,7 @@ export type AnnotationQueueItemRecord = {
   scores: AnnotationScoreRecord[]
   completedAt: string
   completedBy: ProjectUserRecord | null
+  assignee: ProjectUserRecord | null
   createdAt: string
   updatedAt: string
 }
@@ -230,6 +237,16 @@ export type AnnotationQueueMetricSummary = {
 export type AnnotationQueueItemFilterCounts = {
   status: Record<AnnotationItemStatus, number>
   objectType: Record<AnnotationObjectType, number>
+  assigneeIds: Record<string, number>
+}
+
+export type AnnotationQueueItemAssigneeUpdateResult = {
+  assigneeUserId: string
+  requestedCount: number
+  updatedCount: number
+  skippedCount: number
+  updatedItemIds: string[]
+  skippedItemIds: string[]
 }
 
 export type AnnotationScoreFormInput = {

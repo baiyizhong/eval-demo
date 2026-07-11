@@ -1,4 +1,5 @@
 import { z } from 'zod'
+import type { UseFormReturn } from 'react-hook-form'
 import { toast } from 'sonner'
 import { Checkbox } from '@/components/ui/checkbox'
 import {
@@ -15,17 +16,24 @@ import { BaseForm } from '@/components/common/base-form'
 import { Drawer } from '@/components/common/drawer'
 import {
   scoreDataTypeLabels,
+  type AnnotationAssignmentStrategy,
   type AnnotationQueueFormInput,
   type AnnotationQueueRecord,
   type ProjectUserRecord,
   type ScoreConfigRecord,
 } from '../types'
+import {
+  AnnotationAssignmentFields,
+  type AnnotationAssignmentFormValues,
+} from './annotation-assignment-fields'
 
 const annotationQueueFormSchema = z.object({
   name: z.string().min(1, '请输入任务名称'),
   description: z.string(),
   scoreConfigIds: z.array(z.string()).min(1, '请选择至少一个评分指标'),
   assigneeIds: z.array(z.string()),
+  assignmentStrategy: z.enum(['average', 'random', 'weighted']),
+  assignmentWeights: z.record(z.string(), z.number().min(1)),
 })
 
 type AnnotationQueueFormValues = z.infer<typeof annotationQueueFormSchema>
@@ -53,7 +61,7 @@ export function AnnotationQueueFormDrawer({
 
   const handleSubmit = async (values: AnnotationQueueFormValues) => {
     try {
-      await onSubmit(values)
+      await onSubmit(normalizeAnnotationQueueFormValues(values))
       onOpenChange(false)
     } catch (error) {
       toast.error(
@@ -198,6 +206,12 @@ export function AnnotationQueueFormDrawer({
                 </FormItem>
               )}
             />
+            <AnnotationAssignmentFields
+              form={
+                form as unknown as UseFormReturn<AnnotationAssignmentFormValues>
+              }
+              users={users}
+            />
           </>
         )}
       </BaseForm>
@@ -213,5 +227,27 @@ function getDefaultValues(
     description: queue?.description ?? '',
     scoreConfigIds: queue?.scoreConfigIds ?? [],
     assigneeIds: queue?.assigneeIds ?? [],
+    assignmentStrategy: queue?.assignmentStrategy ?? 'average',
+    assignmentWeights: queue?.assignmentWeights ?? {},
+  }
+}
+
+function normalizeAnnotationQueueFormValues(
+  values: AnnotationQueueFormValues
+): AnnotationQueueFormInput {
+  const selectedAssigneeIds = values.assigneeIds
+  const assignmentStrategy: AnnotationAssignmentStrategy =
+    selectedAssigneeIds.length > 1 ? values.assignmentStrategy : 'average'
+  const assignmentWeights = Object.fromEntries(
+    selectedAssigneeIds.map((assigneeId) => [
+      assigneeId,
+      Math.max(1, Number(values.assignmentWeights[assigneeId] ?? 1)),
+    ])
+  )
+
+  return {
+    ...values,
+    assignmentStrategy,
+    assignmentWeights,
   }
 }

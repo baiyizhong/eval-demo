@@ -1,10 +1,5 @@
-import {
-  useEffect,
-  useMemo,
-  useRef,
-  useState,
-  type CSSProperties,
-} from 'react'
+import { useEffect, useMemo, useRef, useState, type CSSProperties } from 'react'
+import { MixerHorizontalIcon } from '@radix-ui/react-icons'
 import { useQuery, useQueryClient } from '@tanstack/react-query'
 import {
   ChevronLeft,
@@ -14,9 +9,10 @@ import {
   SlidersHorizontal,
   Trash2,
 } from 'lucide-react'
-import { MixerHorizontalIcon } from '@radix-ui/react-icons'
 import { useNavigate, useParams, useSearchParams } from 'react-router'
 import { toast } from 'sonner'
+import { cn } from '@/lib/utils'
+import { useAPI } from '@/hooks/use-api'
 import { Button } from '@/components/ui/button'
 import { Checkbox } from '@/components/ui/checkbox'
 import {
@@ -57,16 +53,14 @@ import {
 import { Loading } from '@/components/common/loading'
 import { Page } from '@/components/common/page'
 import { PageAction } from '@/components/common/page-action'
-import { useAPI } from '@/hooks/use-api'
-import { cn } from '@/lib/utils'
 import {
   getProjectAnnotationQueue,
   listProjectAnnotationQueueItems,
   saveProjectAnnotationBatchScores,
   saveProjectAnnotationScores,
 } from '../api/annotation-api'
-import { AnnotationScoreForm } from '../components/annotation-score-form'
 import { AnnotationObjectTypeBadge } from '../components/annotation-object-type-badge'
+import { AnnotationScoreForm } from '../components/annotation-score-form'
 import { AnnotationStatusBadge } from '../components/annotation-status-badge'
 import { formatDateTime } from '../components/format'
 import {
@@ -87,9 +81,10 @@ type BatchFilterCondition = {
   value: string
 }
 type BatchColumnKey =
-  | 'source'
+  | 'sourceDataId'
   | 'type'
   | 'status'
+  | 'assignee'
   | 'createdAt'
   | 'input'
   | 'output'
@@ -97,19 +92,22 @@ type BatchColumnKey =
 
 const DEFAULT_PAGE_SIZE = 20
 const PAGE_SIZE_OPTIONS = [10, 20, 50]
+const ASSIGNEE_ALL_VALUE = 'ALL'
 const BATCH_COLUMN_LABELS: Record<BatchColumnKey, string> = {
-  source: '源对象',
+  sourceDataId: '源数据 ID',
   type: '类型',
   status: '状态',
+  assignee: '处理人',
   createdAt: '创建时间',
   input: 'Input',
   output: 'Output',
   metadata: 'Metadata',
 }
 const DEFAULT_BATCH_COLUMN_VISIBILITY: Record<BatchColumnKey, boolean> = {
-  source: true,
+  sourceDataId: true,
   type: true,
   status: true,
+  assignee: true,
   createdAt: true,
   input: true,
   output: true,
@@ -156,6 +154,8 @@ const mockAnnotationQueues: AnnotationQueueRecord[] = [
     description: '人工复核客服 Trace',
     scoreConfigIds: mockScoreConfigs.map((config) => config.id),
     assigneeIds: [mockAnnotationUser.id],
+    assignmentStrategy: 'average',
+    assignmentWeights: { [mockAnnotationUser.id]: 1 },
     completedCount: 1,
     pendingCount: 1,
     scoreConfigs: mockScoreConfigs,
@@ -175,6 +175,7 @@ const mockAnnotationQueueItems: AnnotationQueueItemRecord[] = [
     scores: [],
     completedAt: '',
     completedBy: null,
+    assignee: mockAnnotationUser,
     createdAt: MOCK_BATCH_CREATED_AT,
     updatedAt: MOCK_BATCH_CREATED_AT,
     source: {
@@ -201,14 +202,21 @@ export function ProjectAnnotationBatch() {
   const queryClient = useQueryClient()
   const [searchParams, setSearchParams] = useSearchParams()
   const { projectId = 'project_customer_agent', queueId = '' } = useParams()
-  const [page, setPage] = useState(readPositiveNumber(searchParams.get('page'), 1))
+  const [page, setPage] = useState(
+    readPositiveNumber(searchParams.get('page'), 1)
+  )
   const [pageSize, setPageSize] = useState(
     readPositiveNumber(searchParams.get('pageSize'), DEFAULT_PAGE_SIZE)
   )
   const [statusView, setStatusView] = useState<StatusView>(
     toStatusView(searchParams.get('status'))
   )
-  const [metadataFilters, setMetadataFilters] = useState<BatchFilterCondition[]>(
+  const [selectedAssigneeId, setSelectedAssigneeId] = useState(
+    searchParams.get('assigneeIds') ?? ''
+  )
+  const [metadataFilters, setMetadataFilters] = useState<
+    BatchFilterCondition[]
+  >(
     () =>
       readFilterConditions(searchParams.get('metadataFilters')) ??
       readLegacyMetadataCondition(searchParams)
@@ -223,7 +231,9 @@ export function ProjectAnnotationBatch() {
   const [columnVisibility, setColumnVisibility] = useState(
     DEFAULT_BATCH_COLUMN_VISIBILITY
   )
-  const [selectedItemId, setSelectedItemId] = useState(searchParams.get('item') ?? '')
+  const [selectedItemId, setSelectedItemId] = useState(
+    searchParams.get('item') ?? ''
+  )
   const [selectedItemIds, setSelectedItemIds] = useState<string[]>([])
   const [completedItemIds, setCompletedItemIds] = useState<string[]>([])
   const [scorePaneWidth, setScorePaneWidth] = useState(400)
@@ -236,6 +246,7 @@ export function ProjectAnnotationBatch() {
       keyword: '',
       filters: {
         status: statusView === 'ALL' ? [] : [statusView],
+        ...(selectedAssigneeId ? { assigneeIds: [selectedAssigneeId] } : {}),
         ...(compactFilterConditions(metadataFilters).length
           ? { metadataFilters: compactFilterConditions(metadataFilters) }
           : {}),
@@ -248,7 +259,15 @@ export function ProjectAnnotationBatch() {
       },
       sorting: [],
     }),
-    [inputFilters, metadataFilters, outputFilters, page, pageSize, statusView]
+    [
+      inputFilters,
+      metadataFilters,
+      outputFilters,
+      page,
+      pageSize,
+      selectedAssigneeId,
+      statusView,
+    ]
   )
   const searchString = searchParams.toString()
 
@@ -260,6 +279,7 @@ export function ProjectAnnotationBatch() {
       metadataFilters,
       inputFilters,
       outputFilters,
+      assigneeId: selectedAssigneeId,
       selectedItemId,
     })
     if (nextParams.toString() !== searchString) {
@@ -272,6 +292,7 @@ export function ProjectAnnotationBatch() {
     page,
     pageSize,
     searchString,
+    selectedAssigneeId,
     selectedItemId,
     setSearchParams,
     statusView,
@@ -283,7 +304,13 @@ export function ProjectAnnotationBatch() {
     enabled: Boolean(queueId),
   })
   const itemsQuery = useQuery({
-    queryKey: ['project-annotation-batch-items', $api, projectId, queueId, queryState],
+    queryKey: [
+      'project-annotation-batch-items',
+      $api,
+      projectId,
+      queueId,
+      queryState,
+    ],
     queryFn: () =>
       listProjectAnnotationQueueItems($api, projectId, queueId, queryState),
     enabled: Boolean(queueId),
@@ -302,14 +329,24 @@ export function ProjectAnnotationBatch() {
       filterMockBatchItems(
         mockBatchItems,
         statusView,
+        selectedAssigneeId,
         metadataFilters,
         inputFilters,
         outputFilters
       ),
-    [inputFilters, metadataFilters, mockBatchItems, outputFilters, statusView]
+    [
+      inputFilters,
+      metadataFilters,
+      mockBatchItems,
+      outputFilters,
+      selectedAssigneeId,
+      statusView,
+    ]
   )
   const useMockFallback =
-    !queueQuery.data && !itemsQuery.isLoading && (itemsQuery.data?.total ?? 0) === 0
+    !queueQuery.data &&
+    !itemsQuery.isLoading &&
+    (itemsQuery.data?.total ?? 0) === 0
   const itemDatas = useMockFallback
     ? filteredMockItems.slice((page - 1) * pageSize, page * pageSize)
     : itemsQuery.data?.datas
@@ -319,7 +356,10 @@ export function ProjectAnnotationBatch() {
     [completedItemIds, itemDatas]
   )
   const selectedItemIdsOnPage = useMemo(
-    () => selectedItemIds.filter((itemId) => items.some((item) => item.id === itemId)),
+    () =>
+      selectedItemIds.filter((itemId) =>
+        items.some((item) => item.id === itemId)
+      ),
     [items, selectedItemIds]
   )
   const selectedItemsOnPage = useMemo(
@@ -337,8 +377,9 @@ export function ProjectAnnotationBatch() {
     : completedItemIds.length
   const totalItems = Math.max(
     0,
-    (useMockFallback ? filteredMockItems.length : (itemsQuery.data?.total ?? 0)) -
-      localCompletedCount
+    (useMockFallback
+      ? filteredMockItems.length
+      : (itemsQuery.data?.total ?? 0)) - localCompletedCount
   )
   const pageCount = Math.max(1, Math.ceil(totalItems / pageSize))
 
@@ -450,7 +491,9 @@ export function ProjectAnnotationBatch() {
             <span className='truncate text-sm font-medium'>
               {queue?.name ?? '批量标注工作台'}
             </span>
-            <span className='text-muted-foreground text-sm'>批量标注工作台</span>
+            <span className='text-muted-foreground text-sm'>
+              批量标注工作台
+            </span>
           </div>
         </PageAction>
 
@@ -482,14 +525,16 @@ export function ProjectAnnotationBatch() {
                               ]),
                             ]
                           : current.filter(
-                              (itemId) => !items.some((item) => item.id === itemId)
+                              (itemId) =>
+                                !items.some((item) => item.id === itemId)
                             )
                       )
                     }
                     aria-label='全选当前列表数据'
                   />
                   <span className='text-muted-foreground truncate'>
-                    本页 {items.length} 条，已选 {selectedItemIdsOnPage.length} 条
+                    本页 {items.length} 条，已选 {selectedItemIdsOnPage.length}{' '}
+                    条
                   </span>
                 </label>
                 <span className='text-muted-foreground text-xs'>
@@ -512,6 +557,32 @@ export function ProjectAnnotationBatch() {
                       <SelectItem value='PENDING'>待标注</SelectItem>
                       <SelectItem value='COMPLETED'>已完成</SelectItem>
                       <SelectItem value='ALL'>全部</SelectItem>
+                    </SelectContent>
+                  </Select>
+                  <Select
+                    value={selectedAssigneeId || ASSIGNEE_ALL_VALUE}
+                    disabled={!queue.assignees.length}
+                    onValueChange={(value) => {
+                      setSelectedAssigneeId(
+                        value === ASSIGNEE_ALL_VALUE ? '' : value
+                      )
+                      setSelectedItemId('')
+                      setSelectedItemIds([])
+                      setPage(1)
+                    }}
+                  >
+                    <SelectTrigger className='h-8 w-36'>
+                      <SelectValue placeholder='处理人' />
+                    </SelectTrigger>
+                    <SelectContent>
+                      <SelectItem value={ASSIGNEE_ALL_VALUE}>
+                        全部处理人
+                      </SelectItem>
+                      {queue.assignees.map((user) => (
+                        <SelectItem key={user.id} value={user.id}>
+                          {user.name || user.email || user.id}
+                        </SelectItem>
+                      ))}
                     </SelectContent>
                   </Select>
                   <BatchAdvancedFilterPopover
@@ -551,7 +622,7 @@ export function ProjectAnnotationBatch() {
                 <Loading text='加载标注数据中...' className='min-h-40' />
               ) : null}
               <Table className='min-w-[1080px]'>
-                <TableHeader className='sticky top-0 z-10 bg-card'>
+                <TableHeader className='bg-card sticky top-0 z-10'>
                   <TableRow>
                     <TableHead className='w-10'>
                       <Checkbox
@@ -581,8 +652,8 @@ export function ProjectAnnotationBatch() {
                         aria-label='全选当前页标注数据'
                       />
                     </TableHead>
-                    {columnVisibility.source ? (
-                      <TableHead className='w-[210px]'>源对象</TableHead>
+                    {columnVisibility.sourceDataId ? (
+                      <TableHead className='w-[210px]'>源数据 ID</TableHead>
                     ) : null}
                     {columnVisibility.type ? (
                       <TableHead className='w-[92px]'>类型</TableHead>
@@ -590,11 +661,18 @@ export function ProjectAnnotationBatch() {
                     {columnVisibility.status ? (
                       <TableHead className='w-[92px]'>状态</TableHead>
                     ) : null}
+                    {columnVisibility.assignee ? (
+                      <TableHead className='w-[120px]'>处理人</TableHead>
+                    ) : null}
                     {columnVisibility.createdAt ? (
                       <TableHead className='w-[132px]'>创建时间</TableHead>
                     ) : null}
-                    {columnVisibility.input ? <TableHead>Input</TableHead> : null}
-                    {columnVisibility.output ? <TableHead>Output</TableHead> : null}
+                    {columnVisibility.input ? (
+                      <TableHead>Input</TableHead>
+                    ) : null}
+                    {columnVisibility.output ? (
+                      <TableHead>Output</TableHead>
+                    ) : null}
                     {columnVisibility.metadata ? (
                       <TableHead className='w-[220px]'>Metadata</TableHead>
                     ) : null}
@@ -638,7 +716,7 @@ export function ProjectAnnotationBatch() {
                     setPage(1)
                   }}
                 >
-                  <SelectTrigger className='h-8 w-24'>
+                  <SelectTrigger className='h-8 w-28'>
                     <SelectValue />
                   </SelectTrigger>
                   <SelectContent>
@@ -664,7 +742,9 @@ export function ProjectAnnotationBatch() {
                   variant='outline'
                   size='sm'
                   disabled={page >= pageCount}
-                  onClick={() => setPage((current) => Math.min(pageCount, current + 1))}
+                  onClick={() =>
+                    setPage((current) => Math.min(pageCount, current + 1))
+                  }
                 >
                   下一页
                   <ChevronRight data-icon='inline-end' />
@@ -676,7 +756,7 @@ export function ProjectAnnotationBatch() {
           <button
             type='button'
             aria-label='调整左右区域宽度'
-            className='hover:bg-accent focus-visible:ring-ring hidden cursor-col-resize items-center justify-center border-r border-l bg-muted/30 focus-visible:ring-2 focus-visible:outline-none lg:flex'
+            className='hover:bg-accent focus-visible:ring-ring bg-muted/30 hidden cursor-col-resize items-center justify-center border-r border-l focus-visible:ring-2 focus-visible:outline-none lg:flex'
             onPointerDown={startResize}
           >
             <GripVertical className='text-muted-foreground' />
@@ -706,9 +786,7 @@ export function ProjectAnnotationBatch() {
                   item={selectedItem}
                   scoreConfigs={queue.scoreConfigs}
                   showAddToDataset={false}
-                  saveLabel={
-                    isBatchScoring ? '批量保存' : '保存'
-                  }
+                  saveLabel={isBatchScoring ? '批量保存' : '保存'}
                   showSaveNext={!isBatchScoring}
                   submitHint={
                     isBatchScoring
@@ -738,6 +816,7 @@ function buildBatchSearchParams({
   metadataFilters,
   inputFilters,
   outputFilters,
+  assigneeId,
   selectedItemId,
 }: {
   page: number
@@ -746,6 +825,7 @@ function buildBatchSearchParams({
   metadataFilters: BatchFilterCondition[]
   inputFilters: BatchFilterCondition[]
   outputFilters: BatchFilterCondition[]
+  assigneeId: string
   selectedItemId: string
 }) {
   const params = new URLSearchParams()
@@ -755,6 +835,7 @@ function buildBatchSearchParams({
   if (page > 1) params.set('page', String(page))
   if (pageSize !== DEFAULT_PAGE_SIZE) params.set('pageSize', String(pageSize))
   if (statusView !== 'PENDING') params.set('status', statusView)
+  if (assigneeId) params.set('assigneeIds', assigneeId)
   if (compactMetadataFilters.length) {
     params.set('metadataFilters', JSON.stringify(compactMetadataFilters))
   }
@@ -848,6 +929,8 @@ function createMockBatchQueue(
     completedCount: 16,
     scoreConfigs,
     assignees: baseQueue.assignees,
+    assignmentStrategy: baseQueue.assignmentStrategy,
+    assignmentWeights: baseQueue.assignmentWeights,
   }
 }
 
@@ -856,7 +939,8 @@ function createMockBatchItems(
   queueId: string
 ): AnnotationQueueItemRecord[] {
   return Array.from({ length: 128 }, (_, index) => {
-    const baseItem = mockAnnotationQueueItems[index % mockAnnotationQueueItems.length]
+    const baseItem =
+      mockAnnotationQueueItems[index % mockAnnotationQueueItems.length]
     const number = String(index + 1).padStart(3, '0')
     const status: AnnotationItemStatus = index < 112 ? 'PENDING' : 'COMPLETED'
     const objectId = `trace_pa_eval_batch_${number}`
@@ -873,7 +957,10 @@ function createMockBatchItems(
       objectId,
       status,
       scores: status === 'COMPLETED' ? baseItem.scores : [],
-      completedAt: status === 'COMPLETED' ? `2026-07-08T10:${number.slice(1)}:00.000Z` : '',
+      completedAt:
+        status === 'COMPLETED'
+          ? `2026-07-08T10:${number.slice(1)}:00.000Z`
+          : '',
       completedBy: status === 'COMPLETED' ? baseItem.completedBy : null,
       createdAt,
       updatedAt: createdAt,
@@ -919,6 +1006,7 @@ function createMockBatchItems(
 function filterMockBatchItems(
   items: AnnotationQueueItemRecord[],
   statusView: StatusView,
+  selectedAssigneeId: string,
   metadataFilters: BatchFilterCondition[],
   inputFilters: BatchFilterCondition[],
   outputFilters: BatchFilterCondition[]
@@ -929,6 +1017,9 @@ function filterMockBatchItems(
 
   return items.filter((item) => {
     if (statusView !== 'ALL' && item.status !== statusView) return false
+    if (selectedAssigneeId && item.assignee?.id !== selectedAssigneeId) {
+      return false
+    }
     return (
       matchesFilterConditions(item.source.metadata, compactMetadataFilters) &&
       matchesFilterConditions(item.source.input, compactInputFilters) &&
@@ -999,17 +1090,12 @@ function AnnotationItemTableRows({
           aria-label={`选择 ${item.source.title || item.objectId}`}
         />
       </TableCell>
-      {columnVisibility.source ? (
-        <TableCell className='max-w-[220px]'>
-          <div className='min-w-0'>
-            <div className='truncate font-medium'>
-              {item.source.title || item.objectId}
-            </div>
-            <div className='text-muted-foreground truncate text-xs'>
-              {item.objectId}
-            </div>
-          </div>
-        </TableCell>
+      {columnVisibility.sourceDataId ? (
+        <SummaryTableCell
+          label='源数据 ID'
+          value={item.objectId}
+          className='max-w-[220px]'
+        />
       ) : null}
       {columnVisibility.type ? (
         <TableCell>
@@ -1019,6 +1105,13 @@ function AnnotationItemTableRows({
       {columnVisibility.status ? (
         <TableCell>
           <AnnotationStatusBadge status={item.status} />
+        </TableCell>
+      ) : null}
+      {columnVisibility.assignee ? (
+        <TableCell className='max-w-[140px]'>
+          <span className='truncate text-sm'>
+            {item.assignee?.name || item.assignee?.email || '-'}
+          </span>
         </TableCell>
       ) : null}
       {columnVisibility.createdAt ? (
@@ -1077,7 +1170,10 @@ function BatchAdvancedFilterPopover({
           高级筛选{activeCount ? ` ${activeCount}` : ''}
         </Button>
       </PopoverTrigger>
-      <PopoverContent align='start' className='w-[720px] max-w-[calc(100vw-2rem)] p-4'>
+      <PopoverContent
+        align='start'
+        className='w-[720px] max-w-[calc(100vw-2rem)] p-4'
+      >
         <div className='flex items-center justify-between gap-3'>
           <div>
             <h3 className='text-sm font-medium'>高级筛选</h3>
@@ -1151,10 +1247,7 @@ function BatchFilterEditor({
           variant='outline'
           size='sm'
           onClick={() =>
-            onChange([
-              ...filters,
-              { key: '', operator: 'contains', value: '' },
-            ])
+            onChange([...filters, { key: '', operator: 'contains', value: '' }])
           }
         >
           <Plus data-icon='inline-start' />
@@ -1205,7 +1298,9 @@ function BatchFilterEditor({
                 variant='ghost'
                 size='icon'
                 onClick={() =>
-                  onChange(filters.filter((_, currentIndex) => currentIndex !== index))
+                  onChange(
+                    filters.filter((_, currentIndex) => currentIndex !== index)
+                  )
                 }
               >
                 <Trash2 />
@@ -1228,7 +1323,9 @@ function BatchViewOptions({
   onColumnVisibilityChange,
 }: {
   columnVisibility: Record<BatchColumnKey, boolean>
-  onColumnVisibilityChange: (visibility: Record<BatchColumnKey, boolean>) => void
+  onColumnVisibilityChange: (
+    visibility: Record<BatchColumnKey, boolean>
+  ) => void
 }) {
   return (
     <DropdownMenu modal={false}>
@@ -1275,7 +1372,7 @@ function SummaryTableCell({
         <HoverCardTrigger asChild>
           <button
             type='button'
-            className='hover:text-foreground block w-full truncate text-left text-xs text-muted-foreground'
+            className='hover:text-foreground text-muted-foreground block w-full truncate text-left text-xs'
             onClick={(event) => event.stopPropagation()}
           >
             {value || '-'}
@@ -1283,7 +1380,7 @@ function SummaryTableCell({
         </HoverCardTrigger>
         <HoverCardContent align='start' className='w-[520px] p-3'>
           <div className='text-xs font-medium'>{label}</div>
-          <pre className='mt-2 max-h-80 overflow-auto whitespace-pre-wrap break-words font-mono text-xs leading-relaxed'>
+          <pre className='mt-2 max-h-80 overflow-auto font-mono text-xs leading-relaxed break-words whitespace-pre-wrap'>
             {value || '-'}
           </pre>
         </HoverCardContent>

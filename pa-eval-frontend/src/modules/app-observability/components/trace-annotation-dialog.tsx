@@ -1,5 +1,6 @@
 import { useMemo, useState } from 'react'
 import { z } from 'zod'
+import type { UseFormReturn } from 'react-hook-form'
 import { useQuery } from '@tanstack/react-query'
 import {
   listProjectAnnotationQueues,
@@ -7,7 +8,12 @@ import {
   listProjectScoreConfigsForAnnotation,
 } from '@/modules/app-evaluation/api/annotation-api'
 import {
+  AnnotationAssignmentFields,
+  type AnnotationAssignmentFormValues,
+} from '@/modules/app-evaluation/components/annotation-assignment-fields'
+import {
   scoreDataTypeLabels,
+  type AnnotationAssignmentStrategy,
   type AnnotationQueueFormInput,
 } from '@/modules/app-evaluation/types'
 import { useAPI } from '@/hooks/use-api'
@@ -47,6 +53,8 @@ const newQueueSchema = z.object({
   description: z.string(),
   scoreConfigIds: z.array(z.string()).min(1, '请选择至少一个评分指标'),
   assigneeIds: z.array(z.string()),
+  assignmentStrategy: z.enum(['average', 'random', 'weighted']),
+  assignmentWeights: z.record(z.string(), z.number().min(1)),
 })
 
 type TraceAnnotationDialogProps = {
@@ -184,9 +192,11 @@ export function TraceAnnotationDialog({
               description: '',
               scoreConfigIds: [],
               assigneeIds: [],
+              assignmentStrategy: 'average',
+              assignmentWeights: {},
             }}
             onSubmit={async (values) => {
-              await onSubmitNew(values)
+              await onSubmitNew(normalizeAnnotationQueueFormValues(values))
               onOpenChange(false)
             }}
             className='flex flex-col gap-4 p-0'
@@ -316,6 +326,12 @@ export function TraceAnnotationDialog({
                     </FormItem>
                   )}
                 />
+                <AnnotationAssignmentFields
+                  form={
+                    form as unknown as UseFormReturn<AnnotationAssignmentFormValues>
+                  }
+                  users={users}
+                />
               </>
             )}
           </BaseForm>
@@ -325,7 +341,27 @@ export function TraceAnnotationDialog({
   )
 }
 
-export function buildDefaultAnnotationTaskName(
+function normalizeAnnotationQueueFormValues(
+  values: z.infer<typeof newQueueSchema>
+): AnnotationQueueFormInput {
+  const selectedAssigneeIds = values.assigneeIds
+  const assignmentStrategy: AnnotationAssignmentStrategy =
+    selectedAssigneeIds.length > 1 ? values.assignmentStrategy : 'average'
+  const assignmentWeights = Object.fromEntries(
+    selectedAssigneeIds.map((assigneeId) => [
+      assigneeId,
+      Math.max(1, Number(values.assignmentWeights[assigneeId] ?? 1)),
+    ])
+  )
+
+  return {
+    ...values,
+    assignmentStrategy,
+    assignmentWeights,
+  }
+}
+
+function buildDefaultAnnotationTaskName(
   projectName: string,
   date = new Date()
 ) {

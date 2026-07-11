@@ -20,6 +20,7 @@ router = APIRouter(prefix="/api/projects/{project_id}", tags=["annotations"])
 AnnotationObjectType = Literal["TRACE", "OBSERVATION", "SESSION"]
 AnnotationItemStatus = Literal["PENDING", "COMPLETED"]
 ScoreConfigDataType = Literal["NUMERIC", "CATEGORICAL", "BOOLEAN", "TEXT"]
+AnnotationAssignmentStrategy = Literal["average", "random", "weighted"]
 ANNOTATION_ITEM_STATUSES: tuple[AnnotationItemStatus, ...] = ("PENDING", "COMPLETED")
 ANNOTATION_OBJECT_TYPES: tuple[AnnotationObjectType, ...] = (
     "TRACE",
@@ -38,6 +39,14 @@ class AnnotationQueuePayload(BaseModel):
     description: str = ""
     score_config_ids: list[str] = Field(min_length=1, alias="scoreConfigIds")
     assignee_ids: list[str] = Field(default_factory=list, alias="assigneeIds")
+    assignment_strategy: AnnotationAssignmentStrategy = Field(
+        default="average",
+        alias="assignmentStrategy",
+    )
+    assignment_weights: dict[str, int] = Field(
+        default_factory=dict,
+        alias="assignmentWeights",
+    )
 
 
 class ScoreConfigCategoryPayload(BaseModel):
@@ -63,6 +72,15 @@ class AnnotationTraceTaskPayload(BaseModel):
     trace_ids: list[str] = Field(min_length=1, alias="traceIds")
     queue_id: str | None = Field(default=None, alias="queueId")
     queue_name: str | None = Field(default=None, alias="queueName")
+    assignee_ids: list[str] = Field(default_factory=list, alias="assigneeIds")
+    assignment_strategy: AnnotationAssignmentStrategy = Field(
+        default="average",
+        alias="assignmentStrategy",
+    )
+    assignment_weights: dict[str, int] = Field(
+        default_factory=dict,
+        alias="assignmentWeights",
+    )
 
 
 class TraceDatasetItemsPayload(BaseModel):
@@ -90,14 +108,19 @@ class MetadataFilterPayload(BaseModel):
 class AnnotationBatchFiltersPayload(BaseModel):
     keyword: str = ""
     status: list[AnnotationItemStatus] = Field(default_factory=list)
-    object_type: list[AnnotationObjectType] = Field(default_factory=list, alias="objectType")
+    object_type: list[AnnotationObjectType] = Field(
+        default_factory=list, alias="objectType"
+    )
     completed_by: list[str] = Field(default_factory=list, alias="completedBy")
+    assignee_ids: list[str] = Field(default_factory=list, alias="assigneeIds")
     created_at_from: str = Field(default="", alias="createdAtFrom")
     created_at_to: str = Field(default="", alias="createdAtTo")
     completed_at_from: str = Field(default="", alias="completedAtFrom")
     completed_at_to: str = Field(default="", alias="completedAtTo")
     has_scores: bool | None = Field(default=None, alias="hasScores")
-    metadata_filter: MetadataFilterPayload | None = Field(default=None, alias="metadataFilter")
+    metadata_filter: MetadataFilterPayload | None = Field(
+        default=None, alias="metadataFilter"
+    )
     metadata_filters: list[MetadataFilterPayload] = Field(
         default_factory=list,
         alias="metadataFilters",
@@ -114,19 +137,30 @@ class AnnotationBatchFiltersPayload(BaseModel):
 
 
 class AnnotationBatchPreviewPayload(BaseModel):
-    filters: AnnotationBatchFiltersPayload = Field(default_factory=AnnotationBatchFiltersPayload)
+    filters: AnnotationBatchFiltersPayload = Field(
+        default_factory=AnnotationBatchFiltersPayload
+    )
     limit: int = Field(default=5, ge=1, le=20)
 
 
 class AnnotationBatchScorePayload(BaseModel):
-    filters: AnnotationBatchFiltersPayload = Field(default_factory=AnnotationBatchFiltersPayload)
+    filters: AnnotationBatchFiltersPayload = Field(
+        default_factory=AnnotationBatchFiltersPayload
+    )
     scores: list[AnnotationScoreInput] = Field(min_length=1)
-    expected_pending_count: int | None = Field(default=None, alias="expectedPendingCount")
+    expected_pending_count: int | None = Field(
+        default=None, alias="expectedPendingCount"
+    )
     confirm_large_batch: bool = Field(default=False, alias="confirmLargeBatch")
 
 
 class DeleteItemsPayload(BaseModel):
     item_ids: list[str] = Field(min_length=1, alias="itemIds")
+
+
+class UpdateItemAssigneesPayload(BaseModel):
+    item_ids: list[str] = Field(min_length=1, alias="itemIds")
+    assignee_user_id: str = Field(min_length=1, alias="assigneeUserId")
 
 
 class AddAnnotationItemToDatasetPayload(BaseModel):
@@ -247,7 +281,11 @@ def _matches_payload_filter(
     source = item.get("source") or {}
     payload = source.get(field)
     key = payload_filter.key.strip()
-    value = _get_nested_value(payload, key) if isinstance(payload, dict) and key else payload
+    value = (
+        _get_nested_value(payload, key)
+        if isinstance(payload, dict) and key
+        else payload
+    )
     if payload_filter.operator == "exists":
         return value is not None
     if value is None:
@@ -278,7 +316,9 @@ async def _enrich_annotation_items_with_trace_source(
 
         if trace_id not in trace_cache:
             try:
-                trace_cache[trace_id] = await trace_reader.get_trace(project_id, trace_id)
+                trace_cache[trace_id] = await trace_reader.get_trace(
+                    project_id, trace_id
+                )
             except BusinessError:
                 trace_cache[trace_id] = None
 
@@ -313,22 +353,37 @@ def _merge_trace_source(item: dict[str, Any], trace: dict[str, Any]) -> dict[str
             **source,
             "objectId": source.get("objectId") or item.get("objectId") or "",
             "objectType": source.get("objectType") or item.get("objectType") or "TRACE",
-            "title": trace.get("name") or source.get("title") or item.get("objectId") or "",
-            "input": trace.get("input") if trace.get("input") is not None else source.get("input"),
-            "output": trace.get("output") if trace.get("output") is not None else source.get("output"),
+            "title": trace.get("name")
+            or source.get("title")
+            or item.get("objectId")
+            or "",
+            "input": trace.get("input")
+            if trace.get("input") is not None
+            else source.get("input"),
+            "output": trace.get("output")
+            if trace.get("output") is not None
+            else source.get("output"),
             "metadata": trace.get("metadata") or source.get("metadata") or {},
-            "traceId": trace.get("traceId") or source.get("traceId") or item.get("objectId") or "",
+            "traceId": trace.get("traceId")
+            or source.get("traceId")
+            or item.get("objectId")
+            or "",
             "observationId": source.get("observationId") or "",
             "sessionId": trace.get("sessionId") or source.get("sessionId") or "",
             "userId": trace.get("userId") or source.get("userId") or "",
             "latencyMs": trace.get("latency") or source.get("latencyMs") or 0,
             "costUsd": source.get("costUsd") or 0,
-            "createdAt": trace.get("createdAt") or source.get("createdAt") or item.get("createdAt") or "",
+            "createdAt": trace.get("createdAt")
+            or source.get("createdAt")
+            or item.get("createdAt")
+            or "",
         },
     }
 
 
-def _parse_filter_conditions_query(value: str, label: str) -> list[MetadataFilterPayload]:
+def _parse_filter_conditions_query(
+    value: str, label: str
+) -> list[MetadataFilterPayload]:
     if not value:
         return []
     try:
@@ -350,6 +405,8 @@ def _queue_payload(payload: AnnotationQueuePayload) -> dict[str, Any]:
         "description": payload.description,
         "scoreConfigIds": payload.score_config_ids,
         "assigneeIds": payload.assignee_ids,
+        "assignmentStrategy": payload.assignment_strategy,
+        "assignmentWeights": payload.assignment_weights,
     }
 
 
@@ -407,7 +464,9 @@ def _first_non_empty_list(
     return primary if primary else fallback
 
 
-def _score_payload(payload: AnnotationScorePayload | AnnotationBatchScorePayload) -> dict[str, Any]:
+def _score_payload(
+    payload: AnnotationScorePayload | AnnotationBatchScorePayload,
+) -> dict[str, Any]:
     return {
         "scores": [
             {
@@ -439,6 +498,13 @@ def _filter_annotation_items(
             for item in filtered
             if (item.get("completedBy") or {}).get("id") in allowed_users
         ]
+    if filters.assignee_ids:
+        allowed_assignees = set(filters.assignee_ids)
+        filtered = [
+            item
+            for item in filtered
+            if (item.get("assignee") or {}).get("id") in allowed_assignees
+        ]
     if filters.item_ids:
         allowed_item_ids = set(filters.item_ids)
         filtered = [item for item in filtered if item["id"] in allowed_item_ids]
@@ -464,18 +530,14 @@ def _filter_annotation_items(
         ]
     if filters.has_scores is not None:
         filtered = [
-            item
-            for item in filtered
-            if bool(item.get("scores")) is filters.has_scores
+            item for item in filtered if bool(item.get("scores")) is filters.has_scores
         ]
     metadata_filters = filters.metadata_filters
     if filters.metadata_filter:
         metadata_filters = [filters.metadata_filter, *metadata_filters]
     for metadata_filter in metadata_filters:
         filtered = [
-            item
-            for item in filtered
-            if _matches_metadata_filter(item, metadata_filter)
+            item for item in filtered if _matches_metadata_filter(item, metadata_filter)
         ]
     for input_filter in filters.input_filters:
         filtered = [
@@ -507,6 +569,20 @@ def _count_by_field(
     return counts
 
 
+def _count_by_assignee_id(
+    items: list[dict[str, Any]],
+    values: set[str],
+) -> dict[str, int]:
+    counts = {value: 0 for value in sorted(values)}
+
+    for item in items:
+        assignee_id = (item.get("assignee") or {}).get("id")
+        if assignee_id in counts:
+            counts[assignee_id] += 1
+
+    return counts
+
+
 def _annotation_item_filter_counts(
     items: list[dict[str, Any]],
     filters: AnnotationBatchFiltersPayload,
@@ -519,6 +595,15 @@ def _annotation_item_filter_counts(
         items,
         filters.model_copy(update={"object_type": []}),
     )
+    assignee_items = _filter_annotation_items(
+        items,
+        filters.model_copy(update={"assignee_ids": []}),
+    )
+    assignee_ids = {
+        assignee_id
+        for item in items
+        if (assignee_id := (item.get("assignee") or {}).get("id"))
+    }
 
     return {
         "status": _count_by_field(
@@ -531,6 +616,7 @@ def _annotation_item_filter_counts(
             "objectType",
             ANNOTATION_OBJECT_TYPES,
         ),
+        "assigneeIds": _count_by_assignee_id(assignee_items, assignee_ids),
     }
 
 
@@ -827,6 +913,7 @@ async def count_annotation_queue_item_filters(
         alias="objectType",
     ),
     completed_by: list[str] | None = Query(default=None, alias="completedBy"),
+    assignee_ids: list[str] | None = Query(default=None, alias="assigneeIds"),
     status_bracket: list[AnnotationItemStatus] | None = Query(
         default=None,
         alias="status[]",
@@ -838,6 +925,10 @@ async def count_annotation_queue_item_filters(
     completed_by_bracket: list[str] | None = Query(
         default=None,
         alias="completedBy[]",
+    ),
+    assignee_ids_bracket: list[str] | None = Query(
+        default=None,
+        alias="assigneeIds[]",
     ),
     created_at_from: str = Query(default="", alias="createdAtFrom"),
     created_at_to: str = Query(default="", alias="createdAtTo"),
@@ -872,6 +963,10 @@ async def count_annotation_queue_item_filters(
     effective_status = _first_non_empty_list(status, status_bracket)
     effective_object_type = _first_non_empty_list(object_type, object_type_bracket)
     effective_completed_by = _first_non_empty_list(completed_by, completed_by_bracket)
+    effective_assignee_ids = _first_non_empty_list(
+        assignee_ids,
+        assignee_ids_bracket,
+    )
     effective_item_ids = _first_non_empty_list(item_ids, item_ids_bracket)
     parsed_metadata_filters = _parse_metadata_filters_query(metadata_filters)
     parsed_input_filters = _parse_filter_conditions_query(input_filters, "Input")
@@ -883,6 +978,7 @@ async def count_annotation_queue_item_filters(
             status=effective_status or [],
             objectType=effective_object_type or [],
             completedBy=effective_completed_by or [],
+            assigneeIds=effective_assignee_ids or [],
             createdAtFrom=created_at_from,
             createdAtTo=created_at_to,
             completedAtFrom=completed_at_from,
@@ -917,6 +1013,7 @@ async def list_annotation_queue_items(
         alias="objectType",
     ),
     completed_by: list[str] | None = Query(default=None, alias="completedBy"),
+    assignee_ids: list[str] | None = Query(default=None, alias="assigneeIds"),
     status_bracket: list[AnnotationItemStatus] | None = Query(
         default=None,
         alias="status[]",
@@ -928,6 +1025,10 @@ async def list_annotation_queue_items(
     completed_by_bracket: list[str] | None = Query(
         default=None,
         alias="completedBy[]",
+    ),
+    assignee_ids_bracket: list[str] | None = Query(
+        default=None,
+        alias="assigneeIds[]",
     ),
     created_at_from: str = Query(default="", alias="createdAtFrom"),
     created_at_to: str = Query(default="", alias="createdAtTo"),
@@ -963,6 +1064,10 @@ async def list_annotation_queue_items(
     effective_status = _first_non_empty_list(status, status_bracket)
     effective_object_type = _first_non_empty_list(object_type, object_type_bracket)
     effective_completed_by = _first_non_empty_list(completed_by, completed_by_bracket)
+    effective_assignee_ids = _first_non_empty_list(
+        assignee_ids,
+        assignee_ids_bracket,
+    )
     effective_item_ids = _first_non_empty_list(item_ids, item_ids_bracket)
     parsed_metadata_filters = _parse_metadata_filters_query(metadata_filters)
     parsed_input_filters = _parse_filter_conditions_query(input_filters, "Input")
@@ -974,6 +1079,7 @@ async def list_annotation_queue_items(
             status=effective_status or [],
             objectType=effective_object_type or [],
             completedBy=effective_completed_by or [],
+            assigneeIds=effective_assignee_ids or [],
             createdAtFrom=created_at_from,
             createdAtTo=created_at_to,
             completedAtFrom=completed_at_from,
@@ -1044,6 +1150,24 @@ async def delete_annotation_queue_items(
         payload.item_ids,
     )
     return success({"ids": deleted})
+
+
+@router.patch("/annotation-queues/{queue_id}/items/assignees")
+async def update_annotation_queue_item_assignees(
+    project_id: str,
+    queue_id: str,
+    payload: UpdateItemAssigneesPayload,
+    current_user: CurrentUserContext = Depends(get_current_user_context),
+    reader: LangfuseDatabaseReader = Depends(get_langfuse_db_reader),
+) -> dict[str, Any]:
+    result = await reader.update_annotation_queue_item_assignees_for_user(
+        project_id,
+        queue_id,
+        current_user.user_id,
+        payload.item_ids,
+        payload.assignee_user_id,
+    )
+    return success(result)
 
 
 @router.post("/annotation-queues/{queue_id}/batch-preview")
@@ -1192,6 +1316,10 @@ async def create_trace_annotation_task(
         task_payload["queueId"] = payload.queue_id
     if payload.queue_name:
         task_payload["queueName"] = payload.queue_name
+    if payload.assignee_ids:
+        task_payload["assigneeIds"] = payload.assignee_ids
+        task_payload["assignmentStrategy"] = payload.assignment_strategy
+        task_payload["assignmentWeights"] = payload.assignment_weights
 
     result = await reader.create_trace_annotation_task_for_user(
         project_id,

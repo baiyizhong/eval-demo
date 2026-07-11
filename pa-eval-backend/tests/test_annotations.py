@@ -123,7 +123,9 @@ class FakeAnnotationDatabaseReader:
         user_id: str,
         payload: dict,
     ) -> dict:
-        self.calls.append(("update_score_config", (project_id, config_id, user_id, payload)))
+        self.calls.append(
+            ("update_score_config", (project_id, config_id, user_id, payload))
+        )
         return {
             "id": config_id,
             "projectId": project_id,
@@ -315,6 +317,41 @@ class FakeAnnotationDatabaseReader:
             },
         ]
 
+    async def update_annotation_queue_item_assignees_for_user(
+        self,
+        project_id: str,
+        queue_id: str,
+        user_id: str,
+        item_ids: list[str],
+        assignee_user_id: str,
+    ) -> dict:
+        self.calls.append(
+            (
+                "update_item_assignees",
+                (project_id, queue_id, user_id, item_ids, assignee_user_id),
+            )
+        )
+        items = await self.list_annotation_queue_items_for_user(
+            project_id,
+            queue_id,
+            user_id,
+        )
+        selected = [item for item in items if item["id"] in item_ids]
+        updated_ids = [
+            item["id"] for item in selected if item.get("status") == "PENDING"
+        ]
+        skipped_ids = [
+            item["id"] for item in selected if item.get("status") == "COMPLETED"
+        ]
+        return {
+            "assigneeUserId": assignee_user_id,
+            "requestedCount": len(item_ids),
+            "updatedCount": len(updated_ids),
+            "skippedCount": len(skipped_ids),
+            "updatedItemIds": updated_ids,
+            "skippedItemIds": skipped_ids,
+        }
+
 
 class FakeAnnotationTraceReader:
     async def get_trace(self, project_id: str, trace_id: str) -> dict:
@@ -343,8 +380,8 @@ def override_reader(fake_reader: FakeAnnotationDatabaseReader) -> None:
         return fake_reader  # type: ignore[return-value]
 
     app.dependency_overrides[get_langfuse_db_reader] = _override
-    app.dependency_overrides[get_langfuse_clickhouse_reader] = (
-        lambda: FakeAnnotationTraceReader()
+    app.dependency_overrides[get_langfuse_clickhouse_reader] = lambda: (
+        FakeAnnotationTraceReader()
     )
     app.dependency_overrides[get_current_user_context] = lambda: CurrentUserContext(
         user_id="user-1",
@@ -386,6 +423,8 @@ def test_creates_project_annotation_queue() -> None:
         "description": "人工复核",
         "scoreConfigIds": ["score-1"],
         "assigneeIds": ["user-1"],
+        "assignmentStrategy": "average",
+        "assignmentWeights": {"user-1": 1},
     }
     try:
         response = TestClient(app).post(
@@ -793,13 +832,34 @@ def test_counts_annotation_item_filters_across_all_matching_items() -> None:
                 user_id,
             )
             return [
-                *base,
+                {
+                    **base[0],
+                    "assignee": {
+                        "id": "user-1",
+                        "name": "Octocat",
+                        "email": "octocat@example.com",
+                    },
+                },
+                {
+                    **base[1],
+                    "assignee": {
+                        "id": "user-2",
+                        "name": "Reviewer",
+                        "email": "reviewer@example.com",
+                    },
+                },
+                {**base[2], "assignee": None},
                 {
                     **base[0],
                     "id": "item-observation",
                     "objectId": "observation-1",
                     "objectType": "OBSERVATION",
                     "status": "PENDING",
+                    "assignee": {
+                        "id": "user-2",
+                        "name": "Reviewer",
+                        "email": "reviewer@example.com",
+                    },
                     "source": {
                         **base[0]["source"],
                         "objectId": "observation-1",
@@ -838,6 +898,7 @@ def test_counts_annotation_item_filters_across_all_matching_items() -> None:
     assert response.json()["data"] == {
         "status": {"PENDING": 1, "COMPLETED": 0},
         "objectType": {"TRACE": 2, "OBSERVATION": 1, "SESSION": 0},
+        "assigneeIds": {"user-1": 0, "user-2": 1},
     }
 
 
@@ -924,8 +985,14 @@ def test_bulk_saves_annotation_scores_only_for_pending_filtered_items() -> None:
     assert body["failures"] == []
     assert fake_reader.calls == [
         ("list_items", ("project-1", "queue-1", "user-1")),
-        ("save_scores", ("project-1", "queue-1", "item-1", "user-1", {"scores": scores})),
-        ("save_scores", ("project-1", "queue-1", "item-2", "user-1", {"scores": scores})),
+        (
+            "save_scores",
+            ("project-1", "queue-1", "item-1", "user-1", {"scores": scores}),
+        ),
+        (
+            "save_scores",
+            ("project-1", "queue-1", "item-2", "user-1", {"scores": scores}),
+        ),
     ]
 
 
@@ -968,8 +1035,48 @@ def test_bulk_saves_annotation_scores_with_input_output_filters() -> None:
     assert body["successItemIds"] == ["item-2"]
     assert fake_reader.calls == [
         ("list_items", ("project-1", "queue-1", "user-1")),
-        ("save_scores", ("project-1", "queue-1", "item-2", "user-1", {"scores": scores})),
+        (
+            "save_scores",
+            ("project-1", "queue-1", "item-2", "user-1", {"scores": scores}),
+        ),
     ]
+
+
+def test_bulk_updates_annotation_item_assignees_skips_completed_items() -> None:
+    fake_reader = FakeAnnotationDatabaseReader()
+    override_reader(fake_reader)
+
+    try:
+        response = TestClient(app).patch(
+            "/api/projects/project-1/annotation-queues/queue-1/items/assignees",
+            json={
+                "itemIds": ["item-1", "item-done"],
+                "assigneeUserId": "user-2",
+            },
+        )
+    finally:
+        clear_overrides()
+
+    assert response.status_code == 200
+    body = response.json()["data"]
+    assert body == {
+        "assigneeUserId": "user-2",
+        "requestedCount": 2,
+        "updatedCount": 1,
+        "skippedCount": 1,
+        "updatedItemIds": ["item-1"],
+        "skippedItemIds": ["item-done"],
+    }
+    assert fake_reader.calls[0] == (
+        "update_item_assignees",
+        (
+            "project-1",
+            "queue-1",
+            "user-1",
+            ["item-1", "item-done"],
+            "user-2",
+        ),
+    )
 
 
 def test_normalizes_boolean_annotation_score_values() -> None:

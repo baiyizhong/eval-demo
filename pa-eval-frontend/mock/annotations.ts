@@ -12,6 +12,8 @@ const hydrateQueue = (queue: any) => {
   )
   return {
     ...queue,
+    assignmentStrategy: queue.assignmentStrategy ?? 'average',
+    assignmentWeights: queue.assignmentWeights ?? {},
     completedCount: queueItems.filter(
       (item: MockRecord) => item.status === 'COMPLETED'
     ).length,
@@ -35,6 +37,12 @@ const hydrateAnnotationItem = (item: any) => {
       trace.projectId === item.projectId &&
       (trace.traceId === objectId || trace.id === objectId)
   )
+  const queue = db.annotationQueues.find(
+    (queue: MockRecord) => queue.id === item.queueId
+  )
+  const fallbackAssignee = db.users.find(
+    (user: MockRecord) => user.id === queue?.assigneeIds?.[0]
+  )
 
   return {
     ...item,
@@ -42,6 +50,7 @@ const hydrateAnnotationItem = (item: any) => {
     objectType,
     completedAt: item.completedAt ?? '',
     completedBy: item.completedBy ?? null,
+    assignee: item.assignee ?? fallbackAssignee ?? null,
     source: item.source ?? {
       objectId,
       objectType,
@@ -72,12 +81,14 @@ const matchesQueryValues = (actual: unknown, values: string[]) =>
 
 const annotationItemFilterRows = (
   req: any,
-  omitFilter?: 'status' | 'objectType'
+  omitFilter?: 'status' | 'objectType' | 'assigneeIds'
 ) => {
   const status = omitFilter === 'status' ? [] : queryValues(req.query?.status)
   const objectType =
     omitFilter === 'objectType' ? [] : queryValues(req.query?.objectType)
   const completedBy = queryValues(req.query?.completedBy)
+  const assigneeIds =
+    omitFilter === 'assigneeIds' ? [] : queryValues(req.query?.assigneeIds)
 
   return db.annotationItems
     .filter(
@@ -91,6 +102,9 @@ const annotationItemFilterRows = (
     .filter((item: MockRecord) =>
       matchesQueryValues(item.completedBy?.id ?? item.completedBy, completedBy)
     )
+    .filter((item: MockRecord) =>
+      matchesQueryValues(item.assignee?.id ?? item.assignee, assigneeIds)
+    )
 }
 
 const countByValue = (rows: MockRecord[], field: string, values: string[]) =>
@@ -100,6 +114,29 @@ const countByValue = (rows: MockRecord[], field: string, values: string[]) =>
       rows.filter((row: MockRecord) => String(row[field] ?? '') === value).length,
     ])
   )
+
+const countByAssigneeId = (req: any) => {
+  const rows = annotationItemFilterRows(req, 'assigneeIds')
+  const assigneeIds = Array.from(
+    new Set(
+      db.annotationItems
+        .filter(
+          (item: MockRecord) =>
+            item.projectId === projectId(req) && item.queueId === queueId(req)
+        )
+        .map(hydrateAnnotationItem)
+        .map((item: MockRecord) => item.assignee?.id)
+        .filter(Boolean)
+    )
+  )
+
+  return Object.fromEntries(
+    assigneeIds.map((assigneeId) => [
+      assigneeId,
+      rows.filter((row: MockRecord) => row.assignee?.id === assigneeId).length,
+    ])
+  )
+}
 
 export default [
   {
@@ -177,6 +214,7 @@ export default [
           'objectType',
           ['TRACE', 'OBSERVATION', 'SESSION']
         ),
+        assigneeIds: countByAssigneeId(req),
       }),
   },
   {
@@ -408,6 +446,8 @@ export default [
         description: input.description ?? '',
         scoreConfigIds: input.scoreConfigIds ?? [],
         assigneeIds: input.assigneeIds ?? [],
+        assignmentStrategy: input.assignmentStrategy ?? 'average',
+        assignmentWeights: input.assignmentWeights ?? {},
         completedCount: 0,
         pendingCount: 0,
         createdAt: nowIso(),

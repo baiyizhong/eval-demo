@@ -259,6 +259,10 @@ export const apiRegistry = {
     method: 'DELETE',
     url: '/projects/:projectId/annotation-queues/:queueId/items',
   },
+  updateProjectAnnotationQueueItemAssignees: {
+    method: 'PATCH',
+    url: '/projects/:projectId/annotation-queues/:queueId/items/assignees',
+  },
   getProjectAnnotationQueueItem: {
     method: 'GET',
     url: '/projects/:projectId/annotation-queues/:queueId/items/:itemId',
