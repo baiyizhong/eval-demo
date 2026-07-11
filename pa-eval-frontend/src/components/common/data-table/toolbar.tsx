@@ -32,6 +32,7 @@ type DataTableToolbarProps<TData> = {
       value: string
       icon?: React.ComponentType<{ className?: string }>
     }[]
+    optionCounts?: Record<string, number>
   }[]
   filterValues?: Record<string, unknown>
   onFilterValueChange?: (fieldId: string, value: unknown) => void
@@ -151,6 +152,7 @@ export function DataTableToolbar<TData>({
                   column={column}
                   title={filter.title}
                   options={filter.options}
+                  optionCounts={filter.optionCounts}
                   selectionMode={filter.selectionMode}
                 />
               )
@@ -161,6 +163,7 @@ export function DataTableToolbar<TData>({
                 key={fieldId}
                 title={filter.title}
                 options={filter.options}
+                optionCounts={filter.optionCounts}
                 selectionMode={filter.selectionMode}
                 selectedValues={normalizeToolbarFilterValue(
                   filterValues[fieldId],

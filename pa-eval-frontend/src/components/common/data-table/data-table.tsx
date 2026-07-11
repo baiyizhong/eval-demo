@@ -71,6 +71,7 @@ export type DataTableToolbarFilter = {
     value: string
     icon?: React.ComponentType<{ className?: string }>
   }[]
+  optionCounts?: Record<string, number>
 }
 
 export type DataTableFilterChangeContext = {

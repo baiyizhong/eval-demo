@@ -9,6 +9,7 @@ import type {
   DatasetExportJobRecord,
   DatasetItemFormInput,
   DatasetItemRecord,
+  DatasetItemStatus,
   DatasetMetricSummary,
   DatasetRecord,
   DatasetTypeFilter,
@@ -24,11 +25,13 @@ type DatasetApiClient = {
   deleteProjectDataset: ApiMethod
   getProjectDatasetMetrics: ApiMethod
   getProjectDatasetItems: ApiMethod
+  getProjectDatasetItemStatusCounts: ApiMethod
   createProjectDatasetExportJob: ApiMethod
   getProjectDatasetExportJob: ApiMethod
   downloadProjectDatasetExportJob: ApiMethod
   createProjectDatasetItem: ApiMethod
   updateProjectDatasetItem: ApiMethod
+  deleteProjectDatasetItem: ApiMethod
   archiveProjectDatasetItem: ApiMethod
 }
 
@@ -130,6 +133,24 @@ export function listProjectDatasetItems(
   })
 }
 
+export function getProjectDatasetItemStatusCounts(
+  api: DatasetApiClient,
+  projectId: string,
+  datasetId: string,
+  query: { keyword?: string } = {}
+) {
+  const keyword = query.keyword?.trim()
+
+  return api.getProjectDatasetItemStatusCounts<
+    Record<DatasetItemStatus, number>
+  >({
+    path: { projectId, datasetId },
+    query: {
+      ...(keyword ? { keyword } : {}),
+    },
+  })
+}
+
 export function createProjectDatasetExportJob(
   api: DatasetApiClient,
   projectId: string,
@@ -223,6 +244,17 @@ export function archiveProjectDatasetItem(
   itemId: string
 ) {
   return api.archiveProjectDatasetItem<DatasetItemRecord>({
+    path: { projectId, datasetId, itemId },
+  })
+}
+
+export function deleteProjectDatasetItem(
+  api: DatasetApiClient,
+  projectId: string,
+  datasetId: string,
+  itemId: string
+) {
+  return api.deleteProjectDatasetItem<{ id: string }>({
     path: { projectId, datasetId, itemId },
   })
 }

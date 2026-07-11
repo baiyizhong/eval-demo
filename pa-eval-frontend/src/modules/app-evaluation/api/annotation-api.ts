@@ -11,6 +11,7 @@ import type {
   AnnotationNavigationResult,
   AnnotationQueueExportPayload,
   AnnotationQueueFormInput,
+  AnnotationQueueItemFilterCounts,
   AnnotationQueueItemRecord,
   AnnotationQueueMetricSummary,
   AnnotationQueueRecord,
@@ -35,6 +36,7 @@ type AnnotationApiClient = {
   deleteProjectAnnotationQueue: ApiMethod
   getProjectAnnotationQueueMetrics: ApiMethod
   getProjectAnnotationQueueItems: ApiMethod
+  getProjectAnnotationQueueItemFilterCounts: ApiMethod
   deleteProjectAnnotationQueueItems: ApiMethod
   previewProjectAnnotationBatch: ApiMethod
   saveProjectAnnotationBatchScores: ApiMethod
@@ -245,6 +247,66 @@ export function listProjectAnnotationQueueItems(
     query: {
       page: query.page,
       pageSize: query.pageSize,
+      ...(keyword ? { keyword } : {}),
+      ...(status?.length ? { status } : {}),
+      ...(objectType?.length ? { objectType } : {}),
+      ...(completedBy?.length ? { completedBy } : {}),
+      ...(createdAtFrom ? { createdAtFrom } : {}),
+      ...(createdAtTo ? { createdAtTo } : {}),
+      ...(completedAtFrom ? { completedAtFrom } : {}),
+      ...(completedAtTo ? { completedAtTo } : {}),
+      ...(typeof hasScores === 'boolean' ? { hasScores } : {}),
+      ...(metadataKey ? { metadataKey } : {}),
+      ...(metadataOperator ? { metadataOperator } : {}),
+      ...(metadataValue ? { metadataValue } : {}),
+      ...(metadataFilters?.length
+        ? { metadataFilters: JSON.stringify(metadataFilters) }
+        : {}),
+      ...(inputFilters?.length
+        ? { inputFilters: JSON.stringify(inputFilters) }
+        : {}),
+      ...(outputFilters?.length
+        ? { outputFilters: JSON.stringify(outputFilters) }
+        : {}),
+      ...(itemIds?.length ? { itemIds } : {}),
+    },
+  })
+}
+
+export function getProjectAnnotationQueueItemFilterCounts(
+  api: AnnotationApiClient,
+  projectId: string,
+  queueId: string,
+  query: DataTableQueryState
+) {
+  const keyword = query.keyword.trim()
+  const status = query.filters.status as string[] | undefined
+  const objectType = query.filters.objectType as string[] | undefined
+  const completedBy = query.filters.completedBy as string[] | undefined
+  const createdAtFrom = query.filters.createdAtFrom as string | undefined
+  const createdAtTo = query.filters.createdAtTo as string | undefined
+  const completedAtFrom = query.filters.completedAtFrom as string | undefined
+  const completedAtTo = query.filters.completedAtTo as string | undefined
+  const hasScores = query.filters.hasScores as boolean | undefined
+  const metadataKey = query.filters.metadataKey as string | undefined
+  const metadataOperator = query.filters.metadataOperator as string | undefined
+  const metadataValue = query.filters.metadataValue as string | undefined
+  const metadataFilters = query.filters.metadataFilters as
+    | AnnotationBatchFiltersInput['metadataFilters']
+    | undefined
+  const inputFilters = query.filters.inputFilters as
+    | AnnotationBatchFiltersInput['inputFilters']
+    | undefined
+  const outputFilters = query.filters.outputFilters as
+    | AnnotationBatchFiltersInput['outputFilters']
+    | undefined
+  const itemIds = query.filters.itemIds as string[] | undefined
+
+  return api.getProjectAnnotationQueueItemFilterCounts<
+    AnnotationQueueItemFilterCounts
+  >({
+    path: { projectId, queueId },
+    query: {
       ...(keyword ? { keyword } : {}),
       ...(status?.length ? { status } : {}),
       ...(objectType?.length ? { objectType } : {}),

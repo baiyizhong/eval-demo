@@ -1,19 +1,12 @@
 import { useCallback, useMemo, useState } from 'react'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
-import { Download, Loader2, Plus } from 'lucide-react'
-import { useNavigate, useParams } from 'react-router'
+import { Plus } from 'lucide-react'
+import { useNavigate, useParams, useSearchParams } from 'react-router'
 import { toast } from 'sonner'
 import { confirm } from '@/lib/confirm'
 import { useAPI } from '@/hooks/use-api'
 import { usePermission } from '@/hooks/use-permission'
-import { Button } from '@/components/ui/button'
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card'
-import {
-  DropdownMenu,
-  DropdownMenuContent,
-  DropdownMenuItem,
-  DropdownMenuTrigger,
-} from '@/components/ui/dropdown-menu'
 import {
   DataTable,
   type DataTableFilterBinding,
@@ -24,52 +17,42 @@ import { Page } from '@/components/common/page'
 import { PageAction } from '@/components/common/page-action'
 import {
   archiveProjectDatasetItem,
-  createProjectDatasetExportJob,
   createProjectDatasetItem,
-  downloadProjectDatasetExportJob,
+  deleteProjectDatasetItem,
   getProjectDataset,
+  getProjectDatasetItemStatusCounts,
   getProjectDatasetMetricSummary,
   listProjectDatasetItems,
-  pollDatasetExportJob,
   updateProjectDatasetItem,
 } from '../api/dataset-api'
 import { DatasetItemBulkActions } from '../components/dataset-item-bulk-actions'
 import { createDatasetItemColumns } from '../components/dataset-item-columns'
-import { DatasetItemFormDrawer } from '../components/dataset-item-form-drawer'
+import {
+  DatasetItemFormDrawer,
+  type DatasetItemDrawerIntent,
+} from '../components/dataset-item-form-drawer'
 import { DatasetTypeBadge } from '../components/dataset-type-badge'
 import { formatDateTime } from '../components/format'
-import type {
-  DatasetExportFormat,
-  DatasetItemFormInput,
-  DatasetItemRecord,
-} from '../types'
+import type { DatasetItemFormInput, DatasetItemRecord } from '../types'
 
 const itemUrlFilters: DataTableFilterBinding[] = [
   { fieldId: 'status', type: 'array' },
 ]
 
-const itemToolbarFilters: DataTableToolbarFilter[] = [
-  {
-    columnId: 'status',
-    title: '状态',
-    options: [
-      { label: 'ACTIVE', value: 'ACTIVE' },
-      { label: 'ARCHIVED', value: 'ARCHIVED' },
-    ],
-  },
-]
-
 export function ProjectDatasetDetail() {
   const navigate = useNavigate()
+  const [searchParams] = useSearchParams()
   const $api = useAPI()
   const queryClient = useQueryClient()
   const { projectId = 'project_customer_agent', datasetId = '' } = useParams()
   const { can } = usePermission({ type: 'project', projectId })
   const canEditDataset = can('project:dataset:edit')
-  const [itemDrawerOpen, setItemDrawerOpen] = useState(false)
-  const [editingItem, setEditingItem] = useState<DatasetItemRecord | null>(null)
-  const [exportingFormat, setExportingFormat] =
-    useState<DatasetExportFormat | null>(null)
+  const [itemDrawerIntent, setItemDrawerIntent] =
+    useState<DatasetItemDrawerIntent | null>(null)
+  const [selectedItem, setSelectedItem] = useState<DatasetItemRecord | null>(
+    null
+  )
+  const itemKeyword = searchParams.get('keyword') ?? ''
 
   const datasetQuery = useQuery({
     queryKey: ['project-dataset', $api, projectId, datasetId],
@@ -81,41 +64,66 @@ export function ProjectDatasetDetail() {
     queryFn: () => getProjectDatasetMetricSummary($api, projectId, datasetId),
     enabled: Boolean(datasetId),
   })
+  const statusCountsQuery = useQuery({
+    queryKey: [
+      'project-dataset-item-status-counts',
+      $api,
+      projectId,
+      datasetId,
+      itemKeyword,
+    ],
+    queryFn: () =>
+      getProjectDatasetItemStatusCounts($api, projectId, datasetId, {
+        keyword: itemKeyword,
+      }),
+    enabled: Boolean(datasetId),
+  })
 
   const invalidateDetail = useCallback(
     () =>
       Promise.all([
         queryClient.invalidateQueries({
-          queryKey: ['project-dataset', projectId, datasetId],
+          queryKey: ['project-dataset', $api, projectId, datasetId],
         }),
         queryClient.invalidateQueries({
-          queryKey: ['project-dataset-metrics', projectId, datasetId],
+          queryKey: ['project-dataset-metrics', $api, projectId, datasetId],
         }),
         queryClient.invalidateQueries({
-          queryKey: ['project-dataset-items', projectId, datasetId],
+          queryKey: ['project-dataset-items', $api, projectId, datasetId],
+        }),
+        queryClient.invalidateQueries({
+          queryKey: [
+            'project-dataset-item-status-counts',
+            $api,
+            projectId,
+            datasetId,
+          ],
         }),
         queryClient.invalidateQueries({
           queryKey: ['project-datasets', projectId],
         }),
       ]),
-    [datasetId, projectId, queryClient]
+    [$api, datasetId, projectId, queryClient]
   )
 
   const saveItemMutation = useMutation({
     mutationFn: (input: DatasetItemFormInput) =>
-      editingItem
+      itemDrawerIntent === 'edit' && selectedItem
         ? updateProjectDatasetItem(
             $api,
             projectId,
             datasetId,
-            editingItem.id,
+            selectedItem.id,
             input
           )
         : createProjectDatasetItem($api, projectId, datasetId, input),
     onSuccess: async () => {
       await invalidateDetail()
-      setEditingItem(null)
-      toast.success(editingItem ? '数据项已更新' : '数据项已新增')
+      const message =
+        itemDrawerIntent === 'edit' ? '数据项已更新' : '数据项已新增'
+      setSelectedItem(null)
+      setItemDrawerIntent(null)
+      toast.success(message)
     },
   })
 
@@ -129,17 +137,35 @@ export function ProjectDatasetDetail() {
   })
   const archiveItem = archiveItemMutation.mutateAsync
 
+  const deleteItemMutation = useMutation({
+    mutationFn: (item: DatasetItemRecord) =>
+      deleteProjectDatasetItem($api, projectId, datasetId, item.id),
+    onSuccess: async () => {
+      await invalidateDetail()
+      toast.success('数据项已删除')
+    },
+  })
+  const deleteItem = deleteItemMutation.mutateAsync
+
   const handleCreateItem = useCallback(() => {
     if (!canEditDataset) return
-    setEditingItem(null)
-    setItemDrawerOpen(true)
+    setSelectedItem(null)
+    setItemDrawerIntent('create')
   }, [canEditDataset])
 
-  const handleEditItem = useCallback((item: DatasetItemRecord) => {
-    if (!canEditDataset) return
-    setEditingItem(item)
-    setItemDrawerOpen(true)
-  }, [canEditDataset])
+  const handleViewItem = useCallback((item: DatasetItemRecord) => {
+    setSelectedItem(item)
+    setItemDrawerIntent('view')
+  }, [])
+
+  const handleEditItem = useCallback(
+    (item: DatasetItemRecord) => {
+      if (!canEditDataset) return
+      setSelectedItem(item)
+      setItemDrawerIntent('edit')
+    },
+    [canEditDataset]
+  )
 
   const handleArchiveItem = useCallback(
     async (item: DatasetItemRecord) => {
@@ -159,67 +185,88 @@ export function ProjectDatasetDetail() {
     [archiveItem, canEditDataset]
   )
 
-  const handleExportDataset = useCallback(
-    async (format: DatasetExportFormat) => {
-      if (!datasetId || exportingFormat) {
+  const handleDeleteItem = useCallback(
+    async (item: DatasetItemRecord) => {
+      if (!canEditDataset) return
+
+      if (
+        await confirm({
+          title: '删除数据项',
+          desc: `确定删除数据项「${item.id}」吗？此操作不可撤销。`,
+          confirmText: '删除',
+          destructive: true,
+        })
+      ) {
+        await deleteItem(item)
+      }
+    },
+    [canEditDataset, deleteItem]
+  )
+
+  const handleOpenSourceTrace = useCallback(
+    async (traceId: string) => {
+      const normalizedTraceId = traceId.trim()
+
+      if (!normalizedTraceId) {
+        toast.info('该数据项没有关联 Trace ID')
         return
       }
 
-      setExportingFormat(format)
       try {
-        const job = await createProjectDatasetExportJob(
-          $api,
-          projectId,
-          datasetId,
-          format
+        await $api.getProjectTrace({
+          path: { projectId, traceId: normalizedTraceId },
+        })
+        navigate(
+          `/projects/${projectId}/observability/traces/logs?traceId=${encodeURIComponent(normalizedTraceId)}`
         )
-        toast.info('导出任务已创建，正在生成文件')
-        const completedJob = await pollDatasetExportJob(
-          $api,
-          projectId,
-          datasetId,
-          job.id
-        )
-
-        if (completedJob.status === 'FAILED') {
-          throw new Error(completedJob.errorMessage || '数据集导出失败')
-        }
-
-        const blob = await downloadProjectDatasetExportJob(
-          $api,
-          projectId,
-          datasetId,
-          completedJob.id
-        )
-        downloadBlob(
-          blob,
-          completedJob.fileName ||
-            `dataset-${datasetId}-${completedJob.id}.${format}`
-        )
-        toast.success('数据集导出完成')
-      } catch (error) {
-        toast.error(error instanceof Error ? error.message : '数据集导出失败')
-      } finally {
-        setExportingFormat(null)
+      } catch {
+        toast.error('Trace 不存在或已删除')
       }
     },
-    [$api, datasetId, exportingFormat, projectId]
+    [$api, navigate, projectId]
   )
+
+  const dataset = datasetQuery.data
+  const metrics = metricQuery.data
 
   const columns = useMemo(
     () =>
       createDatasetItemColumns({
         readOnly: !canEditDataset,
+        onView: handleViewItem,
+        onOpenTrace: handleOpenSourceTrace,
         onEdit: handleEditItem,
         onArchive: (item) => {
           void handleArchiveItem(item)
         },
+        onDelete: (item) => {
+          void handleDeleteItem(item)
+        },
       }),
-    [canEditDataset, handleArchiveItem, handleEditItem]
+    [
+      canEditDataset,
+      handleArchiveItem,
+      handleDeleteItem,
+      handleEditItem,
+      handleOpenSourceTrace,
+      handleViewItem,
+    ]
   )
 
-  const dataset = datasetQuery.data
-  const metrics = metricQuery.data
+  const itemToolbarFilters = useMemo<DataTableToolbarFilter[]>(
+    () => [
+      {
+        columnId: 'status',
+        title: '状态',
+        optionCounts: statusCountsQuery.data,
+        options: [
+          { label: 'ACTIVE', value: 'ACTIVE' },
+          { label: 'ARCHIVED', value: 'ARCHIVED' },
+        ],
+      },
+    ],
+    [statusCountsQuery.data]
+  )
 
   return (
     <Page fixed fluid className='flex min-h-[calc(100svh-3.5rem)] flex-col'>
@@ -227,14 +274,6 @@ export function ProjectDatasetDetail() {
         <PageAction
           showBackButton
           onBack={() => navigate(`/projects/${projectId}/evaluation/datasets`)}
-          actions={
-            <DatasetExportMenu
-              exportingFormat={exportingFormat}
-              onExport={(format) => {
-                void handleExportDataset(format)
-              }}
-            />
-          }
           buttonGroups={{
             buttons: canEditDataset
               ? [
@@ -357,75 +396,22 @@ export function ProjectDatasetDetail() {
         </section>
       </div>
       <DatasetItemFormDrawer
-        open={canEditDataset && itemDrawerOpen}
-        item={editingItem}
+        open={Boolean(itemDrawerIntent)}
+        intent={itemDrawerIntent ?? 'create'}
+        item={selectedItem}
         onOpenChange={(open) => {
-          setItemDrawerOpen(open)
           if (!open) {
-            setEditingItem(null)
+            setItemDrawerIntent(null)
+            setSelectedItem(null)
           }
         }}
         onSubmit={async (input) => {
-          if (!canEditDataset) return
+          if (!canEditDataset || itemDrawerIntent === 'view') return
           await saveItemMutation.mutateAsync(input)
         }}
       />
     </Page>
   )
-}
-
-const exportFormatOptions: {
-  value: DatasetExportFormat
-  label: string
-}[] = [
-  { value: 'xlsx', label: 'Excel' },
-  { value: 'csv', label: 'CSV' },
-  { value: 'txt', label: 'TXT' },
-]
-
-function DatasetExportMenu({
-  exportingFormat,
-  onExport,
-}: {
-  exportingFormat: DatasetExportFormat | null
-  onExport: (format: DatasetExportFormat) => void
-}) {
-  const isExporting = Boolean(exportingFormat)
-
-  return (
-    <DropdownMenu modal={false}>
-      <DropdownMenuTrigger asChild>
-        <Button type='button' variant='outline' size='sm' disabled={isExporting}>
-          {isExporting ? (
-            <Loader2 className='size-4 animate-spin' data-icon='inline-start' />
-          ) : (
-            <Download className='size-4' data-icon='inline-start' />
-          )}
-          <span>导出数据集</span>
-        </Button>
-      </DropdownMenuTrigger>
-      <DropdownMenuContent align='end'>
-        {exportFormatOptions.map((option) => (
-          <DropdownMenuItem
-            key={option.value}
-            disabled={isExporting}
-            onSelect={() => onExport(option.value)}
-          >
-            {option.label}
-          </DropdownMenuItem>
-        ))}
-      </DropdownMenuContent>
-    </DropdownMenu>
-  )
-}
-
-function downloadBlob(blob: Blob, fileName: string) {
-  const url = URL.createObjectURL(blob)
-  const link = document.createElement('a')
-  link.href = url
-  link.download = fileName
-  link.click()
-  URL.revokeObjectURL(url)
 }
 
 function MetricCard({ title, value }: { title: string; value: string }) {

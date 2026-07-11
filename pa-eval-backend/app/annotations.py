@@ -20,6 +20,12 @@ router = APIRouter(prefix="/api/projects/{project_id}", tags=["annotations"])
 AnnotationObjectType = Literal["TRACE", "OBSERVATION", "SESSION"]
 AnnotationItemStatus = Literal["PENDING", "COMPLETED"]
 ScoreConfigDataType = Literal["NUMERIC", "CATEGORICAL", "BOOLEAN", "TEXT"]
+ANNOTATION_ITEM_STATUSES: tuple[AnnotationItemStatus, ...] = ("PENDING", "COMPLETED")
+ANNOTATION_OBJECT_TYPES: tuple[AnnotationObjectType, ...] = (
+    "TRACE",
+    "OBSERVATION",
+    "SESSION",
+)
 SCORE_CONFIG_NAME_PATTERN = re.compile(r"^[\w .()\-\u4e00-\u9fff]+$")
 LANGFUSE_BOOLEAN_CATEGORIES = [
     {"label": "True", "value": 1},
@@ -486,6 +492,48 @@ def _filter_annotation_items(
     return filtered
 
 
+def _count_by_field(
+    items: list[dict[str, Any]],
+    field: str,
+    values: tuple[str, ...],
+) -> dict[str, int]:
+    counts = {value: 0 for value in values}
+
+    for item in items:
+        value = item.get(field)
+        if value in counts:
+            counts[value] += 1
+
+    return counts
+
+
+def _annotation_item_filter_counts(
+    items: list[dict[str, Any]],
+    filters: AnnotationBatchFiltersPayload,
+) -> dict[str, dict[str, int]]:
+    status_items = _filter_annotation_items(
+        items,
+        filters.model_copy(update={"status": []}),
+    )
+    object_type_items = _filter_annotation_items(
+        items,
+        filters.model_copy(update={"object_type": []}),
+    )
+
+    return {
+        "status": _count_by_field(
+            status_items,
+            "status",
+            ANNOTATION_ITEM_STATUSES,
+        ),
+        "objectType": _count_by_field(
+            object_type_items,
+            "objectType",
+            ANNOTATION_OBJECT_TYPES,
+        ),
+    }
+
+
 def _annotation_batch_preview(
     items: list[dict[str, Any]],
     filters: AnnotationBatchFiltersPayload,
@@ -766,6 +814,94 @@ async def get_annotation_queue_metrics(
         current_user.user_id,
     )
     return success(metrics)
+
+
+@router.get("/annotation-queues/{queue_id}/items/filter-counts")
+async def count_annotation_queue_item_filters(
+    project_id: str,
+    queue_id: str,
+    keyword: str | None = Query(default=None),
+    status: list[AnnotationItemStatus] | None = Query(default=None),
+    object_type: list[AnnotationObjectType] | None = Query(
+        default=None,
+        alias="objectType",
+    ),
+    completed_by: list[str] | None = Query(default=None, alias="completedBy"),
+    status_bracket: list[AnnotationItemStatus] | None = Query(
+        default=None,
+        alias="status[]",
+    ),
+    object_type_bracket: list[AnnotationObjectType] | None = Query(
+        default=None,
+        alias="objectType[]",
+    ),
+    completed_by_bracket: list[str] | None = Query(
+        default=None,
+        alias="completedBy[]",
+    ),
+    created_at_from: str = Query(default="", alias="createdAtFrom"),
+    created_at_to: str = Query(default="", alias="createdAtTo"),
+    completed_at_from: str = Query(default="", alias="completedAtFrom"),
+    completed_at_to: str = Query(default="", alias="completedAtTo"),
+    has_scores: bool | None = Query(default=None, alias="hasScores"),
+    metadata_key: str = Query(default="", alias="metadataKey"),
+    metadata_operator: Literal["contains", "equals", "exists"] = Query(
+        default="contains",
+        alias="metadataOperator",
+    ),
+    metadata_value: str = Query(default="", alias="metadataValue"),
+    metadata_filters: str = Query(default="", alias="metadataFilters"),
+    input_filters: str = Query(default="", alias="inputFilters"),
+    output_filters: str = Query(default="", alias="outputFilters"),
+    item_ids: list[str] | None = Query(default=None, alias="itemIds"),
+    item_ids_bracket: list[str] | None = Query(default=None, alias="itemIds[]"),
+    current_user: CurrentUserContext = Depends(get_current_user_context),
+    reader: LangfuseDatabaseReader = Depends(get_langfuse_db_reader),
+    trace_reader: LangfuseClickHouseReader = Depends(get_langfuse_clickhouse_reader),
+) -> dict[str, Any]:
+    items = await reader.list_annotation_queue_items_for_user(
+        project_id,
+        queue_id,
+        current_user.user_id,
+    )
+    items = await _enrich_annotation_items_with_trace_source(
+        project_id,
+        items,
+        trace_reader,
+    )
+    effective_status = _first_non_empty_list(status, status_bracket)
+    effective_object_type = _first_non_empty_list(object_type, object_type_bracket)
+    effective_completed_by = _first_non_empty_list(completed_by, completed_by_bracket)
+    effective_item_ids = _first_non_empty_list(item_ids, item_ids_bracket)
+    parsed_metadata_filters = _parse_metadata_filters_query(metadata_filters)
+    parsed_input_filters = _parse_filter_conditions_query(input_filters, "Input")
+    parsed_output_filters = _parse_filter_conditions_query(output_filters, "Output")
+    counts = _annotation_item_filter_counts(
+        items,
+        AnnotationBatchFiltersPayload(
+            keyword=keyword or "",
+            status=effective_status or [],
+            objectType=effective_object_type or [],
+            completedBy=effective_completed_by or [],
+            createdAtFrom=created_at_from,
+            createdAtTo=created_at_to,
+            completedAtFrom=completed_at_from,
+            completedAtTo=completed_at_to,
+            hasScores=has_scores,
+            metadataFilter=MetadataFilterPayload(
+                key=metadata_key,
+                operator=metadata_operator,
+                value=metadata_value,
+            )
+            if metadata_key
+            else None,
+            metadataFilters=parsed_metadata_filters,
+            inputFilters=parsed_input_filters,
+            outputFilters=parsed_output_filters,
+            itemIds=effective_item_ids or [],
+        ),
+    )
+    return success(counts)
 
 
 @router.get("/annotation-queues/{queue_id}/items")

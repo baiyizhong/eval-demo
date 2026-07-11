@@ -4,6 +4,7 @@ import {
   archiveProjectDatasetItem,
   createProjectDatasetItem,
   createProjectDatasetExportJob,
+  deleteProjectDatasetItem,
   getProjectDatasetExportJob,
   updateProjectDatasetItem,
 } from '../modules/app-evaluation/api/dataset-api.ts'
@@ -28,6 +29,10 @@ test('dataset item mutations call project-scoped real endpoints', async () => {
       calls.push(['archive-item', options])
       return { id: 'item-1' }
     },
+    async deleteProjectDatasetItem(options: unknown) {
+      calls.push(['delete-item', options])
+      return { id: 'item-1' }
+    },
     async createProjectDatasetExportJob(options: unknown) {
       calls.push(['create-export-job', options])
       return { id: 'job-1' }
@@ -47,6 +52,12 @@ test('dataset item mutations call project-scoped real endpoints', async () => {
     input
   )
   await archiveProjectDatasetItem(
+    api as never,
+    'project-1',
+    'dataset-1',
+    'item-1'
+  )
+  await deleteProjectDatasetItem(
     api as never,
     'project-1',
     'dataset-1',
@@ -86,6 +97,16 @@ test('dataset item mutations call project-scoped real endpoints', async () => {
     ],
     [
       'archive-item',
+      {
+        path: {
+          projectId: 'project-1',
+          datasetId: 'dataset-1',
+          itemId: 'item-1',
+        },
+      },
+    ],
+    [
+      'delete-item',
       {
         path: {
           projectId: 'project-1',

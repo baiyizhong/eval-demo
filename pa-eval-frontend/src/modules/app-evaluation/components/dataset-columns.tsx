@@ -2,7 +2,7 @@ import type { ColumnDef } from '@tanstack/react-table'
 import { Link } from 'react-router'
 import { DataTableColumnHeader } from '@/components/common/data-table'
 import { LongText } from '@/components/common/long-text'
-import type { DatasetRecord } from '../types'
+import type { DatasetExportFormat, DatasetRecord } from '../types'
 import { DatasetRowActions } from './dataset-row-actions'
 import { DatasetTypeBadge } from './dataset-type-badge'
 import { formatDateTime } from './format'
@@ -12,8 +12,9 @@ type CreateDatasetColumnsOptions = {
   readOnly?: boolean
   onEdit?: (dataset: DatasetRecord) => void
   onImport?: (dataset: DatasetRecord) => void
-  onExport?: (dataset: DatasetRecord) => void
+  onExport?: (dataset: DatasetRecord, format: DatasetExportFormat) => void
   onDelete?: (dataset: DatasetRecord) => void
+  exportingDatasetId?: string | null
 }
 
 export function createDatasetColumns({
@@ -23,6 +24,7 @@ export function createDatasetColumns({
   onImport,
   onExport,
   onDelete,
+  exportingDatasetId,
 }: CreateDatasetColumnsOptions): ColumnDef<DatasetRecord>[] {
   const columns: ColumnDef<DatasetRecord>[] = [
     {
@@ -98,10 +100,11 @@ export function createDatasetColumns({
           onImport={onImport}
           onExport={onExport}
           onDelete={onDelete}
+          exporting={exportingDatasetId === row.original.id}
         />
       ),
       meta: {
-        className: 'w-[220px]',
+        className: 'w-[132px]',
       },
     })
   }

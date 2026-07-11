@@ -227,6 +227,11 @@ export type AnnotationQueueMetricSummary = {
   updatedAt: string
 }
 
+export type AnnotationQueueItemFilterCounts = {
+  status: Record<AnnotationItemStatus, number>
+  objectType: Record<AnnotationObjectType, number>
+}
+
 export type AnnotationScoreFormInput = {
   scores: {
     configId: string

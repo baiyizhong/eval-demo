@@ -778,6 +778,69 @@ def test_lists_annotation_items_with_multiple_metadata_filters() -> None:
     assert [item["id"] for item in body["datas"]] == ["item-2"]
 
 
+def test_counts_annotation_item_filters_across_all_matching_items() -> None:
+    class FilterCountReader(FakeAnnotationDatabaseReader):
+        async def list_annotation_queue_items_for_user(
+            self,
+            project_id: str,
+            queue_id: str,
+            user_id: str,
+        ) -> list[dict]:
+            self.calls.append(("list_items", (project_id, queue_id, user_id)))
+            base = await super().list_annotation_queue_items_for_user(
+                project_id,
+                queue_id,
+                user_id,
+            )
+            return [
+                *base,
+                {
+                    **base[0],
+                    "id": "item-observation",
+                    "objectId": "observation-1",
+                    "objectType": "OBSERVATION",
+                    "status": "PENDING",
+                    "source": {
+                        **base[0]["source"],
+                        "objectId": "observation-1",
+                        "objectType": "OBSERVATION",
+                        "title": "observation billing",
+                    },
+                },
+                {
+                    **base[0],
+                    "id": "item-session",
+                    "objectId": "session-1",
+                    "objectType": "SESSION",
+                    "status": "COMPLETED",
+                    "source": {
+                        **base[0]["source"],
+                        "objectId": "session-1",
+                        "objectType": "SESSION",
+                        "title": "session billing",
+                    },
+                },
+            ]
+
+    fake_reader = FilterCountReader()
+    override_reader(fake_reader)
+
+    try:
+        response = TestClient(app).get(
+            "/api/projects/project-1/annotation-queues/queue-1/items/filter-counts",
+            params={"status": "PENDING", "objectType": "OBSERVATION"},
+        )
+    finally:
+        clear_overrides()
+
+    assert response.status_code == 200
+    assert fake_reader.calls[0] == ("list_items", ("project-1", "queue-1", "user-1"))
+    assert response.json()["data"] == {
+        "status": {"PENDING": 1, "COMPLETED": 0},
+        "objectType": {"TRACE": 2, "OBSERVATION": 1, "SESSION": 0},
+    }
+
+
 def test_lists_annotation_items_with_input_and_output_filters() -> None:
     fake_reader = FakeAnnotationDatabaseReader()
     override_reader(fake_reader)

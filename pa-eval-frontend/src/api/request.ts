@@ -7,6 +7,9 @@ export const request = axios.create({
   baseURL: env.apiBaseURL,
   timeout: env.apiTimeout,
   withCredentials: env.apiWithCredentials,
+  paramsSerializer: {
+    indexes: null,
+  },
 })
 
 request.interceptors.request.use((config) => {

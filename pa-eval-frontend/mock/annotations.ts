@@ -60,6 +60,47 @@ const hydrateAnnotationItem = (item: any) => {
   }
 }
 
+const queryValues = (value: unknown) =>
+  Array.isArray(value)
+    ? value.map(String)
+    : value === undefined || value === null || value === ''
+      ? []
+      : [String(value)]
+
+const matchesQueryValues = (actual: unknown, values: string[]) =>
+  !values.length || values.includes(String(actual ?? ''))
+
+const annotationItemFilterRows = (
+  req: any,
+  omitFilter?: 'status' | 'objectType'
+) => {
+  const status = omitFilter === 'status' ? [] : queryValues(req.query?.status)
+  const objectType =
+    omitFilter === 'objectType' ? [] : queryValues(req.query?.objectType)
+  const completedBy = queryValues(req.query?.completedBy)
+
+  return db.annotationItems
+    .filter(
+      (item: MockRecord) =>
+        item.projectId === projectId(req) && item.queueId === queueId(req)
+    )
+    .map(hydrateAnnotationItem)
+    .filter((item: MockRecord) => keywordIncludes(item, req.query?.keyword))
+    .filter((item: MockRecord) => matchesQueryValues(item.status, status))
+    .filter((item: MockRecord) => matchesQueryValues(item.objectType, objectType))
+    .filter((item: MockRecord) =>
+      matchesQueryValues(item.completedBy?.id ?? item.completedBy, completedBy)
+    )
+}
+
+const countByValue = (rows: MockRecord[], field: string, values: string[]) =>
+  Object.fromEntries(
+    values.map((value) => [
+      value,
+      rows.filter((row: MockRecord) => String(row[field] ?? '') === value).length,
+    ])
+  )
+
 export default [
   {
     url: '/api/projects/:projectId/score-configs/:configId/archive',
@@ -121,6 +162,22 @@ export default [
     url: '/api/projects/:projectId/annotation-users',
     method: 'get',
     response: () => success(db.users),
+  },
+  {
+    url: '/api/projects/:projectId/annotation-queues/:queueId/items/filter-counts',
+    method: 'get',
+    response: (req: any) =>
+      success({
+        status: countByValue(annotationItemFilterRows(req, 'status'), 'status', [
+          'PENDING',
+          'COMPLETED',
+        ]),
+        objectType: countByValue(
+          annotationItemFilterRows(req, 'objectType'),
+          'objectType',
+          ['TRACE', 'OBSERVATION', 'SESSION']
+        ),
+      }),
   },
   {
     url: '/api/projects/:projectId/annotation-queues/:queueId/items/:itemId/scores',

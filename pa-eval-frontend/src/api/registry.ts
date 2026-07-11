@@ -158,6 +158,10 @@ export const apiRegistry = {
     method: 'GET',
     url: '/projects/:projectId/datasets/:datasetId/items',
   },
+  getProjectDatasetItemStatusCounts: {
+    method: 'GET',
+    url: '/projects/:projectId/datasets/:datasetId/items/status-counts',
+  },
   createProjectDatasetExportJob: {
     method: 'POST',
     url: '/projects/:projectId/datasets/:datasetId/export-jobs',
@@ -177,6 +181,10 @@ export const apiRegistry = {
   },
   updateProjectDatasetItem: {
     method: 'PATCH',
+    url: '/projects/:projectId/datasets/:datasetId/items/:itemId',
+  },
+  deleteProjectDatasetItem: {
+    method: 'DELETE',
     url: '/projects/:projectId/datasets/:datasetId/items/:itemId',
   },
   archiveProjectDatasetItem: {
@@ -238,6 +246,10 @@ export const apiRegistry = {
   getProjectAnnotationQueueItems: {
     method: 'GET',
     url: '/projects/:projectId/annotation-queues/:queueId/items',
+  },
+  getProjectAnnotationQueueItemFilterCounts: {
+    method: 'GET',
+    url: '/projects/:projectId/annotation-queues/:queueId/items/filter-counts',
   },
   createProjectAnnotationQueueItem: {
     method: 'POST',

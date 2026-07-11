@@ -83,6 +83,23 @@ export default [
     },
   },
   {
+    url: '/api/projects/:projectId/datasets/:datasetId/items/status-counts',
+    method: 'get',
+    response: (req: any) => {
+      const rows = db.datasetItems
+        .filter(
+          (item) =>
+            item.projectId === projectId(req) && item.datasetId === datasetId(req)
+        )
+        .filter((item) => keywordIncludes(item, req.query?.keyword))
+
+      return success({
+        ACTIVE: rows.filter((item) => item.status === 'ACTIVE').length,
+        ARCHIVED: rows.filter((item) => item.status === 'ARCHIVED').length,
+      })
+    },
+  },
+  {
     url: '/api/projects/:projectId/datasets/:datasetId/items',
     method: 'get',
     response: (req: any) =>

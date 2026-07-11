@@ -30,6 +30,7 @@ type ImportDialogProps = {
   title?: string
   description?: string
   fileTypes?: string[]
+  helperContent?: React.ReactNode
   onImport?: (file: File) => void
 }
 
@@ -50,13 +51,39 @@ function isAllowedFileType(file: File, fileTypes: string[]) {
 }
 
 function formatFileTypes(fileTypes: string[]) {
-  return fileTypes
-    .map((fileType) => {
-      if (fileType === 'text/csv') return 'CSV'
+  return Array.from(
+    new Set(
+      fileTypes.map((fileType) => {
+        const normalizedFileType = fileType.toLowerCase()
 
-      return fileType
-    })
-    .join('、')
+        if (
+          normalizedFileType === 'text/csv' ||
+          normalizedFileType === '.csv'
+        ) {
+          return 'CSV'
+        }
+
+        if (
+          normalizedFileType === 'text/plain' ||
+          normalizedFileType === '.txt'
+        ) {
+          return 'TXT'
+        }
+
+        if (
+          normalizedFileType ===
+            'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet' ||
+          normalizedFileType === 'application/vnd.ms-excel' ||
+          normalizedFileType === '.xlsx' ||
+          normalizedFileType === '.xls'
+        ) {
+          return 'Excel'
+        }
+
+        return fileType
+      })
+    )
+  ).join('、')
 }
 
 export function ImportDialog({
@@ -65,6 +92,7 @@ export function ImportDialog({
   title = '导入文件',
   description = '从本地选择文件进行导入。',
   fileTypes = DEFAULT_FILE_TYPES,
+  helperContent,
   onImport,
 }: ImportDialogProps) {
   const formSchema = React.useMemo(
@@ -110,11 +138,16 @@ export function ImportDialog({
         form.reset()
       }}
     >
-      <DialogContent className='gap-2 sm:max-w-sm'>
+      <DialogContent className='gap-2 sm:max-w-md'>
         <DialogHeader className='text-start'>
           <DialogTitle>{title}</DialogTitle>
           <DialogDescription>{description}</DialogDescription>
         </DialogHeader>
+        {helperContent ? (
+          <div className='text-muted-foreground rounded-md border p-3 text-sm'>
+            {helperContent}
+          </div>
+        ) : null}
         <Form {...form}>
           <form id='import-form' onSubmit={form.handleSubmit(onSubmit)}>
             <FormField

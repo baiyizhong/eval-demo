@@ -16,6 +16,7 @@ router = APIRouter(prefix="/api/projects/{project_id}/datasets", tags=["datasets
 
 DatasetType = Literal["evaluation", "badcase", "golden", "anomaly"]
 DatasetExportFormat = Literal["xlsx", "csv", "txt"]
+DatasetItemStatus = Literal["ACTIVE", "ARCHIVED"]
 
 EXPORT_MEDIA_TYPES = {
     "xlsx": "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
@@ -40,6 +41,9 @@ class DatasetItemPayload(BaseModel):
     input: Any = Field(default_factory=dict)
     expected_output: Any = Field(default_factory=dict, alias="expectedOutput")
     metadata: dict[str, Any] = Field(default_factory=dict)
+    status: DatasetItemStatus | None = None
+    source_trace_id: str | None = Field(default=None, alias="sourceTraceId")
+    source_observation_id: str | None = Field(default=None, alias="sourceObservationId")
 
 
 class DatasetExportJobPayload(BaseModel):
@@ -98,11 +102,31 @@ def _to_dataset_payload(payload: DatasetPayload) -> dict[str, Any]:
 
 
 def _to_dataset_item_payload(payload: DatasetItemPayload) -> dict[str, Any]:
-    return {
+    result = {
         "input": payload.input,
         "expectedOutput": payload.expected_output,
         "metadata": payload.metadata,
     }
+    if payload.status is not None:
+        result["status"] = payload.status
+    if payload.source_trace_id is not None:
+        result["sourceTraceId"] = payload.source_trace_id
+    if payload.source_observation_id is not None:
+        result["sourceObservationId"] = payload.source_observation_id
+
+    return result
+
+
+def _count_item_statuses(items: list[dict[str, Any]]) -> dict[DatasetItemStatus, int]:
+    counts: dict[DatasetItemStatus, int] = {"ACTIVE": 0, "ARCHIVED": 0}
+
+    for item in items:
+        if item.get("status") == "ARCHIVED":
+            counts["ARCHIVED"] += 1
+            continue
+        counts["ACTIVE"] += 1
+
+    return counts
 
 
 @router.post("/{dataset_id}/export-jobs")
@@ -251,6 +275,23 @@ async def archive_dataset_item(
     return success(item)
 
 
+@router.delete("/{dataset_id}/items/{item_id}")
+async def delete_dataset_item(
+    project_id: str,
+    dataset_id: str,
+    item_id: str,
+    current_user: CurrentUserContext = Depends(get_current_user_context),
+    reader: LangfuseDatabaseReader = Depends(get_langfuse_db_reader),
+) -> dict[str, Any]:
+    await reader.delete_dataset_item_for_user(
+        project_id,
+        dataset_id,
+        item_id,
+        current_user.user_id,
+    )
+    return success({"id": item_id})
+
+
 @router.post("")
 async def create_dataset(
     project_id: str,
@@ -326,6 +367,23 @@ async def get_dataset_metrics(
         current_user.user_id,
     )
     return success(metrics)
+
+
+@router.get("/{dataset_id}/items/status-counts")
+async def count_dataset_item_statuses(
+    project_id: str,
+    dataset_id: str,
+    keyword: str | None = Query(default=None),
+    current_user: CurrentUserContext = Depends(get_current_user_context),
+    reader: LangfuseDatabaseReader = Depends(get_langfuse_db_reader),
+) -> dict[str, Any]:
+    items = await reader.list_dataset_items_for_user(
+        project_id,
+        dataset_id,
+        current_user.user_id,
+    )
+    filtered = [item for item in items if _matches_item_keyword(item, keyword)]
+    return success(_count_item_statuses(filtered))
 
 
 @router.get("/{dataset_id}/items")

@@ -2,21 +2,27 @@ import type { ColumnDef } from '@tanstack/react-table'
 import { Badge } from '@/components/ui/badge'
 import { Checkbox } from '@/components/ui/checkbox'
 import { DataTableColumnHeader } from '@/components/common/data-table'
-import { LongText } from '@/components/common/long-text'
 import type { DatasetItemRecord } from '../types'
+import { JsonPreviewCell, SourcePreviewCell } from './dataset-item-preview-cells'
 import { DatasetItemRowActions } from './dataset-item-row-actions'
 import { formatDateTime } from './format'
 
 type CreateDatasetItemColumnsOptions = {
   readOnly?: boolean
+  onView?: (item: DatasetItemRecord) => void
+  onOpenTrace?: (traceId: string) => void
   onEdit?: (item: DatasetItemRecord) => void
   onArchive?: (item: DatasetItemRecord) => void
+  onDelete?: (item: DatasetItemRecord) => void
 }
 
 export function createDatasetItemColumns({
   readOnly,
+  onView,
+  onOpenTrace,
   onEdit,
   onArchive,
+  onDelete,
 }: CreateDatasetItemColumnsOptions): ColumnDef<DatasetItemRecord>[] {
   const columns: ColumnDef<DatasetItemRecord>[] = []
 
@@ -51,9 +57,19 @@ export function createDatasetItemColumns({
       header: ({ column }) => (
         <DataTableColumnHeader column={column} title='Item ID' />
       ),
-      cell: ({ row }) => (
-        <span className='font-mono text-xs'>{row.original.id}</span>
-      ),
+      cell: ({ row }) =>
+        onView ? (
+          <button
+            type='button'
+            className='font-mono text-xs underline-offset-4 hover:underline'
+            aria-label={`查看数据项 ${row.original.id}`}
+            onClick={() => onView(row.original)}
+          >
+            {row.original.id}
+          </button>
+        ) : (
+          <span className='font-mono text-xs'>{row.original.id}</span>
+        ),
       enableHiding: false,
     },
     {
@@ -76,9 +92,7 @@ export function createDatasetItemColumns({
         <DataTableColumnHeader column={column} title='Input' />
       ),
       cell: ({ row }) => (
-        <LongText className='max-w-64 font-mono text-xs'>
-          {JSON.stringify(row.original.input)}
-        </LongText>
+        <JsonPreviewCell label='Input' value={row.original.input} />
       ),
     },
     {
@@ -87,9 +101,10 @@ export function createDatasetItemColumns({
         <DataTableColumnHeader column={column} title='Expected Output' />
       ),
       cell: ({ row }) => (
-        <LongText className='max-w-64 font-mono text-xs'>
-          {JSON.stringify(row.original.expectedOutput)}
-        </LongText>
+        <JsonPreviewCell
+          label='Expected Output'
+          value={row.original.expectedOutput}
+        />
       ),
     },
     {
@@ -98,9 +113,11 @@ export function createDatasetItemColumns({
         <DataTableColumnHeader column={column} title='Metadata' />
       ),
       cell: ({ row }) => (
-        <LongText className='max-w-56 font-mono text-xs'>
-          {JSON.stringify(row.original.metadata)}
-        </LongText>
+        <JsonPreviewCell
+          label='Metadata'
+          value={row.original.metadata}
+          className='max-w-56'
+        />
       ),
     },
     {
@@ -109,12 +126,10 @@ export function createDatasetItemColumns({
         <DataTableColumnHeader column={column} title='Source' />
       ),
       cell: ({ row }) => (
-        <div className='flex max-w-40 flex-col gap-1 font-mono text-xs'>
-          <span className='truncate'>{row.original.sourceTraceId || '-'}</span>
-          <span className='text-muted-foreground truncate'>
-            {row.original.sourceObservationId || '-'}
-          </span>
-        </div>
+        <SourcePreviewCell
+          sourceTraceId={row.original.sourceTraceId}
+          onOpenTrace={onOpenTrace}
+        />
       ),
     },
     {
@@ -126,7 +141,7 @@ export function createDatasetItemColumns({
     }
   )
 
-  if (!readOnly && onEdit && onArchive) {
+  if (!readOnly && onEdit && onArchive && onDelete) {
     columns.push({
       id: 'actions',
       enableHiding: false,
@@ -135,6 +150,7 @@ export function createDatasetItemColumns({
           row={row}
           onEdit={onEdit}
           onArchive={onArchive}
+          onDelete={onDelete}
         />
       ),
     })

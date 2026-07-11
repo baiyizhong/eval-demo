@@ -1645,12 +1645,12 @@ class LangfuseDatabaseReader:
                         %(id)s,
                         %(project_id)s,
                         %(dataset_id)s,
-                        'ACTIVE'::"DatasetStatus",
+                        %(status)s::"DatasetStatus",
                         %(input)s,
                         %(expected_output)s,
                         %(metadata)s,
-                        '',
-                        '',
+                        %(source_trace_id)s,
+                        %(source_observation_id)s,
                         NOW(),
                         NOW(),
                         NOW(),
@@ -1674,9 +1674,13 @@ class LangfuseDatabaseReader:
                         "id": item_id,
                         "project_id": project_id,
                         "dataset_id": dataset_id,
+                        "status": payload.get("status") or "ACTIVE",
                         "input": Jsonb(payload.get("input")),
                         "expected_output": Jsonb(payload.get("expectedOutput")),
                         "metadata": Jsonb(payload.get("metadata") or {}),
+                        "source_trace_id": payload.get("sourceTraceId") or "",
+                        "source_observation_id": payload.get("sourceObservationId")
+                        or "",
                     },
                 )
                 row = await cursor.fetchone()
@@ -1709,6 +1713,9 @@ class LangfuseDatabaseReader:
                         input = %(input)s,
                         expected_output = %(expected_output)s,
                         metadata = %(metadata)s,
+                        status = COALESCE(%(status)s::"DatasetStatus", status),
+                        source_trace_id = COALESCE(%(source_trace_id)s, source_trace_id),
+                        source_observation_id = COALESCE(%(source_observation_id)s, source_observation_id),
                         updated_at = NOW()
                     WHERE project_id = %(project_id)s
                       AND dataset_id = %(dataset_id)s
@@ -1732,9 +1739,12 @@ class LangfuseDatabaseReader:
                         "id": item_id,
                         "project_id": project_id,
                         "dataset_id": dataset_id,
+                        "status": payload.get("status"),
                         "input": Jsonb(payload.get("input")),
                         "expected_output": Jsonb(payload.get("expectedOutput")),
                         "metadata": Jsonb(payload.get("metadata") or {}),
+                        "source_trace_id": payload.get("sourceTraceId"),
+                        "source_observation_id": payload.get("sourceObservationId"),
                     },
                 )
                 row = await cursor.fetchone()
@@ -1804,6 +1814,51 @@ class LangfuseDatabaseReader:
                 status_code=404,
             )
         return self._to_dataset_item_payload(row)
+
+    async def delete_dataset_item_for_user(
+        self,
+        project_id: str,
+        dataset_id: str,
+        item_id: str,
+        user_id: str,
+    ) -> None:
+        if not self._database_url:
+            raise LangfuseDatabaseConfigError()
+
+        async with await psycopg.AsyncConnection.connect(
+            self._database_url,
+            row_factory=dict_row,
+        ) as connection:
+            async with connection.cursor() as cursor:
+                await self._get_project_for_user(cursor, project_id, user_id)
+                await self._ensure_dataset_exists(cursor, project_id, dataset_id)
+                await cursor.execute(
+                    """
+                    UPDATE dataset_items
+                    SET
+                        is_deleted = TRUE,
+                        valid_to = NOW(),
+                        updated_at = NOW()
+                    WHERE project_id = %(project_id)s
+                      AND dataset_id = %(dataset_id)s
+                      AND id = %(id)s
+                      AND valid_to IS NULL
+                    RETURNING id
+                    """,
+                    {
+                        "id": item_id,
+                        "project_id": project_id,
+                        "dataset_id": dataset_id,
+                    },
+                )
+                row = await cursor.fetchone()
+
+        if row is None:
+            raise BusinessError(
+                code=1012,
+                message="数据项不存在或无访问权限",
+                status_code=404,
+            )
 
     async def create_dataset_export_job_for_user(
         self,

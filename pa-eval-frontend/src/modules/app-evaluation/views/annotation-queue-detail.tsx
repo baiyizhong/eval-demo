@@ -20,6 +20,7 @@ import {
   deleteProjectAnnotationQueueItems,
   exportProjectAnnotationQueue,
   getProjectAnnotationQueue,
+  getProjectAnnotationQueueItemFilterCounts,
   getProjectAnnotationQueueMetricSummary,
   listProjectAnnotationQueueItems,
   listProjectAnnotationUsers,
@@ -74,6 +75,23 @@ export function ProjectAnnotationQueueDetail() {
     queryKey: ['project-annotation-users', $api, projectId],
     queryFn: () => listProjectAnnotationUsers($api, projectId),
   })
+  const filterCountsQuery = useQuery({
+    queryKey: [
+      'project-annotation-queue-item-filter-counts',
+      $api,
+      projectId,
+      queueId,
+      queryState,
+    ],
+    queryFn: () =>
+      getProjectAnnotationQueueItemFilterCounts(
+        $api,
+        projectId,
+        queueId,
+        queryState
+      ),
+    enabled: Boolean(queueId),
+  })
 
   const invalidateDetail = useCallback(
     () =>
@@ -86,6 +104,9 @@ export function ProjectAnnotationQueueDetail() {
         }),
         queryClient.invalidateQueries({
           queryKey: ['project-annotation-queue-items'],
+        }),
+        queryClient.invalidateQueries({
+          queryKey: ['project-annotation-queue-item-filter-counts'],
         }),
         queryClient.invalidateQueries({
           queryKey: ['project-annotation-queues'],
@@ -115,8 +136,17 @@ export function ProjectAnnotationQueueDetail() {
     [$api, canEditAnnotation, invalidateDetail, projectId, queueId]
   )
   const toolbarFilters = useMemo(
-    () => createItemToolbarFilters(usersQuery.data ?? []),
-    [usersQuery.data]
+    () =>
+      createItemToolbarFilters({
+        users: usersQuery.data ?? [],
+        statusCounts: filterCountsQuery.data?.status,
+        objectTypeCounts: filterCountsQuery.data?.objectType,
+      }),
+    [
+      filterCountsQuery.data?.objectType,
+      filterCountsQuery.data?.status,
+      usersQuery.data,
+    ]
   )
 
   const queue = queueQuery.data
@@ -256,13 +286,20 @@ export function ProjectAnnotationQueueDetail() {
   )
 }
 
-function createItemToolbarFilters(
+function createItemToolbarFilters({
+  users,
+  statusCounts,
+  objectTypeCounts,
+}: {
   users: ProjectUserRecord[]
-): DataTableToolbarFilter[] {
+  statusCounts?: Record<string, number>
+  objectTypeCounts?: Record<string, number>
+}): DataTableToolbarFilter[] {
   return [
     {
       columnId: 'status',
       title: '状态',
+      optionCounts: statusCounts,
       options: [
         { label: '待处理', value: 'PENDING' },
         { label: '已完成', value: 'COMPLETED' },
@@ -271,6 +308,7 @@ function createItemToolbarFilters(
     {
       columnId: 'objectType',
       title: '类型',
+      optionCounts: objectTypeCounts,
       options: [
         { label: '追踪', value: 'TRACE' },
         { label: '观测', value: 'OBSERVATION' },

@@ -28,6 +28,7 @@ type DataTableFacetedFilterProps<TData, TValue> = {
     value: string
     icon?: React.ComponentType<{ className?: string }>
   }[]
+  optionCounts?: Record<string, number>
   selectedValues?: string[]
   selectionMode?: 'single' | 'multiple'
   onSelectedValuesChange?: (values: string[]) => void
@@ -37,6 +38,7 @@ export function DataTableFacetedFilter<TData, TValue>({
   column,
   title,
   options,
+  optionCounts,
   selectedValues: controlledSelectedValues,
   selectionMode = 'multiple',
   onSelectedValuesChange,
@@ -103,6 +105,8 @@ export function DataTableFacetedFilter<TData, TValue>({
             <CommandGroup>
               {options.map((option) => {
                 const isSelected = selectedValues.has(option.value)
+                const count =
+                  optionCounts?.[option.value] ?? facets?.get(option.value)
                 return (
                   <CommandItem
                     key={option.value}
@@ -134,9 +138,9 @@ export function DataTableFacetedFilter<TData, TValue>({
                       <option.icon className='text-muted-foreground size-4' />
                     )}
                     <span>{option.label}</span>
-                    {facets?.get(option.value) && (
+                    {count !== undefined && (
                       <span className='ms-auto flex h-4 w-4 items-center justify-center font-mono text-xs'>
-                        {facets.get(option.value)}
+                        {count}
                       </span>
                     )}
                   </CommandItem>

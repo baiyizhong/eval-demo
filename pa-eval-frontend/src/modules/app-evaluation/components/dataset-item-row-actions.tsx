@@ -1,5 +1,5 @@
 import type { Row } from '@tanstack/react-table'
-import { Archive, MoreHorizontal, Pencil } from 'lucide-react'
+import { Archive, MoreHorizontal, Pencil, Trash2 } from 'lucide-react'
 import { Button } from '@/components/ui/button'
 import {
   DropdownMenu,
@@ -14,12 +14,14 @@ type DatasetItemRowActionsProps = {
   row: Row<DatasetItemRecord>
   onEdit: (item: DatasetItemRecord) => void
   onArchive: (item: DatasetItemRecord) => void
+  onDelete: (item: DatasetItemRecord) => void
 }
 
 export function DatasetItemRowActions({
   row,
   onEdit,
   onArchive,
+  onDelete,
 }: DatasetItemRowActionsProps) {
   const item = row.original
 
@@ -34,7 +36,7 @@ export function DatasetItemRowActions({
         <DropdownMenuGroup>
           <DropdownMenuItem onSelect={() => onEdit(item)}>
             <Pencil />
-            查看/编辑
+            编辑
           </DropdownMenuItem>
           <DropdownMenuItem
             disabled={item.status === 'ARCHIVED'}
@@ -42,6 +44,13 @@ export function DatasetItemRowActions({
           >
             <Archive />
             归档
+          </DropdownMenuItem>
+          <DropdownMenuItem
+            variant='destructive'
+            onSelect={() => onDelete(item)}
+          >
+            <Trash2 />
+            删除
           </DropdownMenuItem>
         </DropdownMenuGroup>
       </DropdownMenuContent>
