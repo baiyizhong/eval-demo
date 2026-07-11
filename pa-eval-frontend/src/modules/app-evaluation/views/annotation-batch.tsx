@@ -54,7 +54,9 @@ import { Loading } from '@/components/common/loading'
 import { Page } from '@/components/common/page'
 import { PageAction } from '@/components/common/page-action'
 import {
+  getProjectAnnotationQueueItemFilterCounts,
   getProjectAnnotationQueue,
+  listProjectAnnotationUsers,
   listProjectAnnotationQueueItems,
   saveProjectAnnotationBatchScores,
   saveProjectAnnotationScores,
@@ -315,6 +317,27 @@ export function ProjectAnnotationBatch() {
       listProjectAnnotationQueueItems($api, projectId, queueId, queryState),
     enabled: Boolean(queueId),
   })
+  const usersQuery = useQuery({
+    queryKey: ['project-annotation-users', $api, projectId],
+    queryFn: () => listProjectAnnotationUsers($api, projectId),
+  })
+  const filterCountsQuery = useQuery({
+    queryKey: [
+      'project-annotation-batch-filter-counts',
+      $api,
+      projectId,
+      queueId,
+      queryState,
+    ],
+    queryFn: () =>
+      getProjectAnnotationQueueItemFilterCounts(
+        $api,
+        projectId,
+        queueId,
+        queryState
+      ),
+    enabled: Boolean(queueId),
+  })
 
   const mockQueue = useMemo(
     () => createMockBatchQueue(projectId, queueId),
@@ -370,6 +393,25 @@ export function ProjectAnnotationBatch() {
   const selectedItem =
     items.find((item) => item.id === selectedItemId) ?? items[0] ?? null
   const queue = queueQuery.data ?? mockQueue
+  const assigneeOptions = useMemo(
+    () =>
+      createBatchAssigneeOptions({
+        users: usersQuery.data ?? (useMockFallback ? mockQueue.assignees : []),
+        itemAssignees: items
+          .map((item) => item.assignee)
+          .filter((user): user is ProjectUserRecord => Boolean(user)),
+        assigneeCounts: filterCountsQuery.data?.assigneeIds,
+        selectedAssigneeId,
+      }),
+    [
+      filterCountsQuery.data?.assigneeIds,
+      items,
+      mockQueue.assignees,
+      selectedAssigneeId,
+      useMockFallback,
+      usersQuery.data,
+    ]
+  )
   const localCompletedCount = useMockFallback
     ? completedItemIds.filter((itemId) =>
         filteredMockItems.some((item) => item.id === itemId)
@@ -435,6 +477,9 @@ export function ProjectAnnotationBatch() {
       await Promise.all([
         queryClient.invalidateQueries({
           queryKey: ['project-annotation-batch-items'],
+        }),
+        queryClient.invalidateQueries({
+          queryKey: ['project-annotation-batch-filter-counts'],
         }),
         queryClient.invalidateQueries({
           queryKey: ['project-annotation-queue', $api, projectId, queueId],
@@ -561,7 +606,7 @@ export function ProjectAnnotationBatch() {
                   </Select>
                   <Select
                     value={selectedAssigneeId || ASSIGNEE_ALL_VALUE}
-                    disabled={!queue.assignees.length}
+                    disabled={!assigneeOptions.length}
                     onValueChange={(value) => {
                       setSelectedAssigneeId(
                         value === ASSIGNEE_ALL_VALUE ? '' : value
@@ -578,9 +623,9 @@ export function ProjectAnnotationBatch() {
                       <SelectItem value={ASSIGNEE_ALL_VALUE}>
                         全部处理人
                       </SelectItem>
-                      {queue.assignees.map((user) => (
+                      {assigneeOptions.map((user) => (
                         <SelectItem key={user.id} value={user.id}>
-                          {user.name || user.email || user.id}
+                          {user.label}
                         </SelectItem>
                       ))}
                     </SelectContent>
@@ -847,6 +892,57 @@ function buildBatchSearchParams({
   }
   if (selectedItemId) params.set('item', selectedItemId)
   return params
+}
+
+function createBatchAssigneeOptions({
+  users,
+  itemAssignees,
+  assigneeCounts,
+  selectedAssigneeId,
+}: {
+  users: ProjectUserRecord[]
+  itemAssignees: ProjectUserRecord[]
+  assigneeCounts?: Record<string, number>
+  selectedAssigneeId: string
+}) {
+  const options = new Map<string, { id: string; label: string }>()
+  const addUser = (user: Pick<ProjectUserRecord, 'id' | 'name' | 'email'>) => {
+    if (!user.id || options.has(user.id)) return
+    options.set(user.id, {
+      id: user.id,
+      label: user.name || user.email || user.id,
+    })
+  }
+
+  const usersById = new Map(users.map((user) => [user.id, user]))
+  const itemAssigneesById = new Map(
+    itemAssignees.map((user) => [user.id, user])
+  )
+
+  Object.keys(assigneeCounts ?? {}).forEach((assigneeId) => {
+    addUser(
+      usersById.get(assigneeId) ??
+        itemAssigneesById.get(assigneeId) ?? {
+          id: assigneeId,
+          name: '',
+          email: '',
+        }
+    )
+  })
+  if (!assigneeCounts) {
+    itemAssignees.forEach(addUser)
+  }
+  if (selectedAssigneeId && !options.has(selectedAssigneeId)) {
+    addUser(
+      usersById.get(selectedAssigneeId) ?? {
+        id: selectedAssigneeId,
+        name: '',
+        email: '',
+      }
+    )
+  }
+
+  return Array.from(options.values())
 }
 
 function toStatusView(value: string | null): StatusView {

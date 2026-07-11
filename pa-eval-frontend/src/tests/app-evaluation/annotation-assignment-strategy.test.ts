@@ -18,6 +18,18 @@ const columnsSource = readFileSync(
   'src/modules/app-evaluation/components/annotation-queue-item-columns.tsx',
   'utf8'
 )
+const queueColumnsSource = readFileSync(
+  'src/modules/app-evaluation/components/annotation-queue-columns.tsx',
+  'utf8'
+)
+const queueFiltersSource = readFileSync(
+  'src/modules/app-evaluation/views/annotation-queue-filters.ts',
+  'utf8'
+)
+const queueListSource = readFileSync(
+  'src/modules/app-evaluation/views/annotation-queues.tsx',
+  'utf8'
+)
 const bulkActionsSource = readFileSync(
   'src/modules/app-evaluation/components/annotation-queue-item-bulk-actions.tsx',
   'utf8'
@@ -49,6 +61,20 @@ test('weighted assignment renders per-assignee weight inputs', () => {
   assert.match(fieldsSource, /assignmentWeights/)
   assert.match(fieldsSource, /type='number'/)
   assert.match(fieldsSource, /min=\{1\}/)
+})
+
+test('annotation queue candidate assignee selector supports search and bulk selection', () => {
+  assert.match(queueColumnsSource, /title='候选处理人'/)
+  assert.doesNotMatch(queueColumnsSource, /title='处理人'/)
+  assert.match(queueFiltersSource, /title: '候选处理人'/)
+  assert.match(queueListSource, /assignees: '候选处理人'/)
+  assert.match(formSource, /FormLabel>候选处理人/)
+  assert.match(formSource, /CandidateAssigneeSelector/)
+  assert.match(formSource, /placeholder='搜索候选处理人姓名或邮箱'/)
+  assert.match(formSource, /全选当前结果/)
+  assert.match(formSource, /清空/)
+  assert.match(formSource, /已选 \{selectedCount\} 人/)
+  assert.match(formSource, /filteredUsers/)
 })
 
 test('annotation queue item list displays assigned handler separately from completion user', () => {

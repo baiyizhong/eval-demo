@@ -32,7 +32,10 @@ test('annotation queue list exposes the batch annotation entry', () => {
   assert.match(queueColumnsSource, /canEdit\?: boolean/)
   assert.match(queueColumnsSource, /if \(canEdit\)/)
   assert.match(queueColumnsSource, /annotation-queues/)
-  assert.match(queueColumnsSource, /onExport\?: \(queue: AnnotationQueueRecord\) => void/)
+  assert.match(
+    queueColumnsSource,
+    /onExport\?: \(queue: AnnotationQueueRecord\) => void/
+  )
   assert.match(queueColumnsSource, /onExport={onExport}/)
   assert.match(queueRowActionsSource, /导出数据/)
   assert.match(queueListSource, /exportProjectAnnotationQueue/)
@@ -91,6 +94,10 @@ test('batch annotation workspace focuses on pending item scoring layout', () => 
   assert.match(pageSource, /selectedAssigneeId/)
   assert.match(pageSource, /处理人/)
   assert.match(pageSource, /全部处理人/)
+  assert.match(pageSource, /listProjectAnnotationUsers/)
+  assert.match(pageSource, /getProjectAnnotationQueueItemFilterCounts/)
+  assert.match(pageSource, /createBatchAssigneeOptions/)
+  assert.doesNotMatch(pageSource, /queue\.assignees\.map/)
   assert.match(pageSource, /assigneeId: selectedAssigneeId/)
   assert.match(pageSource, /filterMockBatchItems\([\s\S]*selectedAssigneeId/)
   assert.match(pageSource, /saveProjectAnnotationScores/)

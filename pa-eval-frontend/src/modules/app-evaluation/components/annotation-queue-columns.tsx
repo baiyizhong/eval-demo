@@ -85,7 +85,7 @@ export function createAnnotationQueueColumns({
     {
       accessorKey: 'assignees',
       header: ({ column }) => (
-        <DataTableColumnHeader column={column} title='处理人' />
+        <DataTableColumnHeader column={column} title='候选处理人' />
       ),
       cell: ({ row }) =>
         row.original.assignees.length

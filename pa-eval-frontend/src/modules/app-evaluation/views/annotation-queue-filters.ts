@@ -19,7 +19,7 @@ export const queueToolbarFilters: DataTableToolbarFilter[] = [
   },
   {
     columnId: 'assignees',
-    title: '处理人',
+    title: '候选处理人',
     options: [],
   },
 ]
@@ -31,7 +31,7 @@ export function buildQueueToolbarFilters(
     queueToolbarFilters[0],
     {
       columnId: 'assignees',
-      title: '处理人',
+      title: '候选处理人',
       options: users.map((user) => ({
         label: user.name || user.email || user.id,
         value: user.id,

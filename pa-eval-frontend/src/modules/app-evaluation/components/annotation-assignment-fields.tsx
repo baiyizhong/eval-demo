@@ -84,7 +84,7 @@ export function AnnotationAssignmentFields({
 
       {assignmentStrategy === 'weighted' ? (
         <FormItem>
-          <FormLabel>处理人权重</FormLabel>
+          <FormLabel>候选处理人权重</FormLabel>
           <div className='grid gap-2 sm:grid-cols-2'>
             {selectedUsers.map((user) => (
               <FormField

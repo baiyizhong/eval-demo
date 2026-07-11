@@ -1,6 +1,8 @@
+import { useMemo, useState } from 'react'
 import { z } from 'zod'
 import type { UseFormReturn } from 'react-hook-form'
 import { toast } from 'sonner'
+import { Button } from '@/components/ui/button'
 import { Checkbox } from '@/components/ui/checkbox'
 import {
   FormControl,
@@ -168,41 +170,14 @@ export function AnnotationQueueFormDrawer({
             <FormField
               control={form.control}
               name='assigneeIds'
-              render={() => (
+              render={({ field }) => (
                 <FormItem>
-                  <FormLabel>处理人</FormLabel>
-                  <div className='flex flex-col gap-2'>
-                    {users.map((user) => (
-                      <FormField
-                        key={user.id}
-                        control={form.control}
-                        name='assigneeIds'
-                        render={({ field }) => (
-                          <FormItem className='flex items-center gap-2'>
-                            <FormControl>
-                              <Checkbox
-                                checked={field.value.includes(user.id)}
-                                onCheckedChange={(checked) => {
-                                  const next = checked
-                                    ? [...field.value, user.id]
-                                    : field.value.filter((id) => id !== user.id)
-                                  field.onChange(next)
-                                }}
-                              />
-                            </FormControl>
-                            <FormLabel className='font-normal'>
-                              {user.name}（{user.email}）
-                            </FormLabel>
-                          </FormItem>
-                        )}
-                      />
-                    ))}
-                    {users.length === 0 ? (
-                      <div className='text-muted-foreground text-sm'>
-                        当前项目暂无可分配成员
-                      </div>
-                    ) : null}
-                  </div>
+                  <FormLabel>候选处理人</FormLabel>
+                  <CandidateAssigneeSelector
+                    users={users}
+                    selectedIds={field.value}
+                    onSelectedIdsChange={field.onChange}
+                  />
                 </FormItem>
               )}
             />
@@ -216,6 +191,116 @@ export function AnnotationQueueFormDrawer({
         )}
       </BaseForm>
     </Drawer>
+  )
+}
+
+function CandidateAssigneeSelector({
+  users,
+  selectedIds,
+  onSelectedIdsChange,
+}: {
+  users: ProjectUserRecord[]
+  selectedIds: string[]
+  onSelectedIdsChange: (ids: string[]) => void
+}) {
+  const [keyword, setKeyword] = useState('')
+  const selectedSet = useMemo(() => new Set(selectedIds), [selectedIds])
+  const filteredUsers = useMemo(() => {
+    const needle = keyword.trim().toLowerCase()
+    if (!needle) return users
+    return users.filter((user) =>
+      [user.name, user.email, user.id].some((value) =>
+        (value ?? '').toLowerCase().includes(needle)
+      )
+    )
+  }, [keyword, users])
+  const selectedCount = selectedIds.length
+  const allFilteredSelected =
+    filteredUsers.length > 0 &&
+    filteredUsers.every((user) => selectedSet.has(user.id))
+
+  const toggleUser = (userId: string, checked: boolean) => {
+    onSelectedIdsChange(
+      checked
+        ? [...new Set([...selectedIds, userId])]
+        : selectedIds.filter((id) => id !== userId)
+    )
+  }
+  const selectFilteredUsers = () => {
+    onSelectedIdsChange([
+      ...new Set([...selectedIds, ...filteredUsers.map((user) => user.id)]),
+    ])
+  }
+
+  if (!users.length) {
+    return (
+      <div className='text-muted-foreground rounded-md border border-dashed px-3 py-2 text-sm'>
+        当前项目暂无可分配成员
+      </div>
+    )
+  }
+
+  return (
+    <div className='flex flex-col gap-2 rounded-md border p-3'>
+      <div className='flex flex-col gap-2 sm:flex-row sm:items-center'>
+        <Input
+          value={keyword}
+          onChange={(event) => setKeyword(event.target.value)}
+          placeholder='搜索候选处理人姓名或邮箱'
+          className='h-8 sm:flex-1'
+        />
+        <div className='flex items-center gap-2'>
+          <Button
+            type='button'
+            variant='outline'
+            size='sm'
+            disabled={!filteredUsers.length || allFilteredSelected}
+            onClick={selectFilteredUsers}
+          >
+            全选当前结果
+          </Button>
+          <Button
+            type='button'
+            variant='ghost'
+            size='sm'
+            disabled={!selectedCount}
+            onClick={() => onSelectedIdsChange([])}
+          >
+            清空
+          </Button>
+        </div>
+      </div>
+      <div className='text-muted-foreground text-xs'>
+        已选 {selectedCount} 人
+      </div>
+      <div className='max-h-56 overflow-auto rounded-md border'>
+        {filteredUsers.map((user) => (
+          <label
+            key={user.id}
+            className='hover:bg-muted/60 flex cursor-pointer items-center gap-2 border-b px-3 py-2 text-sm last:border-b-0'
+          >
+            <Checkbox
+              checked={selectedSet.has(user.id)}
+              onCheckedChange={(checked) =>
+                toggleUser(user.id, checked === true)
+              }
+              aria-label={`选择候选处理人 ${user.name || user.email || user.id}`}
+            />
+            <span className='min-w-0 flex-1 truncate'>
+              {user.name || user.email || user.id}
+              {user.email ? (
+                <span className='text-muted-foreground'>（{user.email}）</span>
+              ) : null}
+            </span>
+          </label>
+        ))}
+        {!filteredUsers.length ? (
+          <div className='text-muted-foreground px-3 py-6 text-center text-sm'>
+            没有匹配的候选处理人
+          </div>
+        ) : null}
+      </div>
+    </div>
   )
 }
 

@@ -160,14 +160,16 @@ export function ProjectAnnotationQueues() {
             }}
             toolbar={{
               searchPlaceholder: '按任务名称或描述搜索',
-              filters: toolbarFilters.length ? toolbarFilters : queueToolbarFilters,
+              filters: toolbarFilters.length
+                ? toolbarFilters
+                : queueToolbarFilters,
               columnLabels: {
                 name: '任务名称',
                 description: '任务描述',
                 completedCount: '已完成数量',
                 pendingCount: '待处理数量',
                 scoreConfigs: '评分指标',
-                assignees: '处理人',
+                assignees: '候选处理人',
                 createdAt: '创建时间',
               },
             }}
@@ -219,13 +221,18 @@ async function handleExportQueue(
   projectId: string,
   queue: AnnotationQueueRecord
 ) {
-  const payload = await exportProjectAnnotationQueue($api, projectId, queue.id, {
-    page: 1,
-    pageSize: 10,
-    keyword: '',
-    filters: {},
-    sorting: [],
-  })
+  const payload = await exportProjectAnnotationQueue(
+    $api,
+    projectId,
+    queue.id,
+    {
+      page: 1,
+      pageSize: 10,
+      keyword: '',
+      filters: {},
+      sorting: [],
+    }
+  )
   downloadJson(`annotation-queue-${queue.id}-${Date.now()}.json`, payload)
   toast.success(`已导出 ${payload.items.length} 条标注数据`)
 }
