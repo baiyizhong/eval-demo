@@ -4,7 +4,7 @@ import type { Control } from 'react-hook-form'
 import { useQuery, useQueryClient } from '@tanstack/react-query'
 import type { ColumnDef } from '@tanstack/react-table'
 import { EvaluationPageNav } from '@/modules/app-evaluation/components/evaluation-page-nav'
-import { Eye, MoreHorizontal, Plus, Trash2 } from 'lucide-react'
+import { Eye, MoreHorizontal, Plus, RefreshCw, Trash2 } from 'lucide-react'
 import { useParams } from 'react-router'
 import { toast } from 'sonner'
 import { useAPI } from '@/hooks/use-api'
@@ -50,6 +50,8 @@ import { BaseForm } from '@/components/common/base-form'
 import {
   DataTable,
   DataTableColumnHeader,
+  type DataTableFilterBinding,
+  type DataTableToolbarFilter,
 } from '@/components/common/data-table'
 import { Drawer } from '@/components/common/drawer'
 import { Loading } from '@/components/common/loading'
@@ -84,6 +86,22 @@ const evaluatorProviderLabels: Record<TaskEvaluatorRecord['provider'], string> =
     N8N: 'n8n',
     OPENJUDGE: 'OpenJudge',
   }
+
+const evaluatorUrlFilters: DataTableFilterBinding[] = [
+  { fieldId: 'type', columnId: 'type', type: 'array' },
+]
+
+const evaluatorToolbarFilters: DataTableToolbarFilter[] = [
+  {
+    columnId: 'type',
+    title: '评估器类型',
+    selectionMode: 'single',
+    options: Object.entries(evaluatorTypeLabels).map(([value, label]) => ({
+      label,
+      value,
+    })),
+  },
+]
 
 function stringifyEditorValue(value: unknown) {
   return typeof value === 'string'
@@ -261,6 +279,11 @@ export function TaskEvaluators({ navigation = 'tasks' }: TaskEvaluatorsProps) {
     }
   }
 
+  const handleRefresh = async () => {
+    await queryClient.invalidateQueries({ queryKey: evaluatorQueryKey })
+    toast.success('评估器已刷新')
+  }
+
   return (
     <Page fixed fluid className='flex min-h-[calc(100svh-3.5rem)] flex-col'>
       <div className='flex min-h-0 flex-1 flex-col gap-4'>
@@ -268,6 +291,15 @@ export function TaskEvaluators({ navigation = 'tasks' }: TaskEvaluatorsProps) {
           <EvaluationPageNav
             buttonGroups={{
               buttons: [
+                {
+                  id: 'refresh',
+                  label: '刷新',
+                  icon: RefreshCw,
+                  iconPosition: 'start',
+                  variant: 'outline',
+                  size: 'sm',
+                  onClick: () => void handleRefresh(),
+                },
                 {
                   id: 'create',
                   label: '新建评估器',
@@ -302,9 +334,11 @@ export function TaskEvaluators({ navigation = 'tasks' }: TaskEvaluatorsProps) {
             urlState={{
               defaultPageSize: 10,
               globalFilterKey: 'keyword',
+              filters: evaluatorUrlFilters,
             }}
             toolbar={{
               searchPlaceholder: '搜索评估器名称、描述或类型',
+              filters: evaluatorToolbarFilters,
               columnLabels: {
                 name: '评估器名称',
                 type: '类型',

@@ -38,6 +38,23 @@ test('buildEvaluatorListQuery trims empty keyword', () => {
   )
 })
 
+test('buildEvaluatorListQuery serializes evaluator type filter', () => {
+  assert.deepEqual(
+    buildEvaluatorListQuery({
+      page: 1,
+      pageSize: 10,
+      keyword: '   ',
+      sorting: [],
+      filters: { type: ['WORKFLOW'] },
+    }),
+    {
+      page: 1,
+      pageSize: 10,
+      type: 'WORKFLOW',
+    }
+  )
+})
+
 test('buildCreateEvaluatorPayload maps Langfuse code evaluator fields', () => {
   assert.deepEqual(
     buildCreateEvaluatorPayload({

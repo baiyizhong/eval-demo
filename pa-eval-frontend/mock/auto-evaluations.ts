@@ -3,6 +3,11 @@ import { body, id, keywordIncludes, nowIso, paginate, pathParam, success } from 
 
 const projectId = (req: any) => pathParam(req, 'projectId')
 const taskId = (req: any) => pathParam(req, 'taskId')
+const queryValues = (value: unknown) => {
+  if (Array.isArray(value)) return value.map(String)
+  if (typeof value === 'string' && value) return [value]
+  return []
+}
 
 export default [
   {
@@ -81,7 +86,11 @@ export default [
         paginate(
           db.autoEvaluationTasks
             .filter((task) => task.projectId === projectId(req))
-            .filter((task) => keywordIncludes(task, req.query?.keyword)),
+            .filter((task) => keywordIncludes(task, req.query?.keyword))
+            .filter((task) => {
+              const status = queryValues(req.query?.status)
+              return status.length === 0 || status.includes(task.status)
+            }),
           req.query,
           10
         )

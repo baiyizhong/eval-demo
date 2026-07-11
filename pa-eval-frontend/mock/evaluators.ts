@@ -23,14 +23,19 @@ export default [
   {
     url: '/api/evaluators',
     method: 'get',
-    response: ({ query }: any) =>
-      success(
+    response: ({ query }: any) => {
+      const type = Array.isArray(query?.type) ? query.type[0] : query?.type
+
+      return success(
         paginate(
-          db.evaluators.filter((item) => keywordIncludes(item, query?.keyword)),
+          db.evaluators
+            .filter((item) => keywordIncludes(item, query?.keyword))
+            .filter((item) => !type || item.type === type),
           query,
           10
         )
-      ),
+      )
+    },
   },
   {
     url: '/api/evaluators',

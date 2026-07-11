@@ -14,6 +14,7 @@ type CreateAnnotationQueueColumnsOptions = {
   readOnly?: boolean
   onEdit: (queue: AnnotationQueueRecord) => void
   onDelete: (queue: AnnotationQueueRecord) => void
+  onExport?: (queue: AnnotationQueueRecord) => void
 }
 
 export function createAnnotationQueueColumns({
@@ -22,6 +23,7 @@ export function createAnnotationQueueColumns({
   readOnly,
   onEdit,
   onDelete,
+  onExport,
 }: CreateAnnotationQueueColumnsOptions): ColumnDef<AnnotationQueueRecord>[] {
   const columns: ColumnDef<AnnotationQueueRecord>[] = [
     {
@@ -119,15 +121,16 @@ export function createAnnotationQueueColumns({
     })
   }
 
-  if (!readOnly) {
+  if (!readOnly || onExport) {
     columns.push({
       id: 'actions',
       enableHiding: false,
       cell: ({ row }) => (
         <AnnotationQueueRowActions
           row={row}
-          onEdit={onEdit}
-          onDelete={onDelete}
+          onEdit={readOnly ? undefined : onEdit}
+          onDelete={readOnly ? undefined : onDelete}
+          onExport={onExport}
         />
       ),
     })

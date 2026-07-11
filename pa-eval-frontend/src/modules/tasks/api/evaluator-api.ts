@@ -62,11 +62,13 @@ type EvaluatorApiClient = {
 
 export function buildEvaluatorListQuery(query: DataTableQueryState) {
   const keyword = query.keyword.trim()
+  const evaluatorType = getEvaluatorTypeFilter(query.filters.type)
 
   return {
     page: query.page,
     pageSize: query.pageSize,
     ...(keyword ? { keyword } : {}),
+    ...(evaluatorType ? { type: evaluatorType } : {}),
   }
 }
 
@@ -181,4 +183,17 @@ function parseJsonObject(value: string, label: string) {
     }
     throw error
   }
+}
+
+function getEvaluatorTypeFilter(value: unknown) {
+  const candidate = Array.isArray(value) ? value[0] : value
+  if (
+    candidate === 'LLM_AS_JUDGE' ||
+    candidate === 'CODE' ||
+    candidate === 'WORKFLOW' ||
+    candidate === 'SDK'
+  ) {
+    return candidate
+  }
+  return undefined
 }

@@ -1,5 +1,5 @@
 import { useCallback, useMemo, useState } from 'react'
-import { useQuery, useQueryClient } from '@tanstack/react-query'
+import { useQueryClient } from '@tanstack/react-query'
 import { Plus, RefreshCw } from 'lucide-react'
 import { useNavigate, useParams } from 'react-router'
 import { toast } from 'sonner'
@@ -12,18 +12,16 @@ import { Loading } from '@/components/common/loading'
 import { Page } from '@/components/common/page'
 import {
   deleteProjectAutoEvaluationTask,
-  getProjectAutoEvaluationTaskSummary,
   listProjectAutoEvaluationTasks,
   rerunProjectAutoEvaluationTask,
 } from '../api/auto-evaluation-api'
 import { createAutoEvaluationColumns } from '../components/auto-evaluation-columns'
-import {
-  AutoEvaluationSummaryCards,
-  type AutoEvaluationSummaryFilter,
-} from '../components/auto-evaluation-summary-cards'
 import { AutoEvaluationTaskForm } from '../components/auto-evaluation-task-form'
 import { EvaluationPageNav } from '../components/evaluation-page-nav'
-import type { AutoEvaluationTaskRecord } from '../types'
+import {
+  autoEvaluationStatusLabels,
+  type AutoEvaluationTaskRecord,
+} from '../types'
 
 export function ProjectAutoEvaluations() {
   const { projectId = 'project_customer_agent' } = useParams()
@@ -32,8 +30,6 @@ export function ProjectAutoEvaluations() {
   const queryClient = useQueryClient()
   const { can } = usePermission({ type: 'project', projectId })
   const canEditAutoEvaluation = can('project:auto-evaluation:edit')
-  const [activeFilter, setActiveFilter] =
-    useState<AutoEvaluationSummaryFilter>('all')
   const [createOpen, setCreateOpen] = useState(false)
 
   const invalidateTasks = useCallback(async () => {
@@ -48,12 +44,6 @@ export function ProjectAutoEvaluations() {
         query.queryKey.includes(projectId),
     })
   }, [projectId, queryClient])
-
-  const summaryQuery = useQuery({
-    queryKey: ['project-auto-evaluations', $api, projectId, 'summary'],
-    queryFn: () => getProjectAutoEvaluationTaskSummary($api, projectId),
-    refetchInterval: 3000,
-  })
 
   const columns = useMemo(
     () =>
@@ -107,20 +97,6 @@ export function ProjectAutoEvaluations() {
             ],
           }}
         />
-        <AutoEvaluationSummaryCards
-          summary={
-            summaryQuery.data ?? {
-              total: 0,
-              running: 0,
-              completed: 0,
-              failed: 0,
-              notStarted: 0,
-              badcase: 0,
-            }
-          }
-          active={activeFilter}
-          onChange={setActiveFilter}
-        />
         <section className='bg-card text-card-foreground flex min-h-0 min-w-0 flex-1 flex-col rounded-lg border p-4'>
           <DataTable<AutoEvaluationTaskRecord>
             className='min-h-0 flex-1'
@@ -130,7 +106,6 @@ export function ProjectAutoEvaluations() {
                 'project-auto-evaluations',
                 $api,
                 projectId,
-                activeFilter,
                 state,
               ],
               queryFn: (state) =>
@@ -140,9 +115,30 @@ export function ProjectAutoEvaluations() {
             urlState={{
               defaultPageSize: 10,
               globalFilterKey: 'keyword',
+              filters: [{ fieldId: 'status', type: 'array' }],
             }}
             toolbar={{
               searchPlaceholder: '搜索任务名称',
+              filters: [
+                {
+                  fieldId: 'status',
+                  title: '状态',
+                  options: [
+                    { label: autoEvaluationStatusLabels.RUNNING, value: 'RUNNING' },
+                    {
+                      label: autoEvaluationStatusLabels.COMPLETED,
+                      value: 'COMPLETED',
+                    },
+                    { label: autoEvaluationStatusLabels.FAILED, value: 'FAILED' },
+                    { label: autoEvaluationStatusLabels.DRAFT, value: 'DRAFT' },
+                    { label: autoEvaluationStatusLabels.READY, value: 'READY' },
+                    {
+                      label: autoEvaluationStatusLabels.CANCELLED,
+                      value: 'CANCELLED',
+                    },
+                  ],
+                },
+              ],
               columnLabels: {
                 name: '任务名称',
                 status: '状态',

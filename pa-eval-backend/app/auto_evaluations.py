@@ -2300,6 +2300,7 @@ async def list_auto_evaluations(
     page: int = Query(default=1, ge=1),
     page_size: int = Query(default=10, ge=1, le=200, alias="pageSize"),
     keyword: str | None = Query(default=None),
+    status: list[str] = Query(default_factory=list),
     current_user: CurrentUserContext = Depends(get_current_user_context),
     settings: Settings = Depends(get_settings),
 ) -> dict[str, Any]:
@@ -2313,8 +2314,14 @@ async def list_auto_evaluations(
                 FROM pa_auto_evaluation_tasks
                 WHERE project_id = %(project_id)s
                   AND (%(keyword)s = '' OR name ILIKE %(like)s OR description ILIKE %(like)s)
+                  AND (cardinality(%(status)s::text[]) = 0 OR status = ANY(%(status)s::text[]))
                 """,
-                {"project_id": project_id, "keyword": keyword or "", "like": like},
+                {
+                    "project_id": project_id,
+                    "keyword": keyword or "",
+                    "like": like,
+                    "status": status,
+                },
             )
             total = (await cursor.fetchone() or {}).get("total", 0)
             await cursor.execute(
@@ -2323,6 +2330,7 @@ async def list_auto_evaluations(
                 FROM pa_auto_evaluation_tasks
                 WHERE project_id = %(project_id)s
                   AND (%(keyword)s = '' OR name ILIKE %(like)s OR description ILIKE %(like)s)
+                  AND (cardinality(%(status)s::text[]) = 0 OR status = ANY(%(status)s::text[]))
                 ORDER BY update_date DESC, id DESC
                 LIMIT %(limit)s OFFSET %(offset)s
                 """,
@@ -2330,6 +2338,7 @@ async def list_auto_evaluations(
                     "project_id": project_id,
                     "keyword": keyword or "",
                     "like": like,
+                    "status": status,
                     "limit": page_size,
                     "offset": (page - 1) * page_size,
                 },

@@ -12,6 +12,18 @@ const queueColumnsSource = readFileSync(
   'src/modules/app-evaluation/components/annotation-queue-columns.tsx',
   'utf8'
 )
+const queueRowActionsSource = readFileSync(
+  'src/modules/app-evaluation/components/annotation-queue-row-actions.tsx',
+  'utf8'
+)
+const queueDetailSource = readFileSync(
+  'src/modules/app-evaluation/views/annotation-queue-detail.tsx',
+  'utf8'
+)
+const queueListSource = readFileSync(
+  'src/modules/app-evaluation/views/annotation-queues.tsx',
+  'utf8'
+)
 
 test('annotation queue list exposes the batch annotation entry', () => {
   assert.match(queueColumnsSource, /开始标注/)
@@ -20,6 +32,13 @@ test('annotation queue list exposes the batch annotation entry', () => {
   assert.match(queueColumnsSource, /canEdit\?: boolean/)
   assert.match(queueColumnsSource, /if \(canEdit\)/)
   assert.match(queueColumnsSource, /annotation-queues/)
+  assert.match(queueColumnsSource, /onExport\?: \(queue: AnnotationQueueRecord\) => void/)
+  assert.match(queueColumnsSource, /onExport={onExport}/)
+  assert.match(queueRowActionsSource, /导出数据/)
+  assert.match(queueListSource, /exportProjectAnnotationQueue/)
+  assert.match(queueListSource, /handleExportQueue/)
+  assert.match(queueListSource, /downloadJson/)
+  assert.doesNotMatch(queueDetailSource, /全量导出/)
   assert.doesNotMatch(queueColumnsSource, /进入标注/)
   assert.doesNotMatch(queueColumnsSource, /数据管理/)
   assert.doesNotMatch(queueColumnsSource, /row\.original\.id}\/batch-annotate/)

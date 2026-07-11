@@ -1,6 +1,6 @@
 import { useCallback, useMemo, useState } from 'react'
 import { useQuery, useQueryClient } from '@tanstack/react-query'
-import { Plus } from 'lucide-react'
+import { Plus, RefreshCw } from 'lucide-react'
 import { useParams } from 'react-router'
 import { toast } from 'sonner'
 import { confirm } from '@/lib/confirm'
@@ -12,6 +12,7 @@ import { Page } from '@/components/common/page'
 import {
   createProjectAnnotationQueue,
   deleteProjectAnnotationQueue,
+  exportProjectAnnotationQueue,
   listProjectScoreConfigsForAnnotation,
   listProjectAnnotationQueues,
   listProjectAnnotationUsers,
@@ -20,6 +21,7 @@ import {
 import { createAnnotationQueueColumns } from '../components/annotation-queue-columns'
 import { AnnotationQueueFormDrawer } from '../components/annotation-queue-form-drawer'
 import { EvaluationPageNav } from '../components/evaluation-page-nav'
+import { downloadJson } from '../components/format'
 import type { AnnotationQueueFormInput, AnnotationQueueRecord } from '../types'
 import {
   buildQueueToolbarFilters,
@@ -60,6 +62,9 @@ export function ProjectAnnotationQueues() {
           if (!canEditAnnotation) return
           void handleDeleteQueue($api, projectId, queue, invalidateQueues)
         },
+        onExport: (queue) => {
+          void handleExportQueue($api, projectId, queue)
+        },
       }),
     [$api, canEditAnnotation, invalidateQueues, projectId]
   )
@@ -96,26 +101,42 @@ export function ProjectAnnotationQueues() {
     await invalidateQueues()
   }
 
+  const handleRefresh = async () => {
+    await invalidateQueues()
+    toast.success('人工标注任务已刷新')
+  }
+
   return (
     <Page fixed fluid className='flex min-h-[calc(100svh-3.5rem)] flex-col'>
       <div className='flex min-h-0 flex-1 flex-col gap-4'>
         <EvaluationPageNav
           buttonGroups={{
-            buttons: canEditAnnotation
-              ? [
-                  {
-                    id: 'create',
-                    label: '新建人工标注任务',
-                    icon: Plus,
-                    iconPosition: 'start',
-                    size: 'sm',
-                    onClick: () => {
-                      setEditingQueue(null)
-                      setFormOpen(true)
+            buttons: [
+              {
+                id: 'refresh',
+                label: '刷新',
+                icon: RefreshCw,
+                iconPosition: 'start',
+                variant: 'outline',
+                size: 'sm',
+                onClick: () => void handleRefresh(),
+              },
+              ...(canEditAnnotation
+                ? [
+                    {
+                      id: 'create',
+                      label: '新建人工标注任务',
+                      icon: Plus,
+                      iconPosition: 'start' as const,
+                      size: 'sm' as const,
+                      onClick: () => {
+                        setEditingQueue(null)
+                        setFormOpen(true)
+                      },
                     },
-                  },
-                ]
-              : [],
+                  ]
+                : []),
+            ],
           }}
         />
         <section className='bg-card text-card-foreground flex min-h-0 min-w-0 flex-1 flex-col rounded-lg border p-4'>
@@ -191,4 +212,20 @@ async function handleDeleteQueue(
   await deleteProjectAnnotationQueue($api, projectId, queue.id)
   await onDeleted()
   toast.success(`已删除人工标注任务：${queue.name}`)
+}
+
+async function handleExportQueue(
+  $api: Parameters<typeof exportProjectAnnotationQueue>[0],
+  projectId: string,
+  queue: AnnotationQueueRecord
+) {
+  const payload = await exportProjectAnnotationQueue($api, projectId, queue.id, {
+    page: 1,
+    pageSize: 10,
+    keyword: '',
+    filters: {},
+    sorting: [],
+  })
+  downloadJson(`annotation-queue-${queue.id}-${Date.now()}.json`, payload)
+  toast.success(`已导出 ${payload.items.length} 条标注数据`)
 }

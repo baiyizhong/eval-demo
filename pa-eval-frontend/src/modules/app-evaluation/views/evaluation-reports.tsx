@@ -1,6 +1,6 @@
 import { useCallback, useMemo, useState } from 'react'
 import { useQueryClient } from '@tanstack/react-query'
-import { FileSliders } from 'lucide-react'
+import { FileSliders, RefreshCw } from 'lucide-react'
 import { useNavigate, useParams } from 'react-router'
 import { toast } from 'sonner'
 import { confirm } from '@/lib/confirm'
@@ -74,24 +74,40 @@ export function ProjectEvaluationReports() {
     [$api, canEditReports, invalidateReports, navigate, projectId]
   )
 
+  const handleRefresh = async () => {
+    await invalidateReports()
+    toast.success('评测报告已刷新')
+  }
+
   return (
     <Page fixed fluid className='flex min-h-[calc(100svh-3.5rem)] flex-col'>
       <div className='flex min-h-0 flex-1 flex-col gap-4'>
         <EvaluationPageNav
           buttonGroups={{
-            buttons: canEditReports
-              ? [
-                  {
-                    id: 'report-template',
-                    label: '报告模板',
-                    icon: FileSliders,
-                    iconPosition: 'start',
-                    variant: 'outline',
-                    size: 'sm',
-                    onClick: () => setTemplateOpen(true),
-                  },
-                ]
-              : [],
+            buttons: [
+              {
+                id: 'refresh',
+                label: '刷新',
+                icon: RefreshCw,
+                iconPosition: 'start',
+                variant: 'outline',
+                size: 'sm',
+                onClick: () => void handleRefresh(),
+              },
+              ...(canEditReports
+                ? [
+                    {
+                      id: 'report-template',
+                      label: '报告模板',
+                      icon: FileSliders,
+                      iconPosition: 'start' as const,
+                      variant: 'outline' as const,
+                      size: 'sm' as const,
+                      onClick: () => setTemplateOpen(true),
+                    },
+                  ]
+                : []),
+            ],
           }}
         />
         <section className='bg-card text-card-foreground flex min-h-0 min-w-0 flex-1 flex-col rounded-lg border p-4'>

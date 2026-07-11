@@ -118,6 +118,7 @@ export function listProjectAutoEvaluationTasks(
   query: DataTableQueryState
 ) {
   const keyword = query.keyword.trim()
+  const status = query.filters.status as string[] | undefined
 
   return api.getAutoEvaluationTasks<
     DataTableListResponse<AutoEvaluationTaskRecord>
@@ -127,6 +128,7 @@ export function listProjectAutoEvaluationTasks(
       page: query.page,
       pageSize: query.pageSize,
       ...(keyword ? { keyword } : {}),
+      ...(status?.length ? { status } : {}),
     },
   })
 }

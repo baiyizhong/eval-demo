@@ -316,6 +316,15 @@ export function ProjectDatasets() {
         <EvaluationPageNav
           buttonGroups={{
             buttons: [
+              {
+                id: 'refresh',
+                label: '刷新',
+                icon: RefreshCw,
+                iconPosition: 'start',
+                variant: 'outline',
+                size: 'sm',
+                onClick: () => void handleRefresh(),
+              },
               ...(canEditDatasets
                 ? [
                     {
@@ -328,15 +337,6 @@ export function ProjectDatasets() {
                     },
                   ]
                 : []),
-              {
-                id: 'refresh',
-                label: '刷新',
-                icon: RefreshCw,
-                iconPosition: 'start',
-                variant: 'outline',
-                size: 'sm',
-                onClick: () => void handleRefresh(),
-              },
             ],
           }}
         />

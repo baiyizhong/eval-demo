@@ -1,5 +1,6 @@
 import httpx
 import pytest
+from fastapi.testclient import TestClient
 
 from app.auto_evaluations import (
     _build_dify_inputs_from_dataset_item,
@@ -28,6 +29,8 @@ from app.auto_evaluations import (
     CreateAutoEvaluationPayload,
     EvaluationReportFlowbackPayload,
 )
+from app.auth_context import get_current_user_context
+from app.main import app
 import app.auto_evaluations as auto_evaluations
 from app.errors import BusinessError
 
@@ -45,6 +48,12 @@ class FakeCursor:
         self.params = params
         self.executions.append((sql, params))
 
+    async def __aenter__(self):
+        return self
+
+    async def __aexit__(self, *args):
+        return None
+
     async def fetchone(self):
         return self.row
 
@@ -61,6 +70,12 @@ class SequentialCursor:
     async def execute(self, sql, params):
         self.executions.append((sql, params))
 
+    async def __aenter__(self):
+        return self
+
+    async def __aexit__(self, *args):
+        return None
+
     async def fetchone(self):
         if self.rows_by_fetchone:
             return self.rows_by_fetchone.pop(0)
@@ -74,6 +89,58 @@ class SequentialCursor:
 
 def _jsonb_value(value):
     return getattr(value, "obj", value)
+
+
+class FakeConnection:
+    def __init__(self, cursor):
+        self._cursor = cursor
+
+    async def __aenter__(self):
+        return self
+
+    async def __aexit__(self, *args):
+        return None
+
+    def cursor(self):
+        return self._cursor
+
+
+def _override_current_user():
+    return auto_evaluations.CurrentUserContext(
+        user_id="user-1",
+        email="owner@example.com",
+        name="Owner",
+    )
+
+
+def test_list_auto_evaluations_accepts_status_filter(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    cursor = SequentialCursor(
+        rows_by_fetchone=[{"total": 0}],
+        rows_by_fetchall=[[]],
+    )
+
+    async def fake_connect(settings):
+        return FakeConnection(cursor)
+
+    async def fake_ensure_access(*args, **kwargs):
+        return None
+
+    monkeypatch.setattr(auto_evaluations, "_connect", fake_connect)
+    monkeypatch.setattr(auto_evaluations, "_ensure_project_access", fake_ensure_access)
+    app.dependency_overrides[get_current_user_context] = _override_current_user
+    try:
+        response = TestClient(app, raise_server_exceptions=False).get(
+            "/api/projects/project-1/auto-evaluations",
+            params={"page": 1, "pageSize": 10, "status": ["RUNNING", "FAILED"]},
+        )
+    finally:
+        app.dependency_overrides.clear()
+
+    assert response.status_code == 200
+    assert response.json()["code"] == 0
+    assert cursor.executions[-1][1]["status"] == ["RUNNING", "FAILED"]
 
 
 @pytest.mark.anyio

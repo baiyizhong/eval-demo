@@ -1,6 +1,6 @@
 import { useCallback, useMemo } from 'react'
 import { useQuery, useQueryClient } from '@tanstack/react-query'
-import { Download, ListChecks } from 'lucide-react'
+import { ListChecks } from 'lucide-react'
 import { useNavigate, useParams, useSearchParams } from 'react-router'
 import { toast } from 'sonner'
 import { confirm } from '@/lib/confirm'
@@ -18,7 +18,6 @@ import { Page } from '@/components/common/page'
 import { PageAction } from '@/components/common/page-action'
 import {
   deleteProjectAnnotationQueueItems,
-  exportProjectAnnotationQueue,
   getProjectAnnotationQueue,
   getProjectAnnotationQueueItemFilterCounts,
   getProjectAnnotationQueueMetricSummary,
@@ -27,7 +26,7 @@ import {
 } from '../api/annotation-api'
 import { AnnotationQueueItemBulkActions } from '../components/annotation-queue-item-bulk-actions'
 import { createAnnotationQueueItemColumns } from '../components/annotation-queue-item-columns'
-import { downloadJson, formatDateTime } from '../components/format'
+import { formatDateTime } from '../components/format'
 import type { AnnotationQueueItemRecord, ProjectUserRecord } from '../types'
 
 const itemUrlFilters: DataTableFilterBinding[] = [
@@ -180,17 +179,6 @@ export function ProjectAnnotationQueueDetail() {
                     },
                   ]
                 : []),
-              {
-                id: 'export',
-                label: '全量导出',
-                icon: Download,
-                iconPosition: 'start',
-                variant: 'outline',
-                size: 'sm',
-                onClick: () => {
-                  void handleFullExport($api, projectId, queueId, queryState)
-                },
-              },
             ],
           }}
         >
@@ -361,22 +349,6 @@ function MetricCard({
       </CardContent>
     </Card>
   )
-}
-
-async function handleFullExport(
-  $api: Parameters<typeof exportProjectAnnotationQueue>[0],
-  projectId: string,
-  queueId: string,
-  queryState: DataTableQueryState
-) {
-  const payload = await exportProjectAnnotationQueue(
-    $api,
-    projectId,
-    queueId,
-    queryState
-  )
-  downloadJson(`annotation-queue-${queueId}-${Date.now()}.json`, payload)
-  toast.success(`已导出 ${payload.items.length} 条标注数据`)
 }
 
 async function handleDeleteItem(
