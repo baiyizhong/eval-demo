@@ -77,9 +77,25 @@ export function createAnnotationQueueItemColumns({
       header: ({ column }) => (
         <DataTableColumnHeader column={column} title='源数据 ID' />
       ),
-      cell: ({ row }) => (
-        <span className='font-mono text-xs'>{row.original.objectId}</span>
-      ),
+      cell: ({ row }) => {
+        const sourceDataId = row.original.objectId.trim()
+        if (row.original.objectType === 'TRACE' && sourceDataId) {
+          return (
+            <Link
+              to={`/projects/${projectId}/observability/traces/logs?traceId=${encodeURIComponent(sourceDataId)}`}
+              className='text-primary block max-w-[280px] truncate font-mono text-xs underline-offset-4 hover:underline'
+            >
+              {row.original.objectId}
+            </Link>
+          )
+        }
+
+        return (
+          <span className='block max-w-[280px] truncate font-mono text-xs'>
+            {row.original.objectId || '-'}
+          </span>
+        )
+      },
     },
     {
       accessorKey: 'status',

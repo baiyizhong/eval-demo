@@ -345,3 +345,45 @@ async def test_list_scheduled_job_logs_passes_status_and_trigger_filters_to_quer
     select_params = cursor.executions[-1][1]
     assert select_params["status"] == ["FAILED"]
     assert select_params["trigger_type"] == ["JOB"]
+
+
+@pytest.mark.anyio
+async def test_list_scheduled_job_logs_searches_joined_auto_evaluation_task_name(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    cursor = FakeCursor()
+
+    async def fake_connect(settings: Settings) -> FakeConnection:
+        return FakeConnection(cursor)
+
+    async def fake_ensure_access(*args: object, **kwargs: object) -> None:
+        return None
+
+    monkeypatch.setattr(scheduled_jobs, "_connect", fake_connect)
+    monkeypatch.setattr(scheduled_jobs, "_ensure_project_access", fake_ensure_access)
+
+    await scheduled_jobs.list_scheduled_job_logs(
+        project_id="project-1",
+        page=1,
+        page_size=10,
+        job_id=None,
+        keyword="自动评测任务A",
+        status=[],
+        trigger_type=[],
+        current_user=scheduled_jobs.CurrentUserContext(
+            user_id="user-1",
+            email="owner@example.com",
+            name="Owner",
+        ),
+        settings=Settings(),
+    )
+
+    count_sql = cursor.executions[-2][0]
+    select_sql = cursor.executions[-1][0]
+    assert "LEFT JOIN pa_auto_evaluation_tasks" in count_sql
+    assert "LEFT JOIN pa_auto_evaluation_tasks" in select_sql
+    assert "COALESCE(auto_tasks.name, logs.auto_evaluation_task_name)" in select_sql
+    assert (
+        "COALESCE(auto_tasks.name, logs.auto_evaluation_task_name) ILIKE %(like)s"
+        in count_sql
+    )

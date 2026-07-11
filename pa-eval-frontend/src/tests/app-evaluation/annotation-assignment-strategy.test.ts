@@ -64,6 +64,9 @@ test('annotation queue item list displays assigned handler separately from compl
 test('annotation queue item list keeps source data id instead of duplicate source title', () => {
   assert.match(columnsSource, /title='源数据 ID'/)
   assert.match(columnsSource, /accessorKey: 'objectId'/)
+  assert.match(columnsSource, /row\.original\.objectType === 'TRACE'/)
+  assert.match(columnsSource, /observability\/traces\/logs\?traceId=/)
+  assert.match(columnsSource, /encodeURIComponent\(sourceDataId\)/)
   assert.doesNotMatch(columnsSource, /accessorKey: 'source\.title'/)
   assert.doesNotMatch(columnsSource, /title='源对象 ID'/)
 })

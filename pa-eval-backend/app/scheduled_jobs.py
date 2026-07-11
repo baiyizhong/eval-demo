@@ -567,12 +567,19 @@ async def list_scheduled_job_logs(
             await cursor.execute(
                 """
                 SELECT COUNT(*)::int AS total
-                FROM pa_scheduled_job_execution_logs
-                WHERE project_id = %(project_id)s
-                  AND (%(job_id)s = '' OR scheduled_job_id = %(job_id)s)
-                  AND (%(keyword)s = '' OR scheduled_job_name ILIKE %(like)s OR auto_evaluation_task_name ILIKE %(like)s)
-                  AND (cardinality(%(status)s::text[]) = 0 OR status = ANY(%(status)s::text[]))
-                  AND (cardinality(%(trigger_type)s::text[]) = 0 OR trigger_type = ANY(%(trigger_type)s::text[]))
+                FROM pa_scheduled_job_execution_logs logs
+                LEFT JOIN pa_auto_evaluation_tasks auto_tasks
+                  ON auto_tasks.project_id = logs.project_id
+                 AND auto_tasks.id = logs.auto_evaluation_task_id
+                WHERE logs.project_id = %(project_id)s
+                  AND (%(job_id)s = '' OR logs.scheduled_job_id = %(job_id)s)
+                  AND (
+                    %(keyword)s = ''
+                    OR logs.scheduled_job_name ILIKE %(like)s
+                    OR COALESCE(auto_tasks.name, logs.auto_evaluation_task_name) ILIKE %(like)s
+                  )
+                  AND (cardinality(%(status)s::text[]) = 0 OR logs.status = ANY(%(status)s::text[]))
+                  AND (cardinality(%(trigger_type)s::text[]) = 0 OR logs.trigger_type = ANY(%(trigger_type)s::text[]))
                 """,
                 {
                     "project_id": project_id,
@@ -586,14 +593,24 @@ async def list_scheduled_job_logs(
             total = (await cursor.fetchone() or {}).get("total", 0)
             await cursor.execute(
                 """
-                SELECT *
-                FROM pa_scheduled_job_execution_logs
-                WHERE project_id = %(project_id)s
-                  AND (%(job_id)s = '' OR scheduled_job_id = %(job_id)s)
-                  AND (%(keyword)s = '' OR scheduled_job_name ILIKE %(like)s OR auto_evaluation_task_name ILIKE %(like)s)
-                  AND (cardinality(%(status)s::text[]) = 0 OR status = ANY(%(status)s::text[]))
-                  AND (cardinality(%(trigger_type)s::text[]) = 0 OR trigger_type = ANY(%(trigger_type)s::text[]))
-                ORDER BY started_at DESC, id DESC
+                SELECT
+                    logs.*,
+                    COALESCE(auto_tasks.name, logs.auto_evaluation_task_name)
+                        AS resolved_auto_evaluation_task_name
+                FROM pa_scheduled_job_execution_logs logs
+                LEFT JOIN pa_auto_evaluation_tasks auto_tasks
+                  ON auto_tasks.project_id = logs.project_id
+                 AND auto_tasks.id = logs.auto_evaluation_task_id
+                WHERE logs.project_id = %(project_id)s
+                  AND (%(job_id)s = '' OR logs.scheduled_job_id = %(job_id)s)
+                  AND (
+                    %(keyword)s = ''
+                    OR logs.scheduled_job_name ILIKE %(like)s
+                    OR COALESCE(auto_tasks.name, logs.auto_evaluation_task_name) ILIKE %(like)s
+                  )
+                  AND (cardinality(%(status)s::text[]) = 0 OR logs.status = ANY(%(status)s::text[]))
+                  AND (cardinality(%(trigger_type)s::text[]) = 0 OR logs.trigger_type = ANY(%(trigger_type)s::text[]))
+                ORDER BY logs.started_at DESC, logs.id DESC
                 LIMIT %(limit)s OFFSET %(offset)s
                 """,
                 {
@@ -1449,7 +1466,9 @@ def _to_execution_log(row: dict[str, Any]) -> dict[str, Any]:
         "taskName": row.get("scheduled_job_name"),
         "taskType": row.get("task_type") or "AUTO_EVALUATION",
         "triggerType": row.get("trigger_type"),
-        "autoEvaluationTaskName": row.get("auto_evaluation_task_name") or "",
+        "autoEvaluationTaskName": row.get("resolved_auto_evaluation_task_name")
+        or row.get("auto_evaluation_task_name")
+        or "",
         "autoEvaluationTaskPath": (
             f"/projects/{project_id}/evaluation/auto-evaluations/{auto_task_id}"
             if auto_task_id

@@ -42,6 +42,21 @@ function renderLink(path: string | undefined, label: string) {
   )
 }
 
+function renderErrorMessage(message: string | undefined) {
+  if (!message) {
+    return '-'
+  }
+
+  return (
+    <span
+      className='text-muted-foreground block max-w-72 truncate text-sm'
+      title={message}
+    >
+      {message}
+    </span>
+  )
+}
+
 export function ScheduledJobLogTable({ request }: ScheduledJobLogTableProps) {
   const columns = useMemo<ColumnDef<ScheduledJobExecutionLog>[]>(
     () => [
@@ -141,6 +156,16 @@ export function ScheduledJobLogTable({ request }: ScheduledJobLogTableProps) {
           className: 'min-w-32',
         },
       },
+      {
+        accessorKey: 'errorMessage',
+        header: ({ column }) => (
+          <DataTableColumnHeader column={column} title='错误信息' />
+        ),
+        cell: ({ row }) => renderErrorMessage(row.original.errorMessage),
+        meta: {
+          className: 'min-w-72',
+        },
+      },
     ],
     []
   )
@@ -193,10 +218,11 @@ export function ScheduledJobLogTable({ request }: ScheduledJobLogTableProps) {
           sampleCount: '处理样本数',
           autoEvaluationTaskName: '关联自动评测任务',
           evaluationReportPath: '关联评测报告',
+          errorMessage: '错误信息',
         },
       }}
       emptyText='暂无执行日志'
-      minTableWidth={1200}
+      minTableWidth={1400}
       enableRowSelection={false}
     />
   )
