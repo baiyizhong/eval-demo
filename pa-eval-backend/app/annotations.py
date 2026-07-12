@@ -695,6 +695,31 @@ def _annotation_filters_require_source(
     )
 
 
+def _source_independent_annotation_filters(
+    filters: AnnotationBatchFiltersPayload,
+) -> AnnotationBatchFiltersPayload:
+    return filters.model_copy(
+        update={
+            "keyword": "",
+            "metadata_filter": None,
+            "metadata_filters": [],
+            "input_filters": [],
+            "output_filters": [],
+        }
+    )
+
+
+def _apply_annotation_export_scope(
+    items: list[dict[str, Any]],
+    scope: AnnotationExportScope,
+    item_ids: list[str],
+) -> list[dict[str, Any]]:
+    if scope != "selected":
+        return items
+    selected_ids = set(item_ids)
+    return [item for item in items if item["id"] in selected_ids]
+
+
 async def _get_scoped_annotation_export_items(
     *,
     project_id: str,
@@ -705,6 +730,7 @@ async def _get_scoped_annotation_export_items(
     item_ids: list[str],
     reader: LangfuseDatabaseReader,
     trace_reader: LangfuseClickHouseReader,
+    enrich_all_sources: bool = True,
 ) -> tuple[dict[str, Any], list[dict[str, Any]]]:
     queue = await reader.get_annotation_queue_for_user(
         project_id,
@@ -716,16 +742,62 @@ async def _get_scoped_annotation_export_items(
         queue_id,
         user_id,
     )
-    enriched_items = await _enrich_annotation_items_with_trace_source(
-        project_id,
+    items = _apply_annotation_export_scope(items, scope, item_ids)
+    scoped_items = _filter_annotation_items(
         items,
+        _source_independent_annotation_filters(filters),
+    )
+    if _annotation_filters_require_source(filters):
+        scoped_items = await _enrich_annotation_items_with_trace_sources(
+            project_id,
+            scoped_items,
+            trace_reader,
+        )
+        scoped_items = _filter_annotation_items(scoped_items, filters)
+    if enrich_all_sources:
+        scoped_items = await _enrich_annotation_items_with_trace_sources(
+            project_id,
+            scoped_items,
+            trace_reader,
+        )
+    return queue, scoped_items
+
+
+async def _build_annotation_export_preview_payload(
+    *,
+    project_id: str,
+    queue_id: str,
+    user_id: str,
+    payload: AnnotationExportPreviewPayload,
+    reader: LangfuseDatabaseReader,
+    trace_reader: LangfuseClickHouseReader,
+) -> dict[str, Any]:
+    queue, scoped_items = await _get_scoped_annotation_export_items(
+        project_id=project_id,
+        queue_id=queue_id,
+        user_id=user_id,
+        scope=payload.scope,
+        filters=payload.filters,
+        item_ids=payload.item_ids,
+        reader=reader,
+        trace_reader=trace_reader,
+        enrich_all_sources=False,
+    )
+    metrics = _annotation_export_metrics(scoped_items)
+    preview_items = await _enrich_annotation_items_with_trace_sources(
+        project_id,
+        scoped_items[: payload.preview_limit],
         trace_reader,
     )
-    scoped_items = _filter_annotation_items(enriched_items, filters)
-    if scope == "selected":
-        selected_ids = set(item_ids)
-        scoped_items = [item for item in scoped_items if item["id"] in selected_ids]
-    return queue, scoped_items
+    return build_annotation_export_preview(
+        queue=queue,
+        items=preview_items,
+        score_configs=queue.get("scoreConfigs") or [],
+        preview_limit=payload.preview_limit,
+        split_metadata=payload.split_metadata,
+        metrics=metrics,
+        metadata_items=preview_items,
+    )
 
 
 def _annotation_export_metrics(items: list[dict[str, Any]]) -> dict[str, int]:
@@ -762,6 +834,14 @@ async def generate_annotation_export_file(
             reader=reader,
             trace_reader=trace_reader,
         )
+        if not scoped_items:
+            await reader.mark_annotation_export_job_failed(
+                project_id,
+                queue_id,
+                job_id,
+                "当前范围无可导出数据",
+            )
+            return
         archive_path = generate_annotation_export_archive(
             output_dir=Path(storage_dir) / project_id / "annotation-exports",
             base_file_name=base_file_name,
@@ -1164,22 +1244,13 @@ async def preview_annotation_export(
     reader: LangfuseDatabaseReader = Depends(get_langfuse_db_reader),
     trace_reader: LangfuseClickHouseReader = Depends(get_langfuse_clickhouse_reader),
 ) -> dict[str, Any]:
-    queue, scoped_items = await _get_scoped_annotation_export_items(
+    preview = await _build_annotation_export_preview_payload(
         project_id=project_id,
         queue_id=queue_id,
         user_id=current_user.user_id,
-        scope=payload.scope,
-        filters=payload.filters,
-        item_ids=payload.item_ids,
+        payload=payload,
         reader=reader,
         trace_reader=trace_reader,
-    )
-    preview = build_annotation_export_preview(
-        queue=queue,
-        items=scoped_items,
-        score_configs=queue.get("scoreConfigs") or [],
-        preview_limit=payload.preview_limit,
-        split_metadata=payload.split_metadata,
     )
     return success(preview)
 
@@ -1198,23 +1269,16 @@ async def create_annotation_export_job(
     if payload.scope == "selected" and not payload.item_ids:
         raise BusinessError(1030, "请选择要导出的标注数据", 400)
 
-    queue, scoped_items = await _get_scoped_annotation_export_items(
-        project_id=project_id,
-        queue_id=queue_id,
-        user_id=current_user.user_id,
-        scope=payload.scope,
-        filters=payload.filters,
-        item_ids=payload.item_ids,
-        reader=reader,
-        trace_reader=trace_reader,
+    queue = await reader.get_annotation_queue_for_user(
+        project_id,
+        queue_id,
+        current_user.user_id,
     )
-    if not scoped_items:
-        raise BusinessError(1031, "当前范围无可导出数据", 400)
 
     base_file_name = _annotation_export_base_name_from_payload(
         payload.file_name,
         queue=queue,
-        total_count=len(scoped_items),
+        total_count=0,
     )
     filters_snapshot = payload.filters.model_dump(by_alias=True)
     job = await reader.create_annotation_export_job_for_user(

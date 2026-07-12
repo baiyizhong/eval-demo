@@ -8,6 +8,7 @@ from zipfile import ZipFile
 
 from fastapi.testclient import TestClient
 
+from app import annotation_exports
 from app.annotation_exports import (
     EXCEL_CELL_LIMIT,
     build_annotation_export_preview,
@@ -345,6 +346,41 @@ def test_generate_csv_escapes_formula_headers(tmp_path: Path) -> None:
     assert header[-1] == "'=危险指标"
 
 
+def test_generate_archive_streams_rows_without_building_detail_row_list(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    def fail_build_detail_rows(*args, **kwargs):
+        raise AssertionError("archive generation should stream detail rows")
+
+    monkeypatch.setattr(
+        annotation_exports,
+        "_build_detail_rows",
+        fail_build_detail_rows,
+    )
+
+    archive_path = annotation_exports.generate_annotation_export_archive(
+        output_dir=tmp_path,
+        base_file_name="客服标注-1-20260711-160000",
+        export_format="csv",
+        queue={"id": "queue-1", "name": "客服标注", "description": ""},
+        metrics={"total": 2, "completed": 2, "pending": 0},
+        score_configs=[],
+        items=[
+            _item("item-1", input_value="x" * 40000),
+            _item("item-2", input_value="y" * 40000),
+        ],
+        split_metadata=False,
+    )
+
+    csv_text = _archive_entry_bytes(
+        archive_path,
+        "客服标注-1-20260711-160000.csv",
+    ).decode("utf-8-sig")
+    rows = list(csv.DictReader(io.StringIO(csv_text)))
+    assert [row["id"] for row in rows] == ["item-1", "item-2"]
+
+
 def test_generate_txt_zip_contains_json_lines(tmp_path: Path) -> None:
     archive_path = generate_annotation_export_archive(
         output_dir=tmp_path,
@@ -532,6 +568,123 @@ def test_previews_annotation_export_with_selected_scope() -> None:
     assert [item["id"] for item in data["previewItems"]] == ["item-1"]
 
 
+def test_previews_large_annotation_export_enriches_only_preview_items() -> None:
+    class LargeAnnotationExportReader(FakeAnnotationExportReader):
+        async def list_annotation_queue_items_for_user(
+            self,
+            project_id: str,
+            queue_id: str,
+            user_id: str,
+        ) -> list[dict]:
+            self.calls.append("list_items")
+            return [
+                {
+                    **_item(f"item-{index:04d}", metadata={}, input_value={}),
+                    "projectId": project_id,
+                    "queueId": queue_id,
+                    "objectId": f"trace-{index:04d}",
+                    "objectType": "TRACE",
+                    "source": {
+                        "objectId": f"trace-{index:04d}",
+                        "objectType": "TRACE",
+                        "title": f"trace-{index:04d}",
+                        "input": {},
+                        "output": {},
+                        "metadata": {},
+                        "traceId": f"trace-{index:04d}",
+                        "observationId": "",
+                        "sessionId": "",
+                        "userId": "",
+                        "latencyMs": 0,
+                        "costUsd": 0,
+                        "createdAt": "2026-07-11T08:00:00.000Z",
+                    },
+                    "createdAt": "2026-07-11T08:00:00.000Z",
+                    "updatedAt": "2026-07-11T08:00:00.000Z",
+                }
+                for index in range(1000)
+            ]
+
+    fake_reader = LargeAnnotationExportReader()
+    fake_trace_reader = FakeAnnotationExportTraceReader()
+    override_export_reader(fake_reader, trace_reader=fake_trace_reader)
+
+    try:
+        response = TestClient(app).post(
+            "/api/projects/project-1/annotation-queues/queue-1/export-preview",
+            json={
+                "scope": "filtered",
+                "previewLimit": 5,
+                "splitMetadata": False,
+            },
+        )
+    finally:
+        clear_export_overrides()
+
+    assert response.status_code == 200
+    data = response.json()["data"]
+    assert data["metrics"] == {"total": 1000, "completed": 1000, "pending": 0}
+    assert [item["id"] for item in data["previewItems"]] == [
+        f"item-{index:04d}" for index in range(5)
+    ]
+    assert fake_trace_reader.calls == []
+    assert fake_trace_reader.source_calls == [
+        ("project-1", [f"trace-{index:04d}" for index in range(5)])
+    ]
+
+
+def test_creates_large_annotation_export_job_before_background_item_scan(
+    tmp_path: Path,
+) -> None:
+    class LargeAnnotationExportReader(FakeAnnotationExportReader):
+        async def list_annotation_queue_items_for_user(
+            self,
+            project_id: str,
+            queue_id: str,
+            user_id: str,
+        ) -> list[dict]:
+            self.calls.append("list_items")
+            return [
+                {
+                    **_item(f"item-{index:04d}"),
+                    "projectId": project_id,
+                    "queueId": queue_id,
+                    "objectId": f"trace-{index:04d}",
+                    "objectType": "TRACE",
+                    "createdAt": "2026-07-11T08:00:00.000Z",
+                    "updatedAt": "2026-07-11T08:00:00.000Z",
+                }
+                for index in range(1000)
+            ]
+
+    fake_reader = LargeAnnotationExportReader()
+    fake_trace_reader = FakeAnnotationExportTraceReader()
+    override_export_reader(
+        fake_reader,
+        trace_reader=fake_trace_reader,
+        export_dir=tmp_path,
+    )
+
+    try:
+        response = TestClient(app).post(
+            "/api/projects/project-1/annotation-queues/queue-1/export-jobs",
+            json={
+                "scope": "filtered",
+                "format": "csv",
+                "splitMetadata": False,
+                "fileName": "大队列导出.zip",
+            },
+        )
+    finally:
+        clear_export_overrides()
+
+    assert response.status_code == 200
+    assert fake_reader.calls.index("create_export_job") < fake_reader.calls.index(
+        "list_items"
+    )
+    assert fake_trace_reader.calls == []
+
+
 def test_rejects_empty_selected_annotation_export_job() -> None:
     fake_reader = FakeAnnotationExportReader()
     override_export_reader(fake_reader)
@@ -694,6 +847,7 @@ class FakeAnnotationExportReader:
     def __init__(self) -> None:
         self.export_job: dict | None = None
         self.created_job: dict | None = None
+        self.calls: list[str] = []
 
     async def get_annotation_queue_for_user(
         self,
@@ -701,6 +855,7 @@ class FakeAnnotationExportReader:
         queue_id: str,
         user_id: str,
     ) -> dict:
+        self.calls.append("get_queue")
         return {
             "id": queue_id,
             "projectId": project_id,
@@ -722,6 +877,7 @@ class FakeAnnotationExportReader:
         queue_id: str,
         user_id: str,
     ) -> list[dict]:
+        self.calls.append("list_items")
         return [
             {
                 **_item(
@@ -761,6 +917,7 @@ class FakeAnnotationExportReader:
         split_metadata: bool,
         file_name: str,
     ) -> dict:
+        self.calls.append("create_export_job")
         self.created_job = {
             "scope": scope,
             "format": export_format,
@@ -791,6 +948,7 @@ class FakeAnnotationExportReader:
         job_id: str,
         user_id: str,
     ) -> dict:
+        self.calls.append("get_export_job")
         return dict(
             self.export_job
             or self.job_payload(project_id=project_id, queue_id=queue_id, job_id=job_id)
@@ -802,6 +960,7 @@ class FakeAnnotationExportReader:
         queue_id: str,
         job_id: str,
     ) -> None:
+        self.calls.append("mark_export_running")
         if self.export_job:
             self.export_job["status"] = "RUNNING"
 
@@ -816,6 +975,7 @@ class FakeAnnotationExportReader:
         file_path: str,
         file_size: int,
     ) -> None:
+        self.calls.append("mark_export_succeeded")
         if self.export_job:
             self.export_job.update(
                 {
@@ -835,6 +995,7 @@ class FakeAnnotationExportReader:
         job_id: str,
         error_message: str,
     ) -> None:
+        self.calls.append("mark_export_failed")
         if self.export_job:
             self.export_job.update(
                 {"status": "FAILED", "errorMessage": error_message}
@@ -874,13 +1035,40 @@ class FakeAnnotationExportReader:
 
 
 class FakeAnnotationExportTraceReader:
+    def __init__(self) -> None:
+        self.calls: list[tuple[str, str]] = []
+        self.source_calls: list[tuple[str, list[str]]] = []
+
     async def get_trace(self, project_id: str, trace_id: str) -> dict:
+        self.calls.append((project_id, trace_id))
         return {}
+
+    async def list_trace_sources(
+        self,
+        project_id: str,
+        trace_ids: list[str],
+    ) -> dict[str, dict]:
+        self.source_calls.append((project_id, trace_ids))
+        return {
+            trace_id: {
+                "traceId": trace_id,
+                "projectId": project_id,
+                "name": trace_id,
+                "sessionId": f"session-{trace_id}",
+                "userId": f"user-{trace_id}",
+                "createdAt": "2026-07-11T08:00:00.000Z",
+                "input": {"q": trace_id},
+                "output": {"a": trace_id},
+                "metadata": {"trace": trace_id},
+            }
+            for trace_id in trace_ids
+        }
 
 
 def override_export_reader(
     fake_reader: FakeAnnotationExportReader,
     *,
+    trace_reader: FakeAnnotationExportTraceReader | None = None,
     export_dir: Path | None = None,
 ) -> None:
     async def _override() -> LangfuseDatabaseReader:
@@ -888,7 +1076,7 @@ def override_export_reader(
 
     app.dependency_overrides[get_langfuse_db_reader] = _override
     app.dependency_overrides[get_langfuse_clickhouse_reader] = lambda: (
-        FakeAnnotationExportTraceReader()
+        trace_reader or FakeAnnotationExportTraceReader()
     )
     app.dependency_overrides[get_current_user_context] = lambda: CurrentUserContext(
         user_id="user-1",

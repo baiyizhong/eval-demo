@@ -5,7 +5,7 @@ import re
 import zipfile
 from datetime import UTC, datetime
 from pathlib import Path
-from typing import Any
+from typing import Any, BinaryIO, Iterable, Iterator
 from xml.sax.saxutils import escape, quoteattr
 
 EXCEL_CELL_LIMIT = 32767
@@ -63,8 +63,14 @@ def build_annotation_export_preview(
     score_configs: list[dict[str, Any]],
     preview_limit: int,
     split_metadata: bool,
+    metrics: dict[str, int] | None = None,
+    metadata_items: list[dict[str, Any]] | None = None,
 ) -> dict[str, Any]:
-    metadata_keys = _collect_metadata_keys(items) if split_metadata else []
+    metadata_keys = (
+        _collect_metadata_keys(metadata_items if metadata_items is not None else items)
+        if split_metadata
+        else []
+    )
     detail_rows = _build_detail_rows(
         items[:preview_limit],
         score_configs,
@@ -74,7 +80,7 @@ def build_annotation_export_preview(
 
     return {
         "queue": queue,
-        "metrics": _build_metrics(items),
+        "metrics": metrics or _build_metrics(items),
         "scoreConfigs": score_configs,
         "metadataKeys": metadata_keys,
         "previewItems": detail_rows,
@@ -100,12 +106,6 @@ def generate_annotation_export_archive(
     archive_path = output_dir / f"{safe_base_file_name}.zip"
     data_file_name = f"{safe_base_file_name}.{export_format}"
     metadata_keys = _collect_metadata_keys(items) if split_metadata else []
-    detail_rows = _build_detail_rows(
-        items,
-        score_configs,
-        split_metadata,
-        metadata_keys=metadata_keys,
-    )
     detail_headers = _build_detail_headers(metadata_keys, score_configs, split_metadata)
     manifest = {
         "queue": queue,
@@ -118,25 +118,33 @@ def generate_annotation_export_archive(
         "generatedAt": datetime.now(UTC).isoformat(),
     }
 
-    if export_format == "csv":
-        data_payload: str | bytes = _render_csv(detail_headers, detail_rows)
-    elif export_format == "txt":
-        data_payload = _render_txt(detail_rows)
-    else:
-        data_payload = _render_xlsx(
-            queue,
-            metrics,
-            score_configs,
-            detail_headers,
-            detail_rows,
-        )
-
     with zipfile.ZipFile(archive_path, "w", compression=zipfile.ZIP_DEFLATED) as archive:
         archive.writestr(
             "manifest.json",
             json.dumps(manifest, ensure_ascii=False, default=str, indent=2),
         )
-        archive.writestr(data_file_name, data_payload)
+        detail_rows = _iter_detail_rows(
+            items,
+            score_configs,
+            split_metadata,
+            metadata_keys=metadata_keys,
+        )
+        if export_format == "csv":
+            with archive.open(data_file_name, "w") as output:
+                _write_csv(output, detail_headers, detail_rows)
+        elif export_format == "txt":
+            with archive.open(data_file_name, "w") as output:
+                _write_txt(output, detail_rows)
+        else:
+            with archive.open(data_file_name, "w") as output:
+                _write_xlsx(
+                    output,
+                    queue,
+                    metrics,
+                    score_configs,
+                    detail_headers,
+                    detail_rows,
+                )
 
     return archive_path
 
@@ -149,6 +157,23 @@ def _build_detail_rows(
     metadata_keys: list[str] | None = None,
 ) -> list[dict[str, str]]:
     metadata_keys = metadata_keys if metadata_keys is not None else _collect_metadata_keys(items)
+    return list(
+        _iter_detail_rows(
+            items,
+            score_configs,
+            split_metadata,
+            metadata_keys=metadata_keys,
+        )
+    )
+
+
+def _iter_detail_rows(
+    items: Iterable[dict[str, Any]],
+    score_configs: list[dict[str, Any]],
+    split_metadata: bool,
+    *,
+    metadata_keys: list[str],
+) -> Iterator[dict[str, str]]:
     detail_headers_without_scores = _build_detail_headers(
         metadata_keys,
         score_configs=[],
@@ -158,7 +183,6 @@ def _build_detail_rows(
         score_configs,
         reserved_headers=detail_headers_without_scores,
     )
-    rows = []
 
     for item in items:
         source = item.get("source") or {}
@@ -199,9 +223,7 @@ def _build_detail_rows(
             config_id = config.get("id") or config.get("configId") or config.get("config_id")
             row[column_name] = score_to_label(config, scores_by_config.get(config_id))
 
-        rows.append(row)
-
-    return rows
+        yield row
 
 
 def _collect_metadata_keys(items: list[dict[str, Any]]) -> list[str]:
@@ -289,6 +311,32 @@ def _render_txt(rows: list[dict[str, str]]) -> str:
     )
 
 
+def _write_csv(
+    output: BinaryIO,
+    fieldnames: list[str],
+    rows: Iterable[dict[str, str]],
+) -> None:
+    text_output = io.TextIOWrapper(output, encoding="utf-8", newline="")
+    text_output.write("\ufeff")
+    header_writer = csv.writer(text_output)
+    header_writer.writerow([_csv_safe(fieldname) for fieldname in fieldnames])
+    writer = csv.DictWriter(text_output, fieldnames=fieldnames)
+    for row in rows:
+        writer.writerow(
+            {fieldname: _csv_safe(row.get(fieldname, "")) for fieldname in fieldnames}
+        )
+    text_output.flush()
+    text_output.detach()
+
+
+def _write_txt(output: BinaryIO, rows: Iterable[dict[str, str]]) -> None:
+    text_output = io.TextIOWrapper(output, encoding="utf-8", newline="")
+    for row in rows:
+        text_output.write(f"{json.dumps(row, ensure_ascii=False, default=str)}\n")
+    text_output.flush()
+    text_output.detach()
+
+
 def _render_xlsx(
     queue: dict[str, Any],
     metrics: dict[str, Any],
@@ -323,6 +371,49 @@ def _render_xlsx(
             )
 
     return buffer.getvalue()
+
+
+def _write_xlsx(
+    output: BinaryIO,
+    queue: dict[str, Any],
+    metrics: dict[str, Any],
+    score_configs: list[dict[str, Any]],
+    detail_headers: list[str],
+    detail_rows: Iterable[dict[str, str]],
+) -> None:
+    basic_info_rows = _build_basic_info_rows(queue, metrics)
+    score_config_rows = _build_score_config_rows(score_configs)
+    first_score_column = _first_score_column(detail_headers, score_configs)
+    sheet_specs = [
+        ("基本信息", basic_info_rows, None),
+        ("评分指标", score_config_rows, None),
+        ("数据明细", None, first_score_column),
+    ]
+
+    with zipfile.ZipFile(output, "w", compression=zipfile.ZIP_DEFLATED) as archive:
+        archive.writestr("[Content_Types].xml", _content_types_xml(len(sheet_specs)))
+        archive.writestr("_rels/.rels", _ROOT_RELS_XML)
+        archive.writestr("xl/workbook.xml", _workbook_xml(sheet_specs))
+        archive.writestr("xl/_rels/workbook.xml.rels", _workbook_rels_xml(len(sheet_specs)))
+        archive.writestr("xl/styles.xml", _STYLES_XML)
+        archive.writestr(
+            "xl/worksheets/sheet1.xml",
+            _build_sheet_xml(basic_info_rows, highlighted_from=None),
+        )
+        archive.writestr(
+            "xl/worksheets/sheet2.xml",
+            _build_sheet_xml(score_config_rows, highlighted_from=None),
+        )
+        detail_row_values = (
+            [row.get(header, "") for header in detail_headers] for row in detail_rows
+        )
+        _write_sheet_xml(
+            archive,
+            "xl/worksheets/sheet3.xml",
+            [detail_headers],
+            detail_row_values,
+            highlighted_from=first_score_column,
+        )
 
 
 def _build_basic_info_rows(
@@ -387,21 +478,9 @@ def _build_sheet_xml(
 ) -> str:
     xml_rows = []
     for row_index, row in enumerate(rows, start=1):
-        cells = []
-        for column_index, value in enumerate(row, start=1):
-            ref = f"{_excel_column_name(column_index)}{row_index}"
-            style = (
-                ' s="1"'
-                if row_index == 1
-                and highlighted_from is not None
-                and column_index >= highlighted_from
-                else ""
-            )
-            cells.append(
-                f'<c r="{ref}" t="inlineStr"{style}><is><t>'
-                f"{escape(_xml_text_safe(value))}</t></is></c>"
-            )
-        xml_rows.append(f'<row r="{row_index}">{"".join(cells)}</row>')
+        xml_rows.append(
+            _sheet_row_xml(row, row_index, highlighted_from=highlighted_from)
+        )
 
     return (
         '<?xml version="1.0" encoding="UTF-8" standalone="yes"?>'
@@ -409,6 +488,60 @@ def _build_sheet_xml(
         f'<sheetData>{"".join(xml_rows)}</sheetData>'
         "</worksheet>"
     )
+
+
+def _write_sheet_xml(
+    archive: zipfile.ZipFile,
+    entry_name: str,
+    header_rows: list[list[Any]],
+    rows: Iterable[list[Any]],
+    *,
+    highlighted_from: int | None = None,
+) -> None:
+    with archive.open(entry_name, "w") as output:
+        text_output = io.TextIOWrapper(output, encoding="utf-8", newline="")
+        text_output.write(
+            '<?xml version="1.0" encoding="UTF-8" standalone="yes"?>'
+            '<worksheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main">'
+            "<sheetData>"
+        )
+        row_index = 1
+        for row in header_rows:
+            text_output.write(
+                _sheet_row_xml(row, row_index, highlighted_from=highlighted_from)
+            )
+            row_index += 1
+        for row in rows:
+            text_output.write(
+                _sheet_row_xml(row, row_index, highlighted_from=highlighted_from)
+            )
+            row_index += 1
+        text_output.write("</sheetData></worksheet>")
+        text_output.flush()
+        text_output.detach()
+
+
+def _sheet_row_xml(
+    row: list[Any],
+    row_index: int,
+    *,
+    highlighted_from: int | None = None,
+) -> str:
+    cells = []
+    for column_index, value in enumerate(row, start=1):
+        ref = f"{_excel_column_name(column_index)}{row_index}"
+        style = (
+            ' s="1"'
+            if row_index == 1
+            and highlighted_from is not None
+            and column_index >= highlighted_from
+            else ""
+        )
+        cells.append(
+            f'<c r="{ref}" t="inlineStr"{style}><is><t>'
+            f"{escape(_xml_text_safe(value))}</t></is></c>"
+        )
+    return f'<row r="{row_index}">{"".join(cells)}</row>'
 
 
 def _excel_column_name(index: int) -> str:
@@ -478,7 +611,7 @@ def _content_types_xml(sheet_count: int) -> str:
     )
 
 
-def _workbook_xml(sheet_specs: list[tuple[str, list[list[str]], int | None]]) -> str:
+def _workbook_xml(sheet_specs: list[tuple[str, Any, int | None]]) -> str:
     sheets = "".join(
         f'    <sheet name={quoteattr(name)} sheetId="{index}" r:id="rId{index}"/>\n'
         for index, (name, _, _) in enumerate(sheet_specs, start=1)
