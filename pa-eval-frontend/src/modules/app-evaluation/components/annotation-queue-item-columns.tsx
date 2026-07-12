@@ -118,9 +118,17 @@ export function createAnnotationQueueItemColumns({
     {
       accessorKey: 'assignee',
       header: ({ column }) => (
-        <DataTableColumnHeader column={column} title='处理人' />
+        <DataTableColumnHeader column={column} title='预设处理人' />
       ),
       cell: ({ row }) => row.original.assignee?.name ?? '-',
+      enableSorting: false,
+    },
+    {
+      accessorKey: 'completedBy',
+      header: ({ column }) => (
+        <DataTableColumnHeader column={column} title='实际处理人' />
+      ),
+      cell: ({ row }) => row.original.completedBy?.name ?? '-',
       enableSorting: false,
     },
     {

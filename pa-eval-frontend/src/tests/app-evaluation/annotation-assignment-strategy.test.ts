@@ -79,12 +79,13 @@ test('annotation queue candidate assignee selector supports search and bulk sele
 
 test('annotation queue item list displays assigned handler separately from completion user', () => {
   assert.match(typesSource, /assignee: ProjectUserRecord \| null/)
+  assert.match(typesSource, /completedBy: ProjectUserRecord \| null/)
   assert.match(columnsSource, /accessorKey: 'assignee'/)
+  assert.match(columnsSource, /title='预设处理人'/)
   assert.match(columnsSource, /row\.original\.assignee\?\.name/)
-  assert.doesNotMatch(
-    columnsSource,
-    /row\.original\.completedBy\?\.name \?\? '-'/
-  )
+  assert.match(columnsSource, /accessorKey: 'completedBy'/)
+  assert.match(columnsSource, /title='实际处理人'/)
+  assert.match(columnsSource, /row\.original\.completedBy\?\.name \?\? '-'/)
 })
 
 test('annotation queue item list keeps source data id instead of duplicate source title', () => {

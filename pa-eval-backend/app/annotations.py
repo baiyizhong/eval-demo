@@ -168,6 +168,7 @@ class AnnotationBatchScorePayload(BaseModel):
 
 class AnnotationExportPreviewPayload(BaseModel):
     scope: AnnotationExportScope = "filtered"
+    format: AnnotationExportFormat = "xlsx"
     filters: AnnotationBatchFiltersPayload = Field(
         default_factory=AnnotationBatchFiltersPayload
     )
@@ -184,6 +185,7 @@ class AnnotationExportJobPayload(BaseModel):
     )
     item_ids: list[str] = Field(default_factory=list, alias="itemIds")
     split_metadata: bool = Field(default=False, alias="splitMetadata")
+    file_name: str = Field(default="", alias="fileName")
 
 
 class DeleteItemsPayload(BaseModel):
@@ -219,11 +221,26 @@ def _default_annotation_export_base_name(
     queue: dict[str, Any],
     total_count: int,
 ) -> str:
-    exported_at = datetime.now(timezone.utc).strftime("%Y%m%d-%H%M%S")
+    exported_at = datetime.now(timezone.utc).strftime("%Y%m%d%H%M")
     queue_name = str(queue.get("name") or queue.get("id") or "annotation-export")
     return _safe_annotation_export_base_name(
-        f"{queue_name}-{total_count}-{exported_at}"
+        f"{queue_name}_{exported_at}_批量导出"
     )
+
+
+def _annotation_export_base_name_from_payload(
+    file_name: str,
+    *,
+    queue: dict[str, Any],
+    total_count: int,
+) -> str:
+    if not file_name.strip():
+        return _default_annotation_export_base_name(queue, total_count)
+
+    safe_file_name = _safe_annotation_export_base_name(file_name)
+    if safe_file_name.lower().endswith(".zip"):
+        safe_file_name = safe_file_name[:-4].rstrip(".- ")
+    return _safe_annotation_export_base_name(safe_file_name)
 
 
 def _is_safe_annotation_export_path(
@@ -1145,7 +1162,11 @@ async def create_annotation_export_job(
     if not scoped_items:
         raise BusinessError(1031, "当前范围无可导出数据", 400)
 
-    base_file_name = _default_annotation_export_base_name(queue, len(scoped_items))
+    base_file_name = _annotation_export_base_name_from_payload(
+        payload.file_name,
+        queue=queue,
+        total_count=len(scoped_items),
+    )
     filters_snapshot = payload.filters.model_dump(by_alias=True)
     job = await reader.create_annotation_export_job_for_user(
         project_id,

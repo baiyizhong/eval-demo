@@ -1,6 +1,7 @@
 import csv
 import io
 import json
+import re
 from pathlib import Path
 from xml.etree import ElementTree
 from zipfile import ZipFile
@@ -13,6 +14,7 @@ from app.annotation_exports import (
     generate_annotation_export_archive,
     score_to_label,
 )
+from app.annotations import _default_annotation_export_base_name
 from app.auth_context import CurrentUserContext, get_current_user_context
 from app.config import Settings, get_settings
 from app.langfuse_clickhouse import get_langfuse_clickhouse_reader
@@ -42,6 +44,18 @@ def test_score_to_label_returns_empty_for_unmatched_category() -> None:
     score = {"configId": "cfg-1", "value": 2, "stringValue": ""}
 
     assert score_to_label(score_config, score) == ""
+
+
+def test_default_annotation_export_name_uses_batch_export_rule() -> None:
+    base_name = _default_annotation_export_base_name(
+        {"name": "客服标注"}, total_count=12
+    )
+
+    assert base_name.startswith("客服标注_")
+    assert base_name.endswith("_批量导出")
+    assert "-12-" not in base_name
+    assert re.search(r"_\d{12}_批量导出$", base_name)
+    assert not re.search(r"_\d{8}-\d{6}_批量导出$", base_name)
 
 
 def test_score_to_label_fallbacks_for_boolean_numeric_and_text() -> None:
@@ -424,6 +438,37 @@ def test_generate_xlsx_contains_three_sheets_and_score_header_style(
     assert 's="1"' in detail_xml
 
 
+def test_generate_xlsx_score_sheet_includes_numeric_range_config(
+    tmp_path: Path,
+) -> None:
+    archive_path = generate_annotation_export_archive(
+        output_dir=tmp_path,
+        base_file_name="客服标注-1-20260711-160000",
+        export_format="xlsx",
+        queue={"id": "queue-1", "name": "客服标注", "description": ""},
+        metrics={"total": 1, "completed": 1, "pending": 0},
+        score_configs=[
+            {
+                "id": "cfg-1",
+                "name": "人工质量评分",
+                "dataType": "NUMERIC",
+                "minValue": 0,
+                "maxValue": 5,
+                "categories": [],
+            }
+        ],
+        items=[_item("item-1")],
+        split_metadata=False,
+    )
+
+    with ZipFile(archive_path) as archive:
+        with ZipFile(archive.open("客服标注-1-20260711-160000.xlsx")) as workbook:
+            score_sheet_xml = workbook.read("xl/worksheets/sheet2.xml").decode("utf-8")
+
+    config_text = _worksheet_cell_text(score_sheet_xml, header="分类配置")
+    assert json.loads(config_text) == {"minValue": 0, "maxValue": 5}
+
+
 def test_generate_archive_sanitizes_base_file_name(tmp_path: Path) -> None:
     archive_path = generate_annotation_export_archive(
         output_dir=tmp_path,
@@ -511,7 +556,12 @@ def test_creates_and_gets_annotation_export_job(tmp_path: Path) -> None:
         client = TestClient(app)
         create_response = client.post(
             "/api/projects/project-1/annotation-queues/queue-1/export-jobs",
-            json={"scope": "filtered", "format": "csv", "splitMetadata": True},
+            json={
+                "scope": "filtered",
+                "format": "csv",
+                "splitMetadata": True,
+                "fileName": "自定义/人工标注导出.zip",
+            },
         )
         get_response = client.get(
             "/api/projects/project-1/annotation-queues/queue-1/export-jobs/export-job-1"
@@ -523,6 +573,7 @@ def test_creates_and_gets_annotation_export_job(tmp_path: Path) -> None:
     created_job = create_response.json()["data"]
     assert created_job["id"] == "export-job-1"
     assert created_job["format"] == "csv"
+    assert fake_reader.created_job["fileName"] == "自定义-人工标注导出"
     assert "filePath" not in created_job
     assert fake_reader.created_job["filters"] == {
         "keyword": "",
@@ -544,6 +595,7 @@ def test_creates_and_gets_annotation_export_job(tmp_path: Path) -> None:
     assert fake_reader.export_job["status"] == "SUCCEEDED"
     generated_path = Path(fake_reader.export_job["filePath"])
     assert generated_path.is_file()
+    assert generated_path.name == "自定义-人工标注导出.zip"
     assert generated_path.suffix == ".zip"
 
     assert get_response.status_code == 200

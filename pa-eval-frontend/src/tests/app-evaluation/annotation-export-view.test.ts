@@ -65,31 +65,34 @@ const makeJob = (
 const typeCheckPreviewInput = () => {
   const selectedInput: AnnotationExportPreviewInput = {
     scope: 'selected',
+    format: 'xlsx',
     itemIds: ['item-1'],
   }
   void selectedInput
 
   const filteredInput: AnnotationExportPreviewInput = {
     scope: 'filtered',
+    format: 'xlsx',
   }
   void filteredInput
 
   // @ts-expect-error selected export requires non-empty itemIds
   const missingSelectedItems: AnnotationExportPreviewInput = {
     scope: 'selected',
+    format: 'xlsx',
   }
   void missingSelectedItems
 
   // @ts-expect-error selected export requires non-empty itemIds
   const emptySelectedItems: AnnotationExportPreviewInput = {
     scope: 'selected',
+    format: 'xlsx',
     itemIds: [],
   }
   void emptySelectedItems
 
   const previewWithFormat: AnnotationExportPreviewInput = {
     scope: 'filtered',
-    // @ts-expect-error preview export input does not accept format
     format: 'xlsx',
   }
   void previewWithFormat
@@ -158,6 +161,19 @@ test('annotation export dialog shows summary metrics preview and config controls
   assert.match(dialogSource, /Excel/)
   assert.match(dialogSource, /CSV/)
   assert.match(dialogSource, /TXT/)
+  assert.match(dialogSource, /导出文件名/)
+  assert.match(dialogSource, /默认按任务名称、导出时间和批量导出生成/)
+  assert.match(dialogSource, /\$\{queueName\}_\$\{timestamp\}_批量导出/)
+  assert.doesNotMatch(dialogSource, /pad\(date\.getSeconds\(\)\)/)
+  assert.match(
+    dialogSource,
+    /pad\(date\.getDate\(\)\),\s*pad\(date\.getHours\(\)\)/
+  )
+  assert.match(dialogSource, /md:grid-cols-2/)
+  assert.match(dialogSource, /md:grid-cols-3/)
+  assert.match(dialogSource, /预览前 5 条/)
+  assert.match(dialogSource, /buildDefaultExportFileName/)
+  assert.match(dialogSource, /formatColumnLabel\(column: string\)[\s\S]*return column/)
   assert.match(dialogSource, /创建导出任务/)
 })
 
@@ -195,6 +211,7 @@ test('preview helper sends exact path and body casing', async () => {
 
   await previewProjectAnnotationExport(api, 'project-1', 'queue-1', {
     scope: 'selected',
+    format: 'csv',
     filters: { keyword: 'latency' },
     itemIds: ['item-1'],
     previewLimit: 5,
@@ -205,6 +222,7 @@ test('preview helper sends exact path and body casing', async () => {
     path: { projectId: 'project-1', queueId: 'queue-1' },
     body: {
       scope: 'selected',
+      format: 'csv',
       filters: { keyword: 'latency' },
       itemIds: ['item-1'],
       previewLimit: 5,
@@ -232,6 +250,7 @@ test('create helper sends exact export job body', async () => {
       format: 'csv',
       filters: { status: ['COMPLETED'] },
       splitMetadata: true,
+      fileName: '人工标注导出.zip',
     }
   )
 
@@ -244,6 +263,7 @@ test('create helper sends exact export job body', async () => {
       filters: { status: ['COMPLETED'] },
       itemIds: [],
       splitMetadata: true,
+      fileName: '人工标注导出.zip',
     },
   })
 })

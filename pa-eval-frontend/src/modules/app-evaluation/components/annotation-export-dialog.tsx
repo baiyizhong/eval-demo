@@ -1,4 +1,4 @@
-import { useMemo, useState } from 'react'
+import { useEffect, useMemo, useState } from 'react'
 import { useQuery } from '@tanstack/react-query'
 import { FileArchive } from 'lucide-react'
 import { toast } from 'sonner'
@@ -14,6 +14,7 @@ import {
   DialogHeader,
   DialogTitle,
 } from '@/components/ui/dialog'
+import { Input } from '@/components/ui/input'
 import { Label } from '@/components/ui/label'
 import { Skeleton } from '@/components/ui/skeleton'
 import { Switch } from '@/components/ui/switch'
@@ -84,24 +85,6 @@ const basePreviewColumns = [
   'metadata',
 ]
 
-const columnLabels: Record<string, string> = {
-  id: '数据ID',
-  status: '标注状态',
-  assigneeId: '处理人ID',
-  assigneeName: '数据处理人',
-  assigneeEmail: '处理人邮箱',
-  completedById: '完成人ID',
-  completedByName: '完成人',
-  completedByEmail: '完成人邮箱',
-  traceId: 'traceID',
-  observationId: 'observationId',
-  sessionId: 'sessionId',
-  userId: 'userId',
-  input: 'input',
-  output: 'output',
-  metadata: 'metadata',
-}
-
 export function AnnotationExportDialog({
   open,
   onOpenChange,
@@ -115,6 +98,8 @@ export function AnnotationExportDialog({
   const [format, setFormat] = useState<AnnotationExportFormat>('xlsx')
   const [splitMetadata, setSplitMetadata] = useState(false)
   const [isExporting, setIsExporting] = useState(false)
+  const [fileName, setFileName] = useState('')
+  const [fileNameEdited, setFileNameEdited] = useState(false)
   const selectedItemIds = useMemo(
     () => Array.from(new Set((itemIds ?? []).filter(Boolean))),
     [itemIds]
@@ -125,10 +110,11 @@ export function AnnotationExportDialog({
         scope,
         filters,
         itemIds: selectedItemIds,
+        format,
         splitMetadata,
-        previewLimit: 20,
+        previewLimit: 5,
       }),
-    [filters, scope, selectedItemIds, splitMetadata]
+    [filters, format, scope, selectedItemIds, splitMetadata]
   )
 
   const previewQuery = useQuery({
@@ -140,6 +126,7 @@ export function AnnotationExportDialog({
       scope,
       filters,
       selectedItemIds,
+      format,
       splitMetadata,
       previewInput,
     ],
@@ -154,12 +141,29 @@ export function AnnotationExportDialog({
 
   const preview = previewQuery.data
   const previewColumns = useMemo(() => buildPreviewColumns(preview), [preview])
+  const defaultFileName = useMemo(
+    () => (preview ? buildDefaultExportFileName(preview) : ''),
+    [preview]
+  )
+
+  useEffect(() => {
+    if (!open) {
+      setFileName('')
+      setFileNameEdited(false)
+      return
+    }
+    if (defaultFileName && !fileNameEdited) {
+      setFileName(defaultFileName)
+    }
+  }, [defaultFileName, fileNameEdited, open])
+
   const exportDisabled =
     isExporting ||
     previewQuery.isLoading ||
     !preview ||
     preview.metrics.total <= 0 ||
-    !previewInput
+    !previewInput ||
+    !normalizeExportFileName(fileName)
 
   const handleCreateExport = async () => {
     if (exportDisabled || !previewInput || !preview) return
@@ -174,6 +178,7 @@ export function AnnotationExportDialog({
               filters,
               itemIds: previewInput.itemIds,
               splitMetadata,
+              fileName: normalizeExportFileName(fileName),
             }
           : {
               scope: 'filtered',
@@ -181,6 +186,7 @@ export function AnnotationExportDialog({
               filters,
               itemIds: previewInput.itemIds,
               splitMetadata,
+              fileName: normalizeExportFileName(fileName),
             }
       const job = await createProjectAnnotationExportJob(
         api,
@@ -241,7 +247,7 @@ export function AnnotationExportDialog({
         </DialogHeader>
 
         <div className='flex min-h-0 flex-1 flex-col gap-4 overflow-y-auto px-6 pb-4'>
-          <section className='grid gap-3 md:grid-cols-[1fr_320px]'>
+          <section className='grid gap-3 md:grid-cols-2'>
             <div className='rounded-lg border p-4'>
               <SectionTitle title='基本信息' />
               {preview ? (
@@ -256,9 +262,11 @@ export function AnnotationExportDialog({
                     value={preview.queue.description || '暂无描述'}
                     className='md:col-span-2'
                   />
-                  <MetricItem label='总量' value={preview.metrics.total} />
-                  <MetricItem label='已完成' value={preview.metrics.completed} />
-                  <MetricItem label='待处理' value={preview.metrics.pending} />
+                  <div className='grid gap-2 md:col-span-2 md:grid-cols-3'>
+                    <MetricItem label='总量' value={preview.metrics.total} />
+                    <MetricItem label='已完成' value={preview.metrics.completed} />
+                    <MetricItem label='待处理' value={preview.metrics.pending} />
+                  </div>
                 </div>
               ) : (
                 <SummarySkeleton />
@@ -298,6 +306,24 @@ export function AnnotationExportDialog({
                   </div>
                 </div>
 
+                <div className='flex flex-col gap-2'>
+                  <Label htmlFor='annotation-export-file-name'>
+                    导出文件名
+                  </Label>
+                  <Input
+                    id='annotation-export-file-name'
+                    value={fileName}
+                    placeholder={defaultFileName || 'annotation-export.zip'}
+                    onChange={(event) => {
+                      setFileName(event.target.value)
+                      setFileNameEdited(true)
+                    }}
+                  />
+                  <div className='text-muted-foreground truncate text-[11px]'>
+                    默认按任务名称、导出时间和批量导出生成，可在创建任务前修改。
+                  </div>
+                </div>
+
                 <div className='flex items-start justify-between gap-3 rounded-md border p-3'>
                   <div className='flex min-w-0 flex-col gap-1'>
                     <Label htmlFor='annotation-export-split-metadata'>
@@ -333,7 +359,7 @@ export function AnnotationExportDialog({
             <div className='flex flex-wrap items-center justify-between gap-2'>
               <SectionTitle title='数据明细' />
               <div className='text-muted-foreground text-xs'>
-                预览前 20 条，实际导出按所选范围生成 zip 文件。
+                预览前 5 条，实际导出按所选范围生成 zip 文件。
               </div>
             </div>
 
@@ -396,12 +422,14 @@ function buildAnnotationExportInput({
   scope,
   filters,
   itemIds,
+  format,
   splitMetadata,
   previewLimit,
 }: {
   scope: AnnotationExportScope
   filters: AnnotationBatchFiltersInput
   itemIds: string[]
+  format: AnnotationExportFormat
   splitMetadata: boolean
   previewLimit: number
 }): AnnotationExportPreviewInput | null {
@@ -409,6 +437,7 @@ function buildAnnotationExportInput({
     if (itemIds.length === 0) return null
     return {
       scope: 'selected',
+      format,
       filters,
       itemIds: itemIds as NonEmptyStringArray,
       previewLimit,
@@ -418,6 +447,7 @@ function buildAnnotationExportInput({
 
   return {
     scope: 'filtered',
+    format,
     filters,
     itemIds,
     previewLimit,
@@ -472,9 +502,9 @@ function InfoItem({
 
 function MetricItem({ label, value }: { label: string; value: number }) {
   return (
-    <div className='rounded-md border p-3'>
+    <div className='rounded-md border px-3 py-2'>
       <div className='text-muted-foreground text-xs'>{label}</div>
-      <div className='mt-1 text-xl font-semibold'>{value}</div>
+      <div className='mt-1 text-lg font-semibold leading-none'>{value}</div>
     </div>
   )
 }
@@ -485,8 +515,11 @@ function SummarySkeleton() {
       <Skeleton className='h-10 w-full' />
       <Skeleton className='h-10 w-full' />
       <Skeleton className='h-10 w-full md:col-span-2' />
-      <Skeleton className='h-16 w-full' />
-      <Skeleton className='h-16 w-full' />
+      <div className='grid gap-2 md:col-span-2 md:grid-cols-3'>
+        <Skeleton className='h-14 w-full' />
+        <Skeleton className='h-14 w-full' />
+        <Skeleton className='h-14 w-full' />
+      </div>
     </div>
   )
 }
@@ -563,7 +596,7 @@ function PreviewTable({
             <TableRow key={row.id || String(rowIndex)}>
               {columns.map((column) => (
                 <TableCell key={column} className='max-w-[280px] truncate'>
-                  {formatCellValue(column, row[column])}
+                  {formatCellValue(row[column])}
                 </TableCell>
               ))}
             </TableRow>
@@ -575,15 +608,47 @@ function PreviewTable({
 }
 
 function formatColumnLabel(column: string) {
-  if (column.startsWith('metadata.')) return column
-  return columnLabels[column] ?? column
+  return column
 }
 
-function formatCellValue(column: string, value = '') {
-  if (column === 'status') {
-    if (value === 'COMPLETED') return '已标注'
-    if (value === 'PENDING') return '待处理'
-  }
-
+function formatCellValue(value = '') {
   return value
+}
+
+function buildDefaultExportFileName(preview: AnnotationExportPreview) {
+  const queueName = preview.queue.name || preview.queue.id || 'annotation-export'
+  const timestamp = formatExportTimestamp(new Date())
+  return `${sanitizeExportFileNamePart(
+    `${queueName}_${timestamp}_批量导出`
+  )}.zip`
+}
+
+function formatExportTimestamp(date: Date) {
+  const pad = (value: number) => String(value).padStart(2, '0')
+  return [
+    date.getFullYear(),
+    pad(date.getMonth() + 1),
+    pad(date.getDate()),
+    pad(date.getHours()),
+    pad(date.getMinutes()),
+  ].join('')
+}
+
+function normalizeExportFileName(value: string) {
+  const sanitized = sanitizeExportFileNamePart(value)
+  if (!sanitized) return ''
+  return sanitized.toLowerCase().endsWith('.zip') ? sanitized : `${sanitized}.zip`
+}
+
+function sanitizeExportFileNamePart(value: string) {
+  return (
+    value
+      .replace(/[\x00-\x1f\x7f\\/:*?"<>|]+/g, '-')
+      .replace(/\s+/g, ' ')
+      .replace(/\.\.+/g, '')
+      .trim()
+      .replace(/^[.-\s]+|[.-\s]+$/g, '')
+      .slice(0, 120)
+      .replace(/[.-\s]+$/g, '') || 'annotation-export'
+  )
 }

@@ -99,7 +99,7 @@ const BATCH_COLUMN_LABELS: Record<BatchColumnKey, string> = {
   sourceDataId: '源数据 ID',
   type: '类型',
   status: '状态',
-  assignee: '处理人',
+  assignee: '预设处理人',
   createdAt: '创建时间',
   input: 'Input',
   output: 'Output',
@@ -617,11 +617,11 @@ export function ProjectAnnotationBatch() {
                     }}
                   >
                     <SelectTrigger className='h-8 w-36'>
-                      <SelectValue placeholder='处理人' />
+                      <SelectValue placeholder='预设处理人' />
                     </SelectTrigger>
                     <SelectContent>
                       <SelectItem value={ASSIGNEE_ALL_VALUE}>
-                        全部处理人
+                        全部预设处理人
                       </SelectItem>
                       {assigneeOptions.map((user) => (
                         <SelectItem key={user.id} value={user.id}>
@@ -707,7 +707,7 @@ export function ProjectAnnotationBatch() {
                       <TableHead className='w-[92px]'>状态</TableHead>
                     ) : null}
                     {columnVisibility.assignee ? (
-                      <TableHead className='w-[120px]'>处理人</TableHead>
+                      <TableHead className='w-[120px]'>预设处理人</TableHead>
                     ) : null}
                     {columnVisibility.createdAt ? (
                       <TableHead className='w-[132px]'>创建时间</TableHead>

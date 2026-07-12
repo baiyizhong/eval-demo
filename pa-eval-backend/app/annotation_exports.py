@@ -343,15 +343,32 @@ def _build_basic_info_rows(
 def _build_score_config_rows(score_configs: list[dict[str, Any]]) -> list[list[str]]:
     rows = [["指标ID", "指标名称", "数据类型", "分类配置"]]
     for config in score_configs:
+        data_type = _stringify(config.get("dataType") or config.get("data_type"))
         rows.append(
             [
                 _stringify(config.get("id")),
                 _stringify(config.get("name")),
-                _stringify(config.get("dataType") or config.get("data_type")),
-                _stringify(config.get("categories") or []),
+                data_type,
+                _stringify(_score_config_options(config, data_type)),
             ]
         )
     return rows
+
+
+def _score_config_options(config: dict[str, Any], data_type: str) -> Any:
+    if data_type == "NUMERIC":
+        return {
+            "minValue": _first_present(config, "minValue", "min_value"),
+            "maxValue": _first_present(config, "maxValue", "max_value"),
+        }
+    return config.get("categories") or []
+
+
+def _first_present(config: dict[str, Any], *keys: str) -> Any:
+    for key in keys:
+        if key in config:
+            return config.get(key)
+    return None
 
 
 def _first_score_column(

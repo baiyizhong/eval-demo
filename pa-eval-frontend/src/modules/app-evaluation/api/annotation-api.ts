@@ -84,15 +84,18 @@ type AnnotationExportBaseInput = AnnotationExportScopeInput & {
 }
 
 export type AnnotationExportPreviewInput = AnnotationExportBaseInput & {
+  format: AnnotationExportFormat
   previewLimit?: number
 }
 
 export type AnnotationExportJobInput = AnnotationExportBaseInput & {
   format: AnnotationExportFormat
+  fileName?: string
 }
 
 export type AnnotationExportPreviewPayload = {
   scope: AnnotationExportScope
+  format: AnnotationExportFormat
   filters: AnnotationBatchFiltersInput
   itemIds: string[]
   previewLimit: number
@@ -105,6 +108,7 @@ export type AnnotationExportJobPayload = {
   filters: AnnotationBatchFiltersInput
   itemIds: string[]
   splitMetadata: boolean
+  fileName?: string
 }
 
 export function listProjectScoreConfigs(
@@ -396,9 +400,10 @@ export function previewProjectAnnotationExport(
     path: { projectId, queueId },
     body: {
       scope: input.scope,
+      format: input.format,
       filters: input.filters ?? {},
       itemIds: input.itemIds ?? [],
-      previewLimit: input.previewLimit ?? 20,
+      previewLimit: input.previewLimit ?? 5,
       splitMetadata: input.splitMetadata ?? false,
     },
   })
@@ -421,6 +426,7 @@ export function createProjectAnnotationExportJob(
       filters: input.filters ?? {},
       itemIds: input.itemIds ?? [],
       splitMetadata: input.splitMetadata ?? false,
+      ...(input.fileName ? { fileName: input.fileName } : {}),
     },
   })
 }

@@ -266,7 +266,8 @@ export function ProjectAnnotationQueueDetail() {
                 objectId: '源数据 ID',
                 status: '状态',
                 completedAt: '完成时间',
-                assignee: '处理人',
+                assignee: '预设处理人',
+                completedBy: '实际处理人',
               },
             }}
             bulkActions={(table) => (
@@ -349,7 +350,7 @@ function createItemToolbarFilters({
     },
     {
       columnId: 'assignee',
-      title: '处理人',
+      title: '预设处理人',
       optionCounts: assigneeCounts,
       options: users.map((user) => ({
         label: user.name || user.email,
