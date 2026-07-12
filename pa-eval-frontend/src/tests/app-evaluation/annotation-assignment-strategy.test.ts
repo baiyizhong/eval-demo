@@ -109,6 +109,14 @@ test('annotation queue item bulk actions can manually update assignee and skip c
   assert.match(apiSource, /updateProjectAnnotationQueueItemAssignees/)
   assert.match(apiSource, /assigneeUserId/)
   assert.match(bulkActionsSource, /修改处理人/)
+  assert.match(bulkActionsSource, /为已选中的标注数据分配新的处理人/)
+  assert.match(bulkActionsSource, /预设处理人/)
+  assert.doesNotMatch(
+    bulkActionsSource,
+    /<Label htmlFor='annotation-item-assignee'>新的处理人<\/Label>/
+  )
+  assert.doesNotMatch(bulkActionsSource, /选择新的处理人/)
+  assert.doesNotMatch(bulkActionsSource, /指定新的处理人/)
   assert.match(bulkActionsSource, /已完成的数据会自动跳过/)
   assert.match(bulkActionsSource, /不按任务分配策略/)
   assert.match(bulkActionsSource, /skippedCount/)

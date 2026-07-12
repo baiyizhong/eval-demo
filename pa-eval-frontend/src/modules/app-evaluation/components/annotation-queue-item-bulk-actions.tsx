@@ -163,7 +163,7 @@ export function AnnotationQueueItemBulkActions({
           <DialogHeader>
             <DialogTitle>修改处理人</DialogTitle>
             <DialogDescription>
-              为已选中的标注数据指定新的处理人。
+              为已选中的标注数据分配新的处理人
             </DialogDescription>
           </DialogHeader>
 
@@ -182,10 +182,10 @@ export function AnnotationQueueItemBulkActions({
             </div>
 
             <div className='flex flex-col gap-2'>
-              <Label htmlFor='annotation-item-assignee'>新的处理人</Label>
+              <Label htmlFor='annotation-item-assignee'>预设处理人</Label>
               <Select value={assigneeUserId} onValueChange={setAssigneeUserId}>
                 <SelectTrigger id='annotation-item-assignee' className='w-full'>
-                  <SelectValue placeholder='选择新的处理人' />
+                  <SelectValue placeholder='选择预设处理人' />
                 </SelectTrigger>
                 <SelectContent>
                   <SelectGroup>
