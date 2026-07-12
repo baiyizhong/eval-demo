@@ -224,6 +224,69 @@ class LangfuseClickHouseReader:
             "callChain": _build_call_chain(observations),
         }
 
+    async def list_trace_sources(
+        self,
+        project_id: str,
+        trace_ids: list[str],
+    ) -> dict[str, dict[str, Any]]:
+        unique_trace_ids = list(dict.fromkeys(trace_id for trace_id in trace_ids if trace_id))
+        if not unique_trace_ids:
+            return {}
+
+        sources: dict[str, dict[str, Any]] = {}
+        chunk_size = 500
+        for start in range(0, len(unique_trace_ids), chunk_size):
+            chunk = unique_trace_ids[start : start + chunk_size]
+            params: dict[str, Any] = {"project_id": project_id}
+            trace_id_placeholders: list[str] = []
+            for index, trace_id in enumerate(chunk):
+                param_key = f"trace_id_{index}"
+                trace_id_placeholders.append(f"{{{param_key}:String}}")
+                params[param_key] = trace_id
+
+            rows = await self._query_json_each_row(
+                """
+                SELECT
+                    id AS traceId,
+                    project_id AS projectId,
+                    name,
+                    environment,
+                    user_id AS userId,
+                    session_id AS sessionId,
+                    timestamp AS createdAt,
+                    updated_at AS updatedAt,
+                    input,
+                    output,
+                    metadata,
+                    tags
+                FROM traces
+                WHERE project_id = {project_id:String}
+                  AND id IN (__TRACE_IDS__)
+                  AND is_deleted = 0
+                FORMAT JSONEachRow
+                """.replace("__TRACE_IDS__", ", ".join(trace_id_placeholders)),
+                params,
+            )
+            for row in rows:
+                trace_id = row["traceId"]
+                sources[trace_id] = {
+                    **self._to_trace_row(
+                        {
+                            **row,
+                            "status": _trace_status_from_metadata(
+                                row.get("metadata") or {},
+                                False,
+                            ),
+                            "latency": 0,
+                        }
+                    ),
+                    "updatedAt": _format_clickhouse_datetime(row.get("updatedAt")),
+                    "input": _format_payload(row.get("input")),
+                    "output": _format_payload(row.get("output")),
+                    "metadata": row.get("metadata") or {},
+                }
+        return sources
+
     async def _fetch_trace_rows(
         self,
         project_id: str,

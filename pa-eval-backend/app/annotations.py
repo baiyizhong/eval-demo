@@ -363,6 +363,15 @@ def _payload_to_text(value: Any) -> str:
     return json.dumps(value, ensure_ascii=False)
 
 
+def _payload_to_filter_value(value: Any) -> Any:
+    if not isinstance(value, str):
+        return value
+    try:
+        return json.loads(value)
+    except json.JSONDecodeError:
+        return value
+
+
 def _matches_payload_filter(
     item: dict[str, Any],
     field: Literal["input", "output"],
@@ -371,7 +380,7 @@ def _matches_payload_filter(
     if not payload_filter.key.strip() and not payload_filter.value.strip():
         return True
     source = item.get("source") or {}
-    payload = source.get(field)
+    payload = _payload_to_filter_value(source.get(field))
     key = payload_filter.key.strip()
     value = (
         _get_nested_value(payload, key)
@@ -422,6 +431,34 @@ async def _enrich_annotation_items_with_trace_source(
         enriched_items.append(_merge_trace_source(item, trace))
 
     return enriched_items
+
+
+async def _enrich_annotation_items_with_trace_sources(
+    project_id: str,
+    items: list[dict[str, Any]],
+    trace_reader: LangfuseClickHouseReader,
+) -> list[dict[str, Any]]:
+    trace_ids = [
+        str(item.get("objectId") or "")
+        for item in items
+        if item.get("objectType") == "TRACE"
+        and _needs_trace_source(item)
+        and item.get("objectId")
+    ]
+    if not trace_ids:
+        return items
+
+    traces = await trace_reader.list_trace_sources(project_id, trace_ids)
+    if not traces:
+        return items
+
+    return [
+        _merge_trace_source(item, traces[str(item.get("objectId"))])
+        if item.get("objectType") == "TRACE"
+        and str(item.get("objectId") or "") in traces
+        else item
+        for item in items
+    ]
 
 
 def _needs_trace_source(item: dict[str, Any]) -> bool:
@@ -644,6 +681,18 @@ def _filter_annotation_items(
             if _matches_payload_filter(item, "output", output_filter)
         ]
     return filtered
+
+
+def _annotation_filters_require_source(
+    filters: AnnotationBatchFiltersPayload,
+) -> bool:
+    return bool(
+        filters.keyword
+        or filters.metadata_filter
+        or filters.metadata_filters
+        or filters.input_filters
+        or filters.output_filters
+    )
 
 
 async def _get_scoped_annotation_export_items(
@@ -1297,16 +1346,6 @@ async def count_annotation_queue_item_filters(
     reader: LangfuseDatabaseReader = Depends(get_langfuse_db_reader),
     trace_reader: LangfuseClickHouseReader = Depends(get_langfuse_clickhouse_reader),
 ) -> dict[str, Any]:
-    items = await reader.list_annotation_queue_items_for_user(
-        project_id,
-        queue_id,
-        current_user.user_id,
-    )
-    items = await _enrich_annotation_items_with_trace_source(
-        project_id,
-        items,
-        trace_reader,
-    )
     effective_status = _first_non_empty_list(status, status_bracket)
     effective_object_type = _first_non_empty_list(object_type, object_type_bracket)
     effective_completed_by = _first_non_empty_list(completed_by, completed_by_bracket)
@@ -1318,31 +1357,43 @@ async def count_annotation_queue_item_filters(
     parsed_metadata_filters = _parse_metadata_filters_query(metadata_filters)
     parsed_input_filters = _parse_filter_conditions_query(input_filters, "Input")
     parsed_output_filters = _parse_filter_conditions_query(output_filters, "Output")
+    filters_payload = AnnotationBatchFiltersPayload(
+        keyword=keyword or "",
+        status=effective_status or [],
+        objectType=effective_object_type or [],
+        completedBy=effective_completed_by or [],
+        assigneeIds=effective_assignee_ids or [],
+        createdAtFrom=created_at_from,
+        createdAtTo=created_at_to,
+        completedAtFrom=completed_at_from,
+        completedAtTo=completed_at_to,
+        hasScores=has_scores,
+        metadataFilter=MetadataFilterPayload(
+            key=metadata_key,
+            operator=metadata_operator,
+            value=metadata_value,
+        )
+        if metadata_key
+        else None,
+        metadataFilters=parsed_metadata_filters,
+        inputFilters=parsed_input_filters,
+        outputFilters=parsed_output_filters,
+        itemIds=effective_item_ids or [],
+    )
+    items = await reader.list_annotation_queue_items_for_user(
+        project_id,
+        queue_id,
+        current_user.user_id,
+    )
+    if _annotation_filters_require_source(filters_payload):
+        items = await _enrich_annotation_items_with_trace_sources(
+            project_id,
+            items,
+            trace_reader,
+        )
     counts = _annotation_item_filter_counts(
         items,
-        AnnotationBatchFiltersPayload(
-            keyword=keyword or "",
-            status=effective_status or [],
-            objectType=effective_object_type or [],
-            completedBy=effective_completed_by or [],
-            assigneeIds=effective_assignee_ids or [],
-            createdAtFrom=created_at_from,
-            createdAtTo=created_at_to,
-            completedAtFrom=completed_at_from,
-            completedAtTo=completed_at_to,
-            hasScores=has_scores,
-            metadataFilter=MetadataFilterPayload(
-                key=metadata_key,
-                operator=metadata_operator,
-                value=metadata_value,
-            )
-            if metadata_key
-            else None,
-            metadataFilters=parsed_metadata_filters,
-            inputFilters=parsed_input_filters,
-            outputFilters=parsed_output_filters,
-            itemIds=effective_item_ids or [],
-        ),
+        filters_payload,
     )
     return success(counts)
 
@@ -1397,17 +1448,6 @@ async def list_annotation_queue_items(
     reader: LangfuseDatabaseReader = Depends(get_langfuse_db_reader),
     trace_reader: LangfuseClickHouseReader = Depends(get_langfuse_clickhouse_reader),
 ) -> dict[str, Any]:
-    items = await reader.list_annotation_queue_items_for_user(
-        project_id,
-        queue_id,
-        current_user.user_id,
-    )
-    items = await _enrich_annotation_items_with_trace_source(
-        project_id,
-        items,
-        trace_reader,
-    )
-    filtered = [item for item in items if _matches_item_keyword(item, keyword)]
     effective_status = _first_non_empty_list(status, status_bracket)
     effective_object_type = _first_non_empty_list(object_type, object_type_bracket)
     effective_completed_by = _first_non_empty_list(completed_by, completed_by_bracket)
@@ -1419,33 +1459,50 @@ async def list_annotation_queue_items(
     parsed_metadata_filters = _parse_metadata_filters_query(metadata_filters)
     parsed_input_filters = _parse_filter_conditions_query(input_filters, "Input")
     parsed_output_filters = _parse_filter_conditions_query(output_filters, "Output")
-    filtered = _filter_annotation_items(
-        filtered,
-        AnnotationBatchFiltersPayload(
-            keyword="",
-            status=effective_status or [],
-            objectType=effective_object_type or [],
-            completedBy=effective_completed_by or [],
-            assigneeIds=effective_assignee_ids or [],
-            createdAtFrom=created_at_from,
-            createdAtTo=created_at_to,
-            completedAtFrom=completed_at_from,
-            completedAtTo=completed_at_to,
-            hasScores=has_scores,
-            metadataFilter=MetadataFilterPayload(
-                key=metadata_key,
-                operator=metadata_operator,
-                value=metadata_value,
-            )
-            if metadata_key
-            else None,
-            metadataFilters=parsed_metadata_filters,
-            inputFilters=parsed_input_filters,
-            outputFilters=parsed_output_filters,
-            itemIds=effective_item_ids or [],
-        ),
+    filters_payload = AnnotationBatchFiltersPayload(
+        keyword=keyword or "",
+        status=effective_status or [],
+        objectType=effective_object_type or [],
+        completedBy=effective_completed_by or [],
+        assigneeIds=effective_assignee_ids or [],
+        createdAtFrom=created_at_from,
+        createdAtTo=created_at_to,
+        completedAtFrom=completed_at_from,
+        completedAtTo=completed_at_to,
+        hasScores=has_scores,
+        metadataFilter=MetadataFilterPayload(
+            key=metadata_key,
+            operator=metadata_operator,
+            value=metadata_value,
+        )
+        if metadata_key
+        else None,
+        metadataFilters=parsed_metadata_filters,
+        inputFilters=parsed_input_filters,
+        outputFilters=parsed_output_filters,
+        itemIds=effective_item_ids or [],
     )
-    return success(_paginate(filtered, page, page_size))
+    items = await reader.list_annotation_queue_items_for_user(
+        project_id,
+        queue_id,
+        current_user.user_id,
+    )
+    needs_source_for_filtering = _annotation_filters_require_source(filters_payload)
+    if needs_source_for_filtering:
+        items = await _enrich_annotation_items_with_trace_sources(
+            project_id,
+            items,
+            trace_reader,
+        )
+    filtered = _filter_annotation_items(items, filters_payload)
+    paginated = _paginate(filtered, page, page_size)
+    if not needs_source_for_filtering:
+        paginated["datas"] = await _enrich_annotation_items_with_trace_source(
+            project_id,
+            paginated["datas"],
+            trace_reader,
+        )
+    return success(paginated)
 
 
 @router.post("/annotation-queues/{queue_id}/items")
@@ -1472,6 +1529,7 @@ async def get_annotation_queue_item(
     item_id: str,
     current_user: CurrentUserContext = Depends(get_current_user_context),
     reader: LangfuseDatabaseReader = Depends(get_langfuse_db_reader),
+    trace_reader: LangfuseClickHouseReader = Depends(get_langfuse_clickhouse_reader),
 ) -> dict[str, Any]:
     item = await reader.get_annotation_queue_item_for_user(
         project_id,
@@ -1479,6 +1537,12 @@ async def get_annotation_queue_item(
         item_id,
         current_user.user_id,
     )
+    enriched_items = await _enrich_annotation_items_with_trace_source(
+        project_id,
+        [item],
+        trace_reader,
+    )
+    item = enriched_items[0]
     return success(item)
 
 
@@ -1531,12 +1595,23 @@ async def preview_annotation_batch(
         queue_id,
         current_user.user_id,
     )
-    items = await _enrich_annotation_items_with_trace_source(
-        project_id,
-        items,
-        trace_reader,
-    )
-    return success(_annotation_batch_preview(items, payload.filters, payload.limit))
+    needs_source_for_filtering = _annotation_filters_require_source(payload.filters)
+    if needs_source_for_filtering:
+        items = await _enrich_annotation_items_with_trace_sources(
+            project_id,
+            items,
+            trace_reader,
+        )
+
+    preview = _annotation_batch_preview(items, payload.filters, payload.limit)
+    if not needs_source_for_filtering:
+        preview["samples"] = await _enrich_annotation_items_with_trace_source(
+            project_id,
+            preview["samples"],
+            trace_reader,
+        )
+
+    return success(preview)
 
 
 @router.post("/annotation-queues/{queue_id}/batch-scores")
@@ -1553,11 +1628,12 @@ async def save_annotation_batch_scores(
         queue_id,
         current_user.user_id,
     )
-    items = await _enrich_annotation_items_with_trace_source(
-        project_id,
-        items,
-        trace_reader,
-    )
+    if _annotation_filters_require_source(payload.filters):
+        items = await _enrich_annotation_items_with_trace_sources(
+            project_id,
+            items,
+            trace_reader,
+        )
     filtered = _filter_annotation_items(items, payload.filters)
     pending_items = [item for item in filtered if item["status"] == "PENDING"]
     completed_count = len([item for item in filtered if item["status"] == "COMPLETED"])

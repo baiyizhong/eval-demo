@@ -317,6 +317,21 @@ class FakeAnnotationDatabaseReader:
             },
         ]
 
+    async def get_annotation_queue_item_for_user(
+        self,
+        project_id: str,
+        queue_id: str,
+        item_id: str,
+        user_id: str,
+    ) -> dict:
+        self.calls.append(("get_item", (project_id, queue_id, item_id, user_id)))
+        items = await self.list_annotation_queue_items_for_user(
+            project_id,
+            queue_id,
+            user_id,
+        )
+        return next(item for item in items if item["id"] == item_id)
+
     async def update_annotation_queue_item_assignees_for_user(
         self,
         project_id: str,
@@ -354,7 +369,12 @@ class FakeAnnotationDatabaseReader:
 
 
 class FakeAnnotationTraceReader:
+    def __init__(self) -> None:
+        self.calls: list[tuple[str, str]] = []
+        self.source_calls: list[tuple[str, list[str]]] = []
+
     async def get_trace(self, project_id: str, trace_id: str) -> dict:
+        self.calls.append((project_id, trace_id))
         return {
             "traceId": trace_id,
             "sessionId": "session-1",
@@ -374,6 +394,35 @@ class FakeAnnotationTraceReader:
             "callChain": [],
         }
 
+    async def list_trace_sources(
+        self,
+        project_id: str,
+        trace_ids: list[str],
+    ) -> dict[str, dict]:
+        self.source_calls.append((project_id, trace_ids))
+        return {
+            trace_id: {
+                "traceId": trace_id,
+                "sessionId": "session-1",
+                "projectId": project_id,
+                "projectName": "",
+                "environment": "default",
+                "status": "success",
+                "latency": 120,
+                "createdAt": "2026-07-06T01:00:00.000Z",
+                "updatedAt": "2026-07-06T01:00:01.000Z",
+                "userId": "user-1",
+                "businessId": "app-1",
+                "tags": [],
+                "input": {"question": f"问题 {trace_id}"},
+                "output": {"answer": f"回答 {trace_id}"},
+                "metadata": {
+                    "app_id": "target-app" if trace_id == "trace-0999" else "other-app"
+                },
+            }
+            for trace_id in trace_ids
+        }
+
 
 def override_reader(fake_reader: FakeAnnotationDatabaseReader) -> None:
     async def _override() -> LangfuseDatabaseReader:
@@ -383,6 +432,22 @@ def override_reader(fake_reader: FakeAnnotationDatabaseReader) -> None:
     app.dependency_overrides[get_langfuse_clickhouse_reader] = lambda: (
         FakeAnnotationTraceReader()
     )
+    app.dependency_overrides[get_current_user_context] = lambda: CurrentUserContext(
+        user_id="user-1",
+        email="octocat@example.com",
+        login="octocat",
+    )
+
+
+def override_reader_and_trace_reader(
+    fake_reader: FakeAnnotationDatabaseReader,
+    fake_trace_reader: FakeAnnotationTraceReader,
+) -> None:
+    async def _override() -> LangfuseDatabaseReader:
+        return fake_reader  # type: ignore[return-value]
+
+    app.dependency_overrides[get_langfuse_db_reader] = _override
+    app.dependency_overrides[get_langfuse_clickhouse_reader] = lambda: fake_trace_reader
     app.dependency_overrides[get_current_user_context] = lambda: CurrentUserContext(
         user_id="user-1",
         email="octocat@example.com",
@@ -946,6 +1011,356 @@ def test_lists_annotation_items_enriches_empty_trace_source() -> None:
     assert item["source"]["userId"] == "user-1"
 
 
+def test_gets_annotation_item_enriches_only_current_trace_source() -> None:
+    fake_reader = FakeAnnotationDatabaseReader()
+    fake_trace_reader = FakeAnnotationTraceReader()
+    override_reader_and_trace_reader(fake_reader, fake_trace_reader)
+
+    try:
+        response = TestClient(app).get(
+            "/api/projects/project-1/annotation-queues/queue-1/items/item-1"
+        )
+    finally:
+        clear_overrides()
+
+    assert response.status_code == 200
+    item = response.json()["data"]
+    assert item["id"] == "item-1"
+    assert item["source"]["input"] == '{"question":"退款多久到账"}'
+    assert item["source"]["output"] == '{"answer":"通常 1-3 个工作日到账"}'
+    assert item["source"]["metadata"] == {"app_id": "app-1"}
+    assert fake_trace_reader.calls == [("project-1", "trace-1")]
+
+
+def test_lists_large_annotation_queue_enriches_only_current_page() -> None:
+    class LargeQueueReader(FakeAnnotationDatabaseReader):
+        async def list_annotation_queue_items_for_user(
+            self,
+            project_id: str,
+            queue_id: str,
+            user_id: str,
+        ) -> list[dict]:
+            self.calls.append(("list_items", (project_id, queue_id, user_id)))
+            return [
+                {
+                    "id": f"item-{index:04d}",
+                    "projectId": project_id,
+                    "queueId": queue_id,
+                    "objectId": f"trace-{index:04d}",
+                    "objectType": "TRACE",
+                    "status": "PENDING",
+                    "source": {
+                        "objectId": f"trace-{index:04d}",
+                        "objectType": "TRACE",
+                        "title": f"trace-{index:04d}",
+                        "input": {},
+                        "output": {},
+                        "metadata": {},
+                        "traceId": f"trace-{index:04d}",
+                        "observationId": "",
+                        "sessionId": "",
+                        "userId": "",
+                        "latencyMs": 0,
+                        "costUsd": 0,
+                        "createdAt": "2026-07-06T01:00:00.000Z",
+                    },
+                    "scores": [],
+                    "completedAt": "",
+                    "completedBy": None,
+                    "assignee": None,
+                    "createdAt": "2026-07-06T01:00:00.000Z",
+                    "updatedAt": "2026-07-06T01:00:00.000Z",
+                }
+                for index in range(1000)
+            ]
+
+    fake_reader = LargeQueueReader()
+    fake_trace_reader = FakeAnnotationTraceReader()
+    override_reader_and_trace_reader(fake_reader, fake_trace_reader)
+
+    try:
+        response = TestClient(app).get(
+            "/api/projects/project-1/annotation-queues/queue-1/items",
+            params={"page": 2, "pageSize": 10},
+        )
+    finally:
+        clear_overrides()
+
+    assert response.status_code == 200
+    body = response.json()["data"]
+    assert body["total"] == 1000
+    assert [item["id"] for item in body["datas"]] == [
+        f"item-{index:04d}" for index in range(10, 20)
+    ]
+    assert len(fake_trace_reader.calls) == 10
+    assert [trace_id for _, trace_id in fake_trace_reader.calls] == [
+        f"trace-{index:04d}" for index in range(10, 20)
+    ]
+
+
+def test_counts_large_annotation_queue_filters_without_trace_enrichment() -> None:
+    class LargeQueueReader(FakeAnnotationDatabaseReader):
+        async def list_annotation_queue_items_for_user(
+            self,
+            project_id: str,
+            queue_id: str,
+            user_id: str,
+        ) -> list[dict]:
+            self.calls.append(("list_items", (project_id, queue_id, user_id)))
+            return [
+                {
+                    "id": f"item-{index:04d}",
+                    "projectId": project_id,
+                    "queueId": queue_id,
+                    "objectId": f"trace-{index:04d}",
+                    "objectType": "TRACE",
+                    "status": "PENDING" if index % 2 == 0 else "COMPLETED",
+                    "source": {
+                        "objectId": f"trace-{index:04d}",
+                        "objectType": "TRACE",
+                        "title": f"trace-{index:04d}",
+                        "input": {},
+                        "output": {},
+                        "metadata": {},
+                        "traceId": f"trace-{index:04d}",
+                        "observationId": "",
+                        "sessionId": "",
+                        "userId": "",
+                        "latencyMs": 0,
+                        "costUsd": 0,
+                        "createdAt": "2026-07-06T01:00:00.000Z",
+                    },
+                    "scores": [],
+                    "completedAt": "",
+                    "completedBy": None,
+                    "assignee": {"id": "user-1", "name": "Octocat", "email": ""},
+                    "createdAt": "2026-07-06T01:00:00.000Z",
+                    "updatedAt": "2026-07-06T01:00:00.000Z",
+                }
+                for index in range(1000)
+            ]
+
+    fake_reader = LargeQueueReader()
+    fake_trace_reader = FakeAnnotationTraceReader()
+    override_reader_and_trace_reader(fake_reader, fake_trace_reader)
+
+    try:
+        response = TestClient(app).get(
+            "/api/projects/project-1/annotation-queues/queue-1/items/filter-counts"
+        )
+    finally:
+        clear_overrides()
+
+    assert response.status_code == 200
+    assert response.json()["data"]["status"] == {"PENDING": 500, "COMPLETED": 500}
+    assert fake_trace_reader.calls == []
+
+
+def test_lists_large_annotation_queue_with_metadata_filter_uses_batch_trace_sources() -> None:
+    class LargeQueueReader(FakeAnnotationDatabaseReader):
+        async def list_annotation_queue_items_for_user(
+            self,
+            project_id: str,
+            queue_id: str,
+            user_id: str,
+        ) -> list[dict]:
+            self.calls.append(("list_items", (project_id, queue_id, user_id)))
+            return [
+                {
+                    "id": f"item-{index:04d}",
+                    "projectId": project_id,
+                    "queueId": queue_id,
+                    "objectId": f"trace-{index:04d}",
+                    "objectType": "TRACE",
+                    "status": "PENDING",
+                    "source": {
+                        "objectId": f"trace-{index:04d}",
+                        "objectType": "TRACE",
+                        "title": f"trace-{index:04d}",
+                        "input": {},
+                        "output": {},
+                        "metadata": {},
+                        "traceId": f"trace-{index:04d}",
+                        "observationId": "",
+                        "sessionId": "",
+                        "userId": "",
+                        "latencyMs": 0,
+                        "costUsd": 0,
+                        "createdAt": "2026-07-06T01:00:00.000Z",
+                    },
+                    "scores": [],
+                    "completedAt": "",
+                    "completedBy": None,
+                    "assignee": None,
+                    "createdAt": "2026-07-06T01:00:00.000Z",
+                    "updatedAt": "2026-07-06T01:00:00.000Z",
+                }
+                for index in range(1000)
+            ]
+
+    fake_reader = LargeQueueReader()
+    fake_trace_reader = FakeAnnotationTraceReader()
+    override_reader_and_trace_reader(fake_reader, fake_trace_reader)
+
+    try:
+        response = TestClient(app).get(
+            "/api/projects/project-1/annotation-queues/queue-1/items",
+            params={
+                "page": 1,
+                "pageSize": 10,
+                "metadataFilters": (
+                    '[{"key":"app_id","operator":"equals","value":"target-app"}]'
+                ),
+            },
+        )
+    finally:
+        clear_overrides()
+
+    assert response.status_code == 200
+    body = response.json()["data"]
+    assert body["total"] == 1
+    assert [item["id"] for item in body["datas"]] == ["item-0999"]
+    assert fake_trace_reader.calls == []
+    assert fake_trace_reader.source_calls == [
+        ("project-1", [f"trace-{index:04d}" for index in range(1000)])
+    ]
+
+
+def test_counts_large_annotation_queue_with_metadata_filter_uses_batch_trace_sources() -> None:
+    class LargeQueueReader(FakeAnnotationDatabaseReader):
+        async def list_annotation_queue_items_for_user(
+            self,
+            project_id: str,
+            queue_id: str,
+            user_id: str,
+        ) -> list[dict]:
+            self.calls.append(("list_items", (project_id, queue_id, user_id)))
+            return [
+                {
+                    "id": f"item-{index:04d}",
+                    "projectId": project_id,
+                    "queueId": queue_id,
+                    "objectId": f"trace-{index:04d}",
+                    "objectType": "TRACE",
+                    "status": "PENDING" if index % 2 == 0 else "COMPLETED",
+                    "source": {
+                        "objectId": f"trace-{index:04d}",
+                        "objectType": "TRACE",
+                        "title": f"trace-{index:04d}",
+                        "input": {},
+                        "output": {},
+                        "metadata": {},
+                        "traceId": f"trace-{index:04d}",
+                        "observationId": "",
+                        "sessionId": "",
+                        "userId": "",
+                        "latencyMs": 0,
+                        "costUsd": 0,
+                        "createdAt": "2026-07-06T01:00:00.000Z",
+                    },
+                    "scores": [],
+                    "completedAt": "",
+                    "completedBy": None,
+                    "assignee": None,
+                    "createdAt": "2026-07-06T01:00:00.000Z",
+                    "updatedAt": "2026-07-06T01:00:00.000Z",
+                }
+                for index in range(1000)
+            ]
+
+    fake_reader = LargeQueueReader()
+    fake_trace_reader = FakeAnnotationTraceReader()
+    override_reader_and_trace_reader(fake_reader, fake_trace_reader)
+
+    try:
+        response = TestClient(app).get(
+            "/api/projects/project-1/annotation-queues/queue-1/items/filter-counts",
+            params={
+                "metadataFilters": (
+                    '[{"key":"app_id","operator":"equals","value":"target-app"}]'
+                ),
+            },
+        )
+    finally:
+        clear_overrides()
+
+    assert response.status_code == 200
+    assert response.json()["data"]["status"] == {"PENDING": 0, "COMPLETED": 1}
+    assert fake_trace_reader.calls == []
+    assert fake_trace_reader.source_calls == [
+        ("project-1", [f"trace-{index:04d}" for index in range(1000)])
+    ]
+
+
+def test_previews_large_annotation_batch_enriches_only_preview_samples() -> None:
+    class LargeQueueReader(FakeAnnotationDatabaseReader):
+        async def list_annotation_queue_items_for_user(
+            self,
+            project_id: str,
+            queue_id: str,
+            user_id: str,
+        ) -> list[dict]:
+            self.calls.append(("list_items", (project_id, queue_id, user_id)))
+            return [
+                {
+                    "id": f"item-{index:04d}",
+                    "projectId": project_id,
+                    "queueId": queue_id,
+                    "objectId": f"trace-{index:04d}",
+                    "objectType": "TRACE",
+                    "status": "PENDING",
+                    "source": {
+                        "objectId": f"trace-{index:04d}",
+                        "objectType": "TRACE",
+                        "title": f"trace-{index:04d}",
+                        "input": {},
+                        "output": {},
+                        "metadata": {},
+                        "traceId": f"trace-{index:04d}",
+                        "observationId": "",
+                        "sessionId": "",
+                        "userId": "",
+                        "latencyMs": 0,
+                        "costUsd": 0,
+                        "createdAt": "2026-07-06T01:00:00.000Z",
+                    },
+                    "scores": [],
+                    "completedAt": "",
+                    "completedBy": None,
+                    "assignee": None,
+                    "createdAt": "2026-07-06T01:00:00.000Z",
+                    "updatedAt": "2026-07-06T01:00:00.000Z",
+                }
+                for index in range(1000)
+            ]
+
+    fake_reader = LargeQueueReader()
+    fake_trace_reader = FakeAnnotationTraceReader()
+    override_reader_and_trace_reader(fake_reader, fake_trace_reader)
+
+    try:
+        response = TestClient(app).post(
+            "/api/projects/project-1/annotation-queues/queue-1/batch-preview",
+            json={
+                "filters": {"status": ["PENDING"], "objectType": ["TRACE"]},
+                "limit": 5,
+            },
+        )
+    finally:
+        clear_overrides()
+
+    assert response.status_code == 200
+    body = response.json()["data"]
+    assert body["totalCount"] == 1000
+    assert body["pendingCount"] == 1000
+    assert [item["id"] for item in body["samples"]] == [
+        f"item-{index:04d}" for index in range(5)
+    ]
+    assert [trace_id for _, trace_id in fake_trace_reader.calls] == [
+        f"trace-{index:04d}" for index in range(5)
+    ]
+
+
 def test_bulk_saves_annotation_scores_only_for_pending_filtered_items() -> None:
     fake_reader = FakeAnnotationDatabaseReader()
     override_reader(fake_reader)
@@ -994,6 +1409,80 @@ def test_bulk_saves_annotation_scores_only_for_pending_filtered_items() -> None:
             ("project-1", "queue-1", "item-2", "user-1", {"scores": scores}),
         ),
     ]
+
+
+def test_bulk_saves_large_annotation_batch_by_item_ids_without_trace_enrichment() -> None:
+    class LargeQueueReader(FakeAnnotationDatabaseReader):
+        async def list_annotation_queue_items_for_user(
+            self,
+            project_id: str,
+            queue_id: str,
+            user_id: str,
+        ) -> list[dict]:
+            self.calls.append(("list_items", (project_id, queue_id, user_id)))
+            return [
+                {
+                    "id": f"item-{index:04d}",
+                    "projectId": project_id,
+                    "queueId": queue_id,
+                    "objectId": f"trace-{index:04d}",
+                    "objectType": "TRACE",
+                    "status": "PENDING",
+                    "source": {
+                        "objectId": f"trace-{index:04d}",
+                        "objectType": "TRACE",
+                        "title": f"trace-{index:04d}",
+                        "input": {},
+                        "output": {},
+                        "metadata": {},
+                        "traceId": f"trace-{index:04d}",
+                        "observationId": "",
+                        "sessionId": "",
+                        "userId": "",
+                        "latencyMs": 0,
+                        "costUsd": 0,
+                        "createdAt": "2026-07-06T01:00:00.000Z",
+                    },
+                    "scores": [],
+                    "completedAt": "",
+                    "completedBy": None,
+                    "assignee": None,
+                    "createdAt": "2026-07-06T01:00:00.000Z",
+                    "updatedAt": "2026-07-06T01:00:00.000Z",
+                }
+                for index in range(1000)
+            ]
+
+    scores = [
+        {
+            "configId": "score-1",
+            "value": 3,
+            "stringValue": "",
+            "comment": "批量保存当前页选中项",
+        }
+    ]
+    target_ids = ["item-0001", "item-0003", "item-0005"]
+    fake_reader = LargeQueueReader()
+    fake_trace_reader = FakeAnnotationTraceReader()
+    override_reader_and_trace_reader(fake_reader, fake_trace_reader)
+
+    try:
+        response = TestClient(app).post(
+            "/api/projects/project-1/annotation-queues/queue-1/batch-scores",
+            json={
+                "filters": {"status": ["PENDING"], "itemIds": target_ids},
+                "scores": scores,
+                "expectedPendingCount": len(target_ids),
+            },
+        )
+    finally:
+        clear_overrides()
+
+    assert response.status_code == 200
+    body = response.json()["data"]
+    assert body["successCount"] == len(target_ids)
+    assert body["successItemIds"] == target_ids
+    assert fake_trace_reader.calls == []
 
 
 def test_bulk_saves_annotation_scores_with_input_output_filters() -> None:

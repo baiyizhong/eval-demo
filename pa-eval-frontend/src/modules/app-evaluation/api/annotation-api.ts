@@ -42,6 +42,7 @@ type AnnotationApiClient = {
   deleteProjectAnnotationQueue: ApiMethod
   getProjectAnnotationQueueMetrics: ApiMethod
   getProjectAnnotationQueueItems: ApiMethod
+  getProjectAnnotationQueueItem: ApiMethod
   getProjectAnnotationQueueItemFilterCounts: ApiMethod
   deleteProjectAnnotationQueueItems: ApiMethod
   updateProjectAnnotationQueueItemAssignees: ApiMethod
@@ -328,6 +329,17 @@ export function listProjectAnnotationQueueItems(
   })
 }
 
+export function getProjectAnnotationQueueItem(
+  api: AnnotationApiClient,
+  projectId: string,
+  queueId: string,
+  itemId: string
+) {
+  return api.getProjectAnnotationQueueItem<AnnotationQueueItemRecord>({
+    path: { projectId, queueId, itemId },
+  })
+}
+
 export function getProjectAnnotationQueueItemFilterCounts(
   api: AnnotationApiClient,
   projectId: string,
@@ -497,28 +509,31 @@ export async function getProjectAnnotationNavigation(
   projectId: string,
   queueId: string,
   itemId: string,
-  query: DataTableQueryState
+  query: DataTableQueryState,
+  currentItem?: AnnotationQueueItemRecord
 ): Promise<AnnotationNavigationResult> {
+  const current =
+    currentItem ??
+    (await getProjectAnnotationQueueItem(api, projectId, queueId, itemId))
   const result = await listProjectAnnotationQueueItems(
     api,
     projectId,
     queueId,
     {
       ...query,
-      page: 1,
-      pageSize: 5000,
+      page: query.page,
+      pageSize: query.pageSize,
     }
   )
   const index = result.datas.findIndex((item) => item.id === itemId)
-  if (index < 0) {
-    throw new Error('当前筛选条件下找不到该标注数据')
-  }
+  const absoluteIndex =
+    index >= 0 ? (query.page - 1) * query.pageSize + index : 0
 
   return {
-    current: result.datas[index],
-    previous: result.datas[index - 1] ?? null,
-    next: result.datas[index + 1] ?? null,
-    index,
+    current,
+    previous: index >= 0 ? (result.datas[index - 1] ?? null) : null,
+    next: index >= 0 ? (result.datas[index + 1] ?? null) : null,
+    index: absoluteIndex,
     total: result.total,
   }
 }

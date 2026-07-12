@@ -24,6 +24,10 @@ const queueListSource = readFileSync(
   'src/modules/app-evaluation/views/annotation-queues.tsx',
   'utf8'
 )
+const annotationBatchSource = readFileSync(
+  'src/modules/app-evaluation/views/annotation-batch.tsx',
+  'utf8'
+)
 
 test('annotation queue list exposes the batch annotation entry', () => {
   assert.match(queueColumnsSource, /开始标注/)
@@ -68,10 +72,7 @@ test('batch annotation api helpers call preview and submit endpoints', () => {
 })
 
 test('batch annotation workspace focuses on pending item scoring layout', () => {
-  const pageSource = readFileSync(
-    'src/modules/app-evaluation/views/annotation-batch.tsx',
-    'utf8'
-  )
+  const pageSource = annotationBatchSource
   const scoreFormSource = readFileSync(
     'src/modules/app-evaluation/components/annotation-score-form.tsx',
     'utf8'
@@ -141,4 +142,53 @@ test('batch annotation workspace focuses on pending item scoring layout', () => 
   assert.doesNotMatch(pageSource, /按当前筛选批量标注/)
   assert.doesNotMatch(pageSource, /上次提交结果/)
   assert.doesNotMatch(pageSource, /confirm\(/)
+})
+
+test('batch annotation hides locally completed items only in pending view', () => {
+  assert.match(
+    annotationBatchSource,
+    /const hideLocallyCompletedItems = statusView === 'PENDING'/
+  )
+  assert.match(
+    annotationBatchSource,
+    /hideLocallyCompletedItems\s*\?\s*\(itemDatas \?\? \[\]\)\.filter/
+  )
+  assert.doesNotMatch(
+    annotationBatchSource,
+    /\(itemDatas \?\? \[\]\)\.filter\(\(item\) => !completedItemIds\.includes\(item\.id\)\)/
+  )
+})
+
+test('batch advanced filters are edited as drafts and applied explicitly', () => {
+  assert.match(annotationBatchSource, /draftMetadataFilters/)
+  assert.match(annotationBatchSource, /draftInputFilters/)
+  assert.match(annotationBatchSource, /draftOutputFilters/)
+  assert.match(annotationBatchSource, /const applyDraftFilters = \(\) =>/)
+  assert.match(annotationBatchSource, />\s*应用\s*</)
+
+  assert.match(
+    annotationBatchSource,
+    /title='Metadata'[\s\S]*filters=\{draftMetadataFilters\}[\s\S]*onChange=\{setDraftMetadataFilters\}/
+  )
+  assert.match(
+    annotationBatchSource,
+    /title='Input'[\s\S]*filters=\{draftInputFilters\}[\s\S]*onChange=\{setDraftInputFilters\}/
+  )
+  assert.match(
+    annotationBatchSource,
+    /title='Output'[\s\S]*filters=\{draftOutputFilters\}[\s\S]*onChange=\{setDraftOutputFilters\}/
+  )
+
+  assert.doesNotMatch(
+    annotationBatchSource,
+    /title='Metadata'[\s\S]*onChange=\{onMetadataFiltersChange\}/
+  )
+  assert.doesNotMatch(
+    annotationBatchSource,
+    /title='Input'[\s\S]*onChange=\{onInputFiltersChange\}/
+  )
+  assert.doesNotMatch(
+    annotationBatchSource,
+    /title='Output'[\s\S]*onChange=\{onOutputFiltersChange\}/
+  )
 })

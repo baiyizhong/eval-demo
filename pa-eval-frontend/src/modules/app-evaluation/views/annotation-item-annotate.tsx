@@ -15,6 +15,7 @@ import { Page } from '@/components/common/page'
 import { PageAction } from '@/components/common/page-action'
 import {
   addProjectAnnotationItemToDataset,
+  getProjectAnnotationQueueItem,
   getProjectAnnotationNavigation,
   getProjectAnnotationQueue,
   saveProjectAnnotationScores,
@@ -43,7 +44,7 @@ export function ProjectAnnotationItemAnnotate() {
 
   const queryState = useMemo(
     () => ({
-      page: 1,
+      page: Math.max(1, Number(searchParams.get('page') ?? 1) || 1),
       pageSize: Number(searchParams.get('pageSize') ?? 10),
       keyword: searchParams.get('keyword') ?? '',
       filters: {
@@ -62,6 +63,13 @@ export function ProjectAnnotationItemAnnotate() {
     enabled: Boolean(queueId),
   })
 
+  const itemQuery = useQuery({
+    queryKey: ['project-annotation-item', $api, projectId, queueId, itemId],
+    queryFn: () =>
+      getProjectAnnotationQueueItem($api, projectId, queueId, itemId),
+    enabled: Boolean(queueId && itemId),
+  })
+
   const navigationQuery = useQuery({
     queryKey: [
       'project-annotation-navigation',
@@ -70,6 +78,7 @@ export function ProjectAnnotationItemAnnotate() {
       queueId,
       itemId,
       queryState,
+      itemQuery.data,
     ],
     queryFn: () =>
       getProjectAnnotationNavigation(
@@ -77,9 +86,10 @@ export function ProjectAnnotationItemAnnotate() {
         projectId,
         queueId,
         itemId,
-        queryState
+        queryState,
+        itemQuery.data
       ),
-    enabled: Boolean(queueId && itemId),
+    enabled: Boolean(queueId && itemId && itemQuery.data),
   })
 
   const invalidateAnnotation = useCallback(
@@ -87,6 +97,9 @@ export function ProjectAnnotationItemAnnotate() {
       Promise.all([
         queryClient.invalidateQueries({
           queryKey: ['project-annotation-navigation'],
+        }),
+        queryClient.invalidateQueries({
+          queryKey: ['project-annotation-item'],
         }),
         queryClient.invalidateQueries({
           queryKey: ['project-annotation-queue'],
@@ -105,7 +118,7 @@ export function ProjectAnnotationItemAnnotate() {
   )
 
   const navigation = navigationQuery.data
-  const item = navigation?.current
+  const item = itemQuery.data ?? navigation?.current
   const queue = queueQuery.data
 
   const goToItem = (nextItemId: string) => {
@@ -217,15 +230,17 @@ export function ProjectAnnotationItemAnnotate() {
           {item ? (
             <div className='flex min-w-0 flex-wrap items-center gap-2 text-sm'>
               <span className='font-medium'>{item.id}</span>
-              <span className='text-muted-foreground'>
-                第 {navigation.index + 1} / {navigation.total} 条
-              </span>
+              {navigation ? (
+                <span className='text-muted-foreground'>
+                  第 {navigation.index + 1} / {navigation.total} 条
+                </span>
+              ) : null}
               <span className='text-muted-foreground'>{queue?.name}</span>
             </div>
           ) : null}
         </PageAction>
 
-        {navigationQuery.isLoading || queueQuery.isLoading ? (
+        {itemQuery.isLoading || navigationQuery.isLoading || queueQuery.isLoading ? (
           <Loading text='加载标注详情中...' className='flex-1' />
         ) : null}
 

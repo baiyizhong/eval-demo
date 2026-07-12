@@ -373,10 +373,15 @@ export function ProjectAnnotationBatch() {
   const itemDatas = useMockFallback
     ? filteredMockItems.slice((page - 1) * pageSize, page * pageSize)
     : itemsQuery.data?.datas
+  const hideLocallyCompletedItems = statusView === 'PENDING'
   const items = useMemo(
     () =>
-      (itemDatas ?? []).filter((item) => !completedItemIds.includes(item.id)),
-    [completedItemIds, itemDatas]
+      hideLocallyCompletedItems
+        ? (itemDatas ?? []).filter(
+            (item) => !completedItemIds.includes(item.id)
+          )
+        : (itemDatas ?? []),
+    [completedItemIds, hideLocallyCompletedItems, itemDatas]
   )
   const selectedItemIdsOnPage = useMemo(
     () =>
@@ -412,11 +417,13 @@ export function ProjectAnnotationBatch() {
       usersQuery.data,
     ]
   )
-  const localCompletedCount = useMockFallback
+  const localCompletedCount = hideLocallyCompletedItems
     ? completedItemIds.filter((itemId) =>
-        filteredMockItems.some((item) => item.id === itemId)
+        (useMockFallback ? filteredMockItems : (itemDatas ?? [])).some(
+          (item) => item.id === itemId
+        )
       ).length
-    : completedItemIds.length
+    : 0
   const totalItems = Math.max(
     0,
     (useMockFallback
@@ -1253,13 +1260,40 @@ function BatchAdvancedFilterPopover({
   onOutputFiltersChange: (filters: BatchFilterCondition[]) => void
   onReset: () => void
 }) {
+  const [draftMetadataFilters, setDraftMetadataFilters] =
+    useState(metadataFilters)
+  const [draftInputFilters, setDraftInputFilters] = useState(inputFilters)
+  const [draftOutputFilters, setDraftOutputFilters] = useState(outputFilters)
   const activeCount =
     compactFilterConditions(metadataFilters).length +
     compactFilterConditions(inputFilters).length +
     compactFilterConditions(outputFilters).length
 
+  const handleOpenChange = (nextOpen: boolean) => {
+    if (nextOpen) {
+      setDraftMetadataFilters(metadataFilters)
+      setDraftInputFilters(inputFilters)
+      setDraftOutputFilters(outputFilters)
+    }
+    onOpenChange(nextOpen)
+  }
+
+  const resetDraftFilters = () => {
+    setDraftMetadataFilters([])
+    setDraftInputFilters([])
+    setDraftOutputFilters([])
+    onReset()
+  }
+
+  const applyDraftFilters = () => {
+    onMetadataFiltersChange(draftMetadataFilters)
+    onInputFiltersChange(draftInputFilters)
+    onOutputFiltersChange(draftOutputFilters)
+    onOpenChange(false)
+  }
+
   return (
-    <Popover open={open} onOpenChange={onOpenChange}>
+    <Popover open={open} onOpenChange={handleOpenChange}>
       <PopoverTrigger asChild>
         <Button type='button' variant='outline' size='sm'>
           <SlidersHorizontal data-icon='inline-start' />
@@ -1277,7 +1311,12 @@ function BatchAdvancedFilterPopover({
               按 Metadata、Input、Output 的 key/value 组合过滤当前待标注数据。
             </p>
           </div>
-          <Button type='button' variant='ghost' size='sm' onClick={onReset}>
+          <Button
+            type='button'
+            variant='ghost'
+            size='sm'
+            onClick={resetDraftFilters}
+          >
             重置
           </Button>
         </div>
@@ -1285,21 +1324,34 @@ function BatchAdvancedFilterPopover({
           <BatchFilterEditor
             title='Metadata'
             target='metadata'
-            filters={metadataFilters}
-            onChange={onMetadataFiltersChange}
+            filters={draftMetadataFilters}
+            onChange={setDraftMetadataFilters}
           />
           <BatchFilterEditor
             title='Input'
             target='input'
-            filters={inputFilters}
-            onChange={onInputFiltersChange}
+            filters={draftInputFilters}
+            onChange={setDraftInputFilters}
           />
           <BatchFilterEditor
             title='Output'
             target='output'
-            filters={outputFilters}
-            onChange={onOutputFiltersChange}
+            filters={draftOutputFilters}
+            onChange={setDraftOutputFilters}
           />
+        </div>
+        <div className='mt-4 flex justify-end gap-2 border-t pt-3'>
+          <Button
+            type='button'
+            variant='ghost'
+            size='sm'
+            onClick={() => handleOpenChange(false)}
+          >
+            取消
+          </Button>
+          <Button type='button' size='sm' onClick={applyDraftFilters}>
+            应用
+          </Button>
         </div>
       </PopoverContent>
     </Popover>

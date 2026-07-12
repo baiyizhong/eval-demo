@@ -10,6 +10,10 @@ const pageSource = readFileSync(
   'src/modules/app-evaluation/views/annotation-item-annotate.tsx',
   'utf8'
 )
+const apiSource = readFileSync(
+  'src/modules/app-evaluation/api/annotation-api.ts',
+  'utf8'
+)
 
 test('annotation score form uses compact list rows instead of heavy cards', () => {
   assert.match(source, /annotation-score-list/)
@@ -81,4 +85,14 @@ test('annotation source panel uses lightweight sections instead of nested cards'
   assert.doesNotMatch(sourcePanel, /@\/components\/ui\/card/)
   assert.match(sourcePanel, /AnnotationSourceSection/)
   assert.match(sourcePanel, /formatAnnotationScoreDisplay/)
+})
+
+test('annotation detail loads current item without large page navigation fetch', () => {
+  assert.match(apiSource, /getProjectAnnotationQueueItem: ApiMethod/)
+  assert.match(apiSource, /export function getProjectAnnotationQueueItem/)
+  assert.match(pageSource, /getProjectAnnotationQueueItem/)
+  assert.doesNotMatch(
+    apiSource,
+    /getProjectAnnotationNavigation[\s\S]{0,900}pageSize:\s*5000/
+  )
 })
