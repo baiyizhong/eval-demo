@@ -1,4 +1,10 @@
-import { useEffect, useMemo, useState, type ReactNode } from 'react'
+import {
+  useCallback,
+  useEffect,
+  useMemo,
+  useState,
+  type ReactNode,
+} from 'react'
 import { keepPreviousData, useQuery } from '@tanstack/react-query'
 import {
   flexRender,
@@ -10,6 +16,7 @@ import {
   type ColumnFiltersState,
   type OnChangeFn,
   type PaginationState,
+  type RowSelectionState,
   type SortingState,
   type Table as ReactTable,
   type VisibilityState,
@@ -35,6 +42,7 @@ import {
 import { getDataTableRootClassName } from './layout'
 import { DataTablePagination } from './pagination'
 import { DataTableProvider, useOptionalDataTableContext } from './provider'
+import { DataTableSelectAllBanner } from './select-all-banner'
 import { DataTableToolbar } from './toolbar'
 
 export type DataTableListResponse<TData> = {
@@ -132,6 +140,17 @@ type DataTableProviderConfig<
   initialOpen?: TAction | null
 }
 
+export type DataTableSelectionState<TData> = {
+  isAllMatchingRowsSelected: boolean
+  selectedRowCount: number
+  selectedPageRowCount: number
+  totalRowCount: number
+  pageCount: number
+  queryState: DataTableQueryState
+  clearSelection: () => void
+  currentPageRows: TData[]
+}
+
 export type DataTableProps<
   TData,
   TResponse = DataTableListResponse<TData>,
@@ -144,7 +163,10 @@ export type DataTableProps<
   filterPanel?: DataTableFilterPanelConfig
   toolbar?: DataTableToolbarConfig
   provider?: DataTableProviderConfig<TAction, TContext>
-  bulkActions?: (table: ReactTable<TData>) => ReactNode
+  bulkActions?: (
+    table: ReactTable<TData>,
+    selection: DataTableSelectionState<TData>
+  ) => ReactNode
   enableRowSelection?: boolean
   emptyText?: string
   errorText?: string
@@ -203,7 +225,9 @@ function DataTableContent<
   const [filterPanelCollapsed, setFilterPanelCollapsed] = useState(
     filterPanel?.advanceFilterCollapsed ?? true
   )
-  const [rowSelection, setRowSelection] = useState({})
+  const [rowSelection, setRowSelection] = useState<RowSelectionState>({})
+  const [isAllMatchingRowsSelected, setIsAllMatchingRowsSelected] =
+    useState(false)
   const [columnVisibility, setColumnVisibility] = useState<VisibilityState>({})
 
   const pageKey = urlState?.pageKey ?? 'page'
@@ -269,9 +293,10 @@ function DataTableContent<
     placeholderData: keepPreviousData,
   })
 
-  useEffect(() => {
+  const clearSelection = useCallback(() => {
+    setIsAllMatchingRowsSelected(false)
     setRowSelection({})
-  }, [page, pageSize])
+  }, [])
 
   const rows = useMemo(
     () => selectResponseRows(query.data, request.selectRows),
@@ -282,6 +307,30 @@ function DataTableContent<
     [query.data, request.selectTotal]
   )
   const pageCount = Math.max(1, Math.ceil(total / pageSize))
+
+  useEffect(() => {
+    clearSelection()
+  }, [clearSelection, filters, keyword, pageSize, sorting])
+
+  useEffect(() => {
+    if (isAllMatchingRowsSelected) {
+      setRowSelection(getPageRowSelection(rows.length))
+      return
+    }
+
+    setRowSelection({})
+  }, [isAllMatchingRowsSelected, page, rows.length])
+
+  useEffect(() => {
+    if (!isAllMatchingRowsSelected || rows.length === 0) {
+      return
+    }
+
+    const selectedCount = countSelectedRows(rowSelection)
+    if (selectedCount < rows.length) {
+      setIsAllMatchingRowsSelected(false)
+    }
+  }, [isAllMatchingRowsSelected, rowSelection, rows.length])
 
   const updateSearchParams = (
     updater: (nextParams: URLSearchParams) => void
@@ -447,6 +496,25 @@ function DataTableContent<
   })
 
   const isFilterPanelCollapsed = filterPanel?.collapsed ?? filterPanelCollapsed
+  const selectedPageRowCount = table.getFilteredSelectedRowModel().rows.length
+  const currentPageRowCount = table.getRowModel().rows.length
+  const canSelectAllMatchingRows =
+    enableRowSelection && currentPageRowCount > 0 && total > currentPageRowCount
+  const shouldShowSelectAllBanner =
+    canSelectAllMatchingRows &&
+    (isAllMatchingRowsSelected || table.getIsAllPageRowsSelected())
+  const selectionState: DataTableSelectionState<TData> = {
+    isAllMatchingRowsSelected,
+    selectedRowCount: isAllMatchingRowsSelected
+      ? total
+      : selectedPageRowCount,
+    selectedPageRowCount,
+    totalRowCount: total,
+    pageCount,
+    queryState,
+    clearSelection,
+    currentPageRows: rows,
+  }
 
   return (
     <div
@@ -495,6 +563,20 @@ function DataTableContent<
           onFilterValueChange={handleToolbarFilterValueChange}
           columnLabels={toolbar?.columnLabels}
         />
+
+        {shouldShowSelectAllBanner ? (
+          <DataTableSelectAllBanner
+            isAllSelected={isAllMatchingRowsSelected}
+            selectedPageCount={selectedPageRowCount}
+            totalCount={total}
+            pageCount={pageCount}
+            onSelectAll={() => {
+              setIsAllMatchingRowsSelected(true)
+              setRowSelection(getPageRowSelection(rows.length))
+            }}
+            onClear={clearSelection}
+          />
+        ) : null}
 
         <div className='min-h-0 flex-1 overflow-x-auto rounded-md border'>
           <Table
@@ -569,7 +651,7 @@ function DataTableContent<
           totalRows={total}
           className='mt-auto'
         />
-        {bulkActions ? bulkActions(table) : null}
+        {bulkActions ? bulkActions(table, selectionState) : null}
       </div>
     </div>
   )
@@ -737,6 +819,20 @@ function serializeSorting(sorting: SortingState) {
 
 function normalizeWidth(width: number | string) {
   return typeof width === 'number' ? `${width}px` : width
+}
+
+function getPageRowSelection(rowCount: number): RowSelectionState {
+  return Array.from({ length: rowCount }).reduce<RowSelectionState>(
+    (selection, _, index) => {
+      selection[String(index)] = true
+      return selection
+    },
+    {}
+  )
+}
+
+function countSelectedRows(rowSelection: RowSelectionState) {
+  return Object.values(rowSelection).filter(Boolean).length
 }
 
 function selectResponseRows<TData, TResponse>(

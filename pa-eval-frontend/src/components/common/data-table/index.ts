@@ -11,6 +11,7 @@ export type {
   DataTableListResponse,
   DataTableProps,
   DataTableQueryState,
+  DataTableSelectionState,
   DataTableToolbarFilter,
 } from './data-table'
 export type { DataTableContextValue } from './provider'

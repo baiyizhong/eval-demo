@@ -11,25 +11,33 @@ import { toast } from 'sonner'
 import { useAPI } from '@/hooks/use-api'
 import { usePermission } from '@/hooks/use-permission'
 import { Button } from '@/components/ui/button'
-import { DataTableBulkActions } from '@/components/common/data-table'
+import {
+  DataTableBulkActions,
+  type DataTableSelectionState,
+} from '@/components/common/data-table'
 import {
   addProjectTracesToDatasetTarget,
   type TraceDatasetTargetInput,
 } from '../api/trace-dataset-api'
-import type { TraceLogRow } from '../types'
+import type { TraceListResponse, TraceLogRow } from '../types'
+import { buildTraceListQuery } from '../views/trace-logs-query'
 import { TraceAnnotationDialog } from './trace-annotation-dialog'
 import {
   TraceDatasetDialog,
   type TraceDatasetSubmitValues,
 } from './trace-dataset-dialog'
 
+const TRACE_SELECT_ALL_PAGE_SIZE = 200
+
 type TraceLogBulkActionsProps = {
   table: Table<TraceLogRow>
+  selection?: DataTableSelectionState<TraceLogRow>
   projectId: string
 }
 
 export function TraceLogBulkActions({
   table,
+  selection,
   projectId,
 }: TraceLogBulkActionsProps) {
   const $api = useAPI()
@@ -40,11 +48,56 @@ export function TraceLogBulkActions({
   const [annotationDialogOpen, setAnnotationDialogOpen] = useState(false)
   const selectedRows = table.getFilteredSelectedRowModel().rows
   const selectedTraces = selectedRows.map((row) => row.original)
-  const traceIds = selectedRows.map((row) => row.original.traceId)
+  const selectedCount = selection?.selectedRowCount ?? selectedRows.length
   const projectName = selectedTraces[0]?.projectName || projectId
+  const isCrossPageSelection = Boolean(selection?.isAllMatchingRowsSelected)
+
+  const fetchAllMatchingTraces = async () => {
+    if (!selection || !selection.isAllMatchingRowsSelected) {
+      return selectedTraces
+    }
+
+    const pageCount = Math.ceil(
+      selection.totalRowCount / TRACE_SELECT_ALL_PAGE_SIZE
+    )
+    const traces: TraceLogRow[] = []
+
+    for (let page = 1; page <= pageCount; page += 1) {
+      const response = await $api.listProjectTraces<TraceListResponse>({
+        path: { projectId },
+        query: buildTraceListQuery(
+          {
+            ...selection.queryState,
+            page,
+            pageSize: TRACE_SELECT_ALL_PAGE_SIZE,
+          },
+          projectId
+        ),
+      })
+      traces.push(...response.datas)
+    }
+
+    return traces.slice(0, selection.totalRowCount)
+  }
+
+  const resolveSelectedTraces = async () => fetchAllMatchingTraces()
+
+  const resolveSelectedTraceIds = async () => {
+    const traces = await resolveSelectedTraces()
+    return traces.map((trace) => trace.traceId)
+  }
+
+  const clearBulkSelection = () => {
+    if (selection) {
+      selection.clearSelection()
+      return
+    }
+
+    table.resetRowSelection()
+  }
 
   const handleExport = async () => {
-    const traces = selectedTraces
+    const traces = await resolveSelectedTraces()
     const blob = new Blob([JSON.stringify(traces, null, 2)], {
       type: 'application/json',
     })
@@ -59,6 +112,7 @@ export function TraceLogBulkActions({
 
   const handleCreateAnnotationTask = async (queueId: string) => {
     try {
+      const traceIds = await resolveSelectedTraceIds()
       const result = await createTraceAnnotationTask(
         $api,
         projectId,
@@ -73,7 +127,7 @@ export function TraceLogBulkActions({
       toast.success(
         `已加入人工标注队列：新增 ${result.createdCount} 条，跳过 ${result.skippedCount} 条`
       )
-      table.resetRowSelection()
+      clearBulkSelection()
     } catch (error) {
       toast.error(
         error instanceof Error ? error.message : '创建人工标注任务失败'
@@ -86,6 +140,7 @@ export function TraceLogBulkActions({
   ) => {
     try {
       const queue = await createProjectAnnotationQueue($api, projectId, input)
+      const traceIds = await resolveSelectedTraceIds()
       const result = await createTraceAnnotationTask(
         $api,
         projectId,
@@ -100,7 +155,7 @@ export function TraceLogBulkActions({
       toast.success(
         `已创建人工标注任务：新增 ${result.createdCount} 条，跳过 ${result.skippedCount} 条`
       )
-      table.resetRowSelection()
+      clearBulkSelection()
     } catch (error) {
       toast.error(
         error instanceof Error ? error.message : '创建人工标注任务失败'
@@ -111,6 +166,7 @@ export function TraceLogBulkActions({
 
   const handleAddToDataset = async (values: TraceDatasetSubmitValues) => {
     try {
+      const traceIds = await resolveSelectedTraceIds()
       const input: TraceDatasetTargetInput =
         values.mode === 'existing'
           ? {
@@ -145,7 +201,7 @@ export function TraceLogBulkActions({
           ? `${successMessage}，失败 ${result.failureCount} 条`
           : successMessage
       )
-      table.resetRowSelection()
+      clearBulkSelection()
     } catch (error) {
       toast.error(error instanceof Error ? error.message : '加入数据集失败')
       throw error
@@ -154,7 +210,11 @@ export function TraceLogBulkActions({
 
   return (
     <>
-      <DataTableBulkActions table={table} entityName='Trace'>
+      <DataTableBulkActions
+        table={table}
+        selection={selection}
+        entityName='Trace'
+      >
         <Button
           type='button'
           size='sm'
@@ -193,6 +253,8 @@ export function TraceLogBulkActions({
         projectId={projectId}
         projectName={projectName}
         traces={selectedTraces}
+        selectedCount={selectedCount}
+        isCrossPageSelection={isCrossPageSelection}
         onOpenChange={setDatasetDialogOpen}
         onSubmit={handleAddToDataset}
       />
@@ -201,6 +263,8 @@ export function TraceLogBulkActions({
         projectId={projectId}
         projectName={projectName}
         traces={selectedTraces}
+        selectedCount={selectedCount}
+        isCrossPageSelection={isCrossPageSelection}
         onOpenChange={setAnnotationDialogOpen}
         onSubmitExisting={handleCreateAnnotationTask}
         onSubmitNew={handleCreateAnnotationQueueAndTask}

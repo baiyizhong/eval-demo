@@ -61,6 +61,8 @@ type TraceAnnotationDialogProps = {
   open: boolean
   projectId: string
   traces: TraceLogRow[]
+  selectedCount?: number
+  isCrossPageSelection?: boolean
   projectName?: string
   onOpenChange: (open: boolean) => void
   onSubmitExisting: (queueId: string) => Promise<void> | void
@@ -79,6 +81,8 @@ export function TraceAnnotationDialog({
   open,
   projectId,
   traces,
+  selectedCount,
+  isCrossPageSelection = false,
   projectName,
   onOpenChange,
   onSubmitExisting,
@@ -110,8 +114,11 @@ export function TraceAnnotationDialog({
   const users = usersQuery.data ?? []
   const confirmFormId = mode === 'existing' ? existingFormId : newFormId
   const description = useMemo(
-    () => `将 ${traces.length} 条 Trace 加入人工标注队列。`,
-    [traces.length]
+    () =>
+      isCrossPageSelection
+        ? `将符合当前筛选条件的 ${selectedCount ?? traces.length} 条 Trace 加入人工标注队列。`
+        : `将 ${selectedCount ?? traces.length} 条 Trace 加入人工标注队列。`,
+    [isCrossPageSelection, selectedCount, traces.length]
   )
 
   return (

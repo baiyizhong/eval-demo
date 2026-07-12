@@ -59,6 +59,8 @@ type TraceDatasetDialogProps = {
   open: boolean
   projectId: string
   traces: TraceLogRow[]
+  selectedCount?: number
+  isCrossPageSelection?: boolean
   projectName?: string
   onOpenChange: (open: boolean) => void
   onSubmit: (values: TraceDatasetSubmitValues) => Promise<void> | void
@@ -76,6 +78,8 @@ export function TraceDatasetDialog({
   open,
   projectId,
   traces,
+  selectedCount,
+  isCrossPageSelection = false,
   projectName,
   onOpenChange,
   onSubmit,
@@ -92,8 +96,11 @@ export function TraceDatasetDialog({
   const confirmFormId = mode === 'existing' ? existingFormId : createFormId
   const datasets = datasetsQuery.data?.datas ?? []
   const description = useMemo(
-    () => `将 ${traces.length} 条 Trace 写入目标数据集。`,
-    [traces.length]
+    () =>
+      isCrossPageSelection
+        ? `将符合当前筛选条件的 ${selectedCount ?? traces.length} 条 Trace 写入目标数据集。`
+        : `将 ${selectedCount ?? traces.length} 条 Trace 写入目标数据集。`,
+    [isCrossPageSelection, selectedCount, traces.length]
   )
 
   return (

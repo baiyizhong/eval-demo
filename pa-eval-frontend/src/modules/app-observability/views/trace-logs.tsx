@@ -87,8 +87,12 @@ export function TraceLogs() {
               advanceFilterCollapsed: true,
               width: 320,
             }}
-            bulkActions={(table) => (
-              <TraceLogBulkActions table={table} projectId={projectId} />
+            bulkActions={(table, selection) => (
+              <TraceLogBulkActions
+                table={table}
+                selection={selection}
+                projectId={projectId}
+              />
             )}
             loadingText={
               <Loading
