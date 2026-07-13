@@ -1,4 +1,5 @@
 import json
+import hashlib
 from datetime import datetime, timedelta, timezone
 from typing import Any
 from uuid import uuid4
@@ -154,10 +155,20 @@ class LangfuseDatabaseConfigError(BusinessError):
         )
 
 
+class LangfuseSaltConfigError(BusinessError):
+    def __init__(self) -> None:
+        super().__init__(
+            code=2005,
+            message="Langfuse SALT 未配置",
+            status_code=500,
+        )
+
+
 class LangfuseDatabaseReader:
     def __init__(self, settings: Settings) -> None:
         self._settings = settings
         self._database_url = settings.langfuse_database_url
+        self._langfuse_salt = settings.langfuse_salt
 
     async def list_organizations(self) -> list[dict[str, Any]]:
         rows = await self._fetch_all(
@@ -603,6 +614,8 @@ class LangfuseDatabaseReader:
     ) -> dict[str, Any]:
         if not self._database_url:
             raise LangfuseDatabaseConfigError()
+        if not self._langfuse_salt:
+            raise LangfuseSaltConfigError()
 
         key_id = _new_langfuse_id("papikey")
         public_key = f"pk-lf-{uuid4()}"
@@ -659,6 +672,14 @@ class LangfuseDatabaseReader:
                     },
                 )
                 row = await cursor.fetchone()
+                await self._insert_langfuse_project_api_key(
+                    cursor=cursor,
+                    key_id=key_id,
+                    project_id=project_id,
+                    note=note,
+                    public_key=public_key,
+                    secret_key=secret_key,
+                )
 
         assert row is not None
         return self._to_project_api_key_payload(row)
@@ -736,11 +757,24 @@ class LangfuseDatabaseReader:
                     DELETE FROM pa_project_api_keys
                     WHERE id = %(id)s
                       AND project_id = %(project_id)s
-                    RETURNING id
+                    RETURNING id, public_key
                     """,
                     {"id": key_id, "project_id": project_id},
                 )
                 row = await cursor.fetchone()
+                if row is not None:
+                    await cursor.execute(
+                        """
+                        DELETE FROM api_keys
+                        WHERE project_id = %(project_id)s
+                          AND public_key = %(public_key)s
+                          AND scope = 'PROJECT'
+                        """,
+                        {
+                            "project_id": project_id,
+                            "public_key": row["public_key"],
+                        },
+                    )
 
         if row is None:
             raise BusinessError(
@@ -749,6 +783,57 @@ class LangfuseDatabaseReader:
                 status_code=404,
             )
         return {"id": row["id"]}
+
+    async def _insert_langfuse_project_api_key(
+        self,
+        *,
+        cursor: Any,
+        key_id: str,
+        project_id: str,
+        note: str,
+        public_key: str,
+        secret_key: str,
+    ) -> None:
+        await cursor.execute(
+            """
+            INSERT INTO api_keys (
+                id,
+                created_at,
+                note,
+                public_key,
+                hashed_secret_key,
+                display_secret_key,
+                project_id,
+                fast_hashed_secret_key,
+                scope,
+                is_in_app_agent_key
+            )
+            VALUES (
+                %(id)s,
+                NOW(),
+                %(note)s,
+                %(public_key)s,
+                %(hashed_secret_key)s,
+                %(display_secret_key)s,
+                %(project_id)s,
+                %(fast_hashed_secret_key)s,
+                'PROJECT',
+                false
+            )
+            """,
+            {
+                "id": key_id,
+                "note": note,
+                "public_key": public_key,
+                "hashed_secret_key": f"pa-eval-placeholder-{uuid4()}",
+                "display_secret_key": _display_secret_key(secret_key),
+                "project_id": project_id,
+                "fast_hashed_secret_key": _create_sha_hash(
+                    secret_key,
+                    self._langfuse_salt,
+                ),
+            },
+        )
 
     async def get_project_model_settings_for_user(
         self,
@@ -6771,6 +6856,15 @@ def _format_datetime(value: Any) -> str:
             return f"{formatted}Z"
         return formatted.replace("+00:00", "Z")
     return str(value)
+
+
+def _create_sha_hash(secret_key: str, salt: str) -> str:
+    salt_hash = hashlib.sha256(salt.encode("utf-8")).hexdigest()
+    return hashlib.sha256((secret_key + salt_hash).encode("utf-8")).hexdigest()
+
+
+def _display_secret_key(secret_key: str) -> str:
+    return f"{secret_key[:6]}...{secret_key[-4:]}"
 
 
 def _to_float_or_none(value: Any) -> float | None:

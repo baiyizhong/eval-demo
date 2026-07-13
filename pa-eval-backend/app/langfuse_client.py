@@ -36,7 +36,8 @@ class LangfuseAdminClient:
         method: str,
         path: str,
         json: dict[str, Any] | None = None,
-    ) -> dict[str, Any]:
+        allow_not_found: bool = False,
+    ) -> dict[str, Any] | None:
         if not self._admin_api_key:
             raise LangfuseConfigError()
 
@@ -53,6 +54,8 @@ class LangfuseAdminClient:
                     return response.json()
                 return {}
         except httpx.HTTPStatusError as exc:
+            if allow_not_found and exc.response.status_code == 404:
+                return None
             message = self._extract_error_message(exc.response)
             raise LangfuseUpstreamError(message=message, status_code=502) from exc
         except httpx.HTTPError as exc:

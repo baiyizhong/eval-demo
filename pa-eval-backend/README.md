@@ -36,6 +36,7 @@ uv run uvicorn app.main:app --reload --port 8000
 ```bash
 LANGFUSE_BASE_URL=http://localhost:3000
 LANGFUSE_ADMIN_API_KEY=replace-with-langfuse-admin-api-key
+LANGFUSE_SALT=replace-with-langfuse-salt
 PA_EVAL_CORS_ORIGINS=http://localhost:5173
 ```
 

@@ -411,9 +411,10 @@ async def create_project_api_key(
     current_user: CurrentUserContext = Depends(get_current_user_context),
     reader: LangfuseDatabaseReader = Depends(get_langfuse_db_reader),
 ) -> dict[str, Any]:
+    note = payload.note.strip() or "未命名 Key"
     api_key = await reader.create_project_api_key(
         project_id=project_id,
-        note=payload.note.strip() or "未命名 Key",
+        note=note,
         user_email=current_user.email,
         user_id=current_user.user_id,
     )

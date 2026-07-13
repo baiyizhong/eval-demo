@@ -22,6 +22,7 @@ class FakeProjectApiKeyReader:
             }
         ]
         self.visible_checks: list[tuple[str, str]] = []
+        self.deleted_keys: list[tuple[str, str]] = []
 
     async def ensure_project_visible(self, project_id: str, user_id: str) -> None:
         self.visible_checks.append((project_id, user_id))
@@ -79,6 +80,7 @@ class FakeProjectApiKeyReader:
         user_id: str,
     ) -> dict[str, str]:
         await self.ensure_project_visible(project_id, user_id)
+        self.deleted_keys.append((project_id, key_id))
         self.keys = [
             item
             for item in self.keys

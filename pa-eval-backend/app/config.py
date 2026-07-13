@@ -8,6 +8,7 @@ from pydantic_settings import BaseSettings, SettingsConfigDict
 class Settings(BaseSettings):
     langfuse_base_url: str = Field(default="http://localhost:3000")
     langfuse_admin_api_key: str = Field(default="")
+    langfuse_salt: str = Field(default="")
     langfuse_database_url: str = Field(default="")
     langfuse_clickhouse_url: str = Field(default="http://localhost:8123")
     langfuse_clickhouse_user: str = Field(default="clickhouse")
