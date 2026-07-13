@@ -6,6 +6,7 @@ import { MoreHorizontal, Plus } from 'lucide-react'
 import { useParams } from 'react-router'
 import { toast } from 'sonner'
 import type { ApiErrorPayload } from '@/api/types'
+import { refreshSessionStore } from '@/lib/session-refresh'
 import { useSessionStore } from '@/stores/session.store'
 import { useAPI } from '@/hooks/use-api'
 import { usePermission } from '@/hooks/use-permission'
@@ -235,6 +236,13 @@ export function ProjectMembersSettings() {
       }),
     ])
 
+  const refreshProjectSession = async () => {
+    await refreshSessionStore($api)
+    if (projectId) {
+      useSessionStore.getState().setCurrentProjectId(projectId)
+    }
+  }
+
   const createMutation = useMutation({
     mutationFn: (input: { email: string; role: ProjectRole }) =>
       $api.createProjectMember<ProjectUserRecord>({
@@ -242,7 +250,7 @@ export function ProjectMembersSettings() {
         body: input,
       }),
     onSuccess: async () => {
-      await invalidateMembers()
+      await Promise.all([invalidateMembers(), refreshProjectSession()])
       setDialogOpen(false)
       toast.success('项目成员已添加')
     },
@@ -253,9 +261,9 @@ export function ProjectMembersSettings() {
       $api.updateProjectMember<ProjectUserRecord>({
         path: { projectId, memberId: input.memberId },
         body: { role: input.role },
-      }),
+    }),
     onSuccess: async (_data, variables) => {
-      await invalidateMembers()
+      await Promise.all([invalidateMembers(), refreshProjectSession()])
       setDialogOpen(false)
       setEditingMember(null)
       toast.success(
@@ -268,9 +276,9 @@ export function ProjectMembersSettings() {
     mutationFn: (memberId: string) =>
       $api.deleteProjectMember<{ id: string }>({
         path: { projectId, memberId },
-      }),
+    }),
     onSuccess: async () => {
-      await invalidateMembers()
+      await Promise.all([invalidateMembers(), refreshProjectSession()])
       setRemovingMember(null)
       toast.success('项目角色覆盖已移除')
     },

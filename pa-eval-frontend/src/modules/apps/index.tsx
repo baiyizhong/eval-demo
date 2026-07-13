@@ -17,8 +17,10 @@ import { Boxes, FolderKanban } from 'lucide-react'
 import { useNavigate } from 'react-router'
 import { toast } from 'sonner'
 import { confirm } from '@/lib/confirm'
+import { refreshSessionStore } from '@/lib/session-refresh'
 import { useAPI } from '@/hooks/use-api'
 import { usePermission } from '@/hooks/use-permission'
+import { useSessionStore } from '@/stores/session.store'
 import { Alert, AlertDescription, AlertTitle } from '@/components/ui/alert'
 import type { AppCardListItem } from '@/components/business/app-card-list'
 import { AppList } from '@/components/business/app-list'
@@ -149,7 +151,10 @@ export function Apps() {
       })
     },
     onSuccess: async () => {
-      await invalidateProjects()
+      await Promise.all([invalidateProjects(), refreshSessionStore($api)])
+      if (currentOrganizationId) {
+        useSessionStore.getState().setCurrentOrgId(currentOrganizationId)
+      }
       toast.success('项目创建成功')
       setFormOpen(false)
     },
@@ -160,7 +165,10 @@ export function Apps() {
         ? restoreProject($api, project.id)
         : archiveProject($api, project.id),
     onSuccess: async (_, project) => {
-      await invalidateProjects()
+      await Promise.all([invalidateProjects(), refreshSessionStore($api)])
+      if (currentOrganizationId) {
+        useSessionStore.getState().setCurrentOrgId(currentOrganizationId)
+      }
       toast.success(project.status === 'archived' ? '项目已恢复' : '项目已归档')
     },
   })

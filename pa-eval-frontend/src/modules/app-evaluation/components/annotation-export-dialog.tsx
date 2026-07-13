@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from 'react'
+import { useMemo, useState } from 'react'
 import { useQuery } from '@tanstack/react-query'
 import { FileArchive } from 'lucide-react'
 import { toast } from 'sonner'
@@ -85,6 +85,11 @@ const basePreviewColumns = [
   'metadata',
 ]
 
+const invalidFileNameCharsRegex = new RegExp(
+  String.raw`[\u0000-\u001F\u007F\\/:*?"<>|]+`,
+  'gu'
+)
+
 export function AnnotationExportDialog({
   open,
   onOpenChange,
@@ -98,8 +103,7 @@ export function AnnotationExportDialog({
   const [format, setFormat] = useState<AnnotationExportFormat>('xlsx')
   const [splitMetadata, setSplitMetadata] = useState(false)
   const [isExporting, setIsExporting] = useState(false)
-  const [fileName, setFileName] = useState('')
-  const [fileNameEdited, setFileNameEdited] = useState(false)
+  const [customFileName, setCustomFileName] = useState<string | null>(null)
   const selectedItemIds = useMemo(
     () => Array.from(new Set((itemIds ?? []).filter(Boolean))),
     [itemIds]
@@ -145,17 +149,15 @@ export function AnnotationExportDialog({
     () => (preview ? buildDefaultExportFileName(preview) : ''),
     [preview]
   )
+  const fileName = customFileName ?? defaultFileName
 
-  useEffect(() => {
-    if (!open) {
-      setFileName('')
-      setFileNameEdited(false)
-      return
+  const handleDialogOpenChange = (nextOpen: boolean) => {
+    if (isExporting && !nextOpen) return
+    if (!nextOpen) {
+      setCustomFileName(null)
     }
-    if (defaultFileName && !fileNameEdited) {
-      setFileName(defaultFileName)
-    }
-  }, [defaultFileName, fileNameEdited, open])
+    onOpenChange(nextOpen)
+  }
 
   const exportDisabled =
     isExporting ||
@@ -214,7 +216,7 @@ export function AnnotationExportDialog({
       )
       downloadBlob(blob, completedJob.fileName || `${queueId}-${job.id}.zip`)
       toast.success('导出完成')
-      onOpenChange(false)
+      handleDialogOpenChange(false)
     } catch (error) {
       toast.error(error instanceof Error ? error.message : '标注数据导出失败')
     } finally {
@@ -225,10 +227,7 @@ export function AnnotationExportDialog({
   return (
     <Dialog
       open={open}
-      onOpenChange={(nextOpen) => {
-        if (isExporting && !nextOpen) return
-        onOpenChange(nextOpen)
-      }}
+      onOpenChange={handleDialogOpenChange}
     >
       <DialogContent
         className='flex max-h-[calc(100svh-2rem)] flex-col gap-0 overflow-hidden p-0 sm:max-w-[1120px]'
@@ -315,8 +314,7 @@ export function AnnotationExportDialog({
                     value={fileName}
                     placeholder={defaultFileName || 'annotation-export.zip'}
                     onChange={(event) => {
-                      setFileName(event.target.value)
-                      setFileNameEdited(true)
+                      setCustomFileName(event.target.value)
                     }}
                   />
                   <div className='text-muted-foreground truncate text-[11px]'>
@@ -399,7 +397,7 @@ export function AnnotationExportDialog({
             type='button'
             variant='outline'
             disabled={isExporting}
-            onClick={() => onOpenChange(false)}
+            onClick={() => handleDialogOpenChange(false)}
           >
             取消
           </Button>
@@ -643,7 +641,7 @@ function normalizeExportFileName(value: string) {
 function sanitizeExportFileNamePart(value: string) {
   return (
     value
-      .replace(/[\x00-\x1f\x7f\\/:*?"<>|]+/g, '-')
+      .replace(invalidFileNameCharsRegex, '-')
       .replace(/\s+/g, ' ')
       .replace(/\.\.+/g, '')
       .trim()

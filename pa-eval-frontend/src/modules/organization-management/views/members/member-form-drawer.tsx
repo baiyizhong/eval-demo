@@ -10,6 +10,8 @@ import {
   type UpdateOrganizationMemberPayload,
 } from '@/modules/organization-management/data/schema'
 import { toast } from 'sonner'
+import { refreshSessionStore } from '@/lib/session-refresh'
+import { useSessionStore } from '@/stores/session.store'
 import { useAPI } from '@/hooks/use-api'
 import {
   FormControl,
@@ -114,7 +116,9 @@ export function MemberFormDrawer({
         queryClient.invalidateQueries({
           queryKey: ['organization-members-actor', organizationId],
         }),
+        refreshSessionStore($api),
       ])
+      useSessionStore.getState().setCurrentOrgId(organizationId)
       toast.success(
         isEditMode
           ? '成员角色已更新'

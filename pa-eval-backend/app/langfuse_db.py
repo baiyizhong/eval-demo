@@ -347,7 +347,7 @@ class LangfuseDatabaseReader:
                 }
             )
 
-        is_super_admin = self._is_super_admin(current_user.email)
+        is_super_admin = await self._is_super_admin(current_user.user_id)
 
         return {
             "user": {
@@ -359,8 +359,17 @@ class LangfuseDatabaseReader:
             "orgs": list(orgs_by_id.values()),
         }
 
-    def _is_super_admin(self, email: str) -> bool:
-        return email.strip().lower() in self._settings.super_admin_emails
+    async def _is_super_admin(self, user_id: str) -> bool:
+        rows = await self._fetch_all(
+            """
+            SELECT admin
+            FROM users
+            WHERE id = %(user_id)s
+            LIMIT 1
+            """,
+            {"user_id": user_id},
+        )
+        return bool(rows and rows[0].get("admin") is True)
 
     async def get_project_for_user(
         self,

@@ -15,7 +15,9 @@ import { useCurrentOrganizationRole } from '@/modules/organization-management/ho
 import { useOrganizations } from '@/modules/organization-management/hooks/use-organizations'
 import { MoreHorizontal, Plus } from 'lucide-react'
 import { toast } from 'sonner'
+import { refreshSessionStore } from '@/lib/session-refresh'
 import { useOrganizationStore } from '@/stores/organization.store'
+import { useSessionStore } from '@/stores/session.store'
 import { useAPI } from '@/hooks/use-api'
 import { usePermission } from '@/hooks/use-permission'
 import { Badge } from '@/components/ui/badge'
@@ -233,7 +235,11 @@ export function SettingsOrganizationMembers() {
         queryClient.invalidateQueries({
           queryKey: ['organization-members-actor', organizationId],
         }),
+        refreshSessionStore($api),
       ])
+      if (organizationId) {
+        useSessionStore.getState().setCurrentOrgId(organizationId)
+      }
       toast.success('成员已删除')
       setDeletingMember(null)
     },

@@ -8,7 +8,9 @@ import {
 } from '@/modules/organization-management/data/schema'
 import { organizationsQueryKey } from '@/modules/organization-management/hooks/use-organizations'
 import { toast } from 'sonner'
+import { refreshSessionStore } from '@/lib/session-refresh'
 import { useOrganizationStore } from '@/stores/organization.store'
+import { useSessionStore } from '@/stores/session.store'
 import { useAPI } from '@/hooks/use-api'
 import {
   FormControl,
@@ -54,8 +56,12 @@ export function CreateOrganizationDrawer({
       }),
     onSuccess: async (organization) => {
       upsertOrganization(organization)
+      await Promise.all([
+        queryClient.invalidateQueries({ queryKey: organizationsQueryKey }),
+        refreshSessionStore($api),
+      ])
       setCurrentOrganizationId(organization.id)
-      await queryClient.invalidateQueries({ queryKey: organizationsQueryKey })
+      useSessionStore.getState().setCurrentOrgId(organization.id)
       toast.success('组织创建成功')
       onOpenChange(false)
     },

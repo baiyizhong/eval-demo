@@ -1,14 +1,12 @@
-export namespace Prisma {
-  export type JsonValue =
-    | string
-    | number
-    | boolean
-    | null
-    | JsonObject
-    | JsonArray;
-  export type JsonObject = { [key: string]: JsonValue };
-  export type JsonArray = JsonValue[];
-}
+export type JsonValue =
+  | string
+  | number
+  | boolean
+  | null
+  | JsonObject
+  | JsonArray;
+export type JsonObject = { [key: string]: JsonValue };
+export type JsonArray = JsonValue[];
 
 export type ScoreDomain = {
   id: string;

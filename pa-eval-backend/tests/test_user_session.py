@@ -40,9 +40,14 @@ class FakeSessionDatabaseReader:
 
 
 class RecordingSessionDatabaseReader(LangfuseDatabaseReader):
-    def __init__(self, settings: Settings | None = None) -> None:
-        super().__init__(settings or Settings(pa_eval_super_admin_emails=""))
+    def __init__(
+        self,
+        settings: Settings | None = None,
+        user_admin: bool = False,
+    ) -> None:
+        super().__init__(settings or Settings())
         self.queries: list[tuple[str, dict]] = []
+        self.user_admin = user_admin
 
     async def _fetch_all(
         self,
@@ -64,22 +69,29 @@ class RecordingSessionDatabaseReader(LangfuseDatabaseReader):
                 },
             ]
 
+        if len(self.queries) == 2:
+            return [
+                {
+                    "project_id": "project-1",
+                    "project_name": "客服评测项目",
+                    "organization_id": "org-1",
+                    "organization_name": "PA 平台主组织",
+                    "organization_role": "OWNER",
+                    "role": "OWNER",
+                },
+                {
+                    "project_id": "project-2",
+                    "project_name": "项目专属权限",
+                    "organization_id": "org-2",
+                    "organization_name": "项目专属组织",
+                    "organization_role": "NONE",
+                    "role": "MEMBER",
+                },
+            ]
+
         return [
             {
-                "project_id": "project-1",
-                "project_name": "客服评测项目",
-                "organization_id": "org-1",
-                "organization_name": "PA 平台主组织",
-                "organization_role": "OWNER",
-                "role": "OWNER",
-            },
-            {
-                "project_id": "project-2",
-                "project_name": "项目专属权限",
-                "organization_id": "org-2",
-                "organization_name": "项目专属组织",
-                "organization_role": "NONE",
-                "role": "MEMBER",
+                "admin": self.user_admin,
             },
         ]
 
@@ -251,9 +263,10 @@ async def test_reader_builds_user_session_with_roles_and_permissions() -> None:
 
 
 @pytest.mark.anyio
-async def test_reader_marks_user_as_super_admin_from_email_whitelist() -> None:
+async def test_reader_marks_user_as_super_admin_from_users_admin_field() -> None:
     reader = RecordingSessionDatabaseReader(
-        Settings(pa_eval_super_admin_emails="owner@example.com, ADMIN@163.COM")
+        Settings(),
+        user_admin=True,
     )
 
     session = await reader.get_user_session(
@@ -266,3 +279,6 @@ async def test_reader_marks_user_as_super_admin_from_email_whitelist() -> None:
 
     assert session["superAdmin"] is True
     assert session["permissions"] == ["system:audit:view"]
+    assert reader.queries[2][1] == {"user_id": "user-1"}
+    assert "SELECT admin" in reader.queries[2][0]
+    assert "FROM users" in reader.queries[2][0]

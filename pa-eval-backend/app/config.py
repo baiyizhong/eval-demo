@@ -19,7 +19,6 @@ class Settings(BaseSettings):
     pa_eval_export_storage_dir: str = Field(default=".pa-eval/exports")
     pa_eval_auth_cookie_name: str = Field(default="thisisjustarandomstring")
     pa_eval_auth_secret: str = Field(default="")
-    pa_eval_super_admin_emails: str = Field(default="")
     pa_eval_scheduler_enabled: bool = Field(default=False)
     pa_eval_scheduler_poll_interval_seconds: float = Field(default=10)
     pa_eval_scheduler_batch_size: int = Field(default=10)
@@ -50,14 +49,6 @@ class Settings(BaseSettings):
     @property
     def scheduler_instance_id(self) -> str:
         return self.pa_eval_scheduler_instance_id
-
-    @property
-    def super_admin_emails(self) -> set[str]:
-        return {
-            item.strip().lower()
-            for item in self.pa_eval_super_admin_emails.split(",")
-            if item.strip()
-        }
 
 
 @lru_cache

@@ -15,8 +15,11 @@ import {
 import { SearchQuery, search, setSearchQuery } from "@codemirror/search";
 import { json, jsonParseLinter } from "@codemirror/lang-json";
 import { linter, type Diagnostic } from "@codemirror/lint";
-import { LanguageSupport, StreamLanguage } from "@codemirror/language";
-import type { StringStream } from "@codemirror/language";
+import {
+  LanguageSupport,
+  StreamLanguage,
+  type StringStream,
+} from "@codemirror/language";
 import { useTheme } from "next-themes";
 import {
   useCallback,
@@ -41,7 +44,9 @@ const promptLanguage = StreamLanguage.define({
   startState: () => ({}),
   token: (stream: StringStream) => {
     if (stream.match("@@@langfusePrompt:")) {
-      stream.skipTo("@@@") || stream.skipToEnd();
+      if (!stream.skipTo("@@@")) {
+        stream.skipToEnd();
+      }
       stream.match("@@@");
 
       return "keyword";
@@ -54,7 +59,9 @@ const promptLanguage = StreamLanguage.define({
 
     if (stream.match("{{")) {
       const start = stream.pos;
-      stream.skipTo("}}") || stream.skipToEnd();
+      if (!stream.skipTo("}}")) {
+        stream.skipToEnd();
+      }
       const content = stream.string.slice(start, stream.pos);
       stream.match("}}");
       return isValidVariableName(content) ? "variable" : "error";
@@ -366,7 +373,7 @@ export function CodeMirrorEditor({
   minHeight,
   maxHeight,
   placeholder,
-  editorRef,
+  editorRef: editorInstanceRef,
   enableSearchKeymap = true,
   onEditorMount,
 }: {
@@ -381,7 +388,7 @@ export function CodeMirrorEditor({
   minHeight?: number | string;
   maxHeight?: number | string;
   placeholder?: string;
-  editorRef?: RefObject<ReactCodeMirrorRef | null>;
+  editorRef?: MutableRefObject<ReactCodeMirrorRef | null>;
   enableSearchKeymap?: boolean;
   onEditorMount?: () => void;
 }) {
@@ -393,23 +400,22 @@ export function CodeMirrorEditor({
 
   const handleEditorRef = useCallback(
     (instance: ReactCodeMirrorRef | null) => {
-      if (editorRef) {
-        (editorRef as MutableRefObject<ReactCodeMirrorRef | null>).current =
-          instance;
+      if (editorInstanceRef) {
+        editorInstanceRef.current = instance;
       }
 
       if (instance) {
         onEditorMount?.();
       }
     },
-    [editorRef, onEditorMount],
+    [editorInstanceRef, onEditorMount],
   );
 
   return (
     <CodeMirror
       value={value}
       theme={codeMirrorTheme}
-      ref={editorRef || onEditorMount ? handleEditorRef : undefined}
+      ref={editorInstanceRef || onEditorMount ? handleEditorRef : undefined}
       basicSetup={{
         foldGutter: lineNumbers,
         highlightActiveLine: false,
@@ -447,7 +453,7 @@ export function CodeMirrorEditor({
                 ".cm-gutters": { borderRight: "1px solid" },
               }),
             ]),
-        ...(!!minHeight
+        ...(minHeight
           ? [
               EditorView.theme({
                 ".cm-gutter,.cm-content": {
@@ -460,7 +466,7 @@ export function CodeMirrorEditor({
               }),
             ]
           : []),
-        ...(!!maxHeight
+        ...(maxHeight
           ? [
               EditorView.theme({
                 ".cm-scroller": {

@@ -47,7 +47,7 @@ export function TraceDetailDrawer({
   const queryClient = useQueryClient()
   const { can } = usePermission({ type: 'project', projectId })
   const canEditTrace = can('project:trace:edit')
-  const [traceChainCollapsed, setTraceChainCollapsed] = useState(true)
+  const [traceChainCollapsed, setTraceChainCollapsed] = useState(false)
   const [traceChainWidth, setTraceChainWidth] = useState(
     TRACE_CHAIN_DRAWER_WIDTH
   )
