@@ -20,6 +20,7 @@ from app.langfuse_clickhouse import (
     LangfuseClickHouseReader,
     get_langfuse_clickhouse_reader,
 )
+from app.langfuse_client import LangfuseAdminClient, get_langfuse_client
 from app.langfuse_db import LangfuseDatabaseReader, get_langfuse_db_reader
 from app.response import success
 
@@ -607,6 +608,42 @@ def _score_payload(
             for score in payload.scores
         ]
     }
+
+
+async def _save_annotation_scores_with_langfuse_api(
+    *,
+    project_id: str,
+    queue_id: str,
+    item_id: str,
+    user_id: str,
+    score_payload: dict[str, Any],
+    reader: LangfuseDatabaseReader,
+    langfuse_client: LangfuseAdminClient,
+) -> dict[str, Any]:
+    score_requests = await reader.prepare_annotation_score_payloads_for_user(
+        project_id,
+        queue_id,
+        item_id,
+        user_id,
+        score_payload,
+    )
+    if score_requests:
+        api_key = await reader.get_project_api_key_credentials_for_user(
+            project_id,
+            user_id,
+        )
+        for score_request in score_requests:
+            await langfuse_client.create_score(
+                api_key["publicKey"],
+                api_key["secretKey"],
+                score_request,
+            )
+    return await reader.complete_annotation_queue_item_for_user(
+        project_id,
+        queue_id,
+        item_id,
+        user_id,
+    )
 
 
 def _filter_annotation_items(
@@ -1686,6 +1723,7 @@ async def save_annotation_batch_scores(
     current_user: CurrentUserContext = Depends(get_current_user_context),
     reader: LangfuseDatabaseReader = Depends(get_langfuse_db_reader),
     trace_reader: LangfuseClickHouseReader = Depends(get_langfuse_clickhouse_reader),
+    langfuse_client: LangfuseAdminClient = Depends(get_langfuse_client),
 ) -> dict[str, Any]:
     items = await reader.list_annotation_queue_items_for_user(
         project_id,
@@ -1722,12 +1760,14 @@ async def save_annotation_batch_scores(
     failures: list[dict[str, Any]] = []
     for item in pending_items:
         try:
-            await reader.save_annotation_scores_for_user(
-                project_id,
-                queue_id,
-                item["id"],
-                current_user.user_id,
-                score_payload,
+            await _save_annotation_scores_with_langfuse_api(
+                project_id=project_id,
+                queue_id=queue_id,
+                item_id=item["id"],
+                user_id=current_user.user_id,
+                score_payload=score_payload,
+                reader=reader,
+                langfuse_client=langfuse_client,
             )
             success_item_ids.append(item["id"])
         except BusinessError as exc:
@@ -1756,13 +1796,16 @@ async def save_annotation_scores(
     payload: AnnotationScorePayload,
     current_user: CurrentUserContext = Depends(get_current_user_context),
     reader: LangfuseDatabaseReader = Depends(get_langfuse_db_reader),
+    langfuse_client: LangfuseAdminClient = Depends(get_langfuse_client),
 ) -> dict[str, Any]:
-    item = await reader.save_annotation_scores_for_user(
-        project_id,
-        queue_id,
-        item_id,
-        current_user.user_id,
-        _score_payload(payload),
+    item = await _save_annotation_scores_with_langfuse_api(
+        project_id=project_id,
+        queue_id=queue_id,
+        item_id=item_id,
+        user_id=current_user.user_id,
+        score_payload=_score_payload(payload),
+        reader=reader,
+        langfuse_client=langfuse_client,
     )
     return success(item)
 

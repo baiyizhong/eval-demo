@@ -3810,9 +3810,32 @@ class LangfuseDatabaseReader:
         user_id: str,
         payload: dict[str, Any],
     ) -> dict[str, Any]:
+        await self.prepare_annotation_score_payloads_for_user(
+            project_id,
+            queue_id,
+            item_id,
+            user_id,
+            payload,
+        )
+        return await self.complete_annotation_queue_item_for_user(
+            project_id,
+            queue_id,
+            item_id,
+            user_id,
+        )
+
+    async def prepare_annotation_score_payloads_for_user(
+        self,
+        project_id: str,
+        queue_id: str,
+        item_id: str,
+        user_id: str,
+        payload: dict[str, Any],
+    ) -> list[dict[str, Any]]:
         if not self._database_url:
             raise LangfuseDatabaseConfigError()
 
+        score_payloads: list[dict[str, Any]] = []
         async with await psycopg.AsyncConnection.connect(
             self._database_url,
             row_factory=dict_row,
@@ -3830,6 +3853,7 @@ class LangfuseDatabaseReader:
                 observation_id = (
                     item["object_id"] if item["object_type"] == "OBSERVATION" else None
                 )
+                session_id = item["object_id"] if item["object_type"] == "SESSION" else None
 
                 for score in payload.get("scores") or []:
                     config_id = score["configId"]
@@ -3850,90 +3874,45 @@ class LangfuseDatabaseReader:
                             message="已归档评分指标不能继续标注",
                             status_code=400,
                         )
-                    await cursor.execute(
-                        """
-                        DELETE FROM scores
-                        WHERE project_id = %(project_id)s
-                          AND queue_id = %(queue_id)s
-                          AND config_id = %(config_id)s
-                          AND trace_id = %(trace_id)s
-                          AND (
-                            (
-                                %(observation_id)s::text IS NULL
-                                AND observation_id IS NULL
-                            )
-                            OR observation_id = %(observation_id)s::text
-                          )
-                          AND source::text = 'ANNOTATION'
-                        """,
-                        {
-                            "project_id": project_id,
-                            "queue_id": queue_id,
-                            "config_id": config_id,
-                            "trace_id": trace_id,
-                            "observation_id": observation_id,
-                        },
-                    )
                     value, string_value = self._normalize_score_value(
                         config,
                         score.get("value"),
                         score.get("stringValue") or "",
                     )
-                    await cursor.execute(
-                        """
-                        INSERT INTO scores (
-                            id,
-                            timestamp,
-                            project_id,
-                            name,
-                            value,
-                            source,
-                            author_user_id,
-                            comment,
-                            trace_id,
-                            observation_id,
-                            config_id,
-                            string_value,
-                            queue_id,
-                            created_at,
-                            updated_at,
-                            data_type
+                    score_payloads.append(
+                        _annotation_score_api_payload(
+                            project_id=project_id,
+                            queue_id=queue_id,
+                            item_id=item_id,
+                            user_id=user_id,
+                            trace_id=trace_id,
+                            observation_id=observation_id,
+                            session_id=session_id,
+                            config=config,
+                            config_id=config_id,
+                            value=value,
+                            string_value=string_value,
+                            comment=score.get("comment") or "",
                         )
-                        VALUES (
-                            %(id)s,
-                            NOW(),
-                            %(project_id)s,
-                            %(name)s,
-                            %(value)s,
-                            'ANNOTATION'::"ScoreSource",
-                            %(author_user_id)s,
-                            %(comment)s,
-                            %(trace_id)s,
-                            %(observation_id)s,
-                            %(config_id)s,
-                            %(string_value)s,
-                            %(queue_id)s,
-                            NOW(),
-                            NOW(),
-                            %(data_type)s::"ScoreConfigDataType"
-                        )
-                        """,
-                        {
-                            "id": _new_langfuse_id("score"),
-                            "project_id": project_id,
-                            "name": config["name"],
-                            "value": value,
-                            "author_user_id": user_id,
-                            "comment": score.get("comment") or "",
-                            "trace_id": trace_id,
-                            "observation_id": observation_id,
-                            "config_id": config_id,
-                            "string_value": string_value,
-                            "queue_id": queue_id,
-                            "data_type": config["data_type"],
-                        },
                     )
+        return score_payloads
 
+    async def complete_annotation_queue_item_for_user(
+        self,
+        project_id: str,
+        queue_id: str,
+        item_id: str,
+        user_id: str,
+    ) -> dict[str, Any]:
+        if not self._database_url:
+            raise LangfuseDatabaseConfigError()
+
+        async with await psycopg.AsyncConnection.connect(
+            self._database_url,
+            row_factory=dict_row,
+        ) as connection:
+            async with connection.cursor() as cursor:
+                await self._get_project_for_user(cursor, project_id, user_id)
                 await cursor.execute(
                     """
                     UPDATE annotation_queue_items
@@ -3969,6 +3948,23 @@ class LangfuseDatabaseReader:
             item_id,
             user_id,
         )
+
+    async def get_project_api_key_credentials_for_user(
+        self,
+        project_id: str,
+        user_id: str,
+    ) -> dict[str, str]:
+        keys = await self.list_project_api_keys(project_id, user_id)
+        if not keys:
+            raise BusinessError(
+                code=1029,
+                message="项目 API Key 未配置",
+                status_code=400,
+            )
+        return {
+            "publicKey": keys[0]["publicKey"],
+            "secretKey": keys[0]["secretKey"],
+        }
 
     async def add_annotation_item_to_dataset_for_user(
         self,
@@ -6983,6 +6979,78 @@ def _normalize_annotation_score_object(score: dict[str, Any]) -> dict[str, Any]:
         "createdAt": _format_datetime(score.get("createdAt")),
         "updatedAt": _format_datetime(score.get("updatedAt")),
     }
+
+
+def _annotation_score_api_payload(
+    *,
+    project_id: str,
+    queue_id: str,
+    item_id: str,
+    user_id: str,
+    trace_id: str | None,
+    observation_id: str | None,
+    session_id: str | None,
+    config: dict[str, Any],
+    config_id: str,
+    value: float | None,
+    string_value: str | None,
+    comment: str,
+) -> dict[str, Any]:
+    data_type = config.get("data_type") or "NUMERIC"
+    score_value: float | int | str | None
+    if data_type == "BOOLEAN":
+        score_value = 1 if value == 1 else 0
+    elif data_type in {"CATEGORICAL", "TEXT"}:
+        score_value = string_value or ""
+    else:
+        score_value = value
+
+    payload = {
+        "id": _annotation_score_id(
+            project_id=project_id,
+            queue_id=queue_id,
+            item_id=item_id,
+            config_id=config_id,
+            trace_id=trace_id or "",
+            observation_id=observation_id or "",
+            session_id=session_id or "",
+        ),
+        "name": config["name"],
+        "value": score_value,
+        "dataType": data_type,
+        "source": "ANNOTATION",
+        "configId": config_id,
+        "queueId": queue_id,
+        "comment": comment,
+        "metadata": {
+            "annotationItemId": item_id,
+            "annotatorUserId": user_id,
+        },
+    }
+    if session_id:
+        payload["sessionId"] = session_id
+    else:
+        payload["traceId"] = trace_id
+        if observation_id:
+            payload["observationId"] = observation_id
+    return payload
+
+
+def _annotation_score_id(
+    *,
+    project_id: str,
+    queue_id: str,
+    item_id: str,
+    config_id: str,
+    trace_id: str,
+    observation_id: str,
+    session_id: str,
+) -> str:
+    raw = "|".join(
+        [project_id, queue_id, item_id, config_id, trace_id, observation_id, session_id]
+    )
+    digest = hashlib.sha256(raw.encode("utf-8")).hexdigest()[:32]
+    return f"pa-ann-score-{digest}"
 
 
 def _decode_jsonish(value: Any) -> Any:

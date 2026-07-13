@@ -3,6 +3,7 @@ from fastapi.testclient import TestClient
 from app.auth_context import CurrentUserContext, get_current_user_context
 from app.errors import BusinessError
 from app.langfuse_clickhouse import get_langfuse_clickhouse_reader
+from app.langfuse_client import get_langfuse_client
 from app.langfuse_db import LangfuseDatabaseReader, get_langfuse_db_reader
 from app.main import app
 
@@ -219,6 +220,57 @@ class FakeAnnotationDatabaseReader:
             "updatedAt": "2026-07-06T02:00:00.000Z",
         }
 
+    async def prepare_annotation_score_payloads_for_user(
+        self,
+        project_id: str,
+        queue_id: str,
+        item_id: str,
+        user_id: str,
+        payload: dict,
+    ) -> list[dict]:
+        self.calls.append(
+            ("prepare_scores", (project_id, queue_id, item_id, user_id, payload))
+        )
+        return [
+            {
+                "id": "pa-ann-score-1",
+                "name": "准确性",
+                "traceId": "trace-1",
+                "observationId": None,
+                "value": 4,
+                "dataType": "NUMERIC",
+                "source": "ANNOTATION",
+                "configId": "score-1",
+                "queueId": queue_id,
+                "comment": "回答准确",
+                "metadata": {"annotationItemId": item_id},
+            }
+        ]
+
+    async def complete_annotation_queue_item_for_user(
+        self,
+        project_id: str,
+        queue_id: str,
+        item_id: str,
+        user_id: str,
+    ) -> dict:
+        self.calls.append(("complete_item", (project_id, queue_id, item_id, user_id)))
+        return await self.save_annotation_scores_for_user(
+            project_id,
+            queue_id,
+            item_id,
+            user_id,
+            {"scores": []},
+        )
+
+    async def get_project_api_key_credentials_for_user(
+        self,
+        project_id: str,
+        user_id: str,
+    ) -> dict[str, str]:
+        self.calls.append(("get_project_api_key", (project_id, user_id)))
+        return {"publicKey": "pk-lf-test", "secretKey": "sk-lf-test"}
+
     async def list_annotation_queue_items_for_user(
         self,
         project_id: str,
@@ -424,6 +476,20 @@ class FakeAnnotationTraceReader:
         }
 
 
+class FakeLangfuseClient:
+    def __init__(self) -> None:
+        self.created_scores: list[tuple[str, str, dict]] = []
+
+    async def create_score(
+        self,
+        public_key: str,
+        secret_key: str,
+        payload: dict,
+    ) -> dict:
+        self.created_scores.append((public_key, secret_key, payload))
+        return {"id": payload["id"]}
+
+
 def override_reader(fake_reader: FakeAnnotationDatabaseReader) -> None:
     async def _override() -> LangfuseDatabaseReader:
         return fake_reader  # type: ignore[return-value]
@@ -437,11 +503,13 @@ def override_reader(fake_reader: FakeAnnotationDatabaseReader) -> None:
         email="octocat@example.com",
         login="octocat",
     )
+    app.dependency_overrides[get_langfuse_client] = lambda: FakeLangfuseClient()
 
 
 def override_reader_and_trace_reader(
     fake_reader: FakeAnnotationDatabaseReader,
     fake_trace_reader: FakeAnnotationTraceReader,
+    fake_langfuse_client: FakeLangfuseClient | None = None,
 ) -> None:
     async def _override() -> LangfuseDatabaseReader:
         return fake_reader  # type: ignore[return-value]
@@ -452,6 +520,9 @@ def override_reader_and_trace_reader(
         user_id="user-1",
         email="octocat@example.com",
         login="octocat",
+    )
+    app.dependency_overrides[get_langfuse_client] = lambda: (
+        fake_langfuse_client or FakeLangfuseClient()
     )
 
 
@@ -731,7 +802,12 @@ def test_adds_selected_traces_to_dataset_with_trace_details() -> None:
 
 def test_saves_annotation_scores_and_completes_queue_item() -> None:
     fake_reader = FakeAnnotationDatabaseReader()
-    override_reader(fake_reader)
+    fake_langfuse_client = FakeLangfuseClient()
+    override_reader_and_trace_reader(
+        fake_reader,
+        FakeAnnotationTraceReader(),
+        fake_langfuse_client,
+    )
 
     payload = {
         "scores": [
@@ -754,8 +830,32 @@ def test_saves_annotation_scores_and_completes_queue_item() -> None:
     assert response.status_code == 200
     assert response.json()["data"]["status"] == "COMPLETED"
     assert fake_reader.calls[0] == (
-        "save_scores",
+        "prepare_scores",
         ("project-1", "queue-1", "item-1", "user-1", payload),
+    )
+    assert fake_reader.calls[1] == ("get_project_api_key", ("project-1", "user-1"))
+    assert fake_langfuse_client.created_scores == [
+        (
+            "pk-lf-test",
+            "sk-lf-test",
+            {
+                "id": "pa-ann-score-1",
+                "name": "准确性",
+                "traceId": "trace-1",
+                "observationId": None,
+                "value": 4,
+                "dataType": "NUMERIC",
+                "source": "ANNOTATION",
+                "configId": "score-1",
+                "queueId": "queue-1",
+                "comment": "回答准确",
+                "metadata": {"annotationItemId": "item-1"},
+            },
+        )
+    ]
+    assert fake_reader.calls[2] == (
+        "complete_item",
+        ("project-1", "queue-1", "item-1", "user-1"),
     )
 
 
@@ -1398,17 +1498,25 @@ def test_bulk_saves_annotation_scores_only_for_pending_filtered_items() -> None:
     assert body["skippedCount"] == 1
     assert body["successItemIds"] == ["item-1", "item-2"]
     assert body["failures"] == []
-    assert fake_reader.calls == [
-        ("list_items", ("project-1", "queue-1", "user-1")),
-        (
-            "save_scores",
-            ("project-1", "queue-1", "item-1", "user-1", {"scores": scores}),
-        ),
-        (
-            "save_scores",
-            ("project-1", "queue-1", "item-2", "user-1", {"scores": scores}),
-        ),
+    assert [call[0] for call in fake_reader.calls] == [
+        "list_items",
+        "prepare_scores",
+        "get_project_api_key",
+        "complete_item",
+        "save_scores",
+        "prepare_scores",
+        "get_project_api_key",
+        "complete_item",
+        "save_scores",
     ]
+    assert fake_reader.calls[1][1] == (
+        "project-1",
+        "queue-1",
+        "item-1",
+        "user-1",
+        {"scores": [{"configId": "score-1", "value": 2.0, "stringValue": "", "comment": "同类错误统一低分"}]},
+    )
+    assert fake_reader.calls[5][1][2] == "item-2"
 
 
 def test_bulk_saves_large_annotation_batch_by_item_ids_without_trace_enrichment() -> None:
@@ -1522,13 +1630,20 @@ def test_bulk_saves_annotation_scores_with_input_output_filters() -> None:
     body = response.json()["data"]
     assert body["successCount"] == 1
     assert body["successItemIds"] == ["item-2"]
-    assert fake_reader.calls == [
-        ("list_items", ("project-1", "queue-1", "user-1")),
-        (
-            "save_scores",
-            ("project-1", "queue-1", "item-2", "user-1", {"scores": scores}),
-        ),
+    assert [call[0] for call in fake_reader.calls] == [
+        "list_items",
+        "prepare_scores",
+        "get_project_api_key",
+        "complete_item",
+        "save_scores",
     ]
+    assert fake_reader.calls[1][1] == (
+        "project-1",
+        "queue-1",
+        "item-2",
+        "user-1",
+        {"scores": [{"configId": "score-1", "value": 5.0, "stringValue": "", "comment": "发票回答准确"}]},
+    )
 
 
 def test_bulk_updates_annotation_item_assignees_skips_completed_items() -> None:

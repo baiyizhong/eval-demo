@@ -1,4 +1,5 @@
 from typing import Any
+from base64 import b64encode
 
 import httpx
 from fastapi import Depends
@@ -30,6 +31,33 @@ class LangfuseAdminClient:
             f"/api/admin/organizations/{organization_id}",
             json=payload,
         )
+
+    async def create_score(
+        self,
+        public_key: str,
+        secret_key: str,
+        payload: dict[str, Any],
+    ) -> dict[str, Any]:
+        credentials = b64encode(f"{public_key}:{secret_key}".encode("utf-8")).decode(
+            "ascii"
+        )
+        headers = {"Authorization": f"Basic {credentials}"}
+        try:
+            async with httpx.AsyncClient(
+                base_url=self._base_url,
+                headers=headers,
+                timeout=self._timeout,
+            ) as client:
+                response = await client.post("/api/public/scores", json=payload)
+                response.raise_for_status()
+                if response.content:
+                    return response.json()
+                return {}
+        except httpx.HTTPStatusError as exc:
+            message = self._extract_error_message(exc.response)
+            raise LangfuseUpstreamError(message=message, status_code=502) from exc
+        except httpx.HTTPError as exc:
+            raise LangfuseUpstreamError(message="Langfuse 服务暂不可用") from exc
 
     async def _request(
         self,
