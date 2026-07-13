@@ -8,7 +8,7 @@ import {
   updateProjectScoreConfig,
   type ScoreConfigInput,
 } from '@/modules/app-evaluation/api/annotation-api'
-import { Plus } from 'lucide-react'
+import { Plus, Trash2 } from 'lucide-react'
 import { useParams } from 'react-router'
 import { toast } from 'sonner'
 import { useAPI } from '@/hooks/use-api'
@@ -56,8 +56,8 @@ const DATA_TYPE_LABELS: Record<ScoreConfigDataType, string> = {
 }
 
 const BOOLEAN_SCORE_OPTIONS: ScoreConfigCategory[] = [
-  { value: 1, label: '是' },
-  { value: 0, label: '否' },
+  { value: 1, label: 'True' },
+  { value: 0, label: 'False' },
 ]
 
 function formatDateTime(value: string) {
@@ -298,14 +298,24 @@ function ScoreConfigDialog({
   )
   const [description, setDescription] = useState(config?.description ?? '')
   const [minValue, setMinValue] = useState(
-    config?.minValue == null ? '1' : String(config.minValue)
+    config?.minValue == null ? '' : String(config.minValue)
   )
   const [maxValue, setMaxValue] = useState(
-    config?.maxValue == null ? '5' : String(config.maxValue)
+    config?.maxValue == null ? '' : String(config.maxValue)
   )
   const [categoryRows, setCategoryRows] = useState<ScoreOptionRow[]>(
     getInitialScoreOptionRows(config)
   )
+
+  function handleDataTypeChange(value: string) {
+    const nextDataType = value as ScoreConfigDataType
+    setDataType(nextDataType)
+    setCategoryRows(getInitialScoreOptionRows({ dataType: nextDataType }))
+    if (nextDataType !== 'NUMERIC') {
+      setMinValue('')
+      setMaxValue('')
+    }
+  }
 
   const submit = () => {
     const trimmedName = name.trim()
@@ -331,12 +341,7 @@ function ScoreConfigDialog({
         dataType === 'NUMERIC' && minValue !== '' ? Number(minValue) : null,
       maxValue:
         dataType === 'NUMERIC' && maxValue !== '' ? Number(maxValue) : null,
-      categories:
-        dataType === 'BOOLEAN'
-          ? toLangfuseBooleanCategories()
-          : dataType === 'CATEGORICAL'
-            ? categoryValues
-            : [],
+      categories: dataType === 'CATEGORICAL' ? categoryValues : undefined,
     })
   }
 
@@ -356,9 +361,8 @@ function ScoreConfigDialog({
           <Field label='类型'>
             <Select
               value={dataType}
-              onValueChange={(value) =>
-                setDataType(value as ScoreConfigDataType)
-              }
+              disabled={Boolean(config)}
+              onValueChange={handleDataTypeChange}
             >
               <SelectTrigger>
                 <SelectValue />
@@ -401,10 +405,16 @@ function ScoreConfigDialog({
               rows={categoryRows}
               onChange={setCategoryRows}
               addLabel='新增分类'
+              readOnlyValue
             />
           ) : null}
           {dataType === 'BOOLEAN' ? (
-            <BooleanScoreOptionRows />
+            <ScoreOptionRows
+              rows={categoryRows}
+              onChange={setCategoryRows}
+              readOnlyValue
+              readOnlyLabel
+            />
           ) : null}
         </div>
         <DialogFooter>
@@ -429,32 +439,18 @@ type ScoreOptionRow = {
   label: string
 }
 
-function BooleanScoreOptionRows() {
-  return (
-    <div className='flex flex-col gap-2'>
-      <Label>选项配置</Label>
-      <div className='flex flex-wrap gap-2'>
-        {BOOLEAN_SCORE_OPTIONS.map((row) => (
-          <Badge key={row.value} variant='secondary' className='px-3 py-1'>
-            {row.label}
-          </Badge>
-        ))}
-      </div>
-      <p className='text-muted-foreground text-xs'>
-        布尔类型固定为“是 / 否”，不支持自定义修改。
-      </p>
-    </div>
-  )
-}
-
 function ScoreOptionRows({
   rows,
   onChange,
   addLabel,
+  readOnlyValue = false,
+  readOnlyLabel = false,
 }: {
   rows: ScoreOptionRow[]
   onChange: (rows: ScoreOptionRow[]) => void
-  addLabel: string
+  addLabel?: string
+  readOnlyValue?: boolean
+  readOnlyLabel?: boolean
 }) {
   const updateRow = (index: number, patch: Partial<ScoreOptionRow>) => {
     onChange(
@@ -469,41 +465,78 @@ function ScoreOptionRows({
       <Label>选项配置</Label>
       <div className='grid gap-2'>
         {rows.map((row, index) => (
-          <div key={index} className='grid grid-cols-[1fr_1fr_auto] gap-2'>
-            <Input
-              value={row.value}
-              onChange={(event) => updateRow(index, { value: event.target.value })}
-              placeholder='值，例如 1'
-            />
-            <Input
-              value={row.label}
-              onChange={(event) => updateRow(index, { label: event.target.value })}
-              placeholder='显示标签，例如 是'
-            />
-            <Button
-              type='button'
-              variant='outline'
-              onClick={() =>
-                onChange(rows.filter((_, currentIndex) => currentIndex !== index))
-              }
-            >
-              删除
-            </Button>
+          <div
+            key={index}
+            className='grid items-end gap-2 sm:grid-cols-[1fr_3fr_auto]'
+          >
+            <Field label='值'>
+              <Input
+                value={row.value}
+                disabled={readOnlyValue}
+                readOnly={readOnlyValue}
+                inputMode='numeric'
+                className='text-center'
+                onChange={(event) =>
+                  updateRow(index, { value: event.target.value })
+                }
+                placeholder='值，例如 1'
+              />
+            </Field>
+            <Field label='标签'>
+              <Input
+                value={row.label}
+                readOnly={readOnlyLabel}
+                onChange={(event) =>
+                  updateRow(index, { label: event.target.value })
+                }
+                placeholder='显示标签，例如 True'
+              />
+            </Field>
+            {addLabel ? (
+              <Button
+                type='button'
+                variant='outline'
+                size='icon'
+                aria-label='删除分类'
+                disabled={index === 0 || index !== rows.length - 1}
+                onClick={() =>
+                  onChange(
+                    rows.filter((_, currentIndex) => currentIndex !== index)
+                  )
+                }
+              >
+                <Trash2 className='size-4' />
+              </Button>
+            ) : null}
           </div>
         ))}
       </div>
-      <Button
-        type='button'
-        variant='outline'
-        onClick={() => onChange([...rows, { value: '', label: '' }])}
-      >
-        {addLabel}
-      </Button>
+      {addLabel ? (
+        <Button
+          type='button'
+          variant='outline'
+          onClick={() => onChange([...rows, getNextScoreOptionRow(rows)])}
+        >
+          {addLabel}
+        </Button>
+      ) : (
+        <p className='text-muted-foreground text-xs'>
+          布尔类型固定为 True / False，不支持自定义修改。
+        </p>
+      )}
     </div>
   )
 }
 
-function getInitialScoreOptionRows(config: ScoreConfig | null): ScoreOptionRow[] {
+function getInitialScoreOptionRows(
+  config: Pick<ScoreConfig, 'dataType'> & { categories?: ScoreConfigCategory[] }
+): ScoreOptionRow[]
+function getInitialScoreOptionRows(config: ScoreConfig | null): ScoreOptionRow[]
+function getInitialScoreOptionRows(
+  config:
+    | (Pick<ScoreConfig, 'dataType'> & { categories?: ScoreConfigCategory[] })
+    | null
+): ScoreOptionRow[] {
   if (config?.dataType === 'BOOLEAN') {
     return BOOLEAN_SCORE_OPTIONS.map((option) => ({
       value: String(option.value),
@@ -517,16 +550,16 @@ function getInitialScoreOptionRows(config: ScoreConfig | null): ScoreOptionRow[]
     }))
   }
   return [
-    { value: '1', label: '好' },
-    { value: '0', label: '差' },
+    { value: '0', label: '' },
   ]
 }
 
-function toLangfuseBooleanCategories(): ScoreConfigCategory[] {
-  return [
-    { label: 'True', value: 1 },
-    { label: 'False', value: 0 },
-  ]
+function getNextScoreOptionRow(rows: ScoreOptionRow[]): ScoreOptionRow {
+  const numericValues = rows
+    .map((row) => Number(row.value.trim()))
+    .filter(Number.isFinite)
+  const nextValue = numericValues.length ? Math.max(...numericValues) + 1 : 0
+  return { value: String(nextValue), label: '' }
 }
 
 function formatScoreOption(option: ScoreConfigCategory) {

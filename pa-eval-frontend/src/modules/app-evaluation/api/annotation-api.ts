@@ -64,7 +64,7 @@ export type ScoreConfigInput = {
   description: string
   minValue?: number | null
   maxValue?: number | null
-  categories: ScoreConfigCategory[]
+  categories?: ScoreConfigCategory[]
 }
 
 export type NonEmptyStringArray = [string, ...string[]]
