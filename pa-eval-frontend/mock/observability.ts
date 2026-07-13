@@ -1,7 +1,49 @@
 import { db } from './_data.ts'
 import { body, keywordIncludes, paginate, pathParam, success } from './_utils.ts'
 
+type MockTrace = Record<string, any>
+
 const projectId = (req: any) => pathParam(req, 'projectId')
+const traces = () => db.traces as MockTrace[]
+
+function matchesCreatedAtRange(
+  trace: MockTrace,
+  query: Record<string, any> | undefined
+) {
+  const range = normalizeQueryList(query?.createdAtRange ?? query?.['createdAtRange[]'])
+  if (!range.length) return true
+
+  const createdAt = parseFilterDateTime(trace.createdAt)
+  if (!createdAt) return true
+
+  const start = parseFilterDateTime(range[0])
+  const end = parseFilterDateTime(range[1])
+  if (start && createdAt < start) return false
+  if (end && createdAt >= end) return false
+  return true
+}
+
+function normalizeQueryList(value: unknown) {
+  if (Array.isArray(value)) return value.map(String).filter(Boolean)
+  if (typeof value === 'string' && value) return [value]
+  return []
+}
+
+function parseFilterDateTime(value: unknown) {
+  if (!value) return null
+  const text = String(value).trim().replace(' ', 'T')
+  const date = new Date(text)
+  return Number.isNaN(date.getTime()) ? null : date
+}
+
+function findTraceNode(nodes: any[] = [], nodeId: string): any | undefined {
+  for (const node of nodes) {
+    if (node.id === nodeId) return node
+    const child = findTraceNode(node.children ?? [], nodeId)
+    if (child) return child
+  }
+  return undefined
+}
 
 export default [
   {
@@ -29,14 +71,14 @@ export default [
     method: 'post',
     response: (req: any) =>
       success({
-        count: db.traces.filter((trace) => trace.projectId === projectId(req)).length,
+        count: traces().filter((trace) => trace.projectId === projectId(req)).length,
       }),
   },
   {
     url: '/api/projects/:projectId/trace-metrics',
     method: 'get',
     response: (req: any) => {
-      const rows = db.traces.filter((trace) => trace.projectId === projectId(req))
+      const rows = traces().filter((trace) => trace.projectId === projectId(req))
       const failed = rows.filter((trace) => trace.status === 'failed').length
       const totalLatency = rows.reduce((sum, trace) => sum + trace.latency, 0)
       return success({
@@ -70,22 +112,68 @@ export default [
     method: 'get',
     response: (req: any) =>
       success(
-        db.traces.find(
+        traces().find(
           (trace) =>
             trace.projectId === projectId(req) && trace.traceId === pathParam(req, 'traceId')
-        ) ?? db.traces[0]
+        ) ?? traces()[0]
       ),
+  },
+  {
+    url: '/api/projects/:projectId/traces/:traceId/observations/:observationId',
+    method: 'get',
+    response: (req: any) => {
+      const trace =
+        traces().find(
+          (item) =>
+            item.projectId === projectId(req) &&
+            item.traceId === pathParam(req, 'traceId')
+        ) ?? traces()[0]
+      const observationId = pathParam(req, 'observationId')
+      const node = findTraceNode(trace.callChain, observationId)
+      return success({
+        id: observationId,
+        traceId: trace.traceId,
+        projectId: trace.projectId,
+        projectName: trace.projectName,
+        parentObservationId: null,
+        type: node?.type ?? 'chain',
+        name: node?.title ?? observationId,
+        level: 'DEFAULT',
+        statusMessage: '',
+        startTime: trace.createdAt,
+        endTime: trace.updatedAt,
+        input: trace.input,
+        output: trace.output,
+        metadata: {
+          ...trace.metadata,
+          observationId,
+        },
+        usageDetails: {
+          input: node?.tokensIn ?? 0,
+          output: node?.tokensOut ?? 0,
+          total: node?.tokensTotal ?? 0,
+        },
+        providedUsageDetails: {},
+        costDetails: {},
+        providedCostDetails: {},
+        totalCost: 0,
+        scores: (trace.scores ?? []).filter(
+          (score: any) => !score.observationId || score.observationId === observationId
+        ),
+        scoreSummary: trace.scoreSummary ?? '',
+      })
+    },
   },
   {
     url: '/api/projects/:projectId/traces/:traceId',
     method: 'patch',
     response: (req: any) => {
-      const index = db.traces.findIndex(
+      const index = traces().findIndex(
         (trace) =>
           trace.projectId === projectId(req) && trace.traceId === pathParam(req, 'traceId')
       )
       if (index >= 0) {
-        db.traces[index] = { ...db.traces[index], ...body(req), updatedAt: new Date().toISOString() }
+        db.traces[index] = { ...traces()[index], ...body(req), updatedAt: new Date().toISOString() }
       }
       return success(db.traces[index] ?? { traceId: pathParam(req, 'traceId') })
     },
@@ -96,8 +184,9 @@ export default [
     response: (req: any) =>
       success(
         paginate(
-          db.traces
+          traces()
             .filter((trace) => trace.projectId === projectId(req))
+            .filter((trace) => matchesCreatedAtRange(trace, req.query))
             .filter((trace) => keywordIncludes(trace, req.query?.keyword)),
           req.query,
           20

@@ -18,7 +18,7 @@ import {
   type TraceDatasetTargetInput,
 } from '../api/trace-dataset-api'
 import { formatDateTime, formatLatency } from '../lib/format'
-import type { TraceDetail } from '../types'
+import type { TraceDetail, TraceObservationDetail } from '../types'
 import { CopyableText } from './copyable-text'
 import { StatusBadge } from './status-badge'
 import { TraceAnnotationDialog } from './trace-annotation-dialog'
@@ -51,6 +51,14 @@ export function TraceDetailDrawer({
   const [traceChainWidth, setTraceChainWidth] = useState(
     TRACE_CHAIN_DRAWER_WIDTH
   )
+  const [selectedObservationTarget, setSelectedObservationTarget] = useState<{
+    traceId: string
+    observationId: string
+  } | null>(null)
+  const selectedObservationId =
+    selectedObservationTarget?.traceId === traceId
+      ? selectedObservationTarget.observationId
+      : null
   const [datasetDialogOpen, setDatasetDialogOpen] = useState(false)
   const [annotationDialogOpen, setAnnotationDialogOpen] = useState(false)
   const queryKey = ['trace-detail', $api, projectId, traceId]
@@ -62,8 +70,30 @@ export function TraceDetailDrawer({
       }),
     enabled: open && Boolean(traceId),
   })
+  const observationQuery = useQuery({
+    queryKey: [
+      'trace-observation-detail',
+      $api,
+      projectId,
+      traceId,
+      selectedObservationId,
+    ],
+    queryFn: () =>
+      $api.getProjectTraceObservation<TraceObservationDetail>({
+        path: {
+          projectId,
+          traceId: traceId ?? '',
+          observationId: selectedObservationId ?? '',
+        },
+      }),
+    enabled: open && Boolean(traceId) && Boolean(selectedObservationId),
+  })
   const detail = detailQuery.data
+  const selectedObservationDetail = observationQuery.data
   const showDetailLoading = open && (detailQuery.isLoading || !detail)
+  const selectedPayload = selectedObservationDetail ?? detail
+  const showObservationLoading =
+    Boolean(selectedObservationId) && observationQuery.isFetching
 
   const close = (nextOpen: boolean) => {
     onOpenChange(nextOpen)
@@ -200,20 +230,42 @@ export function TraceDetailDrawer({
               isCollapsed={traceChainCollapsed}
               onCollapsedChange={setTraceChainCollapsed}
               onWidthChange={setTraceChainWidth}
+              onNodeClick={(node) => {
+                if (!traceId) return
+                setSelectedObservationTarget({
+                  traceId,
+                  observationId: node.id,
+                })
+              }}
               summary={{ duration: formatLatency(detail.latency) }}
             />
             <div className='min-w-0 flex h-full flex-col gap-3'>
+              {showObservationLoading ? (
+                <Loading
+                  text='加载节点详情中...'
+                  className='min-h-24 border bg-transparent'
+                />
+              ) : null}
               <MixEditor
                 title='Input'
-                value={detail.input}
+                value={selectedPayload?.input ?? ''}
                 readOnly
               />
               <MixEditor
                 title='Output'
-                value={detail.output}
+                value={selectedPayload?.output ?? ''}
                 readOnly
               />
-              <MixEditor title='Metadata' value={detail.metadata} readOnly />
+              <MixEditor
+                title='Metadata'
+                value={selectedPayload?.metadata ?? {}}
+                readOnly
+              />
+              <MixEditor
+                title='Scores'
+                value={selectedPayload?.scores ?? []}
+                readOnly
+              />
             </div>
           </div>
         </div>

@@ -118,6 +118,24 @@ async def get_trace(
     return success(_with_project_name(trace, project["name"]))
 
 
+@router.get("/traces/{trace_id}/observations/{observation_id}")
+async def get_trace_observation(
+    project_id: str,
+    trace_id: str,
+    observation_id: str,
+    current_user: CurrentUserContext = Depends(get_current_user_context),
+    db_reader: LangfuseDatabaseReader = Depends(get_langfuse_db_reader),
+    trace_reader: LangfuseClickHouseReader = Depends(get_langfuse_clickhouse_reader),
+) -> dict[str, Any]:
+    project = await db_reader.get_project_for_user(project_id, current_user.user_id)
+    observation = await trace_reader.get_observation(
+        project_id,
+        trace_id,
+        observation_id,
+    )
+    return success(_with_project_name(observation, project["name"]))
+
+
 @router.patch("/traces/{trace_id}")
 async def patch_trace(
     project_id: str,

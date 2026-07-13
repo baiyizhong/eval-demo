@@ -51,12 +51,47 @@ export function normalizeTraceTimeFilterValues(
 export function getTraceQuickTimeRangeToolbarDefault(
   filterValues: Record<string, unknown>
 ): TraceQuickTimeRange | undefined {
-  return hasCustomTraceTimeRange(filterValues)
+  return hasCustomTraceTimeRange(filterValues) ||
+    hasActiveTraceNonTimeFilter(filterValues)
     ? undefined
     : DEFAULT_TRACE_QUICK_TIME_RANGE
+}
+
+export function getExplicitTraceQuickTimeRange(
+  value: unknown
+): TraceQuickTimeRange | undefined {
+  return typeof value === 'string' &&
+    TRACE_QUICK_TIME_RANGES.has(value as TraceQuickTimeRange)
+    ? (value as TraceQuickTimeRange)
+    : undefined
+}
+
+export function hasActiveTraceNonTimeFilter(
+  filterValues: Record<string, unknown>
+) {
+  return Object.entries(filterValues).some(([key, value]) => {
+    if (key === 'timeRange' || key === 'createdAtRange') {
+      return false
+    }
+
+    return hasActiveTraceFilterValue(value)
+  })
 }
 
 function hasCustomTraceTimeRange(filterValues: Record<string, unknown>) {
   const createdAtRange = filterValues.createdAtRange
   return Array.isArray(createdAtRange) && createdAtRange.length > 0
+}
+
+function hasActiveTraceFilterValue(value: unknown): boolean {
+  if (Array.isArray(value)) {
+    return value.length > 0
+  }
+  if (typeof value === 'string') {
+    return value.trim().length > 0
+  }
+  if (value && typeof value === 'object') {
+    return Object.keys(value).length > 0
+  }
+  return Boolean(value)
 }

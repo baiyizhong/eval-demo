@@ -8,6 +8,7 @@ export { DataTable } from './data-table'
 export { DataTableProvider, useDataTableContext } from './provider'
 export type {
   DataTableFilterBinding,
+  DataTableColumns,
   DataTableListResponse,
   DataTableProps,
   DataTableQueryState,

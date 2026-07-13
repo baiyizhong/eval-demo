@@ -85,7 +85,7 @@ export const traceLogFilterGroups: FilterGroup[] = [
       {
         id: 'createdAtRange',
         type: 'dateRange',
-        label: '自定义时间范围',
+        label: 'Trace 创建时间范围',
         showTime: true,
         placeholder: '选择 Trace 创建时间范围',
       },

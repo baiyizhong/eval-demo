@@ -196,8 +196,10 @@ class LangfuseClickHouseReader:
                 end_time AS endTime,
                 input,
                 output,
+                metadata,
                 usage_details AS usageDetails,
                 provided_usage_details AS providedUsageDetails,
+                cost_details AS costDetails,
                 total_cost AS totalCost
             FROM observations
             WHERE project_id = {project_id:String}
@@ -214,6 +216,7 @@ class LangfuseClickHouseReader:
             **trace,
             "status": _trace_status_from_metadata(trace.get("metadata") or {}, False),
             "latency": _latency_from_observations(trace, observations),
+            "scores": await self._fetch_scores_for_trace(project_id, trace_id),
         }
         return {
             **self._to_trace_row(row),
@@ -222,6 +225,87 @@ class LangfuseClickHouseReader:
             "output": _format_payload(trace.get("output")),
             "metadata": trace.get("metadata") or {},
             "callChain": _build_call_chain(observations),
+        }
+
+    async def get_observation(
+        self,
+        project_id: str,
+        trace_id: str,
+        observation_id: str,
+    ) -> dict[str, Any]:
+        rows = await self._query_json_each_row(
+            """
+            SELECT
+                id,
+                trace_id AS traceId,
+                project_id AS projectId,
+                parent_observation_id AS parentObservationId,
+                type,
+                name,
+                level,
+                status_message AS statusMessage,
+                start_time AS startTime,
+                end_time AS endTime,
+                input,
+                output,
+                metadata,
+                usage_details AS usageDetails,
+                provided_usage_details AS providedUsageDetails,
+                cost_details AS costDetails,
+                provided_cost_details AS providedCostDetails,
+                total_cost AS totalCost
+            FROM observations
+            WHERE project_id = {project_id:String}
+              AND trace_id = {trace_id:String}
+              AND id = {observation_id:String}
+              AND is_deleted = 0
+            LIMIT 1
+            FORMAT JSONEachRow
+            """,
+            {
+                "project_id": project_id,
+                "trace_id": trace_id,
+                "observation_id": observation_id,
+            },
+        )
+        if not rows:
+            raise BusinessError(
+                code=4004,
+                message="Observation 不存在或无访问权限",
+                status_code=404,
+            )
+
+        observation = rows[0]
+        scores = await self._fetch_scores_for_trace(
+            project_id,
+            trace_id,
+            observation_id=observation_id,
+        )
+        if not scores:
+            scores = _scores_from_evaluator_output(observation)
+
+        return {
+            "id": observation["id"],
+            "traceId": observation.get("traceId") or trace_id,
+            "projectId": observation.get("projectId") or project_id,
+            "projectName": "",
+            "parentObservationId": observation.get("parentObservationId"),
+            "type": observation.get("type") or "",
+            "name": observation.get("name") or "",
+            "level": observation.get("level") or "DEFAULT",
+            "statusMessage": observation.get("statusMessage") or "",
+            "startTime": _format_clickhouse_datetime(observation.get("startTime")),
+            "endTime": _format_clickhouse_datetime(observation.get("endTime")),
+            "input": _format_payload(observation.get("input")),
+            "output": _format_payload(observation.get("output")),
+            "metadata": observation.get("metadata") or {},
+            "usageDetails": observation.get("usageDetails") or {},
+            "providedUsageDetails": observation.get("providedUsageDetails") or {},
+            "costDetails": observation.get("costDetails") or {},
+            "providedCostDetails": observation.get("providedCostDetails") or {},
+            "totalCost": float(observation.get("totalCost") or 0),
+            "scores": scores,
+            "scoreSummary": _score_summary(scores),
         }
 
     async def list_trace_sources(
@@ -355,7 +439,146 @@ class LangfuseClickHouseReader:
             ORDER BY t.timestamp DESC, t.id DESC
             FORMAT JSONEachRow
             """.replace("__WHERE_CLAUSE__", where_clause)
-        return await self._query_json_each_row(query, params)
+        rows = await self._query_json_each_row(query, params)
+        trace_ids = [str(row.get("traceId") or "") for row in rows if row.get("traceId")]
+        if not trace_ids:
+            return rows
+
+        scores_by_trace = await self._fetch_scores_by_trace(project_id, trace_ids)
+        evaluator_scores_by_trace = await self._fetch_evaluator_scores_by_trace(
+            project_id,
+            trace_ids,
+        )
+        for row in rows:
+            trace_id = row.get("traceId")
+            scores = scores_by_trace.get(trace_id) or evaluator_scores_by_trace.get(trace_id) or []
+            row["scores"] = scores
+            row["scoreSummary"] = _score_summary(scores)
+        return rows
+
+    async def _fetch_scores_for_trace(
+        self,
+        project_id: str,
+        trace_id: str,
+        *,
+        observation_id: str | None = None,
+    ) -> list[dict[str, Any]]:
+        scores_by_trace = await self._fetch_scores_by_trace(
+            project_id,
+            [trace_id],
+            observation_id=observation_id,
+        )
+        return scores_by_trace.get(trace_id, [])
+
+    async def _fetch_scores_by_trace(
+        self,
+        project_id: str,
+        trace_ids: list[str],
+        *,
+        observation_id: str | None = None,
+    ) -> dict[str, list[dict[str, Any]]]:
+        unique_trace_ids = list(dict.fromkeys(trace_id for trace_id in trace_ids if trace_id))
+        if not unique_trace_ids:
+            return {}
+
+        scores_by_trace: dict[str, list[dict[str, Any]]] = {}
+        for chunk in _chunked(unique_trace_ids, 100):
+            params: dict[str, Any] = {"project_id": project_id}
+            trace_id_placeholders = []
+            for index, trace_id in enumerate(chunk):
+                param_key = f"score_trace_id_{index}"
+                trace_id_placeholders.append(f"{{{param_key}:String}}")
+                params[param_key] = trace_id
+
+            observation_filter = ""
+            if observation_id is not None:
+                observation_filter = "\n                  AND observation_id = {observation_id:String}"
+                params["observation_id"] = observation_id
+
+            rows = await self._query_json_each_row(
+                """
+                SELECT
+                    id,
+                    trace_id AS traceId,
+                    observation_id AS observationId,
+                    name,
+                    value,
+                    source,
+                    comment,
+                    metadata,
+                    author_user_id AS authorUserId,
+                    config_id AS configId,
+                    data_type AS dataType,
+                    string_value AS stringValue,
+                    long_string_value AS longStringValue,
+                    queue_id AS queueId,
+                    created_at AS createdAt,
+                    updated_at AS updatedAt
+                FROM scores
+                WHERE project_id = {project_id:String}
+                  AND trace_id IN (__TRACE_IDS__)__OBSERVATION_FILTER__
+                ORDER BY created_at DESC, id DESC
+                FORMAT JSONEachRow
+                """
+                .replace("__TRACE_IDS__", ", ".join(trace_id_placeholders))
+                .replace("__OBSERVATION_FILTER__", observation_filter),
+                params,
+            )
+
+            for row in rows:
+                trace_id = row.get("traceId")
+                if not trace_id:
+                    continue
+                scores_by_trace.setdefault(trace_id, []).append(_format_score(row))
+        return scores_by_trace
+
+    async def _fetch_evaluator_scores_by_trace(
+        self,
+        project_id: str,
+        trace_ids: list[str],
+    ) -> dict[str, list[dict[str, Any]]]:
+        unique_trace_ids = list(dict.fromkeys(trace_id for trace_id in trace_ids if trace_id))
+        if not unique_trace_ids:
+            return {}
+
+        scores_by_trace: dict[str, list[dict[str, Any]]] = {}
+        for chunk in _chunked(unique_trace_ids, 100):
+            params: dict[str, Any] = {"project_id": project_id}
+            trace_id_placeholders = []
+            for index, trace_id in enumerate(chunk):
+                param_key = f"eval_trace_id_{index}"
+                trace_id_placeholders.append(f"{{{param_key}:String}}")
+                params[param_key] = trace_id
+
+            rows = await self._query_json_each_row(
+                """
+                SELECT
+                    id,
+                    trace_id AS traceId,
+                    name,
+                    output,
+                    metadata,
+                    start_time AS createdAt,
+                    end_time AS updatedAt
+                FROM observations
+                WHERE project_id = {project_id:String}
+                  AND trace_id IN (__TRACE_IDS__)
+                  AND is_deleted = 0
+                  AND type = 'EVALUATOR'
+                ORDER BY start_time DESC, id DESC
+                FORMAT JSONEachRow
+                """.replace("__TRACE_IDS__", ", ".join(trace_id_placeholders)),
+                params,
+            )
+
+            for row in rows:
+                trace_id = row.get("traceId")
+                if not trace_id:
+                    continue
+                scores = _scores_from_evaluator_output(row)
+                if scores:
+                    scores_by_trace.setdefault(trace_id, []).extend(scores)
+        return scores_by_trace
 
     async def _query_json_each_row(
         self,
@@ -408,7 +631,114 @@ class LangfuseClickHouseReader:
             "userId": row.get("userId") or "",
             "businessId": str(business_id),
             "tags": row.get("tags") or [],
+            "scores": row.get("scores") or [],
+            "scoreSummary": row.get("scoreSummary") or _score_summary(row.get("scores") or []),
         }
+
+
+def _format_score(row: dict[str, Any]) -> dict[str, Any]:
+    return {
+        "id": row.get("id") or "",
+        "traceId": row.get("traceId") or "",
+        "observationId": row.get("observationId") or "",
+        "name": row.get("name") or "",
+        "value": _numeric_or_none(row.get("value")),
+        "source": row.get("source") or "",
+        "dataType": row.get("dataType") or "",
+        "stringValue": row.get("stringValue") or "",
+        "longStringValue": row.get("longStringValue") or "",
+        "comment": row.get("comment") or "",
+        "metadata": row.get("metadata") or {},
+        "authorUserId": row.get("authorUserId") or "",
+        "configId": row.get("configId") or "",
+        "queueId": row.get("queueId") or "",
+        "createdAt": _format_clickhouse_datetime(row.get("createdAt")),
+        "updatedAt": _format_clickhouse_datetime(row.get("updatedAt")),
+    }
+
+
+def _scores_from_evaluator_output(observation: dict[str, Any]) -> list[dict[str, Any]]:
+    output = _payload_to_object(observation.get("output"))
+    if not isinstance(output, dict) or "score" not in output:
+        return []
+    value = _numeric_or_none(output.get("score"))
+    if value is None:
+        return []
+
+    reasons = output.get("reasons")
+    comment = ""
+    if isinstance(reasons, list):
+        comment = "；".join(str(reason) for reason in reasons if reason)
+    elif reasons:
+        comment = str(reasons)
+
+    return [
+        {
+            "id": f"{observation.get('id') or ''}:output-score",
+            "traceId": observation.get("traceId") or "",
+            "observationId": observation.get("id") or "",
+            "name": observation.get("name") or "evaluator",
+            "value": value,
+            "source": "EVALUATOR",
+            "dataType": "NUMERIC",
+            "stringValue": str(output.get("label") or ""),
+            "longStringValue": "",
+            "comment": comment,
+            "metadata": observation.get("metadata") or {},
+            "authorUserId": "",
+            "configId": "",
+            "queueId": "",
+            "createdAt": _format_clickhouse_datetime(observation.get("createdAt")),
+            "updatedAt": _format_clickhouse_datetime(observation.get("updatedAt")),
+        }
+    ]
+
+
+def _score_summary(scores: list[dict[str, Any]]) -> str:
+    labels = []
+    for score in scores[:3]:
+        name = score.get("name") or "score"
+        value = ""
+        if score.get("value") is not None:
+            value = _format_score_value(score.get("value"))
+        if not value:
+            value = score.get("stringValue") or score.get("longStringValue")
+        if value:
+            labels.append(f"{name}: {value}")
+    if len(scores) > 3:
+        labels.append(f"+{len(scores) - 3}")
+    return " / ".join(labels)
+
+
+def _format_score_value(value: Any) -> str:
+    number = _numeric_or_none(value)
+    if number is None:
+        return str(value or "")
+    if number.is_integer():
+        return str(int(number))
+    return f"{number:.4f}".rstrip("0").rstrip(".")
+
+
+def _numeric_or_none(value: Any) -> float | None:
+    if value is None or value == "":
+        return None
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        return None
+
+
+def _payload_to_object(value: Any) -> Any:
+    if not isinstance(value, str):
+        return value
+    try:
+        return json.loads(value)
+    except json.JSONDecodeError:
+        return value
+
+
+def _chunked(values: list[str], size: int) -> list[list[str]]:
+    return [values[start : start + size] for start in range(0, len(values), size)]
 
 
 def _matches_trace(

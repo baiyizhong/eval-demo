@@ -25,7 +25,7 @@ test('trace log toolbar exposes quick time range options', () => {
 test('trace log advanced filters keep only manual createdAtRange time control', () => {
   assert.match(source, /fieldId:\s*'createdAtRange'/)
   assert.match(source, /id:\s*'createdAtRange'/)
-  assert.match(source, /label:\s*'自定义时间范围'/)
+  assert.match(source, /label:\s*'Trace 创建时间范围'/)
   assert.doesNotMatch(source, /renderTraceTimeRangeFilter/)
   assert.doesNotMatch(source, /id:\s*'timeRange'/)
 })

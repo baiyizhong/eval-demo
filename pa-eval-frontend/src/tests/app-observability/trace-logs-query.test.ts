@@ -18,6 +18,33 @@ test('trace logs query defaults to the last 1 day when no time filter is selecte
   assert.equal(query.createdAtRange, undefined)
 })
 
+test('trace logs query does not apply default time range when keyword is active', () => {
+  const query = buildTraceListQuery(
+    {
+      ...baseState,
+      keyword: 'trace_legacy_001',
+    },
+    'project-1'
+  )
+
+  assert.equal(query.timeRange, undefined)
+})
+
+test('trace logs query does not apply default time range when advanced filters are active', () => {
+  const query = buildTraceListQuery(
+    {
+      ...baseState,
+      filters: {
+        sessionId: 'session_legacy',
+      },
+    },
+    'project-1'
+  )
+
+  assert.equal(query.timeRange, undefined)
+  assert.equal(query.sessionId, 'session_legacy')
+})
+
 test('trace logs query uses quick time range when selected', () => {
   const query = buildTraceListQuery(
     {
@@ -31,6 +58,21 @@ test('trace logs query uses quick time range when selected', () => {
 
   assert.equal(query.timeRange, '14d')
   assert.equal(query.createdAtRange, undefined)
+})
+
+test('trace logs query keeps an explicit quick time range with keyword search', () => {
+  const query = buildTraceListQuery(
+    {
+      ...baseState,
+      keyword: 'trace_legacy_001',
+      filters: {
+        timeRange: '3d',
+      },
+    },
+    'project-1'
+  )
+
+  assert.equal(query.timeRange, '3d')
 })
 
 test('trace logs query keeps an explicit createdAtRange instead of defaulting to quick time range', () => {

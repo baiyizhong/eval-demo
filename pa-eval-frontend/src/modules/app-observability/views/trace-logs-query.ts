@@ -1,7 +1,8 @@
 import type { DataTableQueryState } from '@/components/common/data-table'
 import {
   DEFAULT_TRACE_QUICK_TIME_RANGE,
-  normalizeTraceQuickTimeRange,
+  getExplicitTraceQuickTimeRange,
+  hasActiveTraceNonTimeFilter,
 } from '../trace-time-ranges.ts'
 import type { TraceListQuery, TraceMetadataFilter } from '../types'
 
@@ -18,17 +19,27 @@ export function buildTraceListQuery(
   projectId: string
 ): TraceListQuery {
   const createdAtRange = state.filters.createdAtRange as string[] | undefined
-  const timeRange = normalizeTraceLogTimeRange(state.filters.timeRange)
   const metadataFilters = normalizeMetadataFilters(
     state.filters.metadataFilters
   )
+  const queryFilters = {
+    ...state.filters,
+    keyword: state.keyword,
+    metadataFilters,
+  }
+  const timeRange = resolveTraceLogTimeRange({
+    createdAtRange,
+    filters: queryFilters,
+    value: state.filters.timeRange,
+  })
+
   return {
     projectId,
     page: state.page,
     pageSize: state.pageSize,
     keyword: state.keyword,
     createdAtRange,
-    timeRange: createdAtRange?.length ? undefined : timeRange,
+    timeRange,
     environments: state.filters.environment as string[] | undefined,
     statuses: state.filters.status as string[] | undefined,
     tags: state.filters.tags as string[] | undefined,
@@ -43,10 +54,27 @@ export function buildTraceListQuery(
   }
 }
 
-function normalizeTraceLogTimeRange(
+function resolveTraceLogTimeRange({
+  createdAtRange,
+  filters,
+  value,
+}: {
+  createdAtRange?: string[]
+  filters: Record<string, unknown>
   value: unknown
-): NonNullable<TraceListQuery['timeRange']> {
-  return normalizeTraceQuickTimeRange(value) ?? DEFAULT_TRACE_LOG_TIME_RANGE
+}): TraceListQuery['timeRange'] {
+  if (createdAtRange?.length) {
+    return undefined
+  }
+
+  const explicitTimeRange = getExplicitTraceQuickTimeRange(value)
+  if (explicitTimeRange) {
+    return explicitTimeRange
+  }
+
+  return hasActiveTraceNonTimeFilter(filters)
+    ? undefined
+    : DEFAULT_TRACE_LOG_TIME_RANGE
 }
 
 function normalizeMetadataFilters(value: unknown): TraceMetadataFilter[] {

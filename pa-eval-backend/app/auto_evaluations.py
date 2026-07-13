@@ -2012,6 +2012,10 @@ async def _complete_auto_evaluation_success(
         "cancelled": 0,
     }
     report_template_snapshot = report["templateSnapshot"]
+    report_sections = report_template_snapshot.get("sections")
+    report_sections = report_sections if isinstance(report_sections, dict) else {}
+    write_report_items = bool(report_sections.get("items", True))
+    write_report_badcases = bool(report_sections.get("badcases", True))
 
     await cursor.execute(
         """
@@ -2071,60 +2075,61 @@ async def _complete_auto_evaluation_success(
     for index, result in enumerate(results):
         sample = result["sample"]
         result_type = report["itemResults"][index]
-        await cursor.execute(
-            """
-            INSERT INTO pa_evaluation_report_items (
-                id, project_id, report_id, source_item_id, trace_id, observation_id,
-                input, output, expected_output, scores, reason, status, error_type,
-                extra, source_id, score_summary, result_type,
-                execution_status, dataset_flowback_status,
-                created_at, updated_at, create_by, create_date, update_by, update_date
+        if write_report_items:
+            await cursor.execute(
+                """
+                INSERT INTO pa_evaluation_report_items (
+                    id, project_id, report_id, source_item_id, trace_id, observation_id,
+                    input, output, expected_output, scores, reason, status, error_type,
+                    extra, source_id, score_summary, result_type,
+                    execution_status, dataset_flowback_status,
+                    created_at, updated_at, create_by, create_date, update_by, update_date
+                )
+                VALUES (
+                    %(id)s, %(project_id)s, %(report_id)s, %(source_item_id)s,
+                    %(trace_id)s, %(observation_id)s,
+                    %(input)s, %(output)s, %(expected_output)s, %(scores)s,
+                    %(reason)s, %(status)s, %(error_type)s, %(extra)s,
+                    %(source_id)s, %(score_summary)s,
+                    %(result_type)s, 'COMPLETED', 'NONE',
+                    %(created_at)s, %(updated_at)s, %(create_by)s, %(create_date)s, %(update_by)s, %(update_date)s
+                )
+                """,
+                {
+                    "id": _new_id("paitem"),
+                    "project_id": project_id,
+                    "report_id": report_id,
+                    "source_item_id": sample["id"],
+                    "trace_id": sample.get("source_trace_id") or None,
+                    "observation_id": sample.get("source_observation_id") or None,
+                    "input": Jsonb(sample.get("input") or {}),
+                    "output": Jsonb(result["raw"]),
+                    "expected_output": Jsonb(sample.get("expected_output") or {}),
+                    "scores": Jsonb(
+                        [
+                            {
+                                "name": payload.score_name,
+                                "value": result["score"],
+                                "passed": result["passed"],
+                            }
+                        ]
+                    ),
+                    "reason": result["reason"],
+                    "status": "COMPLETED",
+                    "error_type": "",
+                    "extra": Jsonb({"resultType": result_type}),
+                    "source_id": sample["id"],
+                    "score_summary": f"{payload.score_name}: {result['score']:.2f}",
+                    "result_type": result_type,
+                    "created_at": now,
+                    "updated_at": now,
+                    "create_by": create_by,
+                    "create_date": now,
+                    "update_by": updated_by,
+                    "update_date": now,
+                },
             )
-            VALUES (
-                %(id)s, %(project_id)s, %(report_id)s, %(source_item_id)s,
-                %(trace_id)s, %(observation_id)s,
-                %(input)s, %(output)s, %(expected_output)s, %(scores)s,
-                %(reason)s, %(status)s, %(error_type)s, %(extra)s,
-                %(source_id)s, %(score_summary)s,
-                %(result_type)s, 'COMPLETED', 'NONE',
-                %(created_at)s, %(updated_at)s, %(create_by)s, %(create_date)s, %(update_by)s, %(update_date)s
-            )
-            """,
-            {
-                "id": _new_id("paitem"),
-                "project_id": project_id,
-                "report_id": report_id,
-                "source_item_id": sample["id"],
-                "trace_id": sample.get("source_trace_id") or None,
-                "observation_id": sample.get("source_observation_id") or None,
-                "input": Jsonb(sample.get("input") or {}),
-                "output": Jsonb(result["raw"]),
-                "expected_output": Jsonb(sample.get("expected_output") or {}),
-                "scores": Jsonb(
-                    [
-                        {
-                            "name": payload.score_name,
-                            "value": result["score"],
-                            "passed": result["passed"],
-                        }
-                    ]
-                ),
-                "reason": result["reason"],
-                "status": "COMPLETED",
-                "error_type": "",
-                "extra": Jsonb({"resultType": result_type}),
-                "source_id": sample["id"],
-                "score_summary": f"{payload.score_name}: {result['score']:.2f}",
-                "result_type": result_type,
-                "created_at": now,
-                "updated_at": now,
-                "create_by": create_by,
-                "create_date": now,
-                "update_by": updated_by,
-                "update_date": now,
-            },
-        )
-        if result_type == "badcase":
+        if result_type == "badcase" and write_report_badcases:
             await cursor.execute(
                 """
                 INSERT INTO pa_evaluation_report_badcases (

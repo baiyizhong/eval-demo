@@ -3,16 +3,18 @@ import { Button } from '@/components/ui/button'
 import { Checkbox } from '@/components/ui/checkbox'
 import { DataTableColumnHeader } from '@/components/common/data-table'
 import { formatDateTime, formatLatency } from '../lib/format'
-import type { TraceLogRow } from '../types'
+import type { TraceLogRow, TraceScore } from '../types'
 import { CopyableText } from './copyable-text'
 import { StatusBadge } from './status-badge'
 
 type CreateTraceLogColumnsOptions = {
   onOpenTrace: (traceId: string) => void
+  rows?: TraceLogRow[]
 }
 
 export function createTraceLogColumns({
   onOpenTrace,
+  rows = [],
 }: CreateTraceLogColumnsOptions): ColumnDef<TraceLogRow>[] {
   return [
     {
@@ -75,6 +77,7 @@ export function createTraceLogColumns({
       ),
       cell: ({ row }) => <StatusBadge status={row.original.status} />,
     },
+    ...createTraceScoreColumns(rows),
     {
       accessorKey: 'latency',
       header: ({ column }) => (
@@ -94,4 +97,64 @@ export function createTraceLogColumns({
       cell: ({ row }) => formatDateTime(row.original.createdAt),
     },
   ]
+}
+
+export function createTraceScoreColumns(
+  rows: Pick<TraceLogRow, 'scores'>[]
+): ColumnDef<TraceLogRow>[] {
+  return getTraceScoreColumnNames(rows).map((scoreName) => ({
+    id: getTraceScoreColumnId(scoreName),
+    accessorFn: (row) => formatTraceScoreValue(findTraceScore(row, scoreName)),
+    header: ({ column }) => (
+      <DataTableColumnHeader column={column} title={scoreName} />
+    ),
+    cell: ({ getValue }) => (
+      <span className='block max-w-[160px] truncate text-xs tabular-nums'>
+        {String(getValue() || '-')}
+      </span>
+    ),
+    meta: {
+      label: scoreName,
+      className: 'min-w-[140px]',
+    },
+  }))
+}
+
+export function getTraceScoreColumnNames(
+  rows: Pick<TraceLogRow, 'scores'>[]
+): string[] {
+  const names = new Set<string>()
+  rows.forEach((row) => {
+    row.scores?.forEach((score) => {
+      const name = score.name.trim()
+      if (name) {
+        names.add(name)
+      }
+    })
+  })
+  return [...names]
+}
+
+function getTraceScoreColumnId(scoreName: string) {
+  return `score:${scoreName}`
+}
+
+function findTraceScore(row: TraceLogRow, scoreName: string) {
+  return row.scores?.find((score) => score.name === scoreName)
+}
+
+export function formatTraceScoreValue(score: TraceScore | undefined) {
+  if (!score) {
+    return '-'
+  }
+  if (score.stringValue) {
+    return score.stringValue
+  }
+  if (score.longStringValue) {
+    return score.longStringValue
+  }
+  if (score.value !== undefined && score.value !== null) {
+    return String(score.value)
+  }
+  return '-'
 }

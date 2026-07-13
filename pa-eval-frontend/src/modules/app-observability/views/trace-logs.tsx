@@ -1,4 +1,4 @@
-import { useCallback, useMemo, useState } from 'react'
+import { useCallback, useState } from 'react'
 import { useParams, useSearchParams } from 'react-router'
 import { useAPI } from '@/hooks/use-api'
 import { DataTable } from '@/components/common/data-table'
@@ -42,8 +42,8 @@ export function TraceLogs() {
     [searchParams, setSearchParams]
   )
 
-  const columns = useMemo(
-    () => createTraceLogColumns({ onOpenTrace: openTrace }),
+  const columns = useCallback(
+    (rows: TraceLogRow[]) => createTraceLogColumns({ onOpenTrace: openTrace, rows }),
     [openTrace]
   )
 
@@ -101,7 +101,7 @@ export function TraceLogs() {
               />
             }
             emptyText='当前筛选条件下暂无 Trace 数据'
-            minTableWidth={980}
+            minTableWidth={1280}
           />
           <TraceDetailDrawer
             projectId={projectId}

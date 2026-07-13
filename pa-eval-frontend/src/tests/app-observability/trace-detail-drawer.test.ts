@@ -53,3 +53,18 @@ test('trace detail drawer keeps the right column adaptive after resizing trace c
   assert.match(source, /onWidthChange=\{setTraceChainWidth\}/)
   assert.match(source, /className='min-w-0 flex h-full flex-col gap-3'/)
 })
+
+test('trace detail drawer fetches observation detail when a trace-chain node is clicked', () => {
+  const source = readFileSync(
+    resolve(
+      process.cwd(),
+      'src/modules/app-observability/components/trace-detail-drawer.tsx'
+    ),
+    'utf8'
+  )
+
+  assert.match(source, /selectedObservationId/)
+  assert.match(source, /getProjectTraceObservation/)
+  assert.match(source, /onNodeClick=\{\(node\) =>/)
+  assert.match(source, /node\.id/)
+})

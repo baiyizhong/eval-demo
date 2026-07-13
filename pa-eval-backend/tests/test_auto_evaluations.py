@@ -778,6 +778,57 @@ async def test_complete_auto_evaluation_success_persists_report_template_snapsho
 
 
 @pytest.mark.anyio
+async def test_complete_auto_evaluation_success_respects_hidden_report_data_sections() -> (
+    None
+):
+    cursor = FakeCursor({"create_date": None, "create_by": "creator@163.com"})
+    payload = CreateAutoEvaluationPayload.model_validate(
+        {
+            "name": "客服质检",
+            "scoreName": "quality",
+            "evaluatorId": "evaluator-1",
+            "reportTemplateId": "template-hidden-data",
+            "reportTemplateSnapshot": {
+                "id": "template-hidden-data",
+                "name": "隐藏明细报告",
+                "sections": {
+                    "items": False,
+                    "badcases": False,
+                },
+            },
+        }
+    )
+
+    await _complete_auto_evaluation_success(
+        cursor,  # type: ignore[arg-type]
+        project_id="project-1",
+        task_id="task-1",
+        run_id="run-1",
+        payload=payload,
+        evaluator={"id": "evaluator-1", "variables": [], "config": {}},
+        data_source={"name": "baiyizhong-dataset"},
+        results=[
+            {
+                "sample": {
+                    "id": "item-1",
+                    "source_trace_id": "trace-1",
+                    "source_observation_id": "obs-1",
+                },
+                "score": 0.1,
+                "passed": False,
+                "reason": "评估器判定失败",
+                "raw": {"data": {"workflow_run_id": "run-1"}},
+            }
+        ],
+        updated_by="admin@163.com",
+    )
+
+    executed_sql = "\n".join(sql for sql, _params in cursor.executions)
+    assert "INSERT INTO pa_evaluation_report_items" not in executed_sql
+    assert "INSERT INTO pa_evaluation_report_badcases" not in executed_sql
+
+
+@pytest.mark.anyio
 async def test_preview_report_flowback_counts_duplicates_for_existing_dataset() -> None:
     cursor = SequentialCursor(
         rows_by_fetchall=[

@@ -140,6 +140,10 @@ type DataTableProviderConfig<
   initialOpen?: TAction | null
 }
 
+export type DataTableColumns<TData> =
+  | ColumnDef<TData>[]
+  | ((rows: TData[]) => ColumnDef<TData>[])
+
 export type DataTableSelectionState<TData> = {
   isAllMatchingRowsSelected: boolean
   selectedRowCount: number
@@ -157,7 +161,7 @@ export type DataTableProps<
   TAction extends string = string,
   TContext extends object = Record<string, never>,
 > = {
-  columns: ColumnDef<TData>[]
+  columns: DataTableColumns<TData>
   request: DataTableRequestConfig<TData, TResponse>
   urlState?: DataTableUrlStateConfig
   filterPanel?: DataTableFilterPanelConfig
@@ -301,6 +305,10 @@ function DataTableContent<
   const rows = useMemo(
     () => selectResponseRows(query.data, request.selectRows),
     [query.data, request.selectRows]
+  )
+  const resolvedColumns = useMemo(
+    () => (typeof columns === 'function' ? columns(rows) : columns),
+    [columns, rows]
   )
   const total = useMemo(
     () => selectResponseTotal(query.data, request.selectTotal),
@@ -470,7 +478,7 @@ function DataTableContent<
 
   const table = useReactTable({
     data: rows,
-    columns,
+    columns: resolvedColumns,
     pageCount,
     state: {
       rowSelection,
@@ -608,11 +616,11 @@ function DataTableContent<
             </TableHeader>
             <TableBody>
               {query.isLoading ? (
-                <TableMessage colSpan={columns.length}>
+                <TableMessage colSpan={resolvedColumns.length}>
                   {loadingText}
                 </TableMessage>
               ) : query.isError ? (
-                <TableMessage colSpan={columns.length}>
+                <TableMessage colSpan={resolvedColumns.length}>
                   {errorText}
                 </TableMessage>
               ) : table.getRowModel().rows.length ? (
@@ -638,7 +646,7 @@ function DataTableContent<
                   </TableRow>
                 ))
               ) : (
-                <TableMessage colSpan={columns.length}>
+                <TableMessage colSpan={resolvedColumns.length}>
                   {emptyText}
                 </TableMessage>
               )}

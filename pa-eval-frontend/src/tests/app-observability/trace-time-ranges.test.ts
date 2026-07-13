@@ -43,3 +43,25 @@ test('quick time toolbar default is hidden while custom time range is active', (
   )
   assert.equal(getTraceQuickTimeRangeToolbarDefault({}), '1d')
 })
+
+test('quick time toolbar default is hidden while keyword or advanced filters are active', () => {
+  assert.equal(
+    getTraceQuickTimeRangeToolbarDefault({
+      keyword: 'trace_legacy_001',
+    }),
+    undefined
+  )
+  assert.equal(
+    getTraceQuickTimeRangeToolbarDefault({
+      sessionId: 'session_legacy',
+    }),
+    undefined
+  )
+  assert.equal(
+    getTraceQuickTimeRangeToolbarDefault({
+      timeRange: '3d',
+      keyword: 'trace_legacy_001',
+    }),
+    undefined
+  )
+})

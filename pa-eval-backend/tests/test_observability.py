@@ -63,6 +63,7 @@ class FakeDatabaseReader:
 class FakeTraceReader:
     def __init__(self) -> None:
         self.project_id = None
+        self.observation_id = None
         self.metrics_kwargs = None
         self.list_kwargs = None
 
@@ -126,6 +127,49 @@ class FakeTraceReader:
             "output": "{}",
             "metadata": {"app_id": "app-1"},
             "callChain": [],
+        }
+
+    async def get_observation(
+        self,
+        project_id: str,
+        trace_id: str,
+        observation_id: str,
+    ) -> dict:
+        self.project_id = project_id
+        self.observation_id = observation_id
+        return {
+            "id": observation_id,
+            "traceId": trace_id,
+            "projectId": project_id,
+            "parentObservationId": None,
+            "type": "GENERATION",
+            "name": "agent-router",
+            "level": "DEFAULT",
+            "statusMessage": "",
+            "startTime": "2026-07-05T01:36:59.275Z",
+            "endTime": "2026-07-05T01:37:00.000Z",
+            "input": "{\"question\":\"如何退款\"}",
+            "output": "{\"route\":\"refund\"}",
+            "metadata": {"node": "agent-router"},
+            "usageDetails": {"input": 10, "output": 4, "total": 14},
+            "providedUsageDetails": {},
+            "costDetails": {},
+            "totalCost": 0.001,
+            "scores": [
+                {
+                    "id": "score-1",
+                    "name": "quality",
+                    "value": 0.9,
+                    "source": "ANNOTATION",
+                    "dataType": "NUMERIC",
+                    "stringValue": "",
+                    "comment": "通过",
+                    "metadata": {},
+                    "authorUserId": "user-1",
+                    "createdAt": "2026-07-05T01:37:01.000Z",
+                    "updatedAt": "2026-07-05T01:37:01.000Z",
+                }
+            ],
         }
 
 
@@ -268,6 +312,30 @@ def test_gets_project_trace_metrics_and_detail() -> None:
     assert detail_response.status_code == 200
     assert detail_response.json()["data"]["traceId"] == "trace-1"
     assert detail_response.json()["data"]["projectName"] == "演示组织 默认项目"
+
+
+def test_gets_project_trace_observation_detail() -> None:
+    fake_db = FakeDatabaseReader()
+    fake_trace = FakeTraceReader()
+    override_readers(fake_db, fake_trace)
+
+    try:
+        response = TestClient(app).get(
+            "/api/projects/project-1/traces/trace-1/observations/obs-1"
+        )
+    finally:
+        clear_overrides()
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["code"] == 0
+    assert body["data"]["id"] == "obs-1"
+    assert body["data"]["traceId"] == "trace-1"
+    assert body["data"]["projectName"] == "演示组织 默认项目"
+    assert body["data"]["scores"][0]["name"] == "quality"
+    assert fake_db.project_id == "project-1"
+    assert fake_db.user_id == "user-1"
+    assert fake_trace.observation_id == "obs-1"
 
 
 def test_patches_project_trace_and_returns_merged_detail() -> None:
@@ -429,6 +497,123 @@ async def test_fetches_trace_rows_with_time_and_environment_filters(monkeypatch)
         "end_time": datetime(2026, 7, 6, 0, 0, 0),
         "environment_0": "default",
     }
+
+
+def test_trace_row_exposes_langfuse_scores_and_summary() -> None:
+    row = LangfuseClickHouseReader._to_trace_row(
+        {
+            "traceId": "trace-1",
+            "projectId": "project-1",
+            "environment": "default",
+            "status": "success",
+            "latency": 120,
+            "createdAt": "2026-07-05 01:36:59.275",
+            "userId": "user-1",
+            "metadata": {"app_id": "app-1"},
+            "tags": [],
+            "scores": [
+                {
+                    "id": "score-1",
+                    "name": "quality",
+                    "value": 0.9,
+                    "source": "ANNOTATION",
+                    "dataType": "NUMERIC",
+                    "stringValue": "",
+                    "comment": "通过",
+                    "metadata": {},
+                    "authorUserId": "user-1",
+                    "createdAt": "2026-07-05T01:37:01.000Z",
+                    "updatedAt": "2026-07-05T01:37:01.000Z",
+                }
+            ],
+            "scoreSummary": "quality: 0.9",
+        }
+    )
+
+    assert row["scores"][0]["name"] == "quality"
+    assert row["scoreSummary"] == "quality: 0.9"
+
+
+@pytest.mark.anyio
+async def test_clickhouse_reader_get_observation_returns_langfuse_fields(monkeypatch) -> None:
+    reader = LangfuseClickHouseReader(Settings())
+    captured_queries = []
+
+    async def fake_query(query: str, params: dict):
+        captured_queries.append((query, params))
+        if "FROM observations" in query:
+            return [
+                {
+                    "id": "obs-1",
+                    "traceId": "trace-1",
+                    "projectId": "project-1",
+                    "parentObservationId": None,
+                    "type": "GENERATION",
+                    "name": "agent-router",
+                    "level": "DEFAULT",
+                    "statusMessage": "",
+                    "startTime": "2026-07-05 01:36:59.275",
+                    "endTime": "2026-07-05 01:37:00.000",
+                    "input": {"question": "如何退款"},
+                    "output": {"route": "refund"},
+                    "metadata": {"node": "agent-router"},
+                    "usageDetails": {"input": 10, "output": 4, "total": 14},
+                    "providedUsageDetails": {},
+                    "costDetails": {},
+                    "totalCost": 0.001,
+                }
+            ]
+        return [
+            {
+                "id": "score-1",
+                "traceId": "trace-1",
+                "observationId": "obs-1",
+                "name": "quality",
+                "value": 0.9,
+                "source": "ANNOTATION",
+                "dataType": "NUMERIC",
+                "stringValue": "",
+                "comment": "通过",
+                "metadata": {},
+                "authorUserId": "user-1",
+                "createdAt": "2026-07-05 01:37:01.000",
+                "updatedAt": "2026-07-05 01:37:01.000",
+            }
+        ]
+
+    monkeypatch.setattr(reader, "_query_json_each_row", fake_query)
+
+    observation = await reader.get_observation("project-1", "trace-1", "obs-1")
+
+    assert observation["id"] == "obs-1"
+    assert observation["input"] == '{\n  "question": "如何退款"\n}'
+    assert observation["output"] == '{\n  "route": "refund"\n}'
+    assert observation["scores"][0]["name"] == "quality"
+    assert captured_queries[0][1] == {
+        "project_id": "project-1",
+        "trace_id": "trace-1",
+        "observation_id": "obs-1",
+    }
+
+
+@pytest.mark.anyio
+async def test_clickhouse_reader_chunks_trace_ids_when_fetching_scores(monkeypatch) -> None:
+    reader = LangfuseClickHouseReader(Settings())
+    captured_params = []
+
+    async def fake_query(query: str, params: dict):
+        captured_params.append(params)
+        return []
+
+    monkeypatch.setattr(reader, "_query_json_each_row", fake_query)
+
+    await reader._fetch_scores_by_trace(
+        "project-1",
+        [f"trace-{index}" for index in range(205)],
+    )
+
+    assert len(captured_params) == 3
+    assert all(len([key for key in params if key.startswith("score_trace_id_")]) <= 100 for params in captured_params)
 
 
 @pytest.mark.anyio

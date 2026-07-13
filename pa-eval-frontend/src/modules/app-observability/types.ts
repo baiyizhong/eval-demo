@@ -4,6 +4,25 @@ export type TraceStatus = 'success' | 'failed' | 'running' | 'unknown'
 
 export type TraceEnvironment = 'default' | 'production' | 'staging' | 'testing'
 
+export type TraceScore = {
+  id: string
+  traceId?: string
+  observationId?: string
+  name: string
+  value?: number | null
+  source?: string
+  dataType?: string
+  stringValue?: string
+  longStringValue?: string
+  comment?: string
+  metadata?: Record<string, unknown>
+  authorUserId?: string
+  configId?: string
+  queueId?: string
+  createdAt?: string
+  updatedAt?: string
+}
+
 export type TraceLogRow = {
   traceId: string
   sessionId: string
@@ -16,6 +35,8 @@ export type TraceLogRow = {
   userId: string
   businessId: string
   tags: string[]
+  scores?: TraceScore[]
+  scoreSummary?: string
 }
 
 export type TraceDetail = TraceLogRow & {
@@ -24,6 +45,30 @@ export type TraceDetail = TraceLogRow & {
   output: string
   metadata: Record<string, unknown>
   callChain: TreeNode[]
+}
+
+export type TraceObservationDetail = {
+  id: string
+  traceId: string
+  projectId: string
+  projectName?: string
+  parentObservationId?: string | null
+  type: string
+  name: string
+  level: string
+  statusMessage: string
+  startTime: string
+  endTime: string
+  input: string
+  output: string
+  metadata: Record<string, unknown>
+  usageDetails: Record<string, number>
+  providedUsageDetails: Record<string, number>
+  costDetails: Record<string, number>
+  providedCostDetails?: Record<string, number>
+  totalCost: number
+  scores: TraceScore[]
+  scoreSummary?: string
 }
 
 export type TraceMetricSummary = {
