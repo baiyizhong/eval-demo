@@ -40,6 +40,11 @@ import {
   TableRow,
 } from '@/components/ui/table'
 import { Textarea } from '@/components/ui/textarea'
+import {
+  Tooltip,
+  TooltipContent,
+  TooltipTrigger,
+} from '@/components/ui/tooltip'
 import { ContentSection } from '@/components/common/content-section'
 import { Loading } from '@/components/common/loading'
 import type {
@@ -204,17 +209,39 @@ export function ProjectScoreConfigsSettings() {
                   <TableRow key={config.id}>
                     <TableCell>
                       <div className='flex flex-col gap-1'>
-                        <span className='font-medium'>{config.name}</span>
-                        <span className='text-muted-foreground max-w-52 truncate'>
-                          {config.description || '-'}
+                        <span className='max-w-52 truncate font-medium'>
+                          {config.name}
                         </span>
+                        {config.description ? (
+                          <Tooltip>
+                            <TooltipTrigger asChild>
+                              <span className='text-muted-foreground max-w-52 truncate'>
+                                {config.description}
+                              </span>
+                            </TooltipTrigger>
+                            <TooltipContent className='max-w-80 whitespace-normal break-words'>
+                              {config.description}
+                            </TooltipContent>
+                          </Tooltip>
+                        ) : (
+                          <span className='text-muted-foreground max-w-52 truncate'>
+                            -
+                          </span>
+                        )}
                       </div>
                     </TableCell>
                     <TableCell>{DATA_TYPE_LABELS[config.dataType]}</TableCell>
-                    <TableCell>{getConfigRange(config)}</TableCell>
+                    <TableCell className='max-w-80 whitespace-normal break-words'>
+                      {getConfigRange(config)}
+                    </TableCell>
                     <TableCell>
                       <Badge
                         variant={config.isArchived ? 'outline' : 'secondary'}
+                        className={
+                          config.isArchived
+                            ? 'border-border bg-muted text-muted-foreground'
+                            : 'border-success/20 bg-success/10 text-success'
+                        }
                       >
                         {config.isArchived ? '已归档' : '启用中'}
                       </Badge>

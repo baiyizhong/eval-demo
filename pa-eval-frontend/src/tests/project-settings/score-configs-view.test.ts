@@ -50,3 +50,28 @@ test('categorical and boolean score options expose readonly value and labels', (
   assert.match(source, /label='标签'/)
   assert.match(source, /dataType === 'BOOLEAN'\s*\?\s*\(\s*<ScoreOptionRows/)
 })
+
+test('score configs range cell allows wrapping long content', () => {
+  assert.match(
+    source,
+    /<TableCell className='max-w-80 whitespace-normal break-words'>/
+  )
+  assert.match(source, /max-w-52 truncate/)
+})
+
+test('score config names keep truncate and description controls tooltip', () => {
+  assert.match(source, /TooltipTrigger asChild/)
+  assert.match(source, /<span className='max-w-52 truncate font-medium'>/)
+  assert.match(source, /config\.description \? \(/)
+  assert.match(
+    source,
+    /<TooltipContent className='max-w-80 whitespace-normal break-words'>\s*\{config\.description\}\s*<\/TooltipContent>/
+  )
+  assert.doesNotMatch(source, /<TooltipContent>\{config\.name\}<\/TooltipContent>/)
+})
+
+test('active score config status badge uses success color', () => {
+  assert.match(source, /'border-success\/20 bg-success\/10 text-success'/)
+  assert.match(source, /'border-border bg-muted text-muted-foreground'/)
+  assert.match(source, /config\.isArchived \? '已归档' : '启用中'/)
+})
