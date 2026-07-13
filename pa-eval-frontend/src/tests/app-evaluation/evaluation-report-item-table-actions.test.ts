@@ -10,6 +10,10 @@ const badcaseSource = readFileSync(
   'src/modules/app-evaluation/components/evaluation-report-badcase-table.tsx',
   'utf8'
 )
+const detailSource = readFileSync(
+  'src/modules/app-evaluation/views/evaluation-report-detail.tsx',
+  'utf8'
+)
 
 test('evaluation report item table does not show the all-data flowback button', () => {
   const fixedActionSection = source.match(
@@ -29,4 +33,20 @@ test('evaluation report badcase table does not show the all-badcase flowback but
   assert.ok(fixedActionSection)
   assert.equal(fixedActionSection.includes('回流 Badcase'), false)
   assert.equal(badcaseSource.includes('回流已选择'), true)
+})
+
+test('evaluation report tables use stable query keys that can be invalidated by detail page', () => {
+  assert.equal(source.includes("'project-evaluation-report-items',\n            $api,"), false)
+  assert.equal(
+    badcaseSource.includes("'project-evaluation-report-badcases',\n            $api,"),
+    false
+  )
+  assert.equal(
+    detailSource.includes("['project-evaluation-report', $api, projectId, reportId]"),
+    false
+  )
+  assert.match(
+    detailSource,
+    /queryKey:\s*\['project-evaluation-report-items', projectId, reportId\]/
+  )
 })

@@ -44,17 +44,12 @@ export function ProjectEvaluationReportDetail() {
     useState<EvaluationReportFlowbackInput['range']>('BADCASE_ONLY')
 
   const reportQuery = useQuery({
-    queryKey: ['project-evaluation-report', $api, projectId, reportId],
+    queryKey: ['project-evaluation-report', projectId, reportId],
     queryFn: () => getProjectEvaluationReport($api, projectId, reportId),
     enabled: Boolean(reportId),
   })
   const flowbacksQuery = useQuery({
-    queryKey: [
-      'project-evaluation-report-flowbacks',
-      $api,
-      projectId,
-      reportId,
-    ],
+    queryKey: ['project-evaluation-report-flowbacks', projectId, reportId],
     queryFn: () =>
       listProjectEvaluationReportFlowbacks($api, projectId, reportId),
     enabled: Boolean(reportId),

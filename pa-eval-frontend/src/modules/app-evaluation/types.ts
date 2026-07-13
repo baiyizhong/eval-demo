@@ -585,6 +585,26 @@ export type EvaluationReportItemRecord = {
   id: string
   reportId: string
   sourceId: string
+  traceId?: string
+  observationId?: string
+  scores?: {
+    id: string
+    traceId: string
+    observationId: string
+    name: string
+    value?: number | null
+    source: string
+    dataType: string
+    stringValue?: string
+    longStringValue?: string
+    comment?: string
+    metadata?: Record<string, unknown>
+    authorUserId?: string
+    configId?: string
+    queueId?: string
+    createdAt?: string
+    updatedAt?: string
+  }[]
   scoreSummary: string
   resultType: 'normal' | 'badcase'
   executionStatus: string

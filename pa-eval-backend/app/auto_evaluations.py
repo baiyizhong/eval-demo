@@ -1,3 +1,4 @@
+import hashlib
 import json
 import logging
 import math
@@ -15,7 +16,9 @@ from pydantic import BaseModel, Field
 from app.auth_context import CurrentUserContext, get_current_user_context
 from app.config import Settings, get_settings
 from app.errors import BusinessError
+from app.langfuse_clickhouse import LangfuseClickHouseReader
 from app.langfuse_db import LangfuseDatabaseConfigError, PROJECT_ACCESS_EXISTS_SQL
+from app.langfuse_client import LangfuseAdminClient
 from app.response import success
 
 router = APIRouter(prefix="/api/projects/{project_id}", tags=["auto-evaluations"])
@@ -1881,6 +1884,8 @@ async def _run_auto_evaluation_background(
     updated_by: str,
 ) -> None:
     completed_count = 0
+    failed_count = 0
+    error_messages: list[str] = []
     try:
         results: list[dict[str, Any]] = []
         sample_count = len(samples)
@@ -1892,6 +1897,7 @@ async def _run_auto_evaluation_background(
                 run_id=run_id,
                 sample_count=sample_count,
                 completed_count=completed_count,
+                failed_count=failed_count,
                 running_count=1,
                 updated_by=updated_by,
             )
@@ -1901,7 +1907,23 @@ async def _run_auto_evaluation_background(
                 evaluator,
                 payload.variable_mapping,
             )
-            result = await _run_workflow_evaluator(evaluator, inputs, settings)
+            try:
+                result = await _run_workflow_evaluator(evaluator, inputs, settings)
+            except (BusinessError, httpx.HTTPError) as exc:
+                failed_count += 1
+                error_messages.append(_background_error_message(exc))
+                await _persist_auto_evaluation_progress(
+                    settings,
+                    project_id=project_id,
+                    task_id=task_id,
+                    run_id=run_id,
+                    sample_count=sample_count,
+                    completed_count=completed_count,
+                    failed_count=failed_count,
+                    running_count=0,
+                    updated_by=updated_by,
+                )
+                continue
             results.append(
                 {
                     "sample": sample,
@@ -1917,9 +1939,26 @@ async def _run_auto_evaluation_background(
                 run_id=run_id,
                 sample_count=sample_count,
                 completed_count=completed_count,
+                failed_count=failed_count,
                 running_count=0,
                 updated_by=updated_by,
             )
+
+        error_message = _partial_auto_evaluation_error_message(error_messages)
+        if not results and failed_count:
+            async with await _connect(settings) as connection:
+                async with connection.cursor() as cursor:
+                    await _mark_auto_evaluation_failed(
+                        cursor,
+                        project_id=project_id,
+                        task_id=task_id,
+                        run_id=run_id,
+                        sample_count=sample_count,
+                        completed_count=0,
+                        message=error_message or "自动评测任务执行失败",
+                        updated_by=updated_by,
+                    )
+            return
 
         async with await _connect(settings) as connection:
             async with connection.cursor() as cursor:
@@ -1933,6 +1972,9 @@ async def _run_auto_evaluation_background(
                     data_source=data_source,
                     results=results,
                     updated_by=updated_by,
+                    langfuse_client=LangfuseAdminClient(settings),
+                    failed_count=failed_count,
+                    error_message=error_message,
                 )
     except Exception as exc:
         message = _background_error_message(exc)
@@ -1961,6 +2003,9 @@ async def _complete_auto_evaluation_success(
     data_source: dict[str, Any],
     results: list[dict[str, Any]],
     updated_by: str,
+    langfuse_client: LangfuseAdminClient | None = None,
+    failed_count: int = 0,
+    error_message: str | None = None,
 ) -> None:
     await cursor.execute(
         """
@@ -2004,11 +2049,12 @@ async def _complete_auto_evaluation_success(
     sample_count = len(results)
     badcase_count = report["badcaseCount"]
     completed_count = report["completedCount"]
+    task_status = "PARTIAL_FAILED" if failed_count else "COMPLETED"
     execution_stats = {
         "pending": 0,
         "running": 0,
         "completed": completed_count,
-        "failed": 0,
+        "failed": failed_count,
         "cancelled": 0,
     }
     report_template_snapshot = report["templateSnapshot"]
@@ -2159,10 +2205,22 @@ async def _complete_auto_evaluation_success(
                 },
             )
 
+    if langfuse_client is not None:
+        await _sync_auto_evaluation_scores_to_langfuse(
+            cursor,
+            project_id=project_id,
+            task_id=task_id,
+            run_id=run_id,
+            score_name=payload.score_name,
+            evaluator_id=str(evaluator.get("id") or ""),
+            results=results,
+            langfuse_client=langfuse_client,
+        )
+
     await cursor.execute(
         """
         UPDATE pa_auto_evaluation_tasks
-        SET status = 'COMPLETED',
+        SET status = %(status)s,
             execution_stats = %(execution_stats)s,
             badcase_count = %(badcase_count)s,
             latest_report_id = %(latest_report_id)s,
@@ -2174,6 +2232,7 @@ async def _complete_auto_evaluation_success(
         {
             "project_id": project_id,
             "task_id": task_id,
+            "status": task_status,
             "execution_stats": Jsonb(execution_stats),
             "badcase_count": badcase_count,
             "latest_report_id": report_id,
@@ -2184,12 +2243,13 @@ async def _complete_auto_evaluation_success(
     await cursor.execute(
         """
         UPDATE pa_auto_evaluation_runs
-        SET status = 'COMPLETED',
+        SET status = %(status)s,
             completed_count = %(completed_count)s,
             failed_count = %(failed_count)s,
             badcase_count = %(badcase_count)s,
             ended_at = %(ended_at)s,
             duration_text = %(duration_text)s,
+            error_message = %(error_message)s,
             update_by = %(update_by)s,
             update_date = %(update_date)s
         WHERE project_id = %(project_id)s
@@ -2200,15 +2260,141 @@ async def _complete_auto_evaluation_success(
             "project_id": project_id,
             "task_id": task_id,
             "run_id": run_id,
+            "status": task_status,
             "completed_count": completed_count,
-            "failed_count": 0,
+            "failed_count": failed_count,
             "badcase_count": badcase_count,
             "ended_at": now,
             "duration_text": _duration_text(started_at, now),
+            "error_message": error_message,
             "update_by": updated_by,
             "update_date": now,
         },
     )
+
+
+async def _sync_auto_evaluation_scores_to_langfuse(
+    cursor: psycopg.AsyncCursor[dict[str, Any]],
+    *,
+    project_id: str,
+    task_id: str,
+    run_id: str,
+    score_name: str,
+    evaluator_id: str,
+    results: list[dict[str, Any]],
+    langfuse_client: LangfuseAdminClient,
+) -> None:
+    score_payloads = [
+        _auto_evaluation_score_api_payload(
+            project_id=project_id,
+            task_id=task_id,
+            run_id=run_id,
+            score_name=score_name,
+            evaluator_id=evaluator_id,
+            result=result,
+        )
+        for result in results
+    ]
+    score_payloads = [payload for payload in score_payloads if payload is not None]
+    if not score_payloads:
+        return
+
+    api_key = await _get_project_api_key_credentials(cursor, project_id)
+    for score_payload in score_payloads:
+        await langfuse_client.create_score(
+            api_key["publicKey"],
+            api_key["secretKey"],
+            score_payload,
+        )
+
+
+async def _get_project_api_key_credentials(
+    cursor: psycopg.AsyncCursor[dict[str, Any]],
+    project_id: str,
+) -> dict[str, str]:
+    await cursor.execute(
+        """
+        SELECT public_key, secret_key
+        FROM pa_project_api_keys
+        WHERE project_id = %(project_id)s
+        ORDER BY create_date DESC, id DESC
+        LIMIT 1
+        """,
+        {"project_id": project_id},
+    )
+    row = await cursor.fetchone()
+    if row is None:
+        raise BusinessError(
+            code=1029,
+            message="项目 API Key 未配置",
+            status_code=400,
+        )
+    return {
+        "publicKey": row["public_key"],
+        "secretKey": row["secret_key"],
+    }
+
+
+def _auto_evaluation_score_api_payload(
+    *,
+    project_id: str,
+    task_id: str,
+    run_id: str,
+    score_name: str,
+    evaluator_id: str,
+    result: dict[str, Any],
+) -> dict[str, Any] | None:
+    sample = result.get("sample") or {}
+    trace_id = sample.get("source_trace_id") or ""
+    if not trace_id:
+        return None
+
+    observation_id = sample.get("source_observation_id") or ""
+    sample_id = sample.get("id") or ""
+    payload = {
+        "id": _auto_evaluation_score_id(
+            project_id=project_id,
+            task_id=task_id,
+            run_id=run_id,
+            sample_id=sample_id,
+            score_name=score_name,
+            trace_id=trace_id,
+            observation_id=observation_id,
+        ),
+        "name": score_name,
+        "value": result["score"],
+        "dataType": "NUMERIC",
+        "traceId": trace_id,
+        "queueId": task_id,
+        "comment": result.get("reason") or "",
+        "metadata": {
+            "paAutoEvaluationTaskId": task_id,
+            "paAutoEvaluationRunId": run_id,
+            "paEvaluationSampleId": sample_id,
+            "evaluatorId": evaluator_id,
+            "passed": result.get("passed"),
+        },
+    }
+    if observation_id:
+        payload["observationId"] = observation_id
+    return payload
+
+
+def _auto_evaluation_score_id(
+    *,
+    project_id: str,
+    task_id: str,
+    run_id: str,
+    sample_id: str,
+    score_name: str,
+    trace_id: str,
+    observation_id: str,
+) -> str:
+    raw = "|".join(
+        [project_id, task_id, run_id, sample_id, score_name, trace_id, observation_id]
+    )
+    digest = hashlib.sha256(raw.encode("utf-8")).hexdigest()[:32]
+    return f"pa-auto-score-{digest}"
 
 
 async def _mark_auto_evaluation_failed(
@@ -2289,6 +2475,15 @@ def _background_error_message(exc: Exception) -> str:
     if isinstance(exc, httpx.HTTPError):
         return "Dify 工作流网络调用失败"
     return "自动评测任务执行失败"
+
+
+def _partial_auto_evaluation_error_message(messages: list[str]) -> str | None:
+    unique_messages = list(dict.fromkeys(message for message in messages if message))
+    if not unique_messages:
+        return None
+    if len(unique_messages) == 1:
+        return f"部分样本执行失败：{unique_messages[0]}"
+    return "部分样本执行失败：" + "；".join(unique_messages[:3])
 
 
 def _duration_text(started_at: datetime, ended_at: datetime) -> str:
@@ -2679,44 +2874,52 @@ async def list_evaluation_report_items(
         async with connection.cursor() as cursor:
             await _ensure_project_access(cursor, project_id, current_user.user_id)
             await _ensure_report_exists(cursor, project_id, report_id)
-            like = f"%{keyword or ''}%"
             await cursor.execute(
                 """
-                SELECT COUNT(*)::int AS total
+                SELECT source_task_id, run_id
+                FROM pa_evaluation_reports
+                WHERE project_id = %(project_id)s
+                  AND id = %(report_id)s
+                LIMIT 1
+                """,
+                {"project_id": project_id, "report_id": report_id},
+            )
+            report_row = await cursor.fetchone()
+            source_task_id = (report_row or {}).get("source_task_id") or ""
+            run_id = (report_row or {}).get("run_id") or ""
+            await cursor.execute(
+                """
+                SELECT id, source_id, trace_id, observation_id, result_type,
+                       execution_status, dataset_flowback_status
                 FROM pa_evaluation_report_items
                 WHERE project_id = %(project_id)s
                   AND report_id = %(report_id)s
-                  AND (%(keyword)s = '' OR source_id ILIKE %(like)s OR score_summary ILIKE %(like)s)
                 """,
-                {
-                    "project_id": project_id,
-                    "report_id": report_id,
-                    "keyword": keyword or "",
-                    "like": like,
-                },
+                {"project_id": project_id, "report_id": report_id},
             )
-            total = (await cursor.fetchone() or {}).get("total", 0)
-            await cursor.execute(
-                """
-                SELECT *
-                FROM pa_evaluation_report_items
-                WHERE project_id = %(project_id)s
-                  AND report_id = %(report_id)s
-                  AND (%(keyword)s = '' OR source_id ILIKE %(like)s OR score_summary ILIKE %(like)s)
-                ORDER BY id DESC
-                LIMIT %(limit)s OFFSET %(offset)s
-                """,
-                {
-                    "project_id": project_id,
-                    "report_id": report_id,
-                    "keyword": keyword or "",
-                    "like": like,
-                    "limit": page_size,
-                    "offset": (page - 1) * page_size,
-                },
-            )
-            rows = await cursor.fetchall()
-    return success({"total": total, "datas": [_to_report_item(row) for row in rows]})
+            report_items = await cursor.fetchall()
+
+    if not source_task_id:
+        return success({"total": 0, "datas": []})
+
+    scores = await LangfuseClickHouseReader(settings).list_scores_by_queue(
+        project_id,
+        source_task_id,
+        run_id=run_id,
+    )
+    rows = _evaluation_report_items_from_scores(
+        report_id=report_id,
+        scores=scores,
+        report_items=report_items,
+    )
+    filtered_rows = _filter_evaluation_report_score_items(rows, keyword or "")
+    start = (page - 1) * page_size
+    return success(
+        {
+            "total": len(filtered_rows),
+            "datas": filtered_rows[start : start + page_size],
+        }
+    )
 
 
 @router.get("/evaluation-reports/{report_id}/badcases")
@@ -3559,6 +3762,115 @@ def _to_report_item(row: dict[str, Any]) -> dict[str, Any]:
         "executionStatus": row["execution_status"],
         "datasetFlowbackStatus": row["dataset_flowback_status"],
     }
+
+
+def _evaluation_report_items_from_scores(
+    *,
+    report_id: str,
+    scores: list[dict[str, Any]],
+    report_items: list[dict[str, Any]],
+) -> list[dict[str, Any]]:
+    item_by_source_id: dict[str, dict[str, Any]] = {}
+    for item in report_items:
+        for key in (
+            item.get("source_id"),
+            item.get("observation_id"),
+            item.get("trace_id"),
+        ):
+            if key:
+                item_by_source_id[str(key)] = item
+
+    grouped: dict[str, dict[str, Any]] = {}
+    for score in scores:
+        source_id = (
+            score.get("observationId")
+            or score.get("traceId")
+            or score.get("metadata", {}).get("paEvaluationSampleId")
+            or score.get("id")
+            or ""
+        )
+        if not source_id:
+            continue
+        source_id = str(source_id)
+        report_item = item_by_source_id.get(source_id)
+        row = grouped.setdefault(
+            source_id,
+            {
+                "id": report_item.get("id") if report_item else score.get("id"),
+                "reportId": report_id,
+                "sourceId": source_id,
+                "traceId": score.get("traceId") or "",
+                "observationId": score.get("observationId") or "",
+                "scores": [],
+                "scoreSummary": "",
+                "resultType": report_item.get("result_type")
+                if report_item
+                else _score_result_type(score),
+                "executionStatus": report_item.get("execution_status")
+                if report_item
+                else "COMPLETED",
+                "datasetFlowbackStatus": report_item.get("dataset_flowback_status")
+                if report_item
+                else "NONE",
+            },
+        )
+        row["scores"].append(score)
+        if row["resultType"] != "badcase" and _score_result_type(score) == "badcase":
+            row["resultType"] = "badcase"
+
+    for row in grouped.values():
+        row["scoreSummary"] = _score_summary(row["scores"])
+
+    return sorted(
+        grouped.values(),
+        key=lambda row: max(
+            (score.get("createdAt") or "" for score in row.get("scores") or []),
+            default="",
+        ),
+        reverse=True,
+    )
+
+
+def _score_result_type(score: dict[str, Any]) -> str:
+    metadata = score.get("metadata") if isinstance(score.get("metadata"), dict) else {}
+    passed = metadata.get("passed")
+    if passed is False or str(passed).lower() == "false":
+        return "badcase"
+    return "normal"
+
+
+def _filter_evaluation_report_score_items(
+    rows: list[dict[str, Any]],
+    keyword: str,
+) -> list[dict[str, Any]]:
+    normalized_keyword = keyword.strip().lower()
+    if not normalized_keyword:
+        return rows
+    return [
+        row
+        for row in rows
+        if normalized_keyword in str(row.get("sourceId") or "").lower()
+        or normalized_keyword in str(row.get("scoreSummary") or "").lower()
+        or any(
+            normalized_keyword in str(score.get("name") or "").lower()
+            or normalized_keyword in str(score.get("value") or "").lower()
+            or normalized_keyword in str(score.get("stringValue") or "").lower()
+            for score in row.get("scores") or []
+        )
+    ]
+
+
+def _score_summary(scores: list[dict[str, Any]]) -> str:
+    labels = []
+    for score in scores[:3]:
+        name = score.get("name") or "score"
+        value = score.get("stringValue") or score.get("longStringValue")
+        if value in (None, ""):
+            value = score.get("value")
+        labels.append(f"{name}: {value}")
+    if len(scores) > 3:
+        labels.append(f"+{len(scores) - 3}")
+    return " / ".join(labels)
 
 
 def _to_report_badcase(row: dict[str, Any]) -> dict[str, Any]:

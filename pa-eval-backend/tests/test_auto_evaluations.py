@@ -21,6 +21,7 @@ from app.auto_evaluations import (
     _preview_report_flowback,
     _resolve_mapping_template,
     _resolve_auto_evaluation_samples,
+    _run_auto_evaluation_background,
     _trace_time_range_condition,
     _mark_auto_evaluation_failed,
     _update_auto_evaluation_progress,
@@ -30,6 +31,7 @@ from app.auto_evaluations import (
     EvaluationReportFlowbackPayload,
 )
 from app.auth_context import get_current_user_context
+from app.langfuse_clickhouse import LangfuseClickHouseReader
 from app.main import app
 import app.auto_evaluations as auto_evaluations
 from app.errors import BusinessError
@@ -103,6 +105,128 @@ class FakeConnection:
 
     def cursor(self):
         return self._cursor
+
+
+class FakeLangfuseScoreClient:
+    def __init__(self) -> None:
+        self.created_scores = []
+
+    async def create_score(self, public_key: str, secret_key: str, payload: dict):
+        self.created_scores.append((public_key, secret_key, payload))
+        return {"id": payload["id"]}
+
+
+@pytest.mark.anyio
+async def test_clickhouse_score_queue_query_filters_report_run(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    reader = LangfuseClickHouseReader(auto_evaluations.Settings())
+    captured = {}
+
+    async def fake_query(query: str, params: dict):
+        captured["query"] = query
+        captured["params"] = params
+        return []
+
+    monkeypatch.setattr(reader, "_query_json_each_row", fake_query)
+
+    await reader.list_scores_by_queue(
+        "project-1",
+        "task-1",
+        run_id="run-2",
+    )
+
+    assert "queue_id = {queue_id:String}" in captured["query"]
+    assert "metadata['paAutoEvaluationRunId'] = {run_id:String}" in captured["query"]
+    assert captured["params"] == {
+        "project_id": "project-1",
+        "queue_id": "task-1",
+        "run_id": "run-2",
+    }
+
+
+@pytest.mark.anyio
+async def test_list_evaluation_report_items_reads_scores_for_report_run(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    cursor = SequentialCursor(
+        rows_by_fetchone=[
+            {"id": "project-1"},
+            {"exists": 1},
+            {"source_task_id": "task-1", "run_id": "run-2"},
+        ],
+        rows_by_fetchall=[
+            [
+                {
+                    "id": "item-1",
+                    "source_id": "obs-1",
+                    "trace_id": "trace-1",
+                    "observation_id": "obs-1",
+                    "result_type": "normal",
+                    "execution_status": "COMPLETED",
+                    "dataset_flowback_status": "NONE",
+                }
+            ]
+        ],
+    )
+    captured = {}
+
+    async def fake_connect(settings):
+        return FakeConnection(cursor)
+
+    class FakeReportScoreReader:
+        def __init__(self, settings):
+            pass
+
+        async def list_scores_by_queue(
+            self,
+            project_id: str,
+            queue_id: str,
+            *,
+            run_id: str | None = None,
+        ):
+            captured["project_id"] = project_id
+            captured["queue_id"] = queue_id
+            captured["run_id"] = run_id
+            return [
+                {
+                    "id": "score-1",
+                    "traceId": "trace-1",
+                    "observationId": "obs-1",
+                    "name": "quality",
+                    "value": 1,
+                    "metadata": {
+                        "paAutoEvaluationRunId": "run-2",
+                        "passed": True,
+                    },
+                    "createdAt": "2026-07-13T10:00:00Z",
+                }
+            ]
+
+    monkeypatch.setattr(auto_evaluations, "_connect", fake_connect)
+    monkeypatch.setattr(
+        auto_evaluations,
+        "LangfuseClickHouseReader",
+        FakeReportScoreReader,
+    )
+
+    response = await auto_evaluations.list_evaluation_report_items(
+        project_id="project-1",
+        report_id="report-1",
+        page=1,
+        page_size=10,
+        keyword=None,
+        current_user=_override_current_user(),
+        settings=auto_evaluations.Settings(),
+    )
+
+    assert captured == {
+        "project_id": "project-1",
+        "queue_id": "task-1",
+        "run_id": "run-2",
+    }
+    assert response["data"]["total"] == 1
+    assert response["data"]["datas"][0]["scores"][0]["name"] == "quality"
 
 
 def _override_current_user():
@@ -826,6 +950,213 @@ async def test_complete_auto_evaluation_success_respects_hidden_report_data_sect
     executed_sql = "\n".join(sql for sql, _params in cursor.executions)
     assert "INSERT INTO pa_evaluation_report_items" not in executed_sql
     assert "INSERT INTO pa_evaluation_report_badcases" not in executed_sql
+
+
+@pytest.mark.anyio
+async def test_complete_auto_evaluation_success_syncs_scores_to_langfuse_api() -> None:
+    cursor = SequentialCursor(
+        rows_by_fetchone=[
+            {"create_date": None, "create_by": "creator@163.com"},
+            {"public_key": "pk-lf-project", "secret_key": "sk-lf-project"},
+        ]
+    )
+    langfuse_client = FakeLangfuseScoreClient()
+    payload = CreateAutoEvaluationPayload.model_validate(
+        {
+            "name": "客服质检",
+            "scoreName": "quality",
+            "evaluatorId": "evaluator-1",
+        }
+    )
+
+    await _complete_auto_evaluation_success(
+        cursor,  # type: ignore[arg-type]
+        project_id="project-1",
+        task_id="paautoeval-1",
+        run_id="run-1",
+        payload=payload,
+        evaluator={"id": "evaluator-1", "variables": [], "config": {}},
+        data_source={"name": "trace-filter"},
+        results=[
+            {
+                "sample": {
+                    "id": "sample-1",
+                    "source_trace_id": "trace-1",
+                    "source_observation_id": "obs-1",
+                },
+                "score": 0.86,
+                "passed": True,
+                "reason": "回答完整",
+                "raw": {"data": {"workflow_run_id": "workflow-run-1"}},
+            },
+            {
+                "sample": {
+                    "id": "sample-2",
+                    "source_trace_id": "",
+                    "source_observation_id": "",
+                },
+                "score": 0.4,
+                "passed": False,
+                "reason": "无 trace 来源，跳过 Langfuse scores 同步",
+                "raw": {},
+            },
+        ],
+        updated_by="admin@163.com",
+        langfuse_client=langfuse_client,  # type: ignore[arg-type]
+    )
+
+    assert langfuse_client.created_scores == [
+        (
+            "pk-lf-project",
+            "sk-lf-project",
+            {
+                "id": langfuse_client.created_scores[0][2]["id"],
+                "name": "quality",
+                "value": 0.86,
+                "dataType": "NUMERIC",
+                "traceId": "trace-1",
+                "observationId": "obs-1",
+                "queueId": "paautoeval-1",
+                "comment": "回答完整",
+                "metadata": {
+                    "paAutoEvaluationTaskId": "paautoeval-1",
+                    "paAutoEvaluationRunId": "run-1",
+                    "paEvaluationSampleId": "sample-1",
+                    "evaluatorId": "evaluator-1",
+                    "passed": True,
+                },
+            },
+        )
+    ]
+    assert langfuse_client.created_scores[0][2]["id"].startswith("pa-auto-score-")
+
+
+@pytest.mark.anyio
+async def test_complete_auto_evaluation_success_marks_partial_failed_runs() -> None:
+    cursor = FakeCursor({"create_date": None, "create_by": "creator@163.com"})
+    payload = CreateAutoEvaluationPayload.model_validate(
+        {
+            "name": "客服质检",
+            "scoreName": "quality",
+            "evaluatorId": "evaluator-1",
+        }
+    )
+
+    await _complete_auto_evaluation_success(
+        cursor,  # type: ignore[arg-type]
+        project_id="project-1",
+        task_id="task-1",
+        run_id="run-1",
+        payload=payload,
+        evaluator={"id": "evaluator-1", "variables": [], "config": {}},
+        data_source={"name": "trace-filter"},
+        results=[
+            {
+                "sample": {"id": "sample-1", "source_trace_id": "trace-1"},
+                "score": 0.86,
+                "passed": True,
+                "reason": "回答完整",
+                "raw": {},
+            }
+        ],
+        updated_by="admin@163.com",
+        failed_count=2,
+        error_message="部分样本执行失败",
+    )
+
+    task_sql, task_params = cursor.executions[-2]
+    run_sql, run_params = cursor.executions[-1]
+    assert "UPDATE pa_auto_evaluation_tasks" in task_sql
+    assert task_params["status"] == "PARTIAL_FAILED"
+    assert _jsonb_value(task_params["execution_stats"]) == {
+        "pending": 0,
+        "running": 0,
+        "completed": 1,
+        "failed": 2,
+        "cancelled": 0,
+    }
+    assert "UPDATE pa_auto_evaluation_runs" in run_sql
+    assert run_params["status"] == "PARTIAL_FAILED"
+    assert run_params["completed_count"] == 1
+    assert run_params["failed_count"] == 2
+    assert run_params["error_message"] == "部分样本执行失败"
+
+
+@pytest.mark.anyio
+async def test_auto_evaluation_background_continues_after_sample_timeout(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    progress_calls = []
+    complete_calls = []
+    failed_calls = []
+
+    async def fake_persist_progress(*args, **kwargs):
+        progress_calls.append(kwargs)
+
+    async def fake_run_workflow(evaluator, inputs, settings):
+        if inputs["input"] == "timeout":
+            raise httpx.TimeoutException("timeout")
+        return {
+            "raw": {"data": {"workflow_run_id": "run-ok"}},
+            "score": 0.8,
+            "passed": True,
+            "reason": "ok",
+        }
+
+    async def fake_complete(cursor, **kwargs):
+        complete_calls.append(kwargs)
+
+    async def fake_mark_failed(cursor, **kwargs):
+        failed_calls.append(kwargs)
+
+    monkeypatch.setattr(
+        auto_evaluations,
+        "_persist_auto_evaluation_progress",
+        fake_persist_progress,
+    )
+    monkeypatch.setattr(auto_evaluations, "_run_workflow_evaluator", fake_run_workflow)
+    monkeypatch.setattr(
+        auto_evaluations,
+        "_complete_auto_evaluation_success",
+        fake_complete,
+    )
+    monkeypatch.setattr(auto_evaluations, "_mark_auto_evaluation_failed", fake_mark_failed)
+
+    async def fake_connect(settings):
+        return FakeConnection(FakeCursor())
+
+    monkeypatch.setattr(auto_evaluations, "_connect", fake_connect)
+
+    await _run_auto_evaluation_background(
+        settings=auto_evaluations.Settings(pa_eval_api_timeout=1),
+        project_id="project-1",
+        task_id="task-1",
+        run_id="run-1",
+        payload=CreateAutoEvaluationPayload.model_validate(
+            {
+                "name": "客服质检",
+                "scoreName": "quality",
+                "evaluatorId": "evaluator-1",
+            }
+        ),
+        evaluator={"id": "evaluator-1", "variables": ["input"], "config": {}},
+        samples=[
+            {"id": "sample-timeout", "input": "timeout"},
+            {"id": "sample-ok", "input": "ok"},
+        ],
+        data_source={"name": "trace-filter"},
+        updated_by="admin@163.com",
+    )
+
+    assert failed_calls == []
+    assert len(complete_calls) == 1
+    assert complete_calls[0]["failed_count"] == 1
+    assert complete_calls[0]["error_message"] == "部分样本执行失败：Dify 工作流调用超时"
+    assert [result["sample"]["id"] for result in complete_calls[0]["results"]] == [
+        "sample-ok"
+    ]
+    assert progress_calls[-1]["completed_count"] == 1
+    assert progress_calls[-1]["failed_count"] == 1
 
 
 @pytest.mark.anyio

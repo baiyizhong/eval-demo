@@ -470,6 +470,47 @@ class LangfuseClickHouseReader:
         )
         return scores_by_trace.get(trace_id, [])
 
+    async def list_scores_by_queue(
+        self,
+        project_id: str,
+        queue_id: str,
+        *,
+        run_id: str | None = None,
+    ) -> list[dict[str, Any]]:
+        rows = await self._query_json_each_row(
+            """
+            SELECT
+                id,
+                trace_id AS traceId,
+                observation_id AS observationId,
+                name,
+                value,
+                source,
+                comment,
+                metadata,
+                author_user_id AS authorUserId,
+                config_id AS configId,
+                data_type AS dataType,
+                string_value AS stringValue,
+                long_string_value AS longStringValue,
+                queue_id AS queueId,
+                created_at AS createdAt,
+                updated_at AS updatedAt
+            FROM scores
+            WHERE project_id = {project_id:String}
+              AND queue_id = {queue_id:String}
+              AND ({run_id:String} = '' OR metadata['paAutoEvaluationRunId'] = {run_id:String})
+            ORDER BY created_at DESC, id DESC
+            FORMAT JSONEachRow
+            """,
+            {
+                "project_id": project_id,
+                "queue_id": queue_id,
+                "run_id": run_id or "",
+            },
+        )
+        return [_format_score(row) for row in rows]
+
     async def _fetch_scores_by_trace(
         self,
         project_id: str,

@@ -80,7 +80,6 @@ export function EvaluationReportBadcaseTable({
         request={{
           queryKey: (state) => [
             'project-evaluation-report-badcases',
-            $api,
             projectId,
             reportId,
             state,
