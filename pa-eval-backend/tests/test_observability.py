@@ -296,6 +296,30 @@ def test_lists_project_traces_passes_multiple_metadata_filters() -> None:
     assert body["data"]["datas"][0]["traceId"] == "trace-1"
 
 
+def test_lists_project_traces_does_not_default_time_range_with_metadata_filters() -> None:
+    fake_db = FakeDatabaseReader()
+    fake_trace = FakeTraceReader()
+    override_readers(fake_db, fake_trace)
+
+    try:
+        response = TestClient(app).get(
+            "/api/projects/project-1/traces",
+            params={
+                "metadataFilters": (
+                    '[{"key":"latencyMs","operator":"contains","value":"9237"}]'
+                )
+            },
+        )
+    finally:
+        clear_overrides()
+
+    assert response.status_code == 200
+    assert fake_trace.list_kwargs["metadata_filters"] == [
+        {"key": "latencyMs", "operator": "contains", "value": "9237"},
+    ]
+    assert fake_trace.list_kwargs["time_range"] is None
+
+
 def test_lists_project_traces_passes_score_filters() -> None:
     fake_db = FakeDatabaseReader()
     fake_trace = FakeTraceReader()

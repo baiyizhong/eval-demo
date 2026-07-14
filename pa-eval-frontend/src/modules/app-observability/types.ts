@@ -23,6 +23,18 @@ export type TraceScore = {
   updatedAt?: string
 }
 
+export type TraceScoreConfigOption = {
+  id: string
+  name: string
+  dataType: 'NUMERIC' | 'CATEGORICAL' | 'BOOLEAN' | 'TEXT' | string
+  categories?: {
+    label: string
+    value: number
+  }[]
+  archived?: boolean
+  isArchived?: boolean
+}
+
 export type TraceLogRow = {
   traceId: string
   sessionId: string
@@ -123,9 +135,9 @@ export type TraceListQuery = {
   businessId?: string
   metadataKey?: string
   metadataValue?: string
-  metadataFilters?: TraceMetadataFilter[]
-  categoricalScoreFilters?: TraceCategoricalScoreFilter[]
-  numericScoreFilters?: TraceNumericScoreFilter[]
+  metadataFilters?: string
+  categoricalScoreFilters?: string
+  numericScoreFilters?: string
   scoreQueueId?: string
 }
 
@@ -137,7 +149,8 @@ export type TraceMetadataFilter = {
   value?: string
 }
 
-export type TraceCategoricalScoreFilterOperator = 'equals' | 'contains' | 'exists'
+export type TraceCategoricalScoreFilterOperator =
+  'equals' | 'contains' | 'exists'
 
 export type TraceCategoricalScoreFilter = {
   name: string

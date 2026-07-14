@@ -1,5 +1,12 @@
 import { useEffect, useState } from 'react'
-import { Circle, CircleCheck, CircleHelp, CircleX, Plus, Trash2 } from 'lucide-react'
+import {
+  Circle,
+  CircleCheck,
+  CircleHelp,
+  CircleX,
+  Plus,
+  Trash2,
+} from 'lucide-react'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
 import {
@@ -18,7 +25,7 @@ import {
   getTraceQuickTimeRangeToolbarDefault,
   TRACE_QUICK_TIME_RANGE_OPTIONS,
 } from '../trace-time-ranges'
-import type { TraceMetadataFilter } from '../types'
+import type { TraceMetadataFilter, TraceScoreConfigOption } from '../types'
 import {
   CategoricalScoreFilterEditor,
   NumericScoreFilterEditor,
@@ -73,93 +80,103 @@ export const traceLogToolbarFilters: DataTableToolbarFilter[] = [
   },
 ]
 
-export const traceLogFilterGroups: FilterGroup[] = [
-  {
-    id: 'trace',
-    label: '筛选条件',
-    defaultOpen: true,
-    fields: [
-      {
-        id: 'metadataFilters',
-        type: 'custom',
-        label: 'Metadata',
-        render: ({ value, setValue }) => (
-          <MetadataFilterEditor
-            value={value}
-            onChange={(nextValue) => setValue(nextValue, 'metadataFilters')}
-          />
-        ),
-      },
-      {
-        id: 'createdAtRange',
-        type: 'dateRange',
-        label: 'Trace 创建时间范围',
-        showTime: true,
-        placeholder: '选择 Trace 创建时间范围',
-      },
-      {
-        id: 'sessionId',
-        type: 'input',
-        label: 'Session ID',
-        placeholder: '输入 Session ID',
-      },
-      {
-        id: 'businessId',
-        type: 'input',
-        label: '业务标识',
-        placeholder: '输入 businessId',
-      },
-      {
-        id: 'userId',
-        type: 'input',
-        label: '用户标识',
-        placeholder: '输入 userId',
-      },
-      {
-        id: 'scoreQueueId',
-        type: 'input',
-        label: 'Score Queue ID',
-        placeholder: '输入 score queue_id',
-      },
-      {
-        id: 'categoricalScoreFilters',
-        type: 'custom',
-        label: 'Categorical Scores',
-        render: ({ value, setValue }) => (
-          <CategoricalScoreFilterEditor
-            value={value}
-            onChange={(nextValue) =>
-              setValue(nextValue, 'categoricalScoreFilters')
-            }
-          />
-        ),
-      },
-      {
-        id: 'numericScoreFilters',
-        type: 'custom',
-        label: 'Numeric Scores',
-        render: ({ value, setValue }) => (
-          <NumericScoreFilterEditor
-            value={value}
-            onChange={(nextValue) => setValue(nextValue, 'numericScoreFilters')}
-          />
-        ),
-      },
-      // {
-      //   id: 'latencyMin',
-      //   type: 'input',
-      //   label: '最小延迟 ms',
-      //   placeholder: '例如 1000',
-      // },
-      // {
-      //   id: 'latencyMax',
-      //   type: 'input',
-      //   label: '最大延迟 ms',
-      //   placeholder: '例如 5000',
-      // },
-    ],
-  },
-]
+export function buildTraceLogFilterGroups(
+  scoreConfigs: TraceScoreConfigOption[] = []
+): FilterGroup[] {
+  return [
+    {
+      id: 'trace',
+      label: '筛选条件',
+      defaultOpen: true,
+      fields: [
+        {
+          id: 'metadataFilters',
+          type: 'custom',
+          label: 'Metadata',
+          render: ({ value, setValue }) => (
+            <MetadataFilterEditor
+              value={value}
+              onChange={(nextValue) => setValue(nextValue, 'metadataFilters')}
+            />
+          ),
+        },
+        {
+          id: 'createdAtRange',
+          type: 'dateRange',
+          label: 'Trace 创建时间范围',
+          showTime: true,
+          placeholder: '选择 Trace 创建时间范围',
+        },
+        {
+          id: 'sessionId',
+          type: 'input',
+          label: 'Session ID',
+          placeholder: '输入 Session ID',
+        },
+        {
+          id: 'businessId',
+          type: 'input',
+          label: '业务标识',
+          placeholder: '输入 businessId',
+        },
+        {
+          id: 'userId',
+          type: 'input',
+          label: '用户标识',
+          placeholder: '输入 userId',
+        },
+        {
+          id: 'scoreQueueId',
+          type: 'input',
+          label: 'Score Queue ID',
+          placeholder: '输入 score queue_id',
+        },
+        {
+          id: 'categoricalScoreFilters',
+          type: 'custom',
+          label: 'Categorical Scores',
+          render: ({ value, setValue }) => (
+            <CategoricalScoreFilterEditor
+              value={value}
+              scoreConfigs={scoreConfigs}
+              onChange={(nextValue) =>
+                setValue(nextValue, 'categoricalScoreFilters')
+              }
+            />
+          ),
+        },
+        {
+          id: 'numericScoreFilters',
+          type: 'custom',
+          label: 'Numeric Scores',
+          render: ({ value, setValue }) => (
+            <NumericScoreFilterEditor
+              value={value}
+              scoreConfigs={scoreConfigs}
+              onChange={(nextValue) =>
+                setValue(nextValue, 'numericScoreFilters')
+              }
+            />
+          ),
+        },
+        // {
+        //   id: 'latencyMin',
+        //   type: 'input',
+        //   label: '最小延迟 ms',
+        //   placeholder: '例如 1000',
+        // },
+        // {
+        //   id: 'latencyMax',
+        //   type: 'input',
+        //   label: '最大延迟 ms',
+        //   placeholder: '例如 5000',
+        // },
+      ],
+    },
+  ]
+}
+
+export const traceLogFilterGroups: FilterGroup[] = buildTraceLogFilterGroups()
 
 function MetadataFilterEditor({
   value,
@@ -168,13 +185,8 @@ function MetadataFilterEditor({
   value: unknown
   onChange: (nextValue: TraceMetadataFilter[]) => void
 }) {
-  const filters = Array.isArray(value)
-    ? (value as TraceMetadataFilter[])
-    : []
-  const updateFilter = (
-    index: number,
-    patch: Partial<TraceMetadataFilter>
-  ) => {
+  const filters = Array.isArray(value) ? (value as TraceMetadataFilter[]) : []
+  const updateFilter = (index: number, patch: Partial<TraceMetadataFilter>) => {
     onChange(
       filters.map((filter, currentIndex) =>
         currentIndex === index ? { ...filter, ...patch } : filter
@@ -238,10 +250,7 @@ function MetadataFilterEditor({
         variant='outline'
         size='sm'
         onClick={() =>
-          onChange([
-            ...filters,
-            { key: '', operator: 'contains', value: '' },
-          ])
+          onChange([...filters, { key: '', operator: 'contains', value: '' }])
         }
       >
         <Plus data-icon='inline-start' />

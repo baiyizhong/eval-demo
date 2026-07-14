@@ -1,4 +1,5 @@
-import { useCallback, useState } from 'react'
+import { useCallback, useMemo, useState } from 'react'
+import { useQuery } from '@tanstack/react-query'
 import { useParams, useSearchParams } from 'react-router'
 import { useAPI } from '@/hooks/use-api'
 import { DataTable } from '@/components/common/data-table'
@@ -9,12 +10,16 @@ import { TraceDetailDrawer } from '../components/trace-detail-drawer'
 import { TraceLogBulkActions } from '../components/trace-log-bulk-actions'
 import { createTraceLogColumns } from '../components/trace-log-columns'
 import {
-  traceLogFilterGroups,
+  buildTraceLogFilterGroups,
   traceLogToolbarFilters,
   traceLogUrlFilters,
 } from '../components/trace-log-filters'
 import { normalizeTraceTimeFilterValues } from '../trace-time-ranges'
-import type { TraceListResponse, TraceLogRow } from '../types'
+import type {
+  TraceListResponse,
+  TraceLogRow,
+  TraceScoreConfigOption,
+} from '../types'
 import { buildTraceListQuery } from './trace-logs-query'
 
 export function TraceLogs() {
@@ -43,8 +48,22 @@ export function TraceLogs() {
   )
 
   const columns = useCallback(
-    (rows: TraceLogRow[]) => createTraceLogColumns({ onOpenTrace: openTrace, rows }),
+    (rows: TraceLogRow[]) =>
+      createTraceLogColumns({ onOpenTrace: openTrace, rows }),
     [openTrace]
+  )
+  const scoreConfigsQuery = useQuery({
+    queryKey: ['project-score-configs', $api, projectId, 'trace-log-filters'],
+    queryFn: () =>
+      $api.getProjectScoreConfigs<TraceScoreConfigOption[]>({
+        path: { projectId },
+      }),
+    staleTime: 5 * 60 * 1000,
+  })
+  const scoreConfigs = scoreConfigsQuery.data ?? []
+  const traceLogFilterGroups = useMemo(
+    () => buildTraceLogFilterGroups(scoreConfigs),
+    [scoreConfigs]
   )
 
   return (

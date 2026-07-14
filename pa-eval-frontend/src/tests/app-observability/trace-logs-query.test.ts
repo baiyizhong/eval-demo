@@ -94,7 +94,7 @@ test('trace logs query keeps an explicit createdAtRange instead of defaulting to
   assert.equal(query.timeRange, undefined)
 })
 
-test('trace logs query serializes multiple metadata filters', () => {
+test('trace logs query serializes multiple metadata filters as API JSON', () => {
   const query = buildTraceListQuery(
     {
       ...baseState,
@@ -108,13 +108,14 @@ test('trace logs query serializes multiple metadata filters', () => {
     'project-1'
   )
 
-  assert.deepEqual(query.metadataFilters, [
+  assert.ok(query.metadataFilters)
+  assert.deepEqual(JSON.parse(query.metadataFilters), [
     { key: 'businessId', operator: 'contains', value: 'ticket' },
     { key: 'priority', operator: 'equals', value: 'high' },
   ])
 })
 
-test('trace logs query serializes score filters', () => {
+test('trace logs query serializes score filters as API JSON', () => {
   const query = buildTraceListQuery(
     {
       ...baseState,
@@ -132,11 +133,13 @@ test('trace logs query serializes score filters', () => {
     'project-1'
   )
 
-  assert.deepEqual(query.categoricalScoreFilters, [
+  assert.ok(query.categoricalScoreFilters)
+  assert.ok(query.numericScoreFilters)
+  assert.deepEqual(JSON.parse(query.categoricalScoreFilters), [
     { name: 'category', operator: 'equals', value: 'passed' },
     { name: 'reason', operator: 'contains', value: '准确' },
   ])
-  assert.deepEqual(query.numericScoreFilters, [
+  assert.deepEqual(JSON.parse(query.numericScoreFilters), [
     { name: 'quality', operator: 'gte', value: '0.8' },
   ])
 })

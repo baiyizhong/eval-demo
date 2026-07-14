@@ -78,20 +78,52 @@ async def list_traces(
         default=None,
         alias="createdAtRange[]",
     ),
-    time_range: str = Query(default="1d", alias="timeRange", pattern=TRACE_TIME_RANGE_PATTERN),
+    time_range: str | None = Query(
+        default=None,
+        alias="timeRange",
+        pattern=TRACE_TIME_RANGE_PATTERN,
+    ),
     current_user: CurrentUserContext = Depends(get_current_user_context),
     db_reader: LangfuseDatabaseReader = Depends(get_langfuse_db_reader),
     trace_reader: LangfuseClickHouseReader = Depends(get_langfuse_clickhouse_reader),
 ) -> dict[str, Any]:
     project = await db_reader.get_project_for_user(project_id, current_user.user_id)
+    resolved_statuses = _first_non_empty_list(statuses, statuses_bracket)
+    resolved_environments = _first_non_empty_list(environments, environments_bracket)
+    resolved_created_at_range = _first_non_empty_list(
+        created_at_range,
+        created_at_range_bracket,
+    )
+    parsed_metadata_filters = _parse_metadata_filters(metadata_filters)
+    parsed_categorical_score_filters = _parse_categorical_score_filters(
+        categorical_score_filters,
+    )
+    parsed_numeric_score_filters = _parse_numeric_score_filters(numeric_score_filters)
+    effective_time_range = _resolve_trace_time_range(
+        time_range=time_range,
+        created_at_range=resolved_created_at_range,
+        keyword=keyword,
+        statuses=resolved_statuses,
+        environments=resolved_environments,
+        session_id=session_id,
+        user_id=user_id,
+        latency_min=latency_min,
+        latency_max=latency_max,
+        score_queue_id=score_queue_id,
+        metadata_key=metadata_key,
+        metadata_value=metadata_value,
+        metadata_filters=parsed_metadata_filters,
+        categorical_score_filters=parsed_categorical_score_filters,
+        numeric_score_filters=parsed_numeric_score_filters,
+    )
     try:
         traces = await trace_reader.list_traces(
             project_id,
             page=page,
             page_size=page_size,
             keyword=keyword,
-            statuses=_first_non_empty_list(statuses, statuses_bracket),
-            environments=_first_non_empty_list(environments, environments_bracket),
+            statuses=resolved_statuses,
+            environments=resolved_environments,
             session_id=session_id,
             user_id=user_id,
             latency_min=latency_min,
@@ -99,16 +131,11 @@ async def list_traces(
             score_queue_id=score_queue_id,
             metadata_key=metadata_key,
             metadata_value=metadata_value,
-            metadata_filters=_parse_metadata_filters(metadata_filters),
-            categorical_score_filters=_parse_categorical_score_filters(
-                categorical_score_filters,
-            ),
-            numeric_score_filters=_parse_numeric_score_filters(numeric_score_filters),
-            created_at_range=_first_non_empty_list(
-                created_at_range,
-                created_at_range_bracket,
-            ),
-            time_range=time_range,
+            metadata_filters=parsed_metadata_filters,
+            categorical_score_filters=parsed_categorical_score_filters,
+            numeric_score_filters=parsed_numeric_score_filters,
+            created_at_range=resolved_created_at_range,
+            time_range=effective_time_range,
         )
     except LangfuseUpstreamError:
         logger.warning("Trace list unavailable; returning empty payload", exc_info=True)
@@ -215,6 +242,53 @@ def _first_non_empty_list(
     fallback: list[str] | None,
 ) -> list[str] | None:
     return primary if primary else fallback
+
+
+def _resolve_trace_time_range(
+    *,
+    time_range: str | None,
+    created_at_range: list[str] | None,
+    keyword: str | None,
+    statuses: list[str] | None,
+    environments: list[str] | None,
+    session_id: str | None,
+    user_id: str | None,
+    latency_min: int | None,
+    latency_max: int | None,
+    score_queue_id: str | None,
+    metadata_key: str | None,
+    metadata_value: str | None,
+    metadata_filters: list[dict[str, Any]] | None,
+    categorical_score_filters: list[dict[str, Any]] | None,
+    numeric_score_filters: list[dict[str, Any]] | None,
+) -> str | None:
+    if created_at_range:
+        return None
+    if time_range:
+        return time_range
+    if any(
+        (
+            _has_text(keyword),
+            statuses,
+            environments,
+            _has_text(session_id),
+            _has_text(user_id),
+            latency_min is not None,
+            latency_max is not None,
+            _has_text(score_queue_id),
+            _has_text(metadata_key),
+            _has_text(metadata_value),
+            metadata_filters,
+            categorical_score_filters,
+            numeric_score_filters,
+        )
+    ):
+        return None
+    return "1d"
+
+
+def _has_text(value: str | None) -> bool:
+    return bool((value or "").strip())
 
 
 def _parse_metadata_filters(value: str | None) -> list[dict[str, Any]] | None:

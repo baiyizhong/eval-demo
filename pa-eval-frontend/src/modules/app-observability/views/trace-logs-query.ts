@@ -64,14 +64,16 @@ export function buildTraceListQuery(
     scoreQueueId: optionalString(state.filters.scoreQueueId),
     metadataKey: optionalString(state.filters.metadataKey),
     metadataValue: optionalString(state.filters.metadataValue),
-    metadataFilters: metadataFilters.length ? metadataFilters : undefined,
+    metadataFilters: serializeJsonFilter(metadataFilters),
     categoricalScoreFilters: categoricalScoreFilters.length
-      ? categoricalScoreFilters
+      ? JSON.stringify(categoricalScoreFilters)
       : undefined,
-    numericScoreFilters: numericScoreFilters.length
-      ? numericScoreFilters
-      : undefined,
+    numericScoreFilters: serializeJsonFilter(numericScoreFilters),
   }
+}
+
+function serializeJsonFilter(value: unknown[]): string | undefined {
+  return value.length ? JSON.stringify(value) : undefined
 }
 
 function resolveTraceLogTimeRange({
