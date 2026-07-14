@@ -8,6 +8,7 @@ from app.config import Settings
 from app.errors import LangfuseUpstreamError
 from app.langfuse_clickhouse import (
     LangfuseClickHouseReader,
+    _matches_trace,
     get_langfuse_clickhouse_reader,
 )
 from app.langfuse_db import LangfuseDatabaseReader, get_langfuse_db_reader
@@ -296,6 +297,24 @@ def test_lists_project_traces_passes_multiple_metadata_filters() -> None:
     assert body["data"]["datas"][0]["traceId"] == "trace-1"
 
 
+def test_lists_project_traces_passes_business_id_filter() -> None:
+    fake_db = FakeDatabaseReader()
+    fake_trace = FakeTraceReader()
+    override_readers(fake_db, fake_trace)
+
+    try:
+        response = TestClient(app).get(
+            "/api/projects/project-1/traces",
+            params={"businessId": "biz-offline-retail-0713-0007"},
+        )
+    finally:
+        clear_overrides()
+
+    assert response.status_code == 200
+    assert fake_trace.list_kwargs["business_id"] == "biz-offline-retail-0713-0007"
+    assert fake_trace.list_kwargs["time_range"] is None
+
+
 def test_lists_project_traces_does_not_default_time_range_with_metadata_filters() -> None:
     fake_db = FakeDatabaseReader()
     fake_trace = FakeTraceReader()
@@ -318,6 +337,57 @@ def test_lists_project_traces_does_not_default_time_range_with_metadata_filters(
         {"key": "latencyMs", "operator": "contains", "value": "9237"},
     ]
     assert fake_trace.list_kwargs["time_range"] is None
+
+
+def test_matches_trace_filters_by_business_id_metadata_aliases() -> None:
+    base_kwargs = {
+        "keyword": None,
+        "statuses": None,
+        "environments": None,
+        "session_id": None,
+        "user_id": None,
+        "latency_min": None,
+        "latency_max": None,
+        "score_queue_id": None,
+        "metadata_key": None,
+        "metadata_value": None,
+        "metadata_filters": None,
+        "categorical_score_filters": None,
+        "numeric_score_filters": None,
+    }
+
+    assert _matches_trace(
+        {
+            "traceId": "trace-1",
+            "metadata": {"businessId": "biz-offline-retail-0713-0007"},
+        },
+        business_id="retail-0713",
+        **base_kwargs,
+    )
+    assert _matches_trace(
+        {
+            "traceId": "trace-2",
+            "metadata": {"business_id": "biz-offline-retail-0713-0008"},
+        },
+        business_id="0008",
+        **base_kwargs,
+    )
+    assert _matches_trace(
+        {
+            "traceId": "trace-3",
+            "metadata": {"app_id": "biz-offline-retail-0713-0009"},
+        },
+        business_id="0009",
+        **base_kwargs,
+    )
+    assert not _matches_trace(
+        {
+            "traceId": "trace-4",
+            "metadata": {"businessId": "biz-offline-retail-0713-0010"},
+        },
+        business_id="0009",
+        **base_kwargs,
+    )
 
 
 def test_lists_project_traces_passes_score_filters() -> None:

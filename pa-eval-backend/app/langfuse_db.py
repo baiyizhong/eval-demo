@@ -5121,6 +5121,47 @@ class LangfuseDatabaseReader:
         )
         return await cursor.fetchone()
 
+    async def _ensure_user_by_email_cursor(
+        self,
+        cursor: psycopg.AsyncCursor[dict[str, Any]],
+        account: str,
+        email: str,
+    ) -> dict[str, Any]:
+        existing = await self._get_user_by_email_cursor(cursor, email)
+        if existing is not None:
+            return existing
+
+        user_id = _new_langfuse_id("user")
+        await cursor.execute(
+            """
+            INSERT INTO users (
+                id,
+                name,
+                email,
+                email_verified,
+                created_at,
+                updated_at
+            )
+            VALUES (
+                %(id)s,
+                %(name)s,
+                %(email)s,
+                NOW(),
+                NOW(),
+                NOW()
+            )
+            RETURNING id, name, email
+            """,
+            {
+                "id": user_id,
+                "name": account,
+                "email": email.lower(),
+            },
+        )
+        created = await cursor.fetchone()
+        assert created is not None
+        return created
+
     async def _get_organization_member_cursor(
         self,
         cursor: psycopg.AsyncCursor[dict[str, Any]],
@@ -5154,7 +5195,7 @@ class LangfuseDatabaseReader:
     async def create_organization_with_default_project(
         self,
         payload: dict[str, Any],
-        owner_user_id: str,
+        owner_account: str,
         owner_email: str,
     ) -> dict[str, Any]:
         if not self._database_url:
@@ -5162,13 +5203,19 @@ class LangfuseDatabaseReader:
 
         organization_id = _new_langfuse_id("org")
         project_id = _new_langfuse_id("project")
-        membership_id = _new_langfuse_id("orgmem")
 
         async with await psycopg.AsyncConnection.connect(
             self._database_url,
             row_factory=dict_row,
         ) as connection:
             async with connection.cursor() as cursor:
+                owner_user = await self._ensure_user_by_email_cursor(
+                    cursor,
+                    owner_account,
+                    owner_email,
+                )
+                owner_user_id = owner_user["id"]
+
                 await cursor.execute(
                     """
                     INSERT INTO organizations (id, name, metadata)
@@ -5185,17 +5232,28 @@ class LangfuseDatabaseReader:
 
                 await cursor.execute(
                     """
-                    INSERT INTO organization_memberships
-                        (id, org_id, user_id, role)
+                    INSERT INTO organization_memberships (
+                        id,
+                        org_id,
+                        user_id,
+                        role
+                    )
                     VALUES
-                        (%(id)s, %(org_id)s, %(user_id)s, 'OWNER')
+                        (%(id)s, %(org_id)s, %(user_id)s, 'OWNER'::"Role")
+                    ON CONFLICT (org_id, user_id)
+                    DO UPDATE SET
+                        role = 'OWNER'::"Role",
+                        updated_at = NOW()
+                    RETURNING id
                     """,
                     {
-                        "id": membership_id,
+                        "id": _new_langfuse_id("orgmem"),
                         "org_id": organization_id,
                         "user_id": owner_user_id,
                     },
                 )
+                membership = await cursor.fetchone()
+                assert membership is not None
 
                 await cursor.execute(
                     """
@@ -5232,7 +5290,7 @@ class LangfuseDatabaseReader:
                     {
                         "project_id": project_id,
                         "user_id": owner_user_id,
-                        "org_membership_id": membership_id,
+                        "org_membership_id": membership["id"],
                     },
                 )
 

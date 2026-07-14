@@ -4,6 +4,7 @@ from fastapi import APIRouter, Depends, Query
 from pydantic import BaseModel, Field
 
 from app.auth_context import CurrentUserContext, get_current_user_context
+from app.config import Settings, get_settings
 from app.errors import BusinessError
 from app.langfuse_db import LangfuseDatabaseReader, get_langfuse_db_reader
 from app.response import success
@@ -101,6 +102,11 @@ def _merge_pa_eval_metadata(
     return merged
 
 
+def _default_owner_email(account: str, settings: Settings) -> str:
+    domain = settings.pa_eval_default_owner_email_domain.strip().lower()
+    return f"{account}@{domain}"
+
+
 @router.get("")
 async def list_organizations(
     page: int = Query(default=1, ge=1),
@@ -120,7 +126,10 @@ async def create_organization(
     payload: CreateOrganizationPayload,
     current_user: CurrentUserContext = Depends(get_current_user_context),
     reader: LangfuseDatabaseReader = Depends(get_langfuse_db_reader),
+    settings: Settings = Depends(get_settings),
 ) -> dict[str, Any]:
+    owner_account = payload.default_owner_account
+    owner_email = _default_owner_email(owner_account, settings)
     create_payload = {
         "name": payload.name,
         "default_project_name": f"{payload.name} 默认项目",
@@ -135,8 +144,8 @@ async def create_organization(
     }
     created = await reader.create_organization_with_default_project(
         create_payload,
-        current_user.user_id,
-        current_user.email,
+        owner_account,
+        owner_email,
     )
     return success(_to_pa_organization(created))
 

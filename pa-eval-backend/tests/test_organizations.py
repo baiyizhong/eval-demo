@@ -2,6 +2,7 @@ from fastapi.testclient import TestClient
 import pytest
 
 from app.auth_context import CurrentUserContext, get_current_user_context
+from app.config import Settings, get_settings
 from app.errors import BusinessError
 from app.langfuse_db import LangfuseDatabaseReader, get_langfuse_db_reader
 from app.main import app
@@ -148,12 +149,12 @@ class FakeDatabaseReader:
     async def create_organization_with_default_project(
         self,
         payload: dict,
-        owner_user_id: str,
+        owner_account: str,
         owner_email: str,
     ) -> dict:
         self.created_payload = {
             "payload": payload,
-            "owner_user_id": owner_user_id,
+            "owner_account": owner_account,
             "owner_email": owner_email,
         }
         return {
@@ -188,6 +189,9 @@ def override_reader(fake_reader: FakeDatabaseReader):
     app.dependency_overrides[get_current_user_context] = lambda: CurrentUserContext(
         user_id="user-1",
         email="admin@163.com",
+    )
+    app.dependency_overrides[get_settings] = lambda: Settings(
+        pa_eval_default_owner_email_domain="owners.test"
     )
 
 
@@ -534,6 +538,7 @@ def test_creates_langfuse_organization_with_pa_eval_metadata() -> None:
                 "name": "新组织",
                 "subsystem": "model-eval",
                 "description": "模型评测组织",
+                "defaultOwnerAccount": "Owner123",
             },
         )
     finally:
@@ -541,8 +546,8 @@ def test_creates_langfuse_organization_with_pa_eval_metadata() -> None:
 
     assert response.status_code == 200
     assert fake_reader.created_payload == {
-        "owner_user_id": "user-1",
-        "owner_email": "admin@163.com",
+        "owner_account": "owner123",
+        "owner_email": "owner123@owners.test",
         "payload": {
             "name": "新组织",
             "default_project_name": "新组织 默认项目",
@@ -560,13 +565,16 @@ def test_creates_langfuse_organization_with_pa_eval_metadata() -> None:
     assert response.json()["data"]["projectCount"] == 1
 
 
-def test_creates_organization_with_logged_in_email_as_owner() -> None:
+def test_creates_organization_with_default_owner_account() -> None:
     fake_reader = FakeDatabaseReader()
     override_reader(fake_reader)
     app.dependency_overrides[get_current_user_context] = lambda: CurrentUserContext(
         user_id="user-octocat",
         email="octocat@example.com",
         login="octocat",
+    )
+    app.dependency_overrides[get_settings] = lambda: Settings(
+        pa_eval_default_owner_email_domain="example.org"
     )
 
     try:
@@ -576,18 +584,40 @@ def test_creates_organization_with_logged_in_email_as_owner() -> None:
                 "name": "登录用户组织",
                 "subsystem": "model-eval",
                 "description": "登录用户创建",
+                "defaultOwnerAccount": "OctoCat99",
             },
         )
     finally:
         clear_overrides()
 
     assert response.status_code == 200
-    assert fake_reader.created_payload["owner_user_id"] == "user-octocat"
-    assert fake_reader.created_payload["owner_email"] == "octocat@example.com"
+    assert fake_reader.created_payload["owner_account"] == "octocat99"
+    assert fake_reader.created_payload["owner_email"] == "octocat99@example.org"
     assert (
         fake_reader.created_payload["payload"]["metadata"]["paEval"]["createdBy"]
         == "octocat@example.com"
     )
+
+
+def test_rejects_invalid_default_owner_account() -> None:
+    fake_reader = FakeDatabaseReader()
+    override_reader(fake_reader)
+
+    try:
+        response = TestClient(app).post(
+            "/api/organizations",
+            json={
+                "name": "非法账号组织",
+                "subsystem": "model-eval",
+                "description": "账号不合法",
+                "defaultOwnerAccount": "owner_中文",
+            },
+        )
+    finally:
+        clear_overrides()
+
+    assert response.status_code == 422
+    assert fake_reader.created_payload is None
 
 
 def test_updates_organization_through_database_and_preserves_metadata() -> None:

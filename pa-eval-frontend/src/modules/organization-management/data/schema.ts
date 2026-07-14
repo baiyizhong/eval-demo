@@ -50,18 +50,26 @@ export type PaginatedResult<T> = {
   datas: T[]
 }
 
+export const normalizeOrganizationOwnerAccount = (value: string) =>
+  value.toLowerCase().replace(/[^a-z0-9]/g, '')
+
 export const createOrganizationPayloadSchema = z.object({
   name: z.string(),
   subsystem: z.string(),
   description: z.string().optional(),
+  defaultOwnerAccount: z
+    .string()
+    .min(1, '请输入默认 Owner 登录账号')
+    .regex(/^[a-z0-9]+$/, '账号只允许输入英文和数字'),
 })
 
 export type CreateOrganizationPayload = z.infer<
   typeof createOrganizationPayloadSchema
 >
 
-export const updateOrganizationPayloadSchema =
-  createOrganizationPayloadSchema.partial()
+export const updateOrganizationPayloadSchema = createOrganizationPayloadSchema
+  .omit({ defaultOwnerAccount: true })
+  .partial()
 
 export type UpdateOrganizationPayload = z.infer<
   typeof updateOrganizationPayloadSchema

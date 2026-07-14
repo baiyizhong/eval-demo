@@ -27,6 +27,7 @@ class LangfuseClickHouseReader:
         environments: list[str] | None = None,
         session_id: str | None = None,
         user_id: str | None = None,
+        business_id: str | None = None,
         latency_min: int | None = None,
         latency_max: int | None = None,
         score_queue_id: str | None = None,
@@ -58,6 +59,7 @@ class LangfuseClickHouseReader:
                 environments=environments,
                 session_id=session_id,
                 user_id=user_id,
+                business_id=business_id,
                 latency_min=latency_min,
                 latency_max=latency_max,
                 score_queue_id=score_queue_id,
@@ -83,6 +85,7 @@ class LangfuseClickHouseReader:
         environments: list[str] | None = None,
         session_id: str | None = None,
         user_id: str | None = None,
+        business_id: str | None = None,
         latency_min: int | None = None,
         latency_max: int | None = None,
         score_queue_id: str | None = None,
@@ -114,6 +117,7 @@ class LangfuseClickHouseReader:
                 environments=environments,
                 session_id=session_id,
                 user_id=user_id,
+                business_id=business_id,
                 latency_min=latency_min,
                 latency_max=latency_max,
                 score_queue_id=score_queue_id,
@@ -662,16 +666,6 @@ class LangfuseClickHouseReader:
 
     @staticmethod
     def _to_trace_row(row: dict[str, Any]) -> dict[str, Any]:
-        metadata = row.get("metadata") or {}
-        business_id = ""
-        if isinstance(metadata, dict):
-            business_id = (
-                metadata.get("businessId")
-                or metadata.get("business_id")
-                or metadata.get("app_id")
-                or ""
-            )
-
         return {
             "traceId": row["traceId"],
             "sessionId": row.get("sessionId") or "",
@@ -682,7 +676,7 @@ class LangfuseClickHouseReader:
             "latency": max(0, int(row.get("latency") or 0)),
             "createdAt": _format_clickhouse_datetime(row.get("createdAt")),
             "userId": row.get("userId") or "",
-            "businessId": str(business_id),
+            "businessId": _trace_business_id(row),
             "tags": row.get("tags") or [],
             "scores": row.get("scores") or [],
             "scoreSummary": row.get("scoreSummary") or _score_summary(row.get("scores") or []),
@@ -802,6 +796,7 @@ def _matches_trace(
     environments: list[str] | None,
     session_id: str | None,
     user_id: str | None,
+    business_id: str | None,
     latency_min: int | None,
     latency_max: int | None,
     score_queue_id: str | None,
@@ -822,6 +817,8 @@ def _matches_trace(
     if session_id and session_id not in (row.get("sessionId") or ""):
         return False
     if user_id and user_id not in (row.get("userId") or ""):
+        return False
+    if business_id and business_id not in _trace_business_id(row):
         return False
     latency = int(row.get("latency") or 0)
     if latency_min is not None and latency < latency_min:
@@ -853,6 +850,18 @@ def _matches_trace(
         if not _matches_numeric_score(row.get("scores") or [], score_filter):
             return False
     return True
+
+
+def _trace_business_id(row: dict[str, Any]) -> str:
+    metadata = row.get("metadata") or {}
+    if not isinstance(metadata, dict):
+        return ""
+    return str(
+        metadata.get("businessId")
+        or metadata.get("business_id")
+        or metadata.get("app_id")
+        or ""
+    )
 
 
 def _matches_score_queue_id(scores: list[dict[str, Any]], queue_id: str) -> bool:

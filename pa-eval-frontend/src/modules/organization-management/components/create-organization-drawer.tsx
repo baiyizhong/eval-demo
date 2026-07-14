@@ -3,6 +3,7 @@ import { z } from 'zod'
 import { useMutation, useQueryClient } from '@tanstack/react-query'
 import {
   createOrganizationPayloadSchema,
+  normalizeOrganizationOwnerAccount,
   type CreateOrganizationPayload,
   type Organization,
 } from '@/modules/organization-management/data/schema'
@@ -28,6 +29,11 @@ const createOrganizationFormSchema = createOrganizationPayloadSchema.extend({
   name: z.string().trim().min(1, '请输入组织名称'),
   subsystem: z.string().trim().min(1, '请输入所属子系统'),
   description: z.string().trim().optional(),
+  defaultOwnerAccount: z
+    .string()
+    .trim()
+    .min(1, '请输入默认 Owner 登录账号')
+    .regex(/^[a-z0-9]+$/, '账号只允许输入英文和数字'),
 })
 
 type CreateOrganizationDrawerProps = {
@@ -96,6 +102,7 @@ export function CreateOrganizationDrawer({
           name: '',
           subsystem: '',
           description: '',
+          defaultOwnerAccount: '',
         }}
         onSubmit={handleSubmit}
         className='gap-4 overflow-visible'
@@ -123,6 +130,27 @@ export function CreateOrganizationDrawer({
                   <FormLabel>所属子系统</FormLabel>
                   <FormControl>
                     <Input placeholder='输入所属子系统' {...field} />
+                  </FormControl>
+                  <FormMessage />
+                </FormItem>
+              )}
+            />
+            <FormField
+              control={form.control}
+              name='defaultOwnerAccount'
+              render={({ field }) => (
+                <FormItem>
+                  <FormLabel>默认 Owner 登录账号</FormLabel>
+                  <FormControl>
+                    <Input
+                      placeholder='输入英文和数字账号'
+                      {...field}
+                      onChange={(event) =>
+                        field.onChange(
+                          normalizeOrganizationOwnerAccount(event.target.value)
+                        )
+                      }
+                    />
                   </FormControl>
                   <FormMessage />
                 </FormItem>

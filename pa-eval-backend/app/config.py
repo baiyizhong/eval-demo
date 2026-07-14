@@ -14,6 +14,7 @@ class Settings(BaseSettings):
     langfuse_clickhouse_user: str = Field(default="clickhouse")
     langfuse_clickhouse_password: str = Field(default="clickhouse")
     pa_eval_default_owner_email: str = Field(default="admin@163.com")
+    pa_eval_default_owner_email_domain: str = Field(default="xxx.com")
     pa_eval_api_timeout: float = Field(default=20)
     pa_eval_cors_origins: str = Field(default="*")
     pa_eval_frontend_url: str = Field(default="http://localhost:5173")
