@@ -1,0 +1,227 @@
+import { useState } from 'react'
+import { useQuery } from '@tanstack/react-query'
+import type { TraceLogRow } from '@/modules/app-observability/types'
+import { buildTraceListQuery } from '@/modules/app-observability/views/trace-logs-query'
+import { ChevronLeft, ChevronRight } from 'lucide-react'
+import { cn } from '@/lib/utils'
+import { useAPI } from '@/hooks/use-api'
+import { Button } from '@/components/ui/button'
+import {
+  Dialog,
+  DialogContent,
+  DialogDescription,
+  DialogHeader,
+  DialogTitle,
+} from '@/components/ui/dialog'
+import {
+  buildSessionTraceListQuery,
+  formatSessionTracePreview,
+  SESSION_TRACE_PAGE_SIZE,
+} from './session-trace-dialog-utils'
+import {
+  HoverCard,
+  HoverCardContent,
+  HoverCardTrigger,
+} from '@/components/ui/hover-card'
+import {
+  Table,
+  TableBody,
+  TableCell,
+  TableHead,
+  TableHeader,
+  TableRow,
+} from '@/components/ui/table'
+import { Loading } from '@/components/common/loading'
+
+type SessionTraceDialogProps = {
+  projectId: string
+  sessionId: string
+  open: boolean
+  onOpenChange: (open: boolean) => void
+}
+
+type SessionTraceRow = TraceLogRow & {
+  input?: unknown
+  output?: unknown
+}
+
+type SessionTraceListResponse = {
+  total: number
+  datas: SessionTraceRow[]
+}
+
+export function SessionTraceDialog({
+  projectId,
+  sessionId,
+  open,
+  onOpenChange,
+}: SessionTraceDialogProps) {
+  const $api = useAPI()
+  const [page, setPage] = useState(1)
+  const normalizedSessionId = sessionId.trim()
+  const tracesQuery = useQuery({
+    queryKey: [
+      'annotation-session-traces',
+      $api,
+      projectId,
+      normalizedSessionId,
+      page,
+    ],
+    queryFn: () =>
+      $api.listProjectTraces<SessionTraceListResponse>({
+        path: { projectId },
+        query: buildTraceListQuery(
+          buildSessionTraceListQuery(normalizedSessionId, page),
+          projectId
+        ),
+      }),
+    enabled: open && Boolean(normalizedSessionId),
+  })
+  const resolvedTraces = tracesQuery.data?.datas ?? []
+  const total = tracesQuery.data?.total ?? 0
+  const pageCount = Math.max(1, Math.ceil(total / SESSION_TRACE_PAGE_SIZE))
+  const isLoading = tracesQuery.isLoading
+
+  return (
+    <Dialog open={open} onOpenChange={onOpenChange}>
+      <DialogContent className='flex max-h-[82vh] flex-col overflow-hidden sm:max-w-6xl'>
+        <DialogHeader>
+          <DialogTitle>会话 Trace 日志</DialogTitle>
+          <DialogDescription>
+            Session ID：
+            <span className='font-mono'>{normalizedSessionId || '-'}</span>
+          </DialogDescription>
+        </DialogHeader>
+        <div className='flex min-h-0 flex-1 flex-col overflow-hidden rounded-md border'>
+          {isLoading ? (
+            <Loading
+              text='加载会话 Trace 中...'
+              className='min-h-32 flex-1 border-0'
+            />
+          ) : null}
+          {!isLoading ? (
+            <div className='min-h-0 flex-1 overflow-x-auto overflow-y-auto'>
+              <Table className='w-full table-fixed'>
+                <TableHeader className='bg-card sticky top-0'>
+                  <TableRow>
+                    <TableHead className='w-[136px]'>会话 ID</TableHead>
+                    <TableHead className='w-[168px]'>Trace ID</TableHead>
+                    <TableHead>Input</TableHead>
+                    <TableHead>Output</TableHead>
+                  </TableRow>
+                </TableHeader>
+                <TableBody>
+                  {resolvedTraces.map((trace) => (
+                    <TableRow key={trace.traceId}>
+                      <SessionTracePreviewCell
+                        label='会话 ID'
+                        value={trace.sessionId}
+                        className='w-[136px]'
+                        mono
+                      />
+                      <SessionTracePreviewCell
+                        label='Trace ID'
+                        value={trace.traceId}
+                        className='w-[168px]'
+                        mono
+                      />
+                      <SessionTracePreviewCell
+                        label='Input'
+                        value={trace.input}
+                      />
+                      <SessionTracePreviewCell
+                        label='Output'
+                        value={trace.output}
+                      />
+                    </TableRow>
+                  ))}
+                </TableBody>
+              </Table>
+              {!resolvedTraces.length ? (
+                <div className='text-muted-foreground p-6 text-center text-sm'>
+                  当前会话下暂无 Trace 日志
+                </div>
+              ) : null}
+            </div>
+          ) : null}
+          <div className='flex shrink-0 flex-wrap items-center justify-between gap-2 border-t p-2 text-xs'>
+            <div className='text-muted-foreground'>
+              共 {total} 条，第 {page} / {pageCount} 页
+            </div>
+            <div className='flex items-center gap-2'>
+              <Button
+                type='button'
+                variant='outline'
+                size='sm'
+                disabled={isLoading || page <= 1}
+                onClick={() => setPage((current) => Math.max(1, current - 1))}
+              >
+                <ChevronLeft data-icon='inline-start' />
+                上一页
+              </Button>
+              <Button
+                type='button'
+                variant='outline'
+                size='sm'
+                disabled={isLoading || page >= pageCount}
+                onClick={() =>
+                  setPage((current) => Math.min(pageCount, current + 1))
+                }
+              >
+                下一页
+                <ChevronRight data-icon='inline-end' />
+              </Button>
+            </div>
+          </div>
+        </div>
+      </DialogContent>
+    </Dialog>
+  )
+}
+
+function SessionTracePreviewCell({
+  label,
+  value,
+  className,
+  mono,
+}: {
+  label: string
+  value: unknown
+  className?: string
+  mono?: boolean
+}) {
+  const preview = formatSessionTracePreview(value)
+
+  return (
+    <TableCell className={cn('align-top', className)}>
+      <HoverCard openDelay={250} closeDelay={100}>
+        <HoverCardTrigger asChild>
+          <Button
+            type='button'
+            variant='ghost'
+            className='text-muted-foreground h-auto w-full min-w-0 justify-start p-0 text-left hover:bg-transparent'
+          >
+            <span
+              className={
+                mono
+                  ? 'min-w-0 truncate font-mono text-xs'
+                  : 'line-clamp-2 min-w-0 text-xs leading-relaxed break-words whitespace-normal'
+              }
+            >
+              {preview}
+            </span>
+          </Button>
+        </HoverCardTrigger>
+        <HoverCardContent
+          align='start'
+          className='w-[min(760px,calc(100vw-3rem))] p-3'
+        >
+          <div className='text-xs font-medium'>{label}</div>
+          <pre className='mt-2 max-h-80 overflow-auto font-mono text-xs leading-relaxed break-words whitespace-pre-wrap'>
+            {preview}
+          </pre>
+        </HoverCardContent>
+      </HoverCard>
+    </TableCell>
+  )
+}

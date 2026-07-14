@@ -65,6 +65,7 @@ import { AnnotationObjectTypeBadge } from '../components/annotation-object-type-
 import { AnnotationScoreForm } from '../components/annotation-score-form'
 import { AnnotationStatusBadge } from '../components/annotation-status-badge'
 import { formatDateTime } from '../components/format'
+import { SessionTraceDialog } from '../components/session-trace-dialog'
 import {
   type AnnotationItemStatus,
   type AnnotationQueueItemRecord,
@@ -84,6 +85,7 @@ type BatchFilterCondition = {
 }
 type BatchColumnKey =
   | 'sourceDataId'
+  | 'sessionId'
   | 'type'
   | 'status'
   | 'assignee'
@@ -97,6 +99,7 @@ const PAGE_SIZE_OPTIONS = [10, 20, 50]
 const ASSIGNEE_ALL_VALUE = 'ALL'
 const BATCH_COLUMN_LABELS: Record<BatchColumnKey, string> = {
   sourceDataId: '源数据 ID',
+  sessionId: '会话 ID',
   type: '类型',
   status: '状态',
   assignee: '预设处理人',
@@ -107,6 +110,7 @@ const BATCH_COLUMN_LABELS: Record<BatchColumnKey, string> = {
 }
 const DEFAULT_BATCH_COLUMN_VISIBILITY: Record<BatchColumnKey, boolean> = {
   sourceDataId: true,
+  sessionId: true,
   type: true,
   status: true,
   assignee: true,
@@ -237,6 +241,7 @@ export function ProjectAnnotationBatch() {
     searchParams.get('item') ?? ''
   )
   const [selectedItemIds, setSelectedItemIds] = useState<string[]>([])
+  const [selectedSessionId, setSelectedSessionId] = useState('')
   const [completedItemIds, setCompletedItemIds] = useState<string[]>([])
   const [batchScoreConfigId, setBatchScoreConfigId] = useState('')
   const [scorePaneWidth, setScorePaneWidth] = useState(400)
@@ -718,6 +723,9 @@ export function ProjectAnnotationBatch() {
                     {columnVisibility.sourceDataId ? (
                       <TableHead className='w-[210px]'>源数据 ID</TableHead>
                     ) : null}
+                    {columnVisibility.sessionId ? (
+                      <TableHead className='w-[210px]'>会话 ID</TableHead>
+                    ) : null}
                     {columnVisibility.type ? (
                       <TableHead className='w-[92px]'>类型</TableHead>
                     ) : null}
@@ -757,6 +765,7 @@ export function ProjectAnnotationBatch() {
                         )
                       }
                       onSelect={() => setSelectedItemId(item.id)}
+                      onOpenSession={setSelectedSessionId}
                     />
                   ))}
                 </TableBody>
@@ -887,6 +896,15 @@ export function ProjectAnnotationBatch() {
             )}
           </main>
         </section>
+        <SessionTraceDialog
+          key={selectedSessionId}
+          projectId={projectId}
+          sessionId={selectedSessionId}
+          open={Boolean(selectedSessionId)}
+          onOpenChange={(open) => {
+            if (!open) setSelectedSessionId('')
+          }}
+        />
       </div>
     </Page>
   )
@@ -1199,6 +1217,7 @@ function AnnotationItemTableRows({
   columnVisibility,
   onCheckedChange,
   onSelect,
+  onOpenSession,
 }: {
   item: AnnotationQueueItemRecord
   selected: boolean
@@ -1206,6 +1225,7 @@ function AnnotationItemTableRows({
   columnVisibility: Record<BatchColumnKey, boolean>
   onCheckedChange: (checked: boolean) => void
   onSelect: () => void
+  onOpenSession: (sessionId: string) => void
 }) {
   const inputText = stringifyBrief(item.source.input)
   const outputText = stringifyBrief(item.source.output)
@@ -1230,6 +1250,27 @@ function AnnotationItemTableRows({
           value={item.objectId}
           className='max-w-[220px]'
         />
+      ) : null}
+      {columnVisibility.sessionId ? (
+        <TableCell
+          className='max-w-[220px]'
+          onClick={(event) => event.stopPropagation()}
+        >
+          {item.source.sessionId ? (
+            <Button
+              type='button'
+              variant='link'
+              className='h-auto max-w-full justify-start p-0'
+              onClick={() => onOpenSession(item.source.sessionId)}
+            >
+              <span className='truncate font-mono text-xs'>
+                {item.source.sessionId}
+              </span>
+            </Button>
+          ) : (
+            <span className='text-muted-foreground text-xs'>-</span>
+          )}
+        </TableCell>
       ) : null}
       {columnVisibility.type ? (
         <TableCell>

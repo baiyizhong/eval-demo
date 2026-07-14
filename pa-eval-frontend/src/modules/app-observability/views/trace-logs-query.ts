@@ -69,6 +69,7 @@ export function buildTraceListQuery(
       ? JSON.stringify(categoricalScoreFilters)
       : undefined,
     numericScoreFilters: serializeJsonFilter(numericScoreFilters),
+    fields: optionalString(state.filters.fields),
   }
 }
 

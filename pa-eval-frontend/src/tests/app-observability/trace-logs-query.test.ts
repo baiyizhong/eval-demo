@@ -158,3 +158,17 @@ test('trace logs query serializes score queue id filter', () => {
   assert.equal(query.scoreQueueId, 'queue-1')
   assert.equal(query.timeRange, undefined)
 })
+
+test('trace logs query forwards selected response fields', () => {
+  const query = buildTraceListQuery(
+    {
+      ...baseState,
+      filters: {
+        fields: 'core,io',
+      },
+    },
+    'project-1'
+  )
+
+  assert.equal(query.fields, 'core,io')
+})

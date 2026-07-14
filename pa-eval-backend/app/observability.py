@@ -74,6 +74,7 @@ async def list_traces(
         alias="categoricalScoreFilters",
     ),
     numeric_score_filters: str | None = Query(default=None, alias="numericScoreFilters"),
+    fields: str | None = Query(default=None),
     created_at_range: list[str] | None = Query(default=None, alias="createdAtRange"),
     created_at_range_bracket: list[str] | None = Query(
         default=None,
@@ -137,6 +138,7 @@ async def list_traces(
             metadata_filters=parsed_metadata_filters,
             categorical_score_filters=parsed_categorical_score_filters,
             numeric_score_filters=parsed_numeric_score_filters,
+            fields=fields,
             created_at_range=resolved_created_at_range,
             time_range=effective_time_range,
         )

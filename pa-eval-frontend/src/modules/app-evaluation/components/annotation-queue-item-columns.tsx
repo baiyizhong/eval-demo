@@ -13,6 +13,7 @@ type CreateAnnotationQueueItemColumnsOptions = {
   queueId: string
   canEdit?: boolean
   onDelete?: (item: AnnotationQueueItemRecord) => void
+  onOpenSession?: (sessionId: string) => void
 }
 
 export function createAnnotationQueueItemColumns({
@@ -20,6 +21,7 @@ export function createAnnotationQueueItemColumns({
   queueId,
   canEdit,
   onDelete,
+  onOpenSession,
 }: CreateAnnotationQueueItemColumnsOptions): ColumnDef<AnnotationQueueItemRecord>[] {
   return [
     {
@@ -96,6 +98,31 @@ export function createAnnotationQueueItemColumns({
           </span>
         )
       },
+    },
+    {
+      accessorKey: 'sessionId',
+      header: ({ column }) => (
+        <DataTableColumnHeader column={column} title='会话 ID' />
+      ),
+      cell: ({ row }) => {
+        const item = row.original
+        const sessionId = item.source.sessionId.trim()
+        if (!sessionId) {
+          return <span className='text-muted-foreground text-xs'>-</span>
+        }
+
+        return (
+          <Button
+            type='button'
+            variant='link'
+            className='h-auto max-w-[220px] justify-start p-0'
+            onClick={() => onOpenSession?.(sessionId)}
+          >
+            <span className='truncate font-mono text-xs'>{sessionId}</span>
+          </Button>
+        )
+      },
+      enableSorting: false,
     },
     {
       accessorKey: 'status',

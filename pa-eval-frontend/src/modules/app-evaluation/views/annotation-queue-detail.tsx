@@ -28,6 +28,7 @@ import { AnnotationExportDialog } from '../components/annotation-export-dialog'
 import { AnnotationQueueItemBulkActions } from '../components/annotation-queue-item-bulk-actions'
 import { createAnnotationQueueItemColumns } from '../components/annotation-queue-item-columns'
 import { formatDateTime } from '../components/format'
+import { SessionTraceDialog } from '../components/session-trace-dialog'
 import type { AnnotationQueueItemRecord, ProjectUserRecord } from '../types'
 
 const itemUrlFilters: DataTableFilterBinding[] = [
@@ -49,6 +50,7 @@ export function ProjectAnnotationQueueDetail() {
   const [selectedExportItemIds, setSelectedExportItemIds] = useState<string[]>(
     []
   )
+  const [selectedSessionId, setSelectedSessionId] = useState('')
 
   const queryState = useMemo<DataTableQueryState>(
     () => ({
@@ -136,6 +138,7 @@ export function ProjectAnnotationQueueDetail() {
               )
             }
           : undefined,
+        onOpenSession: setSelectedSessionId,
       }),
     [$api, canEditAnnotation, invalidateDetail, projectId, queueId]
   )
@@ -264,6 +267,7 @@ export function ProjectAnnotationQueueDetail() {
                 id: '数据 ID',
                 objectType: '类型',
                 objectId: '源数据 ID',
+                sessionId: '会话 ID',
                 status: '状态',
                 completedAt: '完成时间',
                 assignee: '预设处理人',
@@ -295,6 +299,15 @@ export function ProjectAnnotationQueueDetail() {
             minTableWidth={1320}
           />
         </section>
+        <SessionTraceDialog
+          key={selectedSessionId}
+          projectId={projectId}
+          sessionId={selectedSessionId}
+          open={Boolean(selectedSessionId)}
+          onOpenChange={(open) => {
+            if (!open) setSelectedSessionId('')
+          }}
+        />
         <AnnotationExportDialog
           open={selectedExportDialogOpen}
           onOpenChange={(open) => {

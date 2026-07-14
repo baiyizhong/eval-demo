@@ -38,7 +38,9 @@ class LangfuseClickHouseReader:
         numeric_score_filters: list[dict[str, Any]] | None = None,
         created_at_range: list[str] | None = None,
         time_range: str | None = "1d",
+        fields: str | None = None,
     ) -> dict[str, Any]:
+        include_io = _trace_fields_include(fields, "io")
         start_time, end_time = _resolve_time_window(
             time_range=time_range,
             created_at_range=created_at_range,
@@ -48,6 +50,8 @@ class LangfuseClickHouseReader:
             start_time=start_time,
             end_time=end_time,
             environments=_normalize_environments(environments),
+            session_id=session_id,
+            include_io=include_io,
         )
         filtered = [
             row
@@ -73,7 +77,10 @@ class LangfuseClickHouseReader:
         start = (page - 1) * page_size
         return {
             "total": len(filtered),
-            "datas": [self._to_trace_row(row) for row in filtered[start : start + page_size]],
+            "datas": [
+                self._to_trace_row(row, include_io=include_io)
+                for row in filtered[start : start + page_size]
+            ],
         }
 
     async def count_traces(
@@ -106,6 +113,7 @@ class LangfuseClickHouseReader:
             start_time=start_time,
             end_time=end_time,
             environments=_normalize_environments(environments),
+            session_id=session_id,
         )
         return sum(
             1
@@ -394,6 +402,8 @@ class LangfuseClickHouseReader:
         start_time: datetime | None = None,
         end_time: datetime | None = None,
         environments: list[str] | None = None,
+        session_id: str | None = None,
+        include_io: bool = False,
     ) -> list[dict[str, Any]]:
         filters = ["t.project_id = {project_id:String}", "t.is_deleted = 0"]
         params: dict[str, Any] = {"project_id": project_id}
@@ -411,8 +421,18 @@ class LangfuseClickHouseReader:
                 environment_placeholders.append(f"{{{param_key}:String}}")
                 params[param_key] = environment
             filters.append(f"t.environment IN ({', '.join(environment_placeholders)})")
+        if session_id:
+            filters.append("position(ifNull(t.session_id, ''), {session_id:String}) > 0")
+            params["session_id"] = session_id
 
         where_clause = "\n              AND ".join(filters)
+        io_select = (
+            """
+                t.input AS input,
+                t.output AS output,"""
+            if include_io
+            else ""
+        )
         query = """
             WITH observation_summary AS (
                 SELECT
@@ -434,6 +454,7 @@ class LangfuseClickHouseReader:
                 t.session_id AS sessionId,
                 t.timestamp AS createdAt,
                 t.updated_at AS updatedAt,
+                __IO_SELECT__
                 t.metadata AS metadata,
                 t.tags AS tags,
                 if(
@@ -454,7 +475,7 @@ class LangfuseClickHouseReader:
             WHERE __WHERE_CLAUSE__
             ORDER BY t.timestamp DESC, t.id DESC
             FORMAT JSONEachRow
-            """.replace("__WHERE_CLAUSE__", where_clause)
+            """.replace("__WHERE_CLAUSE__", where_clause).replace("__IO_SELECT__", io_select)
         rows = await self._query_json_each_row(query, params)
         trace_ids = [str(row.get("traceId") or "") for row in rows if row.get("traceId")]
         if not trace_ids:
@@ -665,8 +686,8 @@ class LangfuseClickHouseReader:
         return [json.loads(line) for line in lines]
 
     @staticmethod
-    def _to_trace_row(row: dict[str, Any]) -> dict[str, Any]:
-        return {
+    def _to_trace_row(row: dict[str, Any], *, include_io: bool = False) -> dict[str, Any]:
+        trace_row = {
             "traceId": row["traceId"],
             "sessionId": row.get("sessionId") or "",
             "projectId": row["projectId"],
@@ -681,6 +702,10 @@ class LangfuseClickHouseReader:
             "scores": row.get("scores") or [],
             "scoreSummary": row.get("scoreSummary") or _score_summary(row.get("scores") or []),
         }
+        if include_io:
+            trace_row["input"] = _format_payload(row.get("input"))
+            trace_row["output"] = _format_payload(row.get("output"))
+        return trace_row
 
 
 def _format_score(row: dict[str, Any]) -> dict[str, Any]:
@@ -773,6 +798,15 @@ def _numeric_or_none(value: Any) -> float | None:
         return float(value)
     except (TypeError, ValueError):
         return None
+
+
+def _trace_fields_include(fields: str | None, field_name: str) -> bool:
+    requested = {
+        item.strip().lower()
+        for item in str(fields or "").split(",")
+        if item.strip()
+    }
+    return field_name.lower() in requested
 
 
 def _payload_to_object(value: Any) -> Any:

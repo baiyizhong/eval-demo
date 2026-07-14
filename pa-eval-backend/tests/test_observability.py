@@ -315,6 +315,24 @@ def test_lists_project_traces_passes_business_id_filter() -> None:
     assert fake_trace.list_kwargs["time_range"] is None
 
 
+def test_lists_project_traces_passes_selected_response_fields() -> None:
+    fake_db = FakeDatabaseReader()
+    fake_trace = FakeTraceReader()
+    override_readers(fake_db, fake_trace)
+
+    try:
+        response = TestClient(app).get(
+            "/api/projects/project-1/traces",
+            params={"fields": "core,io", "sessionId": "session-1"},
+        )
+    finally:
+        clear_overrides()
+
+    assert response.status_code == 200
+    assert fake_trace.list_kwargs["fields"] == "core,io"
+    assert fake_trace.list_kwargs["session_id"] == "session-1"
+
+
 def test_lists_project_traces_does_not_default_time_range_with_metadata_filters() -> None:
     fake_db = FakeDatabaseReader()
     fake_trace = FakeTraceReader()
@@ -623,6 +641,69 @@ async def test_fetches_trace_rows_with_time_and_environment_filters(monkeypatch)
         "end_time": datetime(2026, 7, 6, 0, 0, 0),
         "environment_0": "default",
     }
+
+
+@pytest.mark.anyio
+async def test_fetches_trace_rows_with_session_filter_and_optional_io_fields(monkeypatch) -> None:
+    reader = LangfuseClickHouseReader(Settings())
+    captured = {}
+
+    async def fake_query(query: str, params: dict):
+        captured["query"] = query
+        captured["params"] = params
+        return []
+
+    monkeypatch.setattr(reader, "_query_json_each_row", fake_query)
+
+    await reader._fetch_trace_rows(
+        "project-1",
+        session_id="session-1",
+        include_io=True,
+    )
+
+    assert "t.input AS input" in captured["query"]
+    assert "t.output AS output" in captured["query"]
+    assert "position(ifNull(t.session_id, ''), {session_id:String}) > 0" in captured["query"]
+    assert captured["params"] == {
+        "project_id": "project-1",
+        "session_id": "session-1",
+    }
+
+
+@pytest.mark.anyio
+async def test_list_traces_includes_input_and_output_when_io_fields_requested(monkeypatch) -> None:
+    reader = LangfuseClickHouseReader(Settings())
+
+    async def fake_fetch_trace_rows(*args, **kwargs):
+        return [
+            {
+                "traceId": "trace-1",
+                "projectId": "project-1",
+                "environment": "default",
+                "status": "success",
+                "latency": 120,
+                "createdAt": "2026-07-05 01:36:59.275",
+                "userId": "user-1",
+                "metadata": {},
+                "tags": [],
+                "scores": [],
+                "input": '{"question":"如何重置密码？"}',
+                "output": {"answer": "请在账户设置中重置密码"},
+            }
+        ]
+
+    monkeypatch.setattr(reader, "_fetch_trace_rows", fake_fetch_trace_rows)
+
+    result = await reader.list_traces(
+        "project-1",
+        page=1,
+        page_size=10,
+        fields="core,io",
+        time_range=None,
+    )
+
+    assert result["datas"][0]["input"] == '{\n  "question": "如何重置密码？"\n}'
+    assert result["datas"][0]["output"] == '{\n  "answer": "请在账户设置中重置密码"\n}'
 
 
 def test_trace_row_exposes_langfuse_scores_and_summary() -> None:

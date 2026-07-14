@@ -187,6 +187,7 @@ export default [
           traces()
             .filter((trace) => trace.projectId === projectId(req))
             .filter((trace) => matchesCreatedAtRange(trace, req.query))
+            .filter((trace) => !req.query?.sessionId || trace.sessionId === req.query?.sessionId)
             .filter((trace) => keywordIncludes(trace, req.query?.keyword)),
           req.query,
           20
