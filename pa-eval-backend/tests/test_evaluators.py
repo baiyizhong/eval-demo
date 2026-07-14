@@ -1,6 +1,9 @@
 from fastapi.testclient import TestClient
+import psycopg
+import pytest
 
 from app.auth_context import CurrentUserContext, get_current_user_context
+from app.config import Settings
 from app.langfuse_db import LangfuseDatabaseReader, get_langfuse_db_reader
 from app.main import app
 
@@ -174,6 +177,41 @@ def clear_overrides() -> None:
     app.dependency_overrides.clear()
 
 
+@pytest.mark.anyio
+async def test_pa_evaluator_list_falls_back_when_output_variables_column_missing(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    reader = LangfuseDatabaseReader(Settings())
+    calls: list[str] = []
+
+    async def fake_fetch_all(sql: str, params: dict) -> list[dict]:
+        calls.append(sql)
+        if "output_variables" in sql:
+            raise psycopg.errors.UndefinedColumn("column pe.output_variables does not exist")
+        return [
+            {
+                "id": "pa-evaluator-1",
+                "name": "Dify 客诉判断",
+                "type": "WORKFLOW",
+                "provider": "DIFY",
+                "version": 1,
+                "description": "Dify 工作流评估器",
+                "variables": ["input", "output"],
+                "project_id": "project-1",
+                "project_name": "默认项目",
+                "updated_at": "2026-07-03T09:00:00.000Z",
+            }
+        ]
+
+    monkeypatch.setattr(reader, "_fetch_all", fake_fetch_all)
+
+    evaluators = await reader._list_pa_evaluators_for_user("user-1")
+
+    assert len(calls) == 2
+    assert evaluators[0]["id"] == "pa-evaluator-1"
+    assert evaluators[0]["outputVariables"] == []
+
+
 def test_lists_evaluators_from_langfuse_with_pa_pagination_and_keyword() -> None:
     override_reader(FakeDatabaseReader())
 
@@ -299,6 +337,8 @@ def test_creates_langfuse_llm_as_judge_evaluator() -> None:
             "project_id": "project-1",
             "description": "检查客服回复是否准确",
             "variables": ["input", "output"],
+            "input_variables": ["input", "output"],
+            "output_variables": [],
             "prompt": "请根据 {{input}} 和 {{output}} 评分",
             "model_config": {
                 "provider": "openai",
@@ -323,6 +363,8 @@ def test_creates_workflow_evaluator_in_pa_table() -> None:
                 "projectId": "project-1",
                 "description": "调用 Dify 工作流判断客诉风险",
                 "variables": ["input", "output"],
+                "inputVariables": ["input", "output"],
+                "outputVariables": ["quality_score", "risk_score"],
                 "endpointUrl": "https://dify.example.com/v1/workflows/run",
                 "authType": "BEARER",
                 "authToken": "secret-token",
@@ -345,6 +387,8 @@ def test_creates_workflow_evaluator_in_pa_table() -> None:
             "project_id": "project-1",
             "description": "调用 Dify 工作流判断客诉风险",
             "variables": ["input", "output"],
+            "input_variables": ["input", "output"],
+            "output_variables": ["quality_score", "risk_score"],
             "config": {
                 "endpointUrl": "https://dify.example.com/v1/workflows/run",
                 "authType": "BEARER",

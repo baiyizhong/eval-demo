@@ -4153,10 +4153,13 @@ class LangfuseDatabaseReader:
                             "id": item_id,
                             "project_id": project_id,
                             "dataset_id": payload["datasetId"],
-                            "input": Jsonb(_decode_jsonish(trace.get("input"))),
-                            "expected_output": Jsonb(
-                                _decode_jsonish(trace.get("output"))
+                            "input": Jsonb(
+                                {
+                                    "input": _decode_jsonish(trace.get("input")),
+                                    "output": _decode_jsonish(trace.get("output")),
+                                }
                             ),
+                            "expected_output": Jsonb({}),
                             "metadata": Jsonb(_trace_dataset_metadata(trace)),
                             "source_trace_id": trace.get("traceId") or "",
                         },
@@ -4241,31 +4244,53 @@ class LangfuseDatabaseReader:
 
     async def _list_pa_evaluators_for_user(self, user_id: str) -> list[dict[str, Any]]:
         try:
-            rows = await self._fetch_all(
-                f"""
-                SELECT
-                    pe.id,
-                    pe.name,
-                    pe.type,
-                    pe.provider,
-                    pe.version,
-                    pe.description,
-                    pe.variables,
-                    pe.project_id,
-                    p.name AS project_name,
-                    pe.update_date AS updated_at
-                FROM pa_evaluators pe
-                JOIN projects p ON p.id = pe.project_id
-                WHERE pe.status = 'ACTIVE'
-                  AND {PROJECT_ACCESS_EXISTS_SQL}
-                ORDER BY pe.update_date DESC, pe.id DESC
-                """,
-                {"user_id": user_id},
+            rows = await self._fetch_pa_evaluators_for_user(
+                user_id,
+                include_output_variables=True,
+            )
+        except psycopg.errors.UndefinedColumn:
+            rows = await self._fetch_pa_evaluators_for_user(
+                user_id,
+                include_output_variables=False,
             )
         except psycopg.errors.UndefinedTable:
             return []
 
         return [self._to_pa_evaluator_payload(row) for row in rows]
+
+    async def _fetch_pa_evaluators_for_user(
+        self,
+        user_id: str,
+        *,
+        include_output_variables: bool,
+    ) -> list[dict[str, Any]]:
+        output_variables_select = (
+            "COALESCE(pe.output_variables, '[]'::jsonb) AS output_variables,"
+            if include_output_variables
+            else ""
+        )
+        return await self._fetch_all(
+            f"""
+            SELECT
+                pe.id,
+                pe.name,
+                pe.type,
+                pe.provider,
+                pe.version,
+                pe.description,
+                pe.variables,
+                {output_variables_select}
+                pe.project_id,
+                p.name AS project_name,
+                pe.update_date AS updated_at
+            FROM pa_evaluators pe
+            JOIN projects p ON p.id = pe.project_id
+            WHERE pe.status = 'ACTIVE'
+              AND {PROJECT_ACCESS_EXISTS_SQL}
+            ORDER BY pe.update_date DESC, pe.id DESC
+            """,
+            {"user_id": user_id},
+        )
 
     async def get_evaluator_for_user(
         self,
@@ -4295,28 +4320,16 @@ class LangfuseDatabaseReader:
         user_id: str,
     ) -> dict[str, Any] | None:
         try:
-            rows = await self._fetch_all(
-                f"""
-                SELECT
-                    pe.id,
-                    pe.name,
-                    pe.type,
-                    pe.provider,
-                    pe.version,
-                    pe.description,
-                    pe.variables,
-                    pe.config,
-                    pe.project_id,
-                    p.name AS project_name,
-                    pe.update_date AS updated_at
-                FROM pa_evaluators pe
-                JOIN projects p ON p.id = pe.project_id
-                WHERE pe.id = %(evaluator_id)s
-                  AND pe.status = 'ACTIVE'
-                  AND {PROJECT_ACCESS_EXISTS_SQL}
-                LIMIT 1
-                """,
-                {"evaluator_id": evaluator_id, "user_id": user_id},
+            rows = await self._fetch_pa_evaluator_for_user(
+                evaluator_id,
+                user_id,
+                include_output_variables=True,
+            )
+        except psycopg.errors.UndefinedColumn:
+            rows = await self._fetch_pa_evaluator_for_user(
+                evaluator_id,
+                user_id,
+                include_output_variables=False,
             )
         except psycopg.errors.UndefinedTable:
             return None
@@ -4329,6 +4342,43 @@ class LangfuseDatabaseReader:
             **payload,
             "config": self._redact_evaluator_config(rows[0].get("config") or {}),
         }
+
+    async def _fetch_pa_evaluator_for_user(
+        self,
+        evaluator_id: str,
+        user_id: str,
+        *,
+        include_output_variables: bool,
+    ) -> list[dict[str, Any]]:
+        output_variables_select = (
+            "COALESCE(pe.output_variables, '[]'::jsonb) AS output_variables,"
+            if include_output_variables
+            else ""
+        )
+        return await self._fetch_all(
+            f"""
+            SELECT
+                pe.id,
+                pe.name,
+                pe.type,
+                pe.provider,
+                pe.version,
+                pe.description,
+                pe.variables,
+                {output_variables_select}
+                pe.config,
+                pe.project_id,
+                p.name AS project_name,
+                pe.update_date AS updated_at
+            FROM pa_evaluators pe
+            JOIN projects p ON p.id = pe.project_id
+            WHERE pe.id = %(evaluator_id)s
+              AND pe.status = 'ACTIVE'
+              AND {PROJECT_ACCESS_EXISTS_SQL}
+            LIMIT 1
+            """,
+            {"evaluator_id": evaluator_id, "user_id": user_id},
+        )
 
     async def _get_langfuse_evaluator_for_user(
         self,
@@ -4536,6 +4586,7 @@ class LangfuseDatabaseReader:
                         version,
                         description,
                         variables,
+                        output_variables,
                         config,
                         status,
                         create_by,
@@ -4552,6 +4603,7 @@ class LangfuseDatabaseReader:
                         1,
                         %(description)s,
                         %(variables)s,
+                        %(output_variables)s,
                         %(config)s,
                         'ACTIVE',
                         %(create_by)s,
@@ -4567,6 +4619,7 @@ class LangfuseDatabaseReader:
                         version,
                         description,
                         variables,
+                        output_variables,
                         project_id,
                         update_date AS updated_at
                     """,
@@ -4578,6 +4631,9 @@ class LangfuseDatabaseReader:
                         "provider": payload["provider"],
                         "description": payload.get("description") or "",
                         "variables": Jsonb(payload.get("variables") or []),
+                        "output_variables": Jsonb(
+                            payload.get("output_variables") or []
+                        ),
                         "config": Jsonb(payload.get("config") or {}),
                         "create_by": user_email,
                         "update_by": user_email,
@@ -6541,6 +6597,8 @@ class LangfuseDatabaseReader:
             "type": evaluator_type,
             "version": f"v{row['version']}",
             "variables": row.get("vars") or [],
+            "inputVariables": row.get("vars") or [],
+            "outputVariables": row.get("output_variables") or [],
             "description": description,
             "provider": "LANGFUSE",
             "projectId": row.get("project_id"),
@@ -6557,6 +6615,8 @@ class LangfuseDatabaseReader:
             "type": row["type"],
             "version": f"v{row['version']}",
             "variables": row.get("variables") or [],
+            "inputVariables": row.get("variables") or [],
+            "outputVariables": row.get("output_variables") or [],
             "description": row.get("description") or "",
             "provider": row["provider"],
             "projectId": row.get("project_id"),

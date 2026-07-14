@@ -114,6 +114,11 @@ test('batch annotation workspace focuses on pending item scoring layout', () => 
   assert.match(pageSource, /minmax\(320px,var\(--annotation-score-width\)\)/)
   assert.match(pageSource, /HoverCard/)
   assert.match(pageSource, /批量保存/)
+  assert.match(pageSource, /本次批量保存指标/)
+  assert.match(pageSource, /batchScoreConfigId/)
+  assert.match(pageSource, /effectiveBatchScoreConfigId/)
+  assert.match(pageSource, /input\.scores\.filter/)
+  assert.match(pageSource, /score\.configId === effectiveBatchScoreConfigId/)
   assert.match(pageSource, /将批量保存已选中的/)
   assert.doesNotMatch(pageSource, /应用到选中项/)
   assert.doesNotMatch(pageSource, /将应用到已选中的/)
@@ -156,6 +161,17 @@ test('batch annotation hides locally completed items only in pending view', () =
   assert.doesNotMatch(
     annotationBatchSource,
     /\(itemDatas \?\? \[\]\)\.filter\(\(item\) => !completedItemIds\.includes\(item\.id\)\)/
+  )
+})
+
+test('batch annotation applies selection when exactly one item is checked', () => {
+  assert.match(
+    annotationBatchSource,
+    /const isBatchScoring = selectedItemsOnPage\.length > 0/
+  )
+  assert.doesNotMatch(
+    annotationBatchSource,
+    /const isBatchScoring = selectedItemsOnPage\.length > 1/
   )
 })
 

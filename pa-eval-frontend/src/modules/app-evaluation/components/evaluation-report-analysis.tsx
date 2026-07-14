@@ -1,3 +1,6 @@
+import { Search } from 'lucide-react'
+import { Link } from 'react-router'
+import { Button } from '@/components/ui/button'
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card'
 import type { EvaluationReportDetailRecord } from '../types'
 
@@ -59,6 +62,14 @@ export function EvaluationReportAnalysis({
                 </span>
               </div>
             ))}
+            <div className='border-border mt-2 flex justify-end border-t pt-3'>
+              <Button variant='outline' size='sm' asChild>
+                <Link to={getTraceScoreQueueLink(report)}>
+                  <Search data-icon='inline-start' />
+                  查看详情
+                </Link>
+              </Button>
+            </div>
           </CardContent>
         </Card>
       ) : null}
@@ -91,6 +102,15 @@ export function EvaluationReportAnalysis({
       ) : null}
     </section>
   )
+}
+
+function getTraceScoreQueueLink(report: EvaluationReportDetailRecord) {
+  const projectId = encodeURIComponent(report.projectId)
+  const params = new URLSearchParams()
+  params.set('scoreQueueId', report.sourceTaskId)
+  params.append('createdAtRange', '1970-01-01 00:00:00')
+  params.append('createdAtRange', '2999-12-31 23:59:59')
+  return `/projects/${projectId}/observability/traces/logs?${params.toString()}`
 }
 
 function ListCard({ title, items }: { title: string; items: string[] }) {

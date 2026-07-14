@@ -19,6 +19,12 @@ test('createProjectAutoEvaluationTask sends task variable mapping', async () => 
     name: '任务',
     description: '',
     scoreName: 'quality',
+    scoreMapping: {
+      quality_score: {
+        scoreConfigId: 'score-config-quality',
+        scoreConfigName: '回答质量',
+      },
+    },
     evaluatorId: 'eval-1',
     sampleRate: 100,
     dataSource: { type: 'DATASET', datasetId: 'dataset-1' },
@@ -32,6 +38,12 @@ test('createProjectAutoEvaluationTask sends task variable mapping', async () => 
   assert.deepEqual(captured.requestBody?.variableMapping, {
     input: '{{ sample.input }}',
     output: '{{ sample.output }}',
+  })
+  assert.deepEqual(captured.requestBody?.scoreMapping, {
+    quality_score: {
+      scoreConfigId: 'score-config-quality',
+      scoreConfigName: '回答质量',
+    },
   })
 })
 
@@ -48,6 +60,7 @@ test('createProjectAutoEvaluationTask sends selected report template', async () 
     name: '任务',
     description: '',
     scoreName: 'quality',
+    scoreMapping: {},
     evaluatorId: 'eval-1',
     sampleRate: 100,
     dataSource: { type: 'DATASET', datasetId: 'dataset-1' },

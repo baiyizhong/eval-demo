@@ -26,6 +26,8 @@ class CreateEvaluatorPayload(BaseModel):
     project_id: str = Field(alias="projectId", min_length=1)
     description: str = Field(default="", max_length=1000)
     variables: list[str] = Field(default_factory=list)
+    input_variables: list[str] = Field(default_factory=list, alias="inputVariables")
+    output_variables: list[str] = Field(default_factory=list, alias="outputVariables")
     prompt: str | None = None
     model_config_payload: ModelConfigPayload | None = Field(
         default=None,
@@ -54,6 +56,11 @@ class CreateEvaluatorPayload(BaseModel):
 
     @model_validator(mode="after")
     def validate_by_type(self) -> "CreateEvaluatorPayload":
+        if not self.input_variables:
+            self.input_variables = self.variables
+        if not self.variables:
+            self.variables = self.input_variables
+
         if self.type in {"LLM_AS_JUDGE", "CODE"} and self.provider != "LANGFUSE":
             raise ValueError("Langfuse 原生评估器 provider 必须为 LANGFUSE")
 
@@ -91,6 +98,8 @@ class CreateEvaluatorPayload(BaseModel):
             "project_id": self.project_id,
             "description": self.description,
             "variables": self.variables,
+            "input_variables": self.input_variables,
+            "output_variables": self.output_variables,
         }
 
         if self.type in {"LLM_AS_JUDGE", "CODE"}:

@@ -33,8 +33,14 @@ test('data table passes cross-page selection state to bulk actions', () => {
   assert.match(dataTableSource, /bulkActions\(table, selectionState\)/)
 })
 
-test('trace bulk actions fetch all filtered traces with backend max page size when cross-page selection is active', () => {
+test('trace bulk actions fetch all filtered traces only after explicit cross-page selection', () => {
   assert.match(traceBulkActionsSource, /TRACE_SELECT_ALL_PAGE_SIZE = 200/)
-  assert.match(traceBulkActionsSource, /selection\.isAllMatchingRowsSelected/)
+  assert.match(traceBulkActionsSource, /shouldUseAllMatchingRows/)
+  assert.match(traceBulkActionsSource, /selection\?\.isAllMatchingRowsSelected/)
+  assert.doesNotMatch(traceBulkActionsSource, /table\.getIsAllPageRowsSelected\(\)/)
+  assert.doesNotMatch(
+    traceBulkActionsSource,
+    /selection\.totalRowCount > selection\.selectedPageRowCount/
+  )
   assert.match(traceBulkActionsSource, /pageSize: TRACE_SELECT_ALL_PAGE_SIZE/)
 })

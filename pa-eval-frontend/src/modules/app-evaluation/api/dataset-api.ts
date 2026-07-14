@@ -283,7 +283,7 @@ export async function listProjectAutoEvaluationDatasets(
         path: { projectId: project.id },
         query: {
           page: 1,
-          pageSize: 50,
+          pageSize: 200,
           ...(normalizedKeyword ? { keyword: normalizedKeyword } : {}),
         },
       })
@@ -300,8 +300,19 @@ export async function listProjectAutoEvaluationDatasets(
     })
   )
 
-  return datasetResults.flatMap((result) =>
+  const datasets = datasetResults.flatMap((result) =>
     result.status === 'fulfilled' ? result.value : []
+  )
+
+  if (!normalizedKeyword) {
+    return datasets
+  }
+
+  const lowerKeyword = normalizedKeyword.toLowerCase()
+  return datasets.filter((dataset) =>
+    [dataset.id, dataset.name, dataset.description, dataset.projectName].some(
+      (value) => String(value ?? '').toLowerCase().includes(lowerKeyword)
+    )
   )
 }
 

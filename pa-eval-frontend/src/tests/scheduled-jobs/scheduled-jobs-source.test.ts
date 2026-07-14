@@ -176,7 +176,7 @@ test('scheduled job drawer implements required creation flow rules', () => {
   assert.match(drawerSource, /schema=/)
   assert.match(drawerSource, /基础信息/)
   assert.match(drawerSource, /自动评测配置/)
-  assert.match(drawerSource, /Score Name/)
+  assert.match(drawerSource, /评分指标绑定/)
   assert.match(drawerSource, /周期性执行/)
   assert.match(drawerSource, /高级 cron/)
   assert.match(drawerSource, /TRACE_FILTER/)
@@ -204,7 +204,13 @@ test('scheduled job drawer implements required creation flow rules', () => {
 })
 
 test('scheduled job drawer uses environments for trace estimate and guards zero samples', () => {
+  assert.match(
+    drawerSource,
+    /const environmentOptions = \['default', 'production', 'staging', 'development'\]/
+  )
   assert.match(drawerSource, /traceEnvironments/)
+  assert.match(drawerSource, /traceEnvironments:[\s\S]*\['default'\]/)
+  assert.match(drawerSource, /form\.traceEnvironments\[0\] \?\? 'default'/)
   assert.match(drawerSource, /environments:\s*values\.traceEnvironments/)
   assert.match(drawerSource, /traceEnvironments:\s*form\.traceEnvironments/)
   assert.match(drawerSource, /form\.traceEnvironments/)
@@ -217,13 +223,13 @@ test('scheduled job drawer uses grouped basic cards and stacked auto evaluation 
   assert.match(drawerSource, /任务类型/)
   assert.match(drawerSource, /任务名称/)
   assert.match(drawerSource, /任务描述/)
-  assert.match(drawerSource, /Score Name/)
+  assert.match(drawerSource, /评分指标绑定/)
   assert.match(drawerSource, /执行频率/)
   assert.match(drawerSource, /执行时间/)
   assert.match(drawerSource, /<Field label='任务类型'>[\s\S]*?<BasicCard>/)
   assert.match(
     drawerSource,
-    /md:grid-cols-2[\s\S]*?<Field label='任务名称'>[\s\S]*?<Field label='Score Name'>/
+    /md:grid-cols-2[\s\S]*?<Field label='任务名称'>[\s\S]*?<Field label='执行频率'>/
   )
   assert.doesNotMatch(drawerSource, /任务信息/)
   assert.doesNotMatch(drawerSource, /定义定时任务的类型、名称和用途说明。/)

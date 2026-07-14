@@ -10,11 +10,13 @@ from app.scheduled_jobs import (
     ScheduledJobTraceWindowPayload,
     _build_due_job_claim_sql,
     _build_fire_key,
+    _build_auto_evaluation_payload_from_job,
     _build_job_triggered_auto_evaluation_name,
     _compute_next_run_at,
     _compute_trace_window,
     _normalize_auto_evaluation_data_source,
     _normalize_variable_mapping,
+    _scheduled_job_insert_params,
 )
 
 
@@ -191,6 +193,87 @@ def test_job_triggered_auto_evaluation_name_uses_required_format() -> None:
     )
 
     assert name == "【JOB触发】每日客服质量评测-202607090900"
+
+
+def test_scheduled_job_insert_params_persists_score_mapping() -> None:
+    payload = scheduled_jobs.CreateScheduledJobPayload.model_validate(
+        {
+            "name": "每日质量评测",
+            "description": "",
+            "scoreName": "quality",
+            "scoreMapping": {
+                "quality_score": {
+                    "scoreConfigId": "score-config-quality",
+                    "scoreConfigName": "回答质量",
+                }
+            },
+            "runMode": "ONCE",
+            "frequency": {"kind": "ONCE", "runAt": "2026-07-10T10:00:00+08:00"},
+            "evaluatorId": "evaluator-1",
+            "dataSource": {"type": "TRACE_FILTER"},
+        }
+    )
+
+    params = _scheduled_job_insert_params(
+        job_id="pajob-1",
+        project_id="project-1",
+        payload=payload,
+        evaluator={
+            "id": "evaluator-1",
+            "name": "Dify 评估器",
+            "type": "WORKFLOW",
+            "provider": "DIFY",
+            "version": 1,
+            "variables": ["input"],
+            "output_variables": ["quality_score"],
+        },
+        report_template_snapshot={"id": "default"},
+        next_run_at=None,
+        user=scheduled_jobs.CurrentUserContext(
+            user_id="user-1",
+            email="owner@example.com",
+        ),
+        now=datetime(2026, 7, 9, tzinfo=timezone.utc),
+    )
+
+    assert params["score_mapping"].obj == {
+        "quality_score": {
+            "scoreConfigId": "score-config-quality",
+            "scoreConfigName": "回答质量",
+        }
+    }
+    assert params["evaluator_snapshot"].obj["outputVariables"] == ["quality_score"]
+
+
+def test_build_auto_evaluation_payload_from_job_carries_score_mapping() -> None:
+    payload = _build_auto_evaluation_payload_from_job(
+        {
+            "description": "",
+            "score_name": "quality",
+            "score_mapping": {
+                "quality_score": {
+                    "scoreConfigId": "score-config-quality",
+                    "scoreConfigName": "回答质量",
+                }
+            },
+            "timezone": "Asia/Shanghai",
+            "evaluator_id": "evaluator-1",
+            "sample_rate": 100,
+            "variable_mapping": {},
+            "data_source": {"type": "TRACE_FILTER"},
+            "report_template_id": "default",
+            "report_template_snapshot": {"id": "default"},
+        },
+        "【JOB触发】每日质量评测-202607090900",
+        datetime(2026, 7, 9, 1, 0, tzinfo=timezone.utc),
+    )
+
+    assert payload.score_mapping == {
+        "quality_score": {
+            "scoreConfigId": "score-config-quality",
+            "scoreConfigName": "回答质量",
+        }
+    }
 
 
 def test_due_job_claim_sql_uses_postgres_skip_locked_and_lease() -> None:

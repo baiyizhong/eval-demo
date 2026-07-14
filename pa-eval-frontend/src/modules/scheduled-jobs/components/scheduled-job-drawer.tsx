@@ -6,6 +6,8 @@ import { toast } from 'sonner'
 import { confirm } from '@/lib/confirm'
 import { cn } from '@/lib/utils'
 import { useAPI } from '@/hooks/use-api'
+import { listProjectScoreConfigs } from '@/modules/app-evaluation/api/annotation-api'
+import type { ScoreConfigRecord } from '@/modules/app-evaluation/types'
 import { Alert, AlertDescription } from '@/components/ui/alert'
 import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
@@ -79,6 +81,7 @@ type ScheduledJobForm = {
   name: string
   description: string
   scoreName: string
+  scoreMapping: NonNullable<ScheduledJobTask['scoreMapping']>
   frequency: FrequencyForm
   evaluatorId: string
   variableMapping: Record<string, string>
@@ -113,7 +116,7 @@ const traceQuickTimeRangeOptions = [
   { value: '3d', label: '近 3 天' },
   { value: '7d', label: '近 7 天' },
 ]
-const environmentOptions = ['production', 'staging', 'development']
+const environmentOptions = ['default', 'production', 'staging', 'development']
 const defaultSampleMappingByVariable: Record<string, string> = {
   input: 'sample.input',
   output: 'sample.output',
@@ -157,6 +160,35 @@ function createDefaultVariableMapping(
       toMappingTemplate(findDefaultMappingField(variable, mappingFields)),
     ])
   )
+}
+
+function getEvaluatorOutputVariables(evaluator: ScheduledJobEvaluator) {
+  return evaluator.outputVariables?.length ? evaluator.outputVariables : ['score']
+}
+
+function createDefaultScoreMapping(
+  evaluator: ScheduledJobEvaluator,
+  scoreConfigs: ScoreConfigRecord[]
+) {
+  return Object.fromEntries(
+    getEvaluatorOutputVariables(evaluator).map((variable, index) => {
+      const scoreConfig = scoreConfigs[index] ?? scoreConfigs[0]
+      return [
+        variable,
+        {
+          scoreConfigId: scoreConfig?.id ?? '',
+          scoreConfigName: scoreConfig?.name ?? '',
+        },
+      ]
+    })
+  )
+}
+
+function getPrimaryScoreName(
+  scoreMapping: NonNullable<ScheduledJobTask['scoreMapping']>
+) {
+  return Object.values(scoreMapping).find((item) => item.scoreConfigName)
+    ?.scoreConfigName ?? 'dify_score'
 }
 
 function findDefaultMappingField(
@@ -450,6 +482,9 @@ function getDefaultForm(
     name: task?.name ?? '',
     description: task?.description ?? '',
     scoreName: task?.scoreName ?? '',
+    scoreMapping:
+      task?.scoreMapping ??
+      createDefaultScoreMapping(defaultEvaluator, []),
     frequency: frequencyToForm(task?.frequency),
     evaluatorId: task?.evaluator.id ?? defaultEvaluator.id,
     variableMapping:
@@ -469,7 +504,7 @@ function getDefaultForm(
     traceEnvironments:
       task?.dataSource.type === 'TRACE_FILTER'
         ? task.dataSource.traceFilter.environments
-        : ['production'],
+        : ['default'],
     traceUserId:
       task?.dataSource.type === 'TRACE_FILTER'
         ? task.dataSource.traceFilter.userId
@@ -668,6 +703,12 @@ export function ScheduledJobDrawer({
   const reportTemplateOptions = reportTemplates?.length
     ? reportTemplates
     : scheduledJobMockReportTemplates
+  const scoreConfigsQuery = useQuery({
+    queryKey: ['scheduled-job-score-configs', $api, projectId],
+    queryFn: () => listProjectScoreConfigs($api, projectId),
+  })
+  const scoreConfigOptions =
+    scoreConfigsQuery.data?.filter((item) => !item.archived) ?? []
   const [step, setStep] = useState(0)
   const [form, setForm] = useState<ScheduledJobForm>(() =>
     getDefaultForm(projectId, task, {
@@ -780,11 +821,6 @@ export function ScheduledJobDrawer({
       return false
     }
 
-    if (!form.scoreName.trim()) {
-      toast.error('请输入 Score Name')
-      return false
-    }
-
     if (
       form.frequency.mode === 'ONCE' &&
       !isValidIsoDateTime(form.frequency.runAt)
@@ -849,6 +885,20 @@ export function ScheduledJobDrawer({
       evaluator.variables.some((variable) => !form.variableMapping[variable])
     ) {
       toast.error('请完成评估器变量映射')
+      return false
+    }
+
+    const outputVariables = getEvaluatorOutputVariables(evaluator)
+    if (!outputVariables.length) {
+      toast.error('请先为评估器定义输出变量')
+      return false
+    }
+    if (
+      outputVariables.some(
+        (variable) => !form.scoreMapping[variable]?.scoreConfigId
+      )
+    ) {
+      toast.error('请完成评估器输出变量与评分指标绑定')
       return false
     }
 
@@ -923,7 +973,8 @@ export function ScheduledJobDrawer({
       type: 'AUTO_EVALUATION',
       name: form.name.trim(),
       description: form.description.trim(),
-      scoreName: form.scoreName.trim(),
+      scoreName: form.scoreName.trim() || getPrimaryScoreName(form.scoreMapping),
+      scoreMapping: form.scoreMapping,
       runMode: form.frequency.mode,
       frequency: frequencyWithLabel,
       status: task?.status ?? 'NOT_STARTED',
@@ -997,6 +1048,7 @@ export function ScheduledJobDrawer({
             datasets={datasetOptions}
             mappingFields={mappingFieldOptions}
             reportTemplates={reportTemplateOptions}
+            scoreConfigs={scoreConfigOptions}
             updateForm={updateForm}
           />
         )}
@@ -1040,16 +1092,6 @@ function BasicStep({ form, updateForm, updateFrequency }: StepProps) {
               value={form.name}
               placeholder='输入任务名称'
               onChange={(event) => updateForm({ name: event.target.value })}
-            />
-          </Field>
-
-          <Field label='Score Name'>
-            <Input
-              value={form.scoreName}
-              placeholder='例如 customer_quality_score'
-              onChange={(event) =>
-                updateForm({ scoreName: event.target.value })
-              }
             />
           </Field>
 
@@ -1227,6 +1269,7 @@ type ConfigStepProps = {
   datasets: ScheduledJobDatasetOption[]
   mappingFields: ScheduledJobMappingFieldOption[]
   reportTemplates: ScheduledJobReportTemplateOption[]
+  scoreConfigs: ScoreConfigRecord[]
   updateForm: (patch: Partial<ScheduledJobForm>) => void
 }
 
@@ -1241,6 +1284,7 @@ function ConfigStep({
   datasets: datasetOptions,
   mappingFields,
   reportTemplates,
+  scoreConfigs: scoreConfigOptions,
   updateForm,
 }: ConfigStepProps) {
   const [evaluatorKeyword, setEvaluatorKeyword] = useState('')
@@ -1313,6 +1357,13 @@ function ConfigStep({
                         item,
                         mappingFields
                       ),
+                      scoreMapping: createDefaultScoreMapping(
+                        item,
+                        scoreConfigOptions
+                      ),
+                      scoreName: getPrimaryScoreName(
+                        createDefaultScoreMapping(item, scoreConfigOptions)
+                      ),
                     })
                   }
                 >
@@ -1323,6 +1374,9 @@ function ConfigStep({
                     </span>
                     <span className='text-muted-foreground text-xs'>
                       {item.provider} · {item.variables.length} 个变量
+                      {getEvaluatorOutputVariables(item).length
+                        ? ` · ${getEvaluatorOutputVariables(item).length} 个输出`
+                        : ''}
                     </span>
                   </span>
                 </button>
@@ -1385,6 +1439,55 @@ function ConfigStep({
                           {mappingFields.map((field) => (
                             <SelectItem key={field.value} value={field.value}>
                               {field.label}
+                            </SelectItem>
+                          ))}
+                        </SelectGroup>
+                      </SelectContent>
+                    </Select>
+                  </div>
+                ))}
+              </div>
+              <div className='flex items-center gap-2 pt-2'>
+                <h4 className='text-sm font-medium'>输出变量绑定</h4>
+                <Badge variant='secondary'>评分指标</Badge>
+              </div>
+              <div className='grid gap-2'>
+                {getEvaluatorOutputVariables(evaluator).map((variable) => (
+                  <div
+                    key={variable}
+                    className='grid gap-2 rounded-lg border p-3 text-sm sm:grid-cols-[minmax(120px,180px)_1fr] sm:items-center'
+                  >
+                    <span className='font-medium'>{variable}</span>
+                    <Select
+                      value={form.scoreMapping[variable]?.scoreConfigId ?? ''}
+                      onValueChange={(value) => {
+                        const scoreConfig = scoreConfigOptions.find(
+                          (item) => item.id === value
+                        )
+                        const nextScoreMapping = {
+                          ...form.scoreMapping,
+                          [variable]: {
+                            scoreConfigId: value,
+                            scoreConfigName: scoreConfig?.name ?? value,
+                          },
+                        }
+                        updateForm({
+                          scoreMapping: nextScoreMapping,
+                          scoreName: getPrimaryScoreName(nextScoreMapping),
+                        })
+                      }}
+                    >
+                      <SelectTrigger className='w-full'>
+                        <SelectValue placeholder='选择评分指标' />
+                      </SelectTrigger>
+                      <SelectContent>
+                        <SelectGroup>
+                          {scoreConfigOptions.map((scoreConfig) => (
+                            <SelectItem
+                              key={scoreConfig.id}
+                              value={scoreConfig.id}
+                            >
+                              {scoreConfig.name}
                             </SelectItem>
                           ))}
                         </SelectGroup>
@@ -1570,7 +1673,7 @@ function ConfigStep({
               <div className='grid gap-4 md:grid-cols-2'>
                 <Field label='环境'>
                   <Select
-                    value={form.traceEnvironments[0] ?? 'production'}
+                    value={form.traceEnvironments[0] ?? 'default'}
                     onValueChange={(value) =>
                       updateForm({ traceEnvironments: [value] })
                     }

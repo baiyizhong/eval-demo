@@ -238,6 +238,7 @@ export function ProjectAnnotationBatch() {
   )
   const [selectedItemIds, setSelectedItemIds] = useState<string[]>([])
   const [completedItemIds, setCompletedItemIds] = useState<string[]>([])
+  const [batchScoreConfigId, setBatchScoreConfigId] = useState('')
   const [scorePaneWidth, setScorePaneWidth] = useState(400)
   const splitContainerRef = useRef<HTMLDivElement>(null)
 
@@ -394,10 +395,12 @@ export function ProjectAnnotationBatch() {
     () => items.filter((item) => selectedItemIds.includes(item.id)),
     [items, selectedItemIds]
   )
-  const isBatchScoring = selectedItemsOnPage.length > 1
+  const isBatchScoring = selectedItemsOnPage.length > 0
   const selectedItem =
     items.find((item) => item.id === selectedItemId) ?? items[0] ?? null
   const queue = queueQuery.data ?? mockQueue
+  const effectiveBatchScoreConfigId =
+    batchScoreConfigId || queue.scoreConfigs[0]?.id || ''
   const assigneeOptions = useMemo(
     () =>
       createBatchAssigneeOptions({
@@ -437,6 +440,14 @@ export function ProjectAnnotationBatch() {
     submitMode: 'save' | 'saveNext'
   ) => {
     if (!selectedItem) return
+    const submittedInput =
+      isBatchScoring && effectiveBatchScoreConfigId
+        ? {
+            scores: input.scores.filter(
+              (score) => score.configId === effectiveBatchScoreConfigId
+            ),
+          }
+        : input
     let targetIds = isBatchScoring
       ? selectedItemsOnPage.map((item) => item.id)
       : [selectedItem.id]
@@ -450,7 +461,7 @@ export function ProjectAnnotationBatch() {
             status: ['PENDING'],
             itemIds: targetIds,
           },
-          scores: input.scores,
+          scores: submittedInput.scores,
           expectedPendingCount: targetIds.length,
           confirmLargeBatch: targetIds.length > 100,
         }
@@ -467,7 +478,7 @@ export function ProjectAnnotationBatch() {
         projectId,
         queueId,
         selectedItem.id,
-        input
+        submittedInput
       )
     }
     const targetSet = new Set(targetIds)
@@ -834,6 +845,26 @@ export function ProjectAnnotationBatch() {
                       : '保存后自动移出左侧列表'}
                   </span>
                 </div>
+                {isBatchScoring && queue.scoreConfigs.length ? (
+                  <div className='flex shrink-0 items-center gap-3 border-b px-3 py-2.5'>
+                    <Label className='shrink-0 text-xs'>本次批量保存指标</Label>
+                    <Select
+                      value={effectiveBatchScoreConfigId}
+                      onValueChange={setBatchScoreConfigId}
+                    >
+                      <SelectTrigger className='h-8 w-full max-w-xs'>
+                        <SelectValue placeholder='选择指标' />
+                      </SelectTrigger>
+                      <SelectContent>
+                        {queue.scoreConfigs.map((config) => (
+                          <SelectItem key={config.id} value={config.id}>
+                            {config.name}
+                          </SelectItem>
+                        ))}
+                      </SelectContent>
+                    </Select>
+                  </div>
+                ) : null}
                 <AnnotationScoreForm
                   item={selectedItem}
                   scoreConfigs={queue.scoreConfigs}

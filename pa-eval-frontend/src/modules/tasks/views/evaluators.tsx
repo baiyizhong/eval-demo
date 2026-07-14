@@ -116,7 +116,9 @@ const createEvaluatorSchema = z
     provider: z.enum(['LANGFUSE', 'DIFY', 'HIAGENT', 'N8N', 'OPENJUDGE']),
     projectId: z.string().min(1, '请选择所属项目'),
     description: z.string().min(1, '请输入评估器描述'),
-    variables: z.string().min(1, '请输入变量名，多个变量用逗号分隔'),
+    variables: z.string(),
+    inputVariables: z.string().min(1, '请输入输入变量，多个变量用逗号分隔'),
+    outputVariables: z.string(),
     prompt: z.string(),
     modelProvider: z.string(),
     model: z.string(),
@@ -378,6 +380,8 @@ export function TaskEvaluators({ navigation = 'tasks' }: TaskEvaluatorsProps) {
             projectId: '',
             description: '',
             variables: 'input, output',
+            inputVariables: 'input, output',
+            outputVariables: 'score, passed, reason',
             prompt: '',
             modelProvider: 'openai',
             model: 'gpt-4.1',
@@ -682,22 +686,44 @@ export function TaskEvaluators({ navigation = 'tasks' }: TaskEvaluatorsProps) {
                   <MappingFields control={form.control} />
                 </>
               ) : null}
-              <FormField
-                control={form.control}
-                name='variables'
-                render={({ field }) => (
-                  <FormItem>
-                    <FormLabel>变量</FormLabel>
-                    <FormControl>
-                      <Input
-                        placeholder='input, output, expected_output'
-                        {...field}
-                      />
-                    </FormControl>
-                    <FormMessage />
-                  </FormItem>
-                )}
-              />
+              <div className='grid gap-4 sm:grid-cols-2'>
+                <FormField
+                  control={form.control}
+                  name='inputVariables'
+                  render={({ field }) => (
+                    <FormItem>
+                      <FormLabel>输入变量</FormLabel>
+                      <FormControl>
+                        <Input
+                          placeholder='input, output, expected_output'
+                          {...field}
+                          onChange={(event) => {
+                            field.onChange(event)
+                            form.setValue('variables', event.target.value)
+                          }}
+                        />
+                      </FormControl>
+                      <FormMessage />
+                    </FormItem>
+                  )}
+                />
+                <FormField
+                  control={form.control}
+                  name='outputVariables'
+                  render={({ field }) => (
+                    <FormItem>
+                      <FormLabel>输出变量</FormLabel>
+                      <FormControl>
+                        <Input
+                          placeholder='quality_score, risk_score'
+                          {...field}
+                        />
+                      </FormControl>
+                      <FormMessage />
+                    </FormItem>
+                  )}
+                />
+              </div>
               <div className='bg-background sticky bottom-0 -mx-6 mt-2 flex justify-end gap-2 border-t px-6 py-4'>
                 <Button
                   type='button'
@@ -899,8 +925,11 @@ function EvaluatorDetailContent({
 }: {
   evaluator: TaskEvaluatorDetail
 }) {
-  const variables = evaluator.variables.length
+  const inputVariables = evaluator.variables.length
     ? evaluator.variables.join(', ')
+    : undefined
+  const outputVariables = evaluator.outputVariables?.length
+    ? evaluator.outputVariables.join(', ')
     : undefined
 
   return (
@@ -917,7 +946,8 @@ function EvaluatorDetailContent({
           { label: '版本', value: evaluator.version },
           { label: '所属项目', value: evaluator.projectName },
           { label: '使用次数', value: evaluator.usageCount },
-          { label: '变量', value: variables, span: 'full' },
+          { label: '输入变量', value: inputVariables, span: 'full' },
+          { label: '输出变量', value: outputVariables, span: 'full' },
           {
             label: '描述',
             value: evaluator.description,

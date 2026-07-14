@@ -109,6 +109,7 @@ class CreateScheduledJobPayload(BaseModel):
     name: str = Field(min_length=1, max_length=120)
     description: str = Field(default="", max_length=1000)
     score_name: str = Field(alias="scoreName", min_length=1)
+    score_mapping: dict[str, Any] = Field(default_factory=dict, alias="scoreMapping")
     run_mode: ScheduledJobRunMode = Field(alias="runMode")
     frequency: ScheduledJobFrequencyPayload
     timezone_name: str = Field(default="Asia/Shanghai", alias="timezone")
@@ -321,7 +322,7 @@ async def create_scheduled_job(
             await cursor.execute(
                 """
                 INSERT INTO pa_scheduled_jobs (
-                    id, project_id, task_type, name, description, score_name,
+                    id, project_id, task_type, name, description, score_name, score_mapping,
                     run_mode, frequency, timezone, status, scheduler_enabled,
                     next_run_at, evaluator_id, evaluator_snapshot,
                     variable_mapping, data_source, sample_rate, report_template_id,
@@ -330,7 +331,7 @@ async def create_scheduled_job(
                 )
                 VALUES (
                     %(id)s, %(project_id)s, 'AUTO_EVALUATION', %(name)s, %(description)s,
-                    %(score_name)s, %(run_mode)s, %(frequency)s, %(timezone)s,
+                    %(score_name)s, %(score_mapping)s, %(run_mode)s, %(frequency)s, %(timezone)s,
                     'NOT_STARTED', %(scheduler_enabled)s, %(next_run_at)s,
                     %(evaluator_id)s, %(evaluator_snapshot)s, %(variable_mapping)s,
                     %(data_source)s, %(sample_rate)s, %(report_template_id)s,
@@ -389,6 +390,7 @@ async def update_scheduled_job(
                 SET name = %(name)s,
                     description = %(description)s,
                     score_name = %(score_name)s,
+                    score_mapping = %(score_mapping)s,
                     run_mode = %(run_mode)s,
                     frequency = %(frequency)s,
                     timezone = %(timezone)s,
@@ -737,6 +739,7 @@ async def _trigger_scheduled_job(
                     name=payload.name,
                     description=payload.description,
                     score_name=payload.score_name,
+                    score_mapping=payload.score_mapping,
                     evaluator=evaluator,
                     data_source=data_source,
                     sample_rate=payload.sample_rate,
@@ -1021,6 +1024,7 @@ def _scheduled_job_insert_params(
         "name": payload.name,
         "description": payload.description,
         "score_name": payload.score_name,
+        "score_mapping": Jsonb(payload.score_mapping),
         "run_mode": payload.run_mode,
         "frequency": Jsonb(payload.frequency.model_dump(by_alias=True)),
         "timezone": payload.timezone_name,
@@ -1035,6 +1039,9 @@ def _scheduled_job_insert_params(
                 "provider": evaluator["provider"],
                 "version": evaluator["version"],
                 "variables": evaluator.get("variables") or [],
+                "outputVariables": evaluator.get("output_variables")
+                or evaluator.get("outputVariables")
+                or [],
             }
         ),
         "variable_mapping": Jsonb(
@@ -1067,6 +1074,7 @@ def _build_auto_evaluation_payload_from_job(
         name=auto_task_name,
         description=job.get("description") or "",
         scoreName=job["score_name"],
+        scoreMapping=job.get("score_mapping") or {},
         evaluatorId=job["evaluator_id"],
         sampleRate=job["sample_rate"],
         variableMapping=job.get("variable_mapping") or {},
@@ -1419,6 +1427,7 @@ def _to_scheduled_job(row: dict[str, Any]) -> dict[str, Any]:
         "name": row.get("name") or "",
         "description": row.get("description") or "",
         "scoreName": row.get("score_name") or "",
+        "scoreMapping": row.get("score_mapping") or {},
         "runMode": row.get("run_mode") or "ONCE",
         "frequency": row.get("frequency") or {},
         "timezone": row.get("timezone") or "Asia/Shanghai",
@@ -1431,6 +1440,7 @@ def _to_scheduled_job(row: dict[str, Any]) -> dict[str, Any]:
             "provider": evaluator.get("provider") or "",
             "description": evaluator.get("description") or "",
             "variables": evaluator.get("variables") or [],
+            "outputVariables": evaluator.get("outputVariables") or [],
             "updatedAt": "",
         },
         "variableMapping": row.get("variable_mapping") or {},

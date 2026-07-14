@@ -9,8 +9,10 @@ import {
 
 test('listProjectAutoEvaluationDatasets merges datasets from visible active projects', async () => {
   const requestedProjectIds: string[] = []
+  const requestedQueries: unknown[] = []
   const api = {
-    async getProjects() {
+    async getProjects(input: unknown) {
+      requestedQueries.push(input)
       return {
         total: 2,
         datas: [
@@ -24,6 +26,7 @@ test('listProjectAutoEvaluationDatasets merges datasets from visible active proj
       query: { keyword?: string }
     }) {
       requestedProjectIds.push(input.path.projectId)
+      requestedQueries.push(input.query)
       if (input.path.projectId === 'project-empty') {
         return { total: 0, datas: [] }
       }
@@ -53,6 +56,11 @@ test('listProjectAutoEvaluationDatasets merges datasets from visible active proj
     'project-empty',
     'project-with-dataset',
   ])
+  assert.deepEqual(requestedQueries, [
+    { query: { page: 1, pageSize: 200, status: 'active' } },
+    { page: 1, pageSize: 200, keyword: 'baiyizhong' },
+    { page: 1, pageSize: 200, keyword: 'baiyizhong' },
+  ])
   assert.deepEqual(datasets, [
     {
       id: 'dataset-1',
@@ -64,6 +72,49 @@ test('listProjectAutoEvaluationDatasets merges datasets from visible active proj
       updatedAt: '2026-07-04T10:00:00.000Z',
     },
   ])
+})
+
+test('listProjectAutoEvaluationDatasets filters keyword locally across dataset fields', async () => {
+  const api = {
+    async getProjects() {
+      return {
+        total: 1,
+        datas: [{ id: 'project-1', name: '客服项目', status: 'active' }],
+      }
+    },
+    async getProjectDatasets() {
+      return {
+        total: 2,
+        datas: [
+          {
+            id: 'dataset-flowback',
+            name: '报告回流数据',
+            description: '',
+            itemCount: 3,
+            updatedAt: '2026-07-04T10:00:00.000Z',
+          },
+          {
+            id: 'dataset-other',
+            name: '生产数据',
+            description: '线上样本',
+            itemCount: 10,
+            updatedAt: '2026-07-04T10:00:00.000Z',
+          },
+        ],
+      }
+    },
+  }
+
+  const datasets = await listProjectAutoEvaluationDatasets(
+    api as never,
+    'project-1',
+    '回流'
+  )
+
+  assert.deepEqual(
+    datasets.map((dataset) => dataset.id),
+    ['dataset-flowback']
+  )
 })
 
 test('dataset mutations call project-scoped Langfuse dataset endpoints', async () => {

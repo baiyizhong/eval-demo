@@ -124,6 +124,9 @@ export type TraceListQuery = {
   metadataKey?: string
   metadataValue?: string
   metadataFilters?: TraceMetadataFilter[]
+  categoricalScoreFilters?: TraceCategoricalScoreFilter[]
+  numericScoreFilters?: TraceNumericScoreFilter[]
+  scoreQueueId?: string
 }
 
 export type TraceMetadataFilterOperator = 'equals' | 'contains' | 'exists'
@@ -131,6 +134,22 @@ export type TraceMetadataFilterOperator = 'equals' | 'contains' | 'exists'
 export type TraceMetadataFilter = {
   key: string
   operator: TraceMetadataFilterOperator
+  value?: string
+}
+
+export type TraceCategoricalScoreFilterOperator = 'equals' | 'contains' | 'exists'
+
+export type TraceCategoricalScoreFilter = {
+  name: string
+  operator: TraceCategoricalScoreFilterOperator
+  value?: string
+}
+
+export type TraceNumericScoreFilterOperator = 'eq' | 'gte' | 'lte' | 'gt' | 'lt'
+
+export type TraceNumericScoreFilter = {
+  name: string
+  operator: TraceNumericScoreFilterOperator
   value?: string
 }
 

@@ -1,3 +1,4 @@
+import { useEffect, useState } from 'react'
 import { Circle, CircleCheck, CircleHelp, CircleX, Plus, Trash2 } from 'lucide-react'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
@@ -18,6 +19,10 @@ import {
   TRACE_QUICK_TIME_RANGE_OPTIONS,
 } from '../trace-time-ranges'
 import type { TraceMetadataFilter } from '../types'
+import {
+  CategoricalScoreFilterEditor,
+  NumericScoreFilterEditor,
+} from './trace-score-filter-editors'
 
 export const traceLogUrlFilters: DataTableFilterBinding[] = [
   { fieldId: 'timeRange', type: 'string' },
@@ -30,9 +35,12 @@ export const traceLogUrlFilters: DataTableFilterBinding[] = [
   { fieldId: 'sessionId', type: 'string' },
   { fieldId: 'userId', type: 'string' },
   { fieldId: 'businessId', type: 'string' },
+  { fieldId: 'scoreQueueId', type: 'string' },
   { fieldId: 'metadataKey', type: 'string' },
   { fieldId: 'metadataValue', type: 'string' },
   { fieldId: 'metadataFilters', type: 'json' },
+  { fieldId: 'categoricalScoreFilters', type: 'json' },
+  { fieldId: 'numericScoreFilters', type: 'json' },
 ]
 
 export const traceLogToolbarFilters: DataTableToolbarFilter[] = [
@@ -107,6 +115,36 @@ export const traceLogFilterGroups: FilterGroup[] = [
         label: '用户标识',
         placeholder: '输入 userId',
       },
+      {
+        id: 'scoreQueueId',
+        type: 'input',
+        label: 'Score Queue ID',
+        placeholder: '输入 score queue_id',
+      },
+      {
+        id: 'categoricalScoreFilters',
+        type: 'custom',
+        label: 'Categorical Scores',
+        render: ({ value, setValue }) => (
+          <CategoricalScoreFilterEditor
+            value={value}
+            onChange={(nextValue) =>
+              setValue(nextValue, 'categoricalScoreFilters')
+            }
+          />
+        ),
+      },
+      {
+        id: 'numericScoreFilters',
+        type: 'custom',
+        label: 'Numeric Scores',
+        render: ({ value, setValue }) => (
+          <NumericScoreFilterEditor
+            value={value}
+            onChange={(nextValue) => setValue(nextValue, 'numericScoreFilters')}
+          />
+        ),
+      },
       // {
       //   id: 'latencyMin',
       //   type: 'input',
@@ -149,11 +187,9 @@ function MetadataFilterEditor({
       {filters.map((filter, index) => (
         <div key={index} className='flex flex-col gap-2 rounded-md border p-2'>
           <div className='grid grid-cols-[minmax(0,1fr)_auto] gap-2'>
-            <Input
+            <MetadataTextInput
               value={filter.key}
-              onChange={(event) =>
-                updateFilter(index, { key: event.target.value })
-              }
+              onValueChange={(value) => updateFilter(index, { key: value })}
               placeholder='key'
             />
             <Button
@@ -188,12 +224,10 @@ function MetadataFilterEditor({
                 <SelectItem value='exists'>存在</SelectItem>
               </SelectContent>
             </Select>
-            <Input
+            <MetadataTextInput
               value={filter.value ?? ''}
               disabled={filter.operator === 'exists'}
-              onChange={(event) =>
-                updateFilter(index, { value: event.target.value })
-              }
+              onValueChange={(value) => updateFilter(index, { value })}
               placeholder='value'
             />
           </div>
@@ -214,5 +248,48 @@ function MetadataFilterEditor({
         添加 Metadata 条件
       </Button>
     </div>
+  )
+}
+
+function MetadataTextInput({
+  value,
+  onValueChange,
+  disabled,
+  placeholder,
+}: {
+  value: string
+  onValueChange: (value: string) => void
+  disabled?: boolean
+  placeholder?: string
+}) {
+  const [draftValue, setDraftValue] = useState(value)
+  const [isComposing, setIsComposing] = useState(false)
+
+  useEffect(() => {
+    if (!isComposing) {
+      setDraftValue(value)
+    }
+  }, [isComposing, value])
+
+  return (
+    <Input
+      value={draftValue}
+      disabled={disabled}
+      placeholder={placeholder}
+      onCompositionStart={() => setIsComposing(true)}
+      onCompositionEnd={(event) => {
+        const nextValue = event.currentTarget.value
+        setIsComposing(false)
+        setDraftValue(nextValue)
+        onValueChange(nextValue)
+      }}
+      onChange={(event) => {
+        const nextValue = event.target.value
+        setDraftValue(nextValue)
+        if (!isComposing) {
+          onValueChange(nextValue)
+        }
+      }}
+    />
   )
 }

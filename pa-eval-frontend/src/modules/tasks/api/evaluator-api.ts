@@ -16,6 +16,8 @@ export type TaskEvaluatorRecord = {
   type: TaskEvaluatorType
   version: string
   variables: string[]
+  inputVariables?: string[]
+  outputVariables?: string[]
   description: string
   provider: TaskEvaluatorProvider
   projectId: string | null
@@ -40,6 +42,8 @@ export type CreateTaskEvaluatorFormValues = {
   projectId: string
   description: string
   variables: string
+  inputVariables: string
+  outputVariables: string
   prompt: string
   modelProvider: string
   model: string
@@ -108,13 +112,17 @@ export function deleteTaskEvaluator(
 export function buildCreateEvaluatorPayload(
   values: CreateTaskEvaluatorFormValues
 ) {
+  const inputVariables = splitVariables(values.inputVariables ?? values.variables)
+  const outputVariables = splitVariables(values.outputVariables ?? '')
   const base = {
     name: values.name.trim(),
     type: values.type,
     provider: values.provider,
     projectId: values.projectId,
     description: values.description.trim(),
-    variables: splitVariables(values.variables),
+    variables: inputVariables,
+    inputVariables,
+    outputVariables,
   }
 
   if (values.type === 'LLM_AS_JUDGE') {

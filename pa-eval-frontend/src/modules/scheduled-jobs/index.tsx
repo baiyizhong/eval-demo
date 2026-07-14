@@ -317,6 +317,9 @@ function toScheduledJobEvaluator(
     variables: Array.isArray(item.variables)
       ? item.variables.map((variable) => String(variable))
       : [],
+    outputVariables: Array.isArray(item.outputVariables)
+      ? item.outputVariables.map((variable) => String(variable))
+      : [],
     updatedAt: String(item.updatedAt ?? ''),
   }
 }
@@ -352,6 +355,7 @@ function toScheduledJobInput(task: ScheduledJobTask): ScheduledJobInput {
     name: task.name,
     description: task.description,
     scoreName: task.scoreName,
+    scoreMapping: task.scoreMapping ?? {},
     runMode: task.runMode,
     frequency: task.frequency,
     evaluatorId: task.evaluator.id,

@@ -34,6 +34,7 @@ export function createProjectAutoEvaluationTask(
     name: string
     description: string
     scoreName: string
+    scoreMapping: AutoEvaluationTaskFormInput['scoreMapping']
     evaluatorId: string
     sampleRate: number
     dataSource: AutoEvaluationTaskFormInput['dataSource']

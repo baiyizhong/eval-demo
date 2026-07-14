@@ -56,6 +56,7 @@ class CreateAutoEvaluationPayload(BaseModel):
     name: str = Field(min_length=1, max_length=120)
     description: str = Field(default="", max_length=1000)
     score_name: str = Field(alias="scoreName", default="dify_score", min_length=1)
+    score_mapping: dict[str, Any] = Field(default_factory=dict, alias="scoreMapping")
     evaluator_id: str = Field(alias="evaluatorId", min_length=1)
     input: str = "用户问：怎么申请退款？"
     output: str = "您可以在订单详情页提交退款申请。"
@@ -176,7 +177,15 @@ async def _get_pa_evaluator(
 ) -> dict[str, Any]:
     await cursor.execute(
         f"""
-        SELECT pe.id, pe.name, pe.type, pe.provider, pe.version, pe.variables, pe.config
+        SELECT
+            pe.id,
+            pe.name,
+            pe.type,
+            pe.provider,
+            pe.version,
+            pe.variables,
+            COALESCE(pe.output_variables, '[]'::jsonb) AS output_variables,
+            pe.config
         FROM pa_evaluators pe
         JOIN projects p ON p.id = pe.project_id
         WHERE pe.id = %(evaluator_id)s
@@ -778,6 +787,7 @@ async def _run_workflow_evaluator(
     evaluator: dict[str, Any],
     inputs: dict[str, str],
     settings: Settings,
+    score_mapping: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     config = evaluator.get("config") or {}
     endpoint_url = config.get("endpointUrl")
@@ -803,7 +813,11 @@ async def _run_workflow_evaluator(
     if response.status_code >= 400:
         raise BusinessError(4003, "工作流调用失败", 502)
 
-    return _parse_workflow_result(evaluator, response.json())
+    return _parse_workflow_result(
+        evaluator,
+        response.json(),
+        score_mapping or evaluator.get("score_mapping"),
+    )
 
 
 def _build_workflow_headers(evaluator: dict[str, Any]) -> dict[str, str]:
@@ -826,6 +840,7 @@ def _build_workflow_headers(evaluator: dict[str, Any]) -> dict[str, str]:
 def _parse_workflow_result(
     evaluator: dict[str, Any],
     body: dict[str, Any],
+    score_mapping: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     provider = evaluator.get("provider")
     if provider == "DIFY":
@@ -834,7 +849,12 @@ def _parse_workflow_result(
     else:
         outputs = body
 
-    score = float(outputs.get("score") or 0)
+    mapped_scores = _resolve_mapped_scores(evaluator, outputs, score_mapping)
+    primary_score = next(
+        (score for score in mapped_scores if isinstance(score.get("value"), int | float)),
+        None,
+    )
+    score = float(primary_score["value"]) if primary_score else float(outputs.get("score") or 0)
     passed_value = outputs.get("passed")
     if passed_value is None:
         passed = score >= 0.6
@@ -843,12 +863,70 @@ def _parse_workflow_result(
     else:
         passed = str(passed_value).lower() == "true"
     reason = str(outputs.get("reason") or "")
-    return {
+    result = {
         "raw": body,
         "score": score,
         "passed": passed,
         "reason": reason,
     }
+    if mapped_scores:
+        result["scores"] = mapped_scores
+    return result
+
+
+def _resolve_mapped_scores(
+    evaluator: dict[str, Any],
+    outputs: dict[str, Any],
+    score_mapping: dict[str, Any] | None,
+) -> list[dict[str, Any]]:
+    mapping = score_mapping if isinstance(score_mapping, dict) else {}
+    if not mapping:
+        return []
+
+    output_variables = evaluator.get("output_variables") or evaluator.get(
+        "outputVariables"
+    )
+    if not isinstance(output_variables, list) or not output_variables:
+        output_variables = list(mapping.keys())
+
+    scores: list[dict[str, Any]] = []
+    for output_variable in output_variables:
+        key = str(output_variable)
+        if key not in mapping:
+            continue
+        raw_mapping = mapping.get(key)
+        mapping_item = raw_mapping if isinstance(raw_mapping, dict) else {}
+        name = (
+            mapping_item.get("scoreConfigName")
+            or mapping_item.get("name")
+            or raw_mapping
+            or key
+        )
+        score_config_id = mapping_item.get("scoreConfigId") or mapping_item.get("id")
+        raw_value = outputs.get(key)
+        numeric_value = _to_float_or_none(raw_value)
+        score = {
+            "outputVariable": key,
+            "scoreConfigId": score_config_id,
+            "name": str(name),
+        }
+        if numeric_value is None:
+            score["stringValue"] = "" if raw_value is None else str(raw_value)
+            score["passed"] = True
+        else:
+            score["value"] = numeric_value
+            score["passed"] = numeric_value >= 0.6
+        scores.append(score)
+    return scores
+
+
+def _to_float_or_none(value: Any) -> float | None:
+    if value in (None, ""):
+        return 0.0
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        return None
 
 
 def _bucket_scores(results: list[dict[str, Any]]) -> list[dict[str, Any]]:
@@ -1385,6 +1463,7 @@ async def create_auto_evaluation(
                 name=payload.name,
                 description=payload.description,
                 score_name=payload.score_name,
+                score_mapping=payload.score_mapping,
                 evaluator=evaluator,
                 data_source=data_source,
                 sample_rate=payload.sample_rate,
@@ -1415,6 +1494,7 @@ async def create_auto_evaluation(
             "name": payload.name,
             "description": payload.description,
             "scoreName": payload.score_name,
+            "scoreMapping": payload.score_mapping,
             "status": "RUNNING",
             "evaluator": {
                 "id": evaluator["id"],
@@ -1600,6 +1680,7 @@ async def _insert_running_auto_evaluation(
     report_template_snapshot: dict[str, Any],
     create_by: str,
     now: datetime | None,
+    score_mapping: dict[str, Any] | None = None,
 ) -> None:
     current_time = now or datetime.now(timezone.utc)
     execution_stats = {
@@ -1618,7 +1699,7 @@ async def _insert_running_auto_evaluation(
     await cursor.execute(
         """
         INSERT INTO pa_auto_evaluation_tasks (
-            id, project_id, name, description, score_name, status,
+            id, project_id, name, description, score_name, score_mapping, status,
             data_source_type, dataset_id, trace_query, evaluator_ids, run_config, report_config,
             evaluator_id, evaluator_name, evaluator_type, evaluator_version,
             data_source, sample_rate, execution_stats, badcase_count,
@@ -1626,7 +1707,7 @@ async def _insert_running_auto_evaluation(
             create_by, last_run_at, create_date, update_by, update_date
         )
         VALUES (
-            %(id)s, %(project_id)s, %(name)s, %(description)s, %(score_name)s, %(status)s,
+            %(id)s, %(project_id)s, %(name)s, %(description)s, %(score_name)s, %(score_mapping)s, %(status)s,
             %(data_source_type)s, %(dataset_id)s, %(trace_query)s, %(evaluator_ids)s, %(run_config)s, %(report_config)s,
             %(evaluator_id)s, %(evaluator_name)s, %(evaluator_type)s, %(evaluator_version)s,
             %(data_source)s, %(sample_rate)s, %(execution_stats)s, 0,
@@ -1640,6 +1721,7 @@ async def _insert_running_auto_evaluation(
             "name": name,
             "description": description,
             "score_name": score_name,
+            "score_mapping": Jsonb(score_mapping or {}),
             "status": "RUNNING",
             "evaluator_id": evaluator["id"],
             "evaluator_name": evaluator["name"],
@@ -1908,7 +1990,11 @@ async def _run_auto_evaluation_background(
                 payload.variable_mapping,
             )
             try:
-                result = await _run_workflow_evaluator(evaluator, inputs, settings)
+                result = await _run_workflow_evaluator(
+                    {**evaluator, "score_mapping": payload.score_mapping},
+                    inputs,
+                    settings,
+                )
             except (BusinessError, httpx.HTTPError) as exc:
                 failed_count += 1
                 error_messages.append(_background_error_message(exc))
@@ -2121,6 +2207,15 @@ async def _complete_auto_evaluation_success(
     for index, result in enumerate(results):
         sample = result["sample"]
         result_type = report["itemResults"][index]
+        result_scores = result.get("scores")
+        if not isinstance(result_scores, list) or not result_scores:
+            result_scores = [
+                {
+                    "name": payload.score_name,
+                    "value": result["score"],
+                    "passed": result["passed"],
+                }
+            ]
         if write_report_items:
             await cursor.execute(
                 """
@@ -2151,21 +2246,13 @@ async def _complete_auto_evaluation_success(
                     "input": Jsonb(sample.get("input") or {}),
                     "output": Jsonb(result["raw"]),
                     "expected_output": Jsonb(sample.get("expected_output") or {}),
-                    "scores": Jsonb(
-                        [
-                            {
-                                "name": payload.score_name,
-                                "value": result["score"],
-                                "passed": result["passed"],
-                            }
-                        ]
-                    ),
+                    "scores": Jsonb(result_scores),
                     "reason": result["reason"],
                     "status": "COMPLETED",
                     "error_type": "",
                     "extra": Jsonb({"resultType": result_type}),
                     "source_id": sample["id"],
-                    "score_summary": f"{payload.score_name}: {result['score']:.2f}",
+                    "score_summary": _score_summary(result_scores),
                     "result_type": result_type,
                     "created_at": now,
                     "updated_at": now,
@@ -2284,17 +2371,36 @@ async def _sync_auto_evaluation_scores_to_langfuse(
     results: list[dict[str, Any]],
     langfuse_client: LangfuseAdminClient,
 ) -> None:
-    score_payloads = [
-        _auto_evaluation_score_api_payload(
-            project_id=project_id,
-            task_id=task_id,
-            run_id=run_id,
-            score_name=score_name,
-            evaluator_id=evaluator_id,
-            result=result,
-        )
-        for result in results
-    ]
+    score_payloads = []
+    for result in results:
+        result_scores = result.get("scores")
+        if isinstance(result_scores, list) and result_scores:
+            for score in result_scores:
+                if "value" not in score:
+                    continue
+                score_payloads.append(
+                    _auto_evaluation_score_api_payload(
+                        project_id=project_id,
+                        task_id=task_id,
+                        run_id=run_id,
+                        score_name=str(score.get("name") or score_name),
+                        evaluator_id=evaluator_id,
+                        result=result,
+                        score_value=float(score.get("value") or 0),
+                        score_passed=bool(score.get("passed")),
+                    )
+                )
+        else:
+            score_payloads.append(
+                _auto_evaluation_score_api_payload(
+                    project_id=project_id,
+                    task_id=task_id,
+                    run_id=run_id,
+                    score_name=score_name,
+                    evaluator_id=evaluator_id,
+                    result=result,
+                )
+            )
     score_payloads = [payload for payload in score_payloads if payload is not None]
     if not score_payloads:
         return
@@ -2343,6 +2449,8 @@ def _auto_evaluation_score_api_payload(
     score_name: str,
     evaluator_id: str,
     result: dict[str, Any],
+    score_value: float | None = None,
+    score_passed: bool | None = None,
 ) -> dict[str, Any] | None:
     sample = result.get("sample") or {}
     trace_id = sample.get("source_trace_id") or ""
@@ -2362,7 +2470,7 @@ def _auto_evaluation_score_api_payload(
             observation_id=observation_id,
         ),
         "name": score_name,
-        "value": result["score"],
+        "value": result["score"] if score_value is None else score_value,
         "dataType": "NUMERIC",
         "traceId": trace_id,
         "queueId": task_id,
@@ -2372,7 +2480,7 @@ def _auto_evaluation_score_api_payload(
             "paAutoEvaluationRunId": run_id,
             "paEvaluationSampleId": sample_id,
             "evaluatorId": evaluator_id,
-            "passed": result.get("passed"),
+            "passed": result.get("passed") if score_passed is None else score_passed,
         },
     }
     if observation_id:
@@ -2960,17 +3068,23 @@ async def list_evaluation_report_badcases(
             total = (await cursor.fetchone() or {}).get("total", 0)
             await cursor.execute(
                 """
-                SELECT *
-                FROM pa_evaluation_report_badcases
-                WHERE project_id = %(project_id)s
-                  AND report_id = %(report_id)s
+                SELECT
+                    b.*,
+                    ri.scores AS score_summary_scores
+                FROM pa_evaluation_report_badcases b
+                LEFT JOIN pa_evaluation_report_items ri
+                  ON ri.project_id = b.project_id
+                 AND ri.report_id = b.report_id
+                 AND ri.source_id = b.dataset_item_id
+                WHERE b.project_id = %(project_id)s
+                  AND b.report_id = %(report_id)s
                   AND (
                     %(keyword)s = ''
-                    OR trace_id ILIKE %(like)s
-                    OR observation_id ILIKE %(like)s
-                    OR comment ILIKE %(like)s
+                    OR b.trace_id ILIKE %(like)s
+                    OR b.observation_id ILIKE %(like)s
+                    OR b.comment ILIKE %(like)s
                   )
-                ORDER BY id DESC
+                ORDER BY b.id DESC
                 LIMIT %(limit)s OFFSET %(offset)s
                 """,
                 {
@@ -3441,13 +3555,18 @@ async def _list_report_flowback_sources(
                 b.dataset_item_id AS source_dataset_item_id,
                 b.trace_id AS source_trace_id,
                 b.observation_id AS source_observation_id,
-                di.input,
-                di.expected_output,
-                di.metadata,
+                COALESCE(t.input, o.input, di.input) AS input,
+                COALESCE(o.output, t.output) AS output,
+                CASE
+                    WHEN t.id IS NOT NULL OR o.id IS NOT NULL THEN NULL
+                    ELSE di.expected_output
+                END AS expected_output,
+                COALESCE(t.metadata, o.metadata, di.metadata) AS metadata,
                 b.score_value,
                 b.reason,
                 b.comment,
                 COALESCE(ri.score_summary, b.score_name || ': ' || b.score_value::text) AS score_summary,
+                TRUE AS prefer_trace_payload,
                 'badcase' AS result_type
             FROM pa_evaluation_report_badcases b
             LEFT JOIN dataset_items di
@@ -3459,6 +3578,13 @@ async def _list_report_flowback_sources(
               ON ri.project_id = b.project_id
              AND ri.report_id = b.report_id
              AND ri.source_id = b.dataset_item_id
+            LEFT JOIN traces t
+              ON t.project_id = b.project_id
+             AND t.id = b.trace_id
+            LEFT JOIN observations o
+              ON o.project_id = b.project_id
+             AND o.trace_id = b.trace_id
+             AND o.id = b.observation_id
             WHERE b.project_id = %(project_id)s
               AND b.report_id = %(report_id)s
             ORDER BY b.id ASC
@@ -3474,12 +3600,14 @@ async def _list_report_flowback_sources(
                 COALESCE(di.source_trace_id, '') AS source_trace_id,
                 COALESCE(di.source_observation_id, '') AS source_observation_id,
                 di.input,
+                ri.output,
                 di.expected_output,
                 di.metadata,
                 NULL::double precision AS score_value,
                 ri.score_summary AS reason,
                 '' AS comment,
                 ri.score_summary,
+                FALSE AS prefer_trace_payload,
                 ri.result_type
             FROM pa_evaluation_report_items ri
             LEFT JOIN dataset_items di
@@ -3683,6 +3811,19 @@ def _default_flowback_dataset_name(flowback_type: str) -> str:
 
 
 def _source_input(source: dict[str, Any]) -> Any:
+    if source.get("output") is not None:
+        raw_input = source.get("input")
+        if isinstance(raw_input, dict) and any(
+            key in raw_input for key in ("input", "output", "context")
+        ):
+            payload = dict(raw_input)
+            payload.setdefault("input", raw_input.get("input", raw_input))
+            payload["output"] = source["output"]
+            return payload
+        return {
+            "input": raw_input,
+            "output": source["output"],
+        }
     if source.get("input") is not None:
         return source["input"]
     return {
@@ -3694,6 +3835,8 @@ def _source_input(source: dict[str, Any]) -> Any:
 
 
 def _source_expected_output(source: dict[str, Any]) -> Any:
+    if source.get("prefer_trace_payload"):
+        return {}
     if source.get("expected_output") is not None:
         return source["expected_output"]
     return {
@@ -3883,10 +4026,35 @@ def _to_report_badcase(row: dict[str, Any]) -> dict[str, Any]:
         "scoreName": row["score_name"],
         "scoreValue": row["score_value"],
         "reason": row["reason"],
+        "scoreSummary": _score_summary_json(row.get("score_summary_scores")),
         "comment": row["comment"],
         "sourceType": row["source_type"],
         "flowbackStatus": row["flowback_status"],
     }
+
+
+def _score_summary_json(scores: Any) -> str:
+    if not isinstance(scores, list):
+        return "{}"
+
+    summary: dict[str, Any] = {}
+    for score in scores:
+        if not isinstance(score, dict):
+            continue
+        output_variable = str(score.get("outputVariable") or "").strip()
+        name = str(score.get("name") or output_variable or "score").strip()
+        normalized_name = name.lower()
+        if normalized_name in {"score", "reason"} or output_variable.lower() in {
+            "score",
+            "reason",
+        }:
+            continue
+        value = score.get("stringValue") or score.get("longStringValue")
+        if value in (None, ""):
+            value = score.get("value")
+        summary[name] = value
+
+    return json.dumps(summary, ensure_ascii=False)
 
 
 def _to_report_flowback(row: dict[str, Any]) -> dict[str, Any]:
@@ -3964,6 +4132,7 @@ def _to_task(row: dict[str, Any]) -> dict[str, Any]:
         "name": row["name"],
         "description": row["description"],
         "scoreName": row["score_name"],
+        "scoreMapping": row.get("score_mapping") or {},
         "status": row["status"],
         "evaluator": {
             "id": row["evaluator_id"],

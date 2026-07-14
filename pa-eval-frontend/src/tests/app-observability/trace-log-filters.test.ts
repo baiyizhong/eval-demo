@@ -29,3 +29,21 @@ test('trace log advanced filters keep only manual createdAtRange time control', 
   assert.doesNotMatch(source, /renderTraceTimeRangeFilter/)
   assert.doesNotMatch(source, /id:\s*'timeRange'/)
 })
+
+test('trace log advanced filters expose Langfuse score filters', () => {
+  assert.match(source, /id:\s*'scoreQueueId'/)
+  assert.match(source, /label:\s*'Score Queue ID'/)
+  assert.match(source, /id:\s*'categoricalScoreFilters'/)
+  assert.match(source, /label:\s*'Categorical Scores'/)
+  assert.match(source, /id:\s*'numericScoreFilters'/)
+  assert.match(source, /label:\s*'Numeric Scores'/)
+})
+
+test('trace log metadata filters use IME-safe text inputs', () => {
+  assert.match(source, /function MetadataTextInput/)
+  assert.match(source, /onCompositionStart=\{\(\) => setIsComposing\(true\)\}/)
+  assert.match(source, /onCompositionEnd=\{\(event\) =>/)
+  assert.match(source, /if \(!isComposing\)/)
+  assert.match(source, /<MetadataTextInput[\s\S]*value=\{filter\.key\}/)
+  assert.match(source, /<MetadataTextInput[\s\S]*value=\{filter\.value \?\? ''\}/)
+})

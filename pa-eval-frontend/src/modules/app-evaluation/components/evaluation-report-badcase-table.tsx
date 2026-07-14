@@ -3,6 +3,11 @@ import { useAPI } from '@/hooks/use-api'
 import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
 import {
+  Tooltip,
+  TooltipContent,
+  TooltipTrigger,
+} from '@/components/ui/tooltip'
+import {
   DataTable,
   DataTableColumnHeader,
 } from '@/components/common/data-table'
@@ -13,14 +18,20 @@ import type { EvaluationReportBadcaseRecord } from '../types'
 const columns: ColumnDef<EvaluationReportBadcaseRecord>[] = [
   { accessorKey: 'traceId', header: 'Trace ID' },
   { accessorKey: 'observationId', header: 'Observation ID' },
-  { accessorKey: 'scoreName', header: 'Score' },
   {
     accessorKey: 'scoreValue',
     header: ({ column }) => (
-      <DataTableColumnHeader column={column} title='分数' />
+      <DataTableColumnHeader column={column} title='score' />
     ),
   },
-  { accessorKey: 'reason', header: '原因' },
+  { accessorKey: 'reason', header: 'reason' },
+  {
+    accessorKey: 'scoreSummary',
+    header: '评分摘要',
+    cell: ({ row }) => (
+      <ScoreSummaryCell value={row.original.scoreSummary} />
+    ),
+  },
   { accessorKey: 'comment', header: '备注' },
   {
     accessorKey: 'flowbackStatus',
@@ -38,6 +49,31 @@ const columns: ColumnDef<EvaluationReportBadcaseRecord>[] = [
     ),
   },
 ]
+
+function ScoreSummaryCell({ value }: { value?: string }) {
+  const summary = value?.trim() || '{}'
+
+  return (
+    <Tooltip>
+      <TooltipTrigger asChild>
+        <span className='block max-w-80 truncate font-mono text-xs'>
+          {summary}
+        </span>
+      </TooltipTrigger>
+      <TooltipContent className='max-w-xl whitespace-pre-wrap break-words font-mono text-xs'>
+        {formatScoreSummary(summary)}
+      </TooltipContent>
+    </Tooltip>
+  )
+}
+
+function formatScoreSummary(value: string) {
+  try {
+    return JSON.stringify(JSON.parse(value), null, 2)
+  } catch {
+    return value
+  }
+}
 
 export function EvaluationReportBadcaseTable({
   projectId,

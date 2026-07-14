@@ -296,6 +296,38 @@ def test_lists_project_traces_passes_multiple_metadata_filters() -> None:
     assert body["data"]["datas"][0]["traceId"] == "trace-1"
 
 
+def test_lists_project_traces_passes_score_filters() -> None:
+    fake_db = FakeDatabaseReader()
+    fake_trace = FakeTraceReader()
+    override_readers(fake_db, fake_trace)
+
+    try:
+        response = TestClient(app).get(
+            "/api/projects/project-1/traces",
+            params={
+                "scoreQueueId": "queue-1",
+                "categoricalScoreFilters": (
+                    '[{"name":"category","operator":"equals","value":"passed"}]'
+                ),
+                "numericScoreFilters": (
+                    '[{"name":"quality","operator":"gte","value":"0.8"},'
+                    '{"name":"invalid","operator":"lte","value":"not-a-number"}]'
+                ),
+            },
+        )
+    finally:
+        clear_overrides()
+
+    assert response.status_code == 200
+    assert fake_trace.list_kwargs["score_queue_id"] == "queue-1"
+    assert fake_trace.list_kwargs["categorical_score_filters"] == [
+        {"name": "category", "operator": "equals", "value": "passed"},
+    ]
+    assert fake_trace.list_kwargs["numeric_score_filters"] == [
+        {"name": "quality", "operator": "gte", "value": 0.8},
+    ]
+
+
 def test_gets_project_trace_metrics_and_detail() -> None:
     fake_db = FakeDatabaseReader()
     fake_trace = FakeTraceReader()
@@ -532,6 +564,87 @@ def test_trace_row_exposes_langfuse_scores_and_summary() -> None:
 
     assert row["scores"][0]["name"] == "quality"
     assert row["scoreSummary"] == "quality: 0.9"
+
+
+@pytest.mark.anyio
+async def test_clickhouse_reader_filters_traces_by_score_values(monkeypatch) -> None:
+    reader = LangfuseClickHouseReader(Settings())
+
+    async def fake_fetch_trace_rows(*args, **kwargs):
+        return [
+            {
+                "traceId": "trace-pass",
+                "projectId": "project-1",
+                "environment": "default",
+                "status": "success",
+                "latency": 120,
+                "createdAt": "2026-07-05 01:36:59.275",
+                "userId": "user-1",
+                "metadata": {},
+                "tags": [],
+                "scores": [
+                    {
+                        "id": "score-1",
+                        "name": "quality",
+                        "value": 0.91,
+                        "stringValue": "",
+                        "queueId": "queue-1",
+                    },
+                    {
+                        "id": "score-2",
+                        "name": "category",
+                        "value": None,
+                        "stringValue": "passed",
+                        "queueId": "queue-1",
+                    },
+                ],
+            },
+            {
+                "traceId": "trace-fail",
+                "projectId": "project-1",
+                "environment": "default",
+                "status": "success",
+                "latency": 90,
+                "createdAt": "2026-07-05 01:37:59.275",
+                "userId": "user-1",
+                "metadata": {},
+                "tags": [],
+                "scores": [
+                    {
+                        "id": "score-3",
+                        "name": "quality",
+                        "value": 0.6,
+                        "stringValue": "",
+                        "queueId": "queue-2",
+                    },
+                    {
+                        "id": "score-4",
+                        "name": "category",
+                        "value": None,
+                        "stringValue": "failed",
+                    },
+                ],
+            },
+        ]
+
+    monkeypatch.setattr(reader, "_fetch_trace_rows", fake_fetch_trace_rows)
+
+    result = await reader.list_traces(
+        "project-1",
+        page=1,
+        page_size=10,
+        score_queue_id="queue-1",
+        categorical_score_filters=[
+            {"name": "category", "operator": "equals", "value": "passed"},
+        ],
+        numeric_score_filters=[
+            {"name": "quality", "operator": "gte", "value": 0.8},
+        ],
+        time_range=None,
+    )
+
+    assert result["total"] == 1
+    assert result["datas"][0]["traceId"] == "trace-pass"
 
 
 @pytest.mark.anyio

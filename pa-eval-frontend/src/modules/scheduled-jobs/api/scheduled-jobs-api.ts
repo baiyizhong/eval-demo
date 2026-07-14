@@ -22,6 +22,7 @@ export type ScheduledJobInput = Pick<
   | 'name'
   | 'description'
   | 'scoreName'
+  | 'scoreMapping'
   | 'runMode'
   | 'frequency'
   | 'dataSource'

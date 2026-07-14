@@ -89,6 +89,7 @@ export type ScheduledJobEvaluator = {
   provider: 'DIFY' | 'N8N'
   description: string
   variables: string[]
+  outputVariables?: string[]
   updatedAt: string
 }
 
@@ -126,6 +127,13 @@ export type ScheduledJobTask = {
   name: string
   description: string
   scoreName: string
+  scoreMapping?: Record<
+    string,
+    {
+      scoreConfigId: string
+      scoreConfigName: string
+    }
+  >
   runMode: ScheduledJobRunMode
   frequency: ScheduledJobFrequency
   status: ScheduledJobStatus

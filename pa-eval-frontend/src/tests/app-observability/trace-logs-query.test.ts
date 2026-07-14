@@ -113,3 +113,45 @@ test('trace logs query serializes multiple metadata filters', () => {
     { key: 'priority', operator: 'equals', value: 'high' },
   ])
 })
+
+test('trace logs query serializes score filters', () => {
+  const query = buildTraceListQuery(
+    {
+      ...baseState,
+      filters: {
+        categoricalScoreFilters: [
+          { name: 'category', operator: 'equals', value: 'passed' },
+          { name: 'reason', operator: 'contains', value: '准确' },
+        ],
+        numericScoreFilters: [
+          { name: 'quality', operator: 'gte', value: '0.8' },
+          { name: 'invalid', operator: 'lte', value: 'not-a-number' },
+        ],
+      },
+    },
+    'project-1'
+  )
+
+  assert.deepEqual(query.categoricalScoreFilters, [
+    { name: 'category', operator: 'equals', value: 'passed' },
+    { name: 'reason', operator: 'contains', value: '准确' },
+  ])
+  assert.deepEqual(query.numericScoreFilters, [
+    { name: 'quality', operator: 'gte', value: '0.8' },
+  ])
+})
+
+test('trace logs query serializes score queue id filter', () => {
+  const query = buildTraceListQuery(
+    {
+      ...baseState,
+      filters: {
+        scoreQueueId: 'queue-1',
+      },
+    },
+    'project-1'
+  )
+
+  assert.equal(query.scoreQueueId, 'queue-1')
+  assert.equal(query.timeRange, undefined)
+})

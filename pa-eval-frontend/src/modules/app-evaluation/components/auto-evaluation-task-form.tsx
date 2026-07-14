@@ -46,6 +46,7 @@ import {
   listProjectAutoEvaluationTracePreview,
   type TraceLogRow,
 } from '../api/auto-evaluation-api'
+import { listProjectScoreConfigs } from '../api/annotation-api'
 import { listProjectAutoEvaluationDatasets } from '../api/dataset-api'
 import { listProjectEvaluationReportTemplates } from '../api/report-template-api'
 import type {
@@ -53,6 +54,7 @@ import type {
   EvaluationReportTemplateRecord,
   MockAutoEvaluationDataset,
   MockAutoEvaluationEvaluator,
+  ScoreConfigRecord,
 } from '../types'
 import { autoEvaluationStepLabels } from './auto-evaluation-steps'
 
@@ -72,6 +74,7 @@ const initialForm: AutoEvaluationTaskFormInput = {
   name: '',
   description: '',
   scoreName: '',
+  scoreMapping: {},
   evaluatorId: '',
   variableMapping: {},
   reportTemplateId: 'default',
@@ -131,6 +134,7 @@ export function AutoEvaluationTaskForm({
   const [reportTemplates, setReportTemplates] = useState<
     EvaluationReportTemplateRecord[]
   >([])
+  const [scoreConfigs, setScoreConfigs] = useState<ScoreConfigRecord[]>([])
   const [traceCountState, setTraceCountState] = useState<
     'idle' | 'loading' | 'success' | 'error'
   >('idle')
@@ -166,6 +170,7 @@ export function AutoEvaluationTaskForm({
             type: 'WORKFLOW',
             version: evaluator.version,
             variables: evaluator.variables,
+            outputVariables: evaluator.outputVariables ?? [],
             description: evaluator.description,
             updatedAt: evaluator.updatedAt,
           }))
@@ -187,6 +192,12 @@ export function AutoEvaluationTaskForm({
         setReportTemplates(result.datas)
       }
     )
+  }, [$api, projectId])
+
+  useEffect(() => {
+    void listProjectScoreConfigs($api, projectId).then((result) => {
+      setScoreConfigs(result.filter((item) => !item.archived))
+    })
   }, [$api, projectId])
 
   const traceFilterKey =
@@ -374,6 +385,7 @@ export function AutoEvaluationTaskForm({
         name: form.name,
         description: form.description,
         scoreName: form.scoreName,
+        scoreMapping: form.scoreMapping,
         evaluatorId: form.evaluatorId,
         sampleRate: form.sampleRate,
         dataSource: form.dataSource,
@@ -421,8 +433,7 @@ export function AutoEvaluationTaskForm({
           <div className='mb-4 flex flex-col gap-1'>
             <h3 className='text-sm font-semibold'>基础信息</h3>
             <p className='text-muted-foreground text-sm'>
-              基础信息会展示在任务列表和报告详情中，Score Name
-              会作为评测分数字段。
+              基础信息会展示在任务列表和报告详情中，评分字段在评估器配置中绑定。
             </p>
           </div>
           <div className='grid gap-4 md:grid-cols-2'>
@@ -432,22 +443,6 @@ export function AutoEvaluationTaskForm({
                 value={form.name}
                 onChange={(event) =>
                   updateForm({ ...form, name: event.target.value })
-                }
-              />
-            </Field>
-            <Field
-              label='Score Name'
-              tooltip='仅支持英文、数字、下划线和短横线。'
-            >
-              <Input
-                placeholder='例如：answer_quality'
-                value={form.scoreName}
-                onChange={(event) =>
-                  updateForm({
-                    ...form,
-                    scoreName: event.target.value,
-                    badcase: { ...form.badcase, scoreName: event.target.value },
-                  })
                 }
               />
             </Field>
@@ -499,6 +494,13 @@ export function AutoEvaluationTaskForm({
                       variableMapping: Object.fromEntries(
                         evaluator.variables.map((item) => [item, ''])
                       ),
+                      scoreMapping: createDefaultScoreMapping(
+                        evaluator,
+                        scoreConfigs
+                      ),
+                      scoreName: getPrimaryScoreName(
+                        createDefaultScoreMapping(evaluator, scoreConfigs)
+                      ),
                     })
                   }
                 >
@@ -509,6 +511,9 @@ export function AutoEvaluationTaskForm({
                     </span>
                     <span className='text-muted-foreground text-xs'>
                       v{evaluator.version} · {evaluator.variables.length} 个变量
+                      {getEvaluatorOutputVariables(evaluator).length
+                        ? ` · ${getEvaluatorOutputVariables(evaluator).length} 个输出`
+                        : ''}
                     </span>
                   </span>
                 </button>
@@ -585,6 +590,72 @@ export function AutoEvaluationTaskForm({
                       </Select>
                     </div>
                   ))}
+                </div>
+                <div className='flex flex-col gap-3'>
+                  <div className='flex flex-col gap-1'>
+                    <h4 className='text-sm font-medium'>输出变量绑定</h4>
+                    <p className='text-muted-foreground text-sm'>
+                      将评估器输出变量绑定到项目评分指标。
+                    </p>
+                  </div>
+                  {getEvaluatorOutputVariables(selectedEvaluator).length ? (
+                    getEvaluatorOutputVariables(selectedEvaluator).map(
+                      (variable) => (
+                        <div
+                          key={variable}
+                          className='bg-background grid gap-2 rounded-lg border p-3 md:grid-cols-[minmax(160px,220px)_1fr] md:items-center'
+                        >
+                          <Label className='text-sm font-medium'>
+                            {variable}
+                          </Label>
+                          <Select
+                            value={
+                              form.scoreMapping[variable]?.scoreConfigId ?? ''
+                            }
+                            onValueChange={(value) => {
+                              const scoreConfig = scoreConfigs.find(
+                                (item) => item.id === value
+                              )
+                              const nextScoreMapping = {
+                                ...form.scoreMapping,
+                                [variable]: {
+                                  scoreConfigId: value,
+                                  scoreConfigName:
+                                    scoreConfig?.name ?? value,
+                                },
+                              }
+                              updateForm({
+                                ...form,
+                                scoreMapping: nextScoreMapping,
+                                scoreName:
+                                  getPrimaryScoreName(nextScoreMapping),
+                              })
+                            }}
+                          >
+                            <SelectTrigger className='w-full'>
+                              <SelectValue placeholder='选择评分指标' />
+                            </SelectTrigger>
+                            <SelectContent>
+                              <SelectGroup>
+                                {scoreConfigs.map((scoreConfig) => (
+                                  <SelectItem
+                                    key={scoreConfig.id}
+                                    value={scoreConfig.id}
+                                  >
+                                    {scoreConfig.name}
+                                  </SelectItem>
+                                ))}
+                              </SelectGroup>
+                            </SelectContent>
+                          </Select>
+                        </div>
+                      )
+                    )
+                  ) : (
+                    <div className='text-muted-foreground rounded-lg border border-dashed p-4 text-sm'>
+                      当前评估器未定义输出变量。
+                    </div>
+                  )}
                 </div>
               </>
             ) : (
@@ -1180,10 +1251,6 @@ function getStepError(
 ) {
   if (step === 0) {
     if (!form.name.trim()) return '任务名称不能为空'
-    if (!form.scoreName.trim()) return 'Score Name 不能为空'
-    if (!isScoreNameValid(form.scoreName)) {
-      return 'Score Name 只允许英文、数字、下划线和短横线'
-    }
   }
   if (step === 1) {
     if (!form.evaluatorId) return '请选择评估器'
@@ -1194,6 +1261,15 @@ function getStepError(
       true
     ) {
       return '请完成评估器变量映射'
+    }
+    const outputVariables = evaluator ? getEvaluatorOutputVariables(evaluator) : []
+    if (!outputVariables.length) return '请先为评估器定义输出变量'
+    if (
+      outputVariables.some(
+        (variable) => !form.scoreMapping[variable]?.scoreConfigId
+      )
+    ) {
+      return '请完成评估器输出变量与评分指标绑定'
     }
   }
   if (step === 2) {
@@ -1219,12 +1295,40 @@ function getStepError(
   return ''
 }
 
-function isScoreNameValid(value: string) {
-  return /^[A-Za-z0-9_-]+$/.test(value)
-}
-
 function getEstimatedRunCount(sampleCount: number, sampleRate: number) {
   return Math.ceil((sampleCount * sampleRate) / 100)
+}
+
+function getEvaluatorOutputVariables(evaluator: MockAutoEvaluationEvaluator) {
+  return evaluator.outputVariables?.length
+    ? evaluator.outputVariables
+    : ['score']
+}
+
+function createDefaultScoreMapping(
+  evaluator: MockAutoEvaluationEvaluator,
+  scoreConfigs: ScoreConfigRecord[]
+) {
+  const outputVariables = getEvaluatorOutputVariables(evaluator)
+  return Object.fromEntries(
+    outputVariables.map((variable, index) => {
+      const scoreConfig = scoreConfigs[index] ?? scoreConfigs[0]
+      return [
+        variable,
+        {
+          scoreConfigId: scoreConfig?.id ?? '',
+          scoreConfigName: scoreConfig?.name ?? '',
+        },
+      ]
+    })
+  )
+}
+
+function getPrimaryScoreName(
+  scoreMapping: AutoEvaluationTaskFormInput['scoreMapping']
+) {
+  return Object.values(scoreMapping).find((item) => item.scoreConfigName)
+    ?.scoreConfigName ?? 'dify_score'
 }
 
 function createDefaultTraceFilter(): Extract<

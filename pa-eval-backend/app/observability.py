@@ -64,9 +64,15 @@ async def list_traces(
     user_id: str | None = Query(default=None, alias="userId"),
     latency_min: int | None = Query(default=None, alias="latencyMin"),
     latency_max: int | None = Query(default=None, alias="latencyMax"),
+    score_queue_id: str | None = Query(default=None, alias="scoreQueueId"),
     metadata_key: str | None = Query(default=None, alias="metadataKey"),
     metadata_value: str | None = Query(default=None, alias="metadataValue"),
     metadata_filters: str | None = Query(default=None, alias="metadataFilters"),
+    categorical_score_filters: str | None = Query(
+        default=None,
+        alias="categoricalScoreFilters",
+    ),
+    numeric_score_filters: str | None = Query(default=None, alias="numericScoreFilters"),
     created_at_range: list[str] | None = Query(default=None, alias="createdAtRange"),
     created_at_range_bracket: list[str] | None = Query(
         default=None,
@@ -90,9 +96,14 @@ async def list_traces(
             user_id=user_id,
             latency_min=latency_min,
             latency_max=latency_max,
+            score_queue_id=score_queue_id,
             metadata_key=metadata_key,
             metadata_value=metadata_value,
             metadata_filters=_parse_metadata_filters(metadata_filters),
+            categorical_score_filters=_parse_categorical_score_filters(
+                categorical_score_filters,
+            ),
+            numeric_score_filters=_parse_numeric_score_filters(numeric_score_filters),
             created_at_range=_first_non_empty_list(
                 created_at_range,
                 created_at_range_bracket,
@@ -233,3 +244,57 @@ def _parse_metadata_filters(value: str | None) -> list[dict[str, Any]] | None:
             }
         )
     return filters or None
+
+
+def _parse_categorical_score_filters(value: str | None) -> list[dict[str, Any]] | None:
+    parsed = _parse_json_filter_list(value)
+    if parsed is None:
+        return None
+    filters: list[dict[str, Any]] = []
+    for item in parsed:
+        name = str(item.get("name") or "").strip()
+        if not name:
+            continue
+        operator = str(item.get("operator") or "equals").strip()
+        if operator not in {"contains", "equals", "exists"}:
+            operator = "equals"
+        filters.append(
+            {
+                "name": name,
+                "operator": operator,
+                "value": str(item.get("value") or ""),
+            }
+        )
+    return filters or None
+
+
+def _parse_numeric_score_filters(value: str | None) -> list[dict[str, Any]] | None:
+    parsed = _parse_json_filter_list(value)
+    if parsed is None:
+        return None
+    filters: list[dict[str, Any]] = []
+    for item in parsed:
+        name = str(item.get("name") or "").strip()
+        if not name:
+            continue
+        try:
+            score_value = float(item.get("value"))
+        except (TypeError, ValueError):
+            continue
+        operator = str(item.get("operator") or "eq").strip()
+        if operator not in {"eq", "gte", "lte", "gt", "lt"}:
+            operator = "eq"
+        filters.append({"name": name, "operator": operator, "value": score_value})
+    return filters or None
+
+
+def _parse_json_filter_list(value: str | None) -> list[dict[str, Any]] | None:
+    if not value:
+        return None
+    try:
+        parsed = json.loads(value)
+    except json.JSONDecodeError:
+        return None
+    if not isinstance(parsed, list):
+        return None
+    return [item for item in parsed if isinstance(item, dict)]

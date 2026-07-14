@@ -48,12 +48,17 @@ export function TraceLogBulkActions({
   const [annotationDialogOpen, setAnnotationDialogOpen] = useState(false)
   const selectedRows = table.getFilteredSelectedRowModel().rows
   const selectedTraces = selectedRows.map((row) => row.original)
-  const selectedCount = selection?.selectedRowCount ?? selectedRows.length
+  const shouldUseAllMatchingRows = Boolean(
+    selection?.isAllMatchingRowsSelected
+  )
+  const selectedCount = shouldUseAllMatchingRows
+    ? (selection?.totalRowCount ?? selectedRows.length)
+    : (selection?.selectedRowCount ?? selectedRows.length)
   const projectName = selectedTraces[0]?.projectName || projectId
-  const isCrossPageSelection = Boolean(selection?.isAllMatchingRowsSelected)
+  const isCrossPageSelection = shouldUseAllMatchingRows
 
   const fetchAllMatchingTraces = async () => {
-    if (!selection || !selection.isAllMatchingRowsSelected) {
+    if (!selection || !shouldUseAllMatchingRows) {
       return selectedTraces
     }
 

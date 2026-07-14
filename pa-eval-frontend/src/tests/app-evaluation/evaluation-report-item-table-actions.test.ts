@@ -35,6 +35,18 @@ test('evaluation report badcase table does not show the all-badcase flowback but
   assert.equal(badcaseSource.includes('回流已选择'), true)
 })
 
+test('evaluation report badcase table shows score reason and score summary tooltip', () => {
+  assert.match(badcaseSource, /title='score'/)
+  assert.match(badcaseSource, /header:\s*'reason'/)
+  assert.match(badcaseSource, /header:\s*'评分摘要'/)
+  assert.match(badcaseSource, /ScoreSummaryCell/)
+  assert.match(badcaseSource, /TooltipContent/)
+  assert.doesNotMatch(
+    badcaseSource,
+    /accessorKey:\s*'scoreName',\s*header:\s*'Score'/
+  )
+})
+
 test('evaluation report tables use stable query keys that can be invalidated by detail page', () => {
   assert.equal(source.includes("'project-evaluation-report-items',\n            $api,"), false)
   assert.equal(

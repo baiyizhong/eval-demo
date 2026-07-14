@@ -29,9 +29,12 @@ class LangfuseClickHouseReader:
         user_id: str | None = None,
         latency_min: int | None = None,
         latency_max: int | None = None,
+        score_queue_id: str | None = None,
         metadata_key: str | None = None,
         metadata_value: str | None = None,
         metadata_filters: list[dict[str, Any]] | None = None,
+        categorical_score_filters: list[dict[str, Any]] | None = None,
+        numeric_score_filters: list[dict[str, Any]] | None = None,
         created_at_range: list[str] | None = None,
         time_range: str | None = "1d",
     ) -> dict[str, Any]:
@@ -57,9 +60,12 @@ class LangfuseClickHouseReader:
                 user_id=user_id,
                 latency_min=latency_min,
                 latency_max=latency_max,
+                score_queue_id=score_queue_id,
                 metadata_key=metadata_key,
                 metadata_value=metadata_value,
                 metadata_filters=metadata_filters,
+                categorical_score_filters=categorical_score_filters,
+                numeric_score_filters=numeric_score_filters,
             )
         ]
         start = (page - 1) * page_size
@@ -79,9 +85,12 @@ class LangfuseClickHouseReader:
         user_id: str | None = None,
         latency_min: int | None = None,
         latency_max: int | None = None,
+        score_queue_id: str | None = None,
         metadata_key: str | None = None,
         metadata_value: str | None = None,
         metadata_filters: list[dict[str, Any]] | None = None,
+        categorical_score_filters: list[dict[str, Any]] | None = None,
+        numeric_score_filters: list[dict[str, Any]] | None = None,
         created_at_range: list[str] | None = None,
         time_range: str | None = "1d",
     ) -> int:
@@ -107,9 +116,12 @@ class LangfuseClickHouseReader:
                 user_id=user_id,
                 latency_min=latency_min,
                 latency_max=latency_max,
+                score_queue_id=score_queue_id,
                 metadata_key=metadata_key,
                 metadata_value=metadata_value,
                 metadata_filters=metadata_filters,
+                categorical_score_filters=categorical_score_filters,
+                numeric_score_filters=numeric_score_filters,
             )
         )
 
@@ -792,9 +804,12 @@ def _matches_trace(
     user_id: str | None,
     latency_min: int | None,
     latency_max: int | None,
+    score_queue_id: str | None,
     metadata_key: str | None,
     metadata_value: str | None,
     metadata_filters: list[dict[str, Any]] | None = None,
+    categorical_score_filters: list[dict[str, Any]] | None = None,
+    numeric_score_filters: list[dict[str, Any]] | None = None,
 ) -> bool:
     metadata = row.get("metadata") or {}
     needle = (keyword or "").strip().lower()
@@ -813,6 +828,8 @@ def _matches_trace(
         return False
     if latency_max is not None and latency > latency_max:
         return False
+    if score_queue_id and not _matches_score_queue_id(row.get("scores") or [], score_queue_id):
+        return False
     if metadata_key:
         if not isinstance(metadata, dict) or metadata_key not in metadata:
             return False
@@ -829,7 +846,75 @@ def _matches_trace(
             return False
         if operator == "contains" and value not in actual:
             return False
+    for score_filter in categorical_score_filters or []:
+        if not _matches_categorical_score(row.get("scores") or [], score_filter):
+            return False
+    for score_filter in numeric_score_filters or []:
+        if not _matches_numeric_score(row.get("scores") or [], score_filter):
+            return False
     return True
+
+
+def _matches_score_queue_id(scores: list[dict[str, Any]], queue_id: str) -> bool:
+    expected = queue_id.strip()
+    return any(str(score.get("queueId") or "") == expected for score in scores)
+
+
+def _matches_categorical_score(
+    scores: list[dict[str, Any]],
+    score_filter: dict[str, Any],
+) -> bool:
+    name = str(score_filter.get("name") or "")
+    operator = str(score_filter.get("operator") or "equals")
+    expected = str(score_filter.get("value") or "")
+    for score in scores:
+        if str(score.get("name") or "") != name:
+            continue
+        if operator == "exists":
+            return True
+        actual = _score_text_value(score)
+        if operator == "equals" and actual == expected:
+            return True
+        if operator == "contains" and expected in actual:
+            return True
+    return False
+
+
+def _matches_numeric_score(
+    scores: list[dict[str, Any]],
+    score_filter: dict[str, Any],
+) -> bool:
+    name = str(score_filter.get("name") or "")
+    operator = str(score_filter.get("operator") or "eq")
+    expected = _numeric_or_none(score_filter.get("value"))
+    if expected is None:
+        return False
+    for score in scores:
+        if str(score.get("name") or "") != name:
+            continue
+        actual = _numeric_or_none(score.get("value"))
+        if actual is None:
+            continue
+        if operator == "eq" and actual == expected:
+            return True
+        if operator == "gte" and actual >= expected:
+            return True
+        if operator == "lte" and actual <= expected:
+            return True
+        if operator == "gt" and actual > expected:
+            return True
+        if operator == "lt" and actual < expected:
+            return True
+    return False
+
+
+def _score_text_value(score: dict[str, Any]) -> str:
+    return str(
+        score.get("stringValue")
+        or score.get("longStringValue")
+        or score.get("value")
+        or ""
+    )
 
 
 def _normalize_environments(environments: list[str] | None) -> list[str] | None:

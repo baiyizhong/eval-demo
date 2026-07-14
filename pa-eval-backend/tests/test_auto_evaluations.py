@@ -27,6 +27,7 @@ from app.auto_evaluations import (
     _update_auto_evaluation_progress,
     _sample_dataset_items,
     _delete_auto_evaluation_task,
+    _to_report_badcase,
     CreateAutoEvaluationPayload,
     EvaluationReportFlowbackPayload,
 )
@@ -749,6 +750,92 @@ def test_parse_workflow_result_derives_passed_when_dify_omits_passed() -> None:
     assert result["reason"] == "命中主要标准"
 
 
+def test_parse_workflow_result_maps_dify_output_variables_to_scores() -> None:
+    result = _parse_workflow_result(
+        {"provider": "DIFY", "output_variables": ["quality_score", "risk_score"]},
+        {
+            "data": {
+                "outputs": {
+                    "quality_score": 0.82,
+                    "risk_score": 0.2,
+                    "reason": "质量较高，风险较低",
+                }
+            }
+        },
+        {
+            "quality_score": {
+                "scoreConfigId": "score-config-quality",
+                "scoreConfigName": "回答质量",
+            },
+            "risk_score": {
+                "scoreConfigId": "score-config-risk",
+                "scoreConfigName": "风险分",
+            },
+        },
+    )
+
+    assert result["score"] == 0.82
+    assert result["reason"] == "质量较高，风险较低"
+    assert result["scores"] == [
+        {
+            "outputVariable": "quality_score",
+            "scoreConfigId": "score-config-quality",
+            "name": "回答质量",
+            "value": 0.82,
+            "passed": True,
+        },
+        {
+            "outputVariable": "risk_score",
+            "scoreConfigId": "score-config-risk",
+            "name": "风险分",
+            "value": 0.2,
+            "passed": False,
+        },
+    ]
+
+
+def test_parse_workflow_result_keeps_text_outputs_as_string_scores() -> None:
+    result = _parse_workflow_result(
+        {"provider": "DIFY", "output_variables": ["score", "reason"]},
+        {
+            "data": {
+                "outputs": {
+                    "score": 0.9,
+                    "reason": "回答准确完整",
+                }
+            }
+        },
+        {
+            "score": {
+                "scoreConfigId": "score-config-number",
+                "scoreConfigName": "数值",
+            },
+            "reason": {
+                "scoreConfigId": "score-config-note",
+                "scoreConfigName": "备注",
+            },
+        },
+    )
+
+    assert result["score"] == 0.9
+    assert result["scores"] == [
+        {
+            "outputVariable": "score",
+            "scoreConfigId": "score-config-number",
+            "name": "数值",
+            "value": 0.9,
+            "passed": True,
+        },
+        {
+            "outputVariable": "reason",
+            "scoreConfigId": "score-config-note",
+            "name": "备注",
+            "stringValue": "回答准确完整",
+            "passed": True,
+        },
+    ]
+
+
 def test_trace_time_range_condition_supports_auto_evaluation_quick_ranges() -> None:
     assert (
         _trace_time_range_condition("1d") == "AND t.timestamp >= now() - INTERVAL 1 DAY"
@@ -899,6 +986,50 @@ async def test_complete_auto_evaluation_success_persists_report_template_snapsho
     assert _jsonb_value(report_params["recommendations"]) == []
     assert "INSERT INTO pa_evaluation_report_badcases" in badcase_sql
     assert badcase_params["score_value"] == 0.5
+
+
+def test_report_badcase_exposes_score_summary_json_from_other_scores() -> None:
+    badcase = _to_report_badcase(
+        {
+            "id": "badcase-1",
+            "report_id": "report-1",
+            "trace_id": "trace-1",
+            "observation_id": "obs-1",
+            "dataset_item_id": "item-1",
+            "score_name": "quality",
+            "score_value": 0.5,
+            "reason": "低于模板阈值",
+            "comment": "Dify 工作流判定未通过。",
+            "source_type": "AUTO_EVAL",
+            "flowback_status": "NONE",
+            "score_summary_scores": [
+                {
+                    "outputVariable": "score",
+                    "name": "score",
+                    "value": 0.5,
+                },
+                {
+                    "outputVariable": "quality_score",
+                    "name": "回答质量",
+                    "value": 0.8,
+                },
+                {
+                    "outputVariable": "risk_reason",
+                    "name": "风险原因",
+                    "stringValue": "命中风险规则",
+                },
+                {
+                    "outputVariable": "reason",
+                    "name": "reason",
+                    "stringValue": "低于模板阈值",
+                },
+            ],
+        }
+    )
+
+    assert badcase["scoreValue"] == 0.5
+    assert badcase["reason"] == "低于模板阈值"
+    assert badcase["scoreSummary"] == '{"回答质量": 0.8, "风险原因": "命中风险规则"}'
 
 
 @pytest.mark.anyio
@@ -1170,12 +1301,14 @@ async def test_preview_report_flowback_counts_duplicates_for_existing_dataset() 
                     "source_trace_id": "trace-1",
                     "source_observation_id": "obs-1",
                     "input": {"question": "如何退款"},
-                    "expected_output": {"answer": "退款路径"},
-                    "metadata": {"origin": "dataset"},
+                    "output": {"answer": "请在订单详情提交退款"},
+                    "expected_output": None,
+                    "metadata": {"origin": "trace"},
                     "score_value": 0.42,
                     "reason": "答案不完整",
                     "comment": "缺少入口说明",
                     "score_summary": "quality: 0.42",
+                    "prefer_trace_payload": True,
                     "result_type": "badcase",
                 },
                 {
@@ -1184,12 +1317,14 @@ async def test_preview_report_flowback_counts_duplicates_for_existing_dataset() 
                     "source_trace_id": "trace-2",
                     "source_observation_id": "",
                     "input": {"question": "怎么改地址"},
+                    "output": {"answer": "请联系人工客服"},
                     "expected_output": None,
-                    "metadata": {},
+                    "metadata": {"origin": "trace"},
                     "score_value": 0.3,
                     "reason": "无效回复",
                     "comment": "",
                     "score_summary": "quality: 0.30",
+                    "prefer_trace_payload": True,
                     "result_type": "badcase",
                 },
             ],
@@ -1244,12 +1379,14 @@ async def test_create_report_flowback_creates_dataset_items_and_updates_statuses
                     "source_trace_id": "trace-1",
                     "source_observation_id": "obs-1",
                     "input": {"question": "如何退款"},
-                    "expected_output": {"answer": "退款路径"},
-                    "metadata": {"origin": "dataset"},
+                    "output": {"answer": "请在订单详情提交退款"},
+                    "expected_output": None,
+                    "metadata": {"origin": "trace"},
                     "score_value": 0.42,
                     "reason": "答案不完整",
                     "comment": "缺少入口说明",
                     "score_summary": "quality: 0.42",
+                    "prefer_trace_payload": True,
                     "result_type": "badcase",
                 }
             ],
@@ -1294,6 +1431,14 @@ async def test_create_report_flowback_creates_dataset_items_and_updates_statuses
         if "INSERT INTO dataset_items" in sql
     )
     metadata = _jsonb_value(dataset_item_params["metadata"])
+    input_payload = _jsonb_value(dataset_item_params["input"])
+    expected_output_payload = _jsonb_value(dataset_item_params["expected_output"])
+    assert input_payload == {
+        "input": {"question": "如何退款"},
+        "output": {"answer": "请在订单详情提交退款"},
+    }
+    assert expected_output_payload == {}
+    assert metadata["origin"] == "trace"
     assert metadata["paEvaluationReport"]["reportId"] == "report-1"
     assert metadata["paEvaluationReport"]["sourceItemId"] == "badcase-1"
     assert dataset_item_params["source_trace_id"] == "trace-1"

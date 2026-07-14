@@ -494,6 +494,7 @@ export type AutoEvaluationTaskRecord = {
 
 export type MockAutoEvaluationEvaluator = AutoEvaluationEvaluatorSummary & {
   variables: string[]
+  outputVariables?: string[]
   description: string
   updatedAt: string
 }
@@ -527,6 +528,13 @@ export type AutoEvaluationTaskFormInput = {
   name: string
   description: string
   scoreName: string
+  scoreMapping: Record<
+    string,
+    {
+      scoreConfigId: string
+      scoreConfigName: string
+    }
+  >
   evaluatorId: string
   variableMapping: Record<string, string>
   reportTemplateId: string
@@ -576,6 +584,7 @@ export type EvaluationReportBadcaseRecord = {
   scoreName: string
   scoreValue: number
   reason: string
+  scoreSummary: string
   comment: string
   sourceType: EvaluationReportSourceType
   flowbackStatus: 'NONE' | 'FLOWED_BACK'
