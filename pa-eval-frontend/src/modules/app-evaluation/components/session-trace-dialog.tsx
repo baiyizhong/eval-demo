@@ -169,8 +169,9 @@ export function SessionTraceDialog({
             </div>
           ) : null}
           <div className='flex shrink-0 flex-wrap items-center justify-between gap-2 border-t p-2 text-xs'>
-            <div className='text-muted-foreground'>
+            <div className='text-muted-foreground min-w-0'>
               共 {total} 条，第 {page} / {pageCount} 页
+              <span className='ml-3'>注：数据按照 Trace 日志创建时间升序排序后分页返回。</span>
             </div>
             <div className='flex items-center gap-2'>
               <Button

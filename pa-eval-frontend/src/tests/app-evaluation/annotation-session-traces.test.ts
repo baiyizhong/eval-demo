@@ -113,6 +113,11 @@ test('session trace dialog keeps pagination visible while trace rows scroll', ()
     dialogSource,
     /className='flex shrink-0 flex-wrap items-center justify-between gap-2 border-t p-2 text-xs'/
   )
+  assert.match(
+    dialogSource,
+    /共 \{total\} 条，第 \{page\} \/ \{pageCount\} 页[\s\S]*<span className='ml-3'>注：数据按照 Trace 日志创建时间升序排序后分页返回。<\/span>/
+  )
+  assert.doesNotMatch(dialogSource, /flex-col gap-1/)
 })
 
 test('session trace dialog exposes a session id copy action', () => {
