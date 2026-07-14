@@ -706,6 +706,72 @@ async def test_list_traces_includes_input_and_output_when_io_fields_requested(mo
     assert result["datas"][0]["output"] == '{\n  "answer": "请在账户设置中重置密码"\n}'
 
 
+@pytest.mark.anyio
+async def test_list_traces_orders_session_results_by_created_at_before_pagination(
+    monkeypatch,
+) -> None:
+    reader = LangfuseClickHouseReader(Settings())
+
+    async def fake_fetch_trace_rows(*args, **kwargs):
+        return [
+            {
+                "traceId": "trace-new",
+                "sessionId": "session-1",
+                "projectId": "project-1",
+                "environment": "default",
+                "status": "success",
+                "latency": 120,
+                "createdAt": "2026-07-05 01:03:00.000",
+                "userId": "user-1",
+                "metadata": {},
+                "tags": [],
+                "scores": [],
+            },
+            {
+                "traceId": "trace-old",
+                "sessionId": "session-1",
+                "projectId": "project-1",
+                "environment": "default",
+                "status": "success",
+                "latency": 120,
+                "createdAt": "2026-07-05 01:01:00.000",
+                "userId": "user-1",
+                "metadata": {},
+                "tags": [],
+                "scores": [],
+            },
+            {
+                "traceId": "trace-mid",
+                "sessionId": "session-1",
+                "projectId": "project-1",
+                "environment": "default",
+                "status": "success",
+                "latency": 120,
+                "createdAt": "2026-07-05 01:02:00.000",
+                "userId": "user-1",
+                "metadata": {},
+                "tags": [],
+                "scores": [],
+            },
+        ]
+
+    monkeypatch.setattr(reader, "_fetch_trace_rows", fake_fetch_trace_rows)
+
+    result = await reader.list_traces(
+        "project-1",
+        page=1,
+        page_size=2,
+        session_id="session-1",
+        time_range=None,
+    )
+
+    assert result["total"] == 3
+    assert [row["traceId"] for row in result["datas"]] == [
+        "trace-old",
+        "trace-mid",
+    ]
+
+
 def test_trace_row_exposes_langfuse_scores_and_summary() -> None:
     row = LangfuseClickHouseReader._to_trace_row(
         {

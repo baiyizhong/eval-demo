@@ -115,6 +115,20 @@ test('session trace dialog keeps pagination visible while trace rows scroll', ()
   )
 })
 
+test('session trace dialog exposes a session id copy action', () => {
+  const dialogSource = readFileSync(
+    'src/modules/app-evaluation/components/session-trace-dialog.tsx',
+    'utf8'
+  )
+
+  assert.match(dialogSource, /import \{ Copy/)
+  assert.match(dialogSource, /navigator\.clipboard\.writeText\(normalizedSessionId\)/)
+  assert.match(dialogSource, /toast\.success\('已复制'\)/)
+  assert.match(dialogSource, /aria-label='复制 Session ID'/)
+  assert.match(dialogSource, /disabled=\{!normalizedSessionId\}/)
+  assert.doesNotMatch(dialogSource, /TooltipContent/)
+})
+
 test('session trace dialog paginates large sessions and requests io fields without trace detail fan-out', () => {
   const dialogSource = readFileSync(
     'src/modules/app-evaluation/components/session-trace-dialog.tsx',

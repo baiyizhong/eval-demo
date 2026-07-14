@@ -74,6 +74,8 @@ class LangfuseClickHouseReader:
                 numeric_score_filters=numeric_score_filters,
             )
         ]
+        if session_id:
+            filtered = sorted(filtered, key=_trace_created_at_sort_key)
         start = (page - 1) * page_size
         return {
             "total": len(filtered),
@@ -807,6 +809,13 @@ def _trace_fields_include(fields: str | None, field_name: str) -> bool:
         if item.strip()
     }
     return field_name.lower() in requested
+
+
+def _trace_created_at_sort_key(row: dict[str, Any]) -> tuple[datetime, str]:
+    return (
+        _parse_clickhouse_datetime(row.get("createdAt")) or datetime.max,
+        str(row.get("traceId") or ""),
+    )
 
 
 def _payload_to_object(value: Any) -> Any:

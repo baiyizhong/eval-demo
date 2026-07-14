@@ -2,7 +2,8 @@ import { useState } from 'react'
 import { useQuery } from '@tanstack/react-query'
 import type { TraceLogRow } from '@/modules/app-observability/types'
 import { buildTraceListQuery } from '@/modules/app-observability/views/trace-logs-query'
-import { ChevronLeft, ChevronRight } from 'lucide-react'
+import { Copy, ChevronLeft, ChevronRight } from 'lucide-react'
+import { toast } from 'sonner'
 import { cn } from '@/lib/utils'
 import { useAPI } from '@/hooks/use-api'
 import { Button } from '@/components/ui/button'
@@ -81,15 +82,38 @@ export function SessionTraceDialog({
   const total = tracesQuery.data?.total ?? 0
   const pageCount = Math.max(1, Math.ceil(total / SESSION_TRACE_PAGE_SIZE))
   const isLoading = tracesQuery.isLoading
+  const copySessionId = async () => {
+    if (!normalizedSessionId) {
+      return
+    }
+
+    await navigator.clipboard.writeText(normalizedSessionId)
+    toast.success('已复制')
+  }
 
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
       <DialogContent className='flex max-h-[82vh] flex-col overflow-hidden sm:max-w-6xl'>
         <DialogHeader>
           <DialogTitle>会话 Trace 日志</DialogTitle>
-          <DialogDescription>
-            Session ID：
-            <span className='font-mono'>{normalizedSessionId || '-'}</span>
+          <DialogDescription className='flex min-w-0 items-center gap-1'>
+            <span>Session ID：</span>
+            <span className='min-w-0 truncate font-mono'>
+              {normalizedSessionId || '-'}
+            </span>
+            <Button
+              type='button'
+              variant='ghost'
+              size='icon'
+              className='size-7 shrink-0'
+              aria-label='复制 Session ID'
+              disabled={!normalizedSessionId}
+              onClick={() => {
+                void copySessionId()
+              }}
+            >
+              <Copy />
+            </Button>
           </DialogDescription>
         </DialogHeader>
         <div className='flex min-h-0 flex-1 flex-col overflow-hidden rounded-md border'>
