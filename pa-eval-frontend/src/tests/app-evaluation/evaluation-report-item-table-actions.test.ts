@@ -50,3 +50,10 @@ test('evaluation report tables use stable query keys that can be invalidated by 
     /queryKey:\s*\['project-evaluation-report-items', projectId, reportId\]/
   )
 })
+
+test('evaluation report item table shows trace ids and score created_at columns', () => {
+  assert.match(source, /accessorKey:\s*'traceId'/)
+  assert.doesNotMatch(source, /accessorKey:\s*'sourceId',\s*header:\s*'来源 ID'/)
+  assert.match(source, /header:\s*'created_at'/)
+  assert.match(source, /score\.createdAt/)
+})

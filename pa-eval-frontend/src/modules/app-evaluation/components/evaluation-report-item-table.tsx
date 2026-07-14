@@ -8,6 +8,7 @@ import {
   formatTraceScoreValue,
   getTraceScoreColumnNames,
 } from '@/modules/app-observability/components/trace-log-columns'
+import { formatDateTime } from '@/modules/app-observability/lib/format'
 import { listProjectEvaluationReportItems } from '../api/evaluation-report-api'
 import type { EvaluationReportItemRecord } from '../types'
 
@@ -15,7 +16,7 @@ function createColumns(
   rows: EvaluationReportItemRecord[]
 ): ColumnDef<EvaluationReportItemRecord>[] {
   return [
-    { accessorKey: 'sourceId', header: '来源 ID' },
+    { accessorKey: 'traceId', header: '来源 ID' },
     ...createReportScoreColumns(rows),
     {
       accessorKey: 'resultType',
@@ -54,21 +55,43 @@ function createColumns(
 function createReportScoreColumns(
   rows: EvaluationReportItemRecord[]
 ): ColumnDef<EvaluationReportItemRecord>[] {
-  return getTraceScoreColumnNames(rows).map((scoreName) => ({
-    id: `score:${scoreName}`,
-    accessorFn: (row) =>
-      formatTraceScoreValue(row.scores?.find((score) => score.name === scoreName)),
-    header: scoreName,
-    cell: ({ getValue }) => (
-      <span className='block max-w-[160px] truncate text-xs tabular-nums'>
-        {String(getValue() || '-')}
-      </span>
-    ),
-    meta: {
-      label: scoreName,
-      className: 'min-w-[140px]',
+  return getTraceScoreColumnNames(rows).flatMap((scoreName) => [
+    {
+      id: `score:${scoreName}`,
+      accessorFn: (row) => formatTraceScoreValue(findScore(row, scoreName)),
+      header: scoreName,
+      cell: ({ getValue }) => (
+        <span className='block max-w-[160px] truncate text-xs tabular-nums'>
+          {String(getValue() || '-')}
+        </span>
+      ),
+      meta: {
+        label: scoreName,
+        className: 'min-w-[140px]',
+      },
     },
-  }))
+    {
+      id: `score:${scoreName}:created_at`,
+      accessorFn: (row) => {
+        const score = findScore(row, scoreName)
+        return score?.createdAt ? formatDateTime(score.createdAt) : '-'
+      },
+      header: 'created_at',
+      cell: ({ getValue }) => (
+        <span className='block min-w-[110px] text-xs tabular-nums'>
+          {String(getValue() || '-')}
+        </span>
+      ),
+      meta: {
+        label: `${scoreName} created_at`,
+        className: 'min-w-[120px]',
+      },
+    },
+  ])
+}
+
+function findScore(row: EvaluationReportItemRecord, scoreName: string) {
+  return row.scores?.find((score) => score.name === scoreName)
 }
 
 export function EvaluationReportItemTable({
@@ -123,7 +146,7 @@ export function EvaluationReportItemTable({
           defaultPageSize: 10,
           globalFilterKey: 'itemKeyword',
         }}
-        toolbar={{ searchPlaceholder: '搜索来源 ID / 评分摘要' }}
+        toolbar={{ searchPlaceholder: '搜索 Trace ID / 评分摘要' }}
         loadingText={
           <Loading
             text='加载评测数据中...'
@@ -131,7 +154,7 @@ export function EvaluationReportItemTable({
           />
         }
         emptyText='暂无评测数据'
-        minTableWidth={900}
+        minTableWidth={1040}
       />
     </section>
   )
