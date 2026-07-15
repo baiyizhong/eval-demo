@@ -4,6 +4,7 @@ import pytest
 from app.auth_context import CurrentUserContext, get_current_user_context
 from app.config import Settings, get_settings
 from app.errors import BusinessError
+import app.langfuse_db as langfuse_db
 from app.langfuse_db import LangfuseDatabaseReader, get_langfuse_db_reader
 from app.main import app
 
@@ -216,6 +217,74 @@ class RecordingOrganizationReader(LangfuseDatabaseReader):
         return self.member_rows
 
 
+class FakeAsyncConnection:
+    def __init__(self, cursor: "CreateMissingUserMemberCursor") -> None:
+        self._cursor = cursor
+
+    async def __aenter__(self) -> "FakeAsyncConnection":
+        return self
+
+    async def __aexit__(self, *args) -> None:
+        return None
+
+    def cursor(self) -> "CreateMissingUserMemberCursor":
+        return self._cursor
+
+
+class CreateMissingUserMemberCursor:
+    def __init__(self) -> None:
+        self.queries: list[tuple[str, dict]] = []
+        self._next_fetchone: dict | None = None
+
+    async def __aenter__(self) -> "CreateMissingUserMemberCursor":
+        return self
+
+    async def __aexit__(self, *args) -> None:
+        return None
+
+    async def execute(self, sql: str, params: dict | None = None) -> None:
+        params = params or {}
+        self.queries.append((sql, params))
+        if (
+            "FROM organization_memberships" in sql
+            and "user_id = %(actor_user_id)s" in sql
+        ):
+            self._next_fetchone = {"role": "OWNER"}
+            return
+        if "FROM users" in sql and "lower(email)" in sql:
+            self._next_fetchone = None
+            return
+        if "INSERT INTO users" in sql:
+            self._next_fetchone = {
+                "id": "user-wangjing",
+                "name": params["name"],
+                "email": params["email"],
+            }
+            return
+        if "INSERT INTO organization_memberships" in sql:
+            self._next_fetchone = None
+            return
+        if (
+            "FROM organization_memberships om" in sql
+            and "JOIN users u ON u.id = om.user_id" in sql
+        ):
+            self._next_fetchone = {
+                "id": "orgmem-wangjing",
+                "org_id": params["organization_id"],
+                "user_id": "user-wangjing",
+                "role": "MEMBER",
+                "created_at": "2026-07-15T10:00:00.000Z",
+                "updated_at": "2026-07-15T10:00:00.000Z",
+                "name": "wangjing",
+                "email": "wangjing@163.com",
+            }
+            return
+        self._next_fetchone = None
+
+    async def fetchone(self) -> dict | None:
+        return self._next_fetchone
+
+
 def test_lists_organizations_with_pa_pagination_and_metadata_mapping() -> None:
     fake_reader = FakeDatabaseReader()
     override_reader(fake_reader)
@@ -262,6 +331,19 @@ def test_gets_organization_detail_from_database_reader() -> None:
     assert response.json()["data"]["id"] == "org-1"
     assert response.json()["data"]["name"] == "PA 平台主组织"
     assert response.json()["data"]["projectCount"] == 1
+
+
+def test_gets_organization_member_email_settings_from_backend_env() -> None:
+    fake_reader = FakeDatabaseReader()
+    override_reader(fake_reader)
+
+    try:
+        response = TestClient(app).get("/api/organizations/member-email-settings")
+    finally:
+        clear_overrides()
+
+    assert response.status_code == 200
+    assert response.json()["data"] == {"defaultEmailDomain": "owners.test"}
 
 
 def test_returns_not_found_when_database_organization_missing() -> None:
@@ -385,6 +467,48 @@ def test_creates_organization_member_with_none_role_for_project_only_access() ->
     assert response.json()["data"]["role"] == "NONE"
 
 
+@pytest.mark.anyio
+async def test_create_organization_member_creates_missing_langfuse_user(
+    monkeypatch,
+) -> None:
+    cursor = CreateMissingUserMemberCursor()
+
+    async def fake_connect(*args, **kwargs):
+        return FakeAsyncConnection(cursor)
+
+    monkeypatch.setattr(langfuse_db.psycopg.AsyncConnection, "connect", fake_connect)
+    reader = LangfuseDatabaseReader(
+        Settings(langfuse_database_url="postgresql://example")
+    )
+
+    member = await reader.create_organization_member(
+        "org-1",
+        "actor-1",
+        {
+            "name": "wangjing",
+            "email": "wangjing@163.com",
+            "role": "MEMBER",
+        },
+    )
+
+    assert member["status"] == "ACTIVE"
+    assert member["email"] == "wangjing@163.com"
+    user_insert = next(
+        item for item in cursor.queries if "INSERT INTO users" in item[0]
+    )
+    assert user_insert[1]["name"] == "wangjing"
+    assert user_insert[1]["email"] == "wangjing@163.com"
+    membership_insert = next(
+        item for item in cursor.queries if "INSERT INTO organization_memberships" in item[0]
+    )
+    assert membership_insert[1]["user_id"] == "user-wangjing"
+    invitation_delete = next(
+        item for item in cursor.queries if "DELETE FROM membership_invitations" in item[0]
+    )
+    assert invitation_delete[1]["email"] == "wangjing@163.com"
+    assert not any("INSERT INTO membership_invitations" in item[0] for item in cursor.queries)
+
+
 def test_updates_organization_member_role_through_database_reader() -> None:
     fake_reader = FakeDatabaseReader()
     override_reader(fake_reader)
@@ -498,6 +622,7 @@ async def test_organization_members_include_pending_membership_invitations() -> 
     invite_sql, invite_params = reader.queries[1]
     assert invite_params == {"organization_id": "org-1"}
     assert "membership_invitations" in invite_sql
+    assert "mi.project_id IS NULL" in invite_sql
     assert members[-1] == {
         "id": "invite-1",
         "organizationId": "org-1",

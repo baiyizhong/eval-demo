@@ -1,8 +1,9 @@
 import { useId, useMemo } from 'react'
 import { z } from 'zod'
-import { useMutation, useQueryClient } from '@tanstack/react-query'
+import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { canAssignRole } from '@/modules/organization-management/data/permissions'
 import {
+  buildOrganizationMemberEmail,
   organizationRoleSchema,
   type CreateOrganizationMemberPayload,
   type OrganizationMember,
@@ -47,6 +48,10 @@ const memberFormSchema = z.object({
 
 type MemberFormValues = z.infer<typeof memberFormSchema>
 
+type MemberEmailSettings = {
+  defaultEmailDomain: string
+}
+
 type MemberFormDrawerProps = {
   open: boolean
   onOpenChange: (open: boolean) => void
@@ -68,6 +73,13 @@ export function MemberFormDrawer({
   const $api = useAPI()
   const queryClient = useQueryClient()
   const isEditMode = Boolean(member)
+  const emailSettingsQuery = useQuery({
+    queryKey: ['organization-member-email-settings', $api],
+    enabled: open && !isEditMode,
+    queryFn: () => $api.getOrganizationMemberEmailSettings<MemberEmailSettings>(),
+    staleTime: Infinity,
+  })
+  const defaultEmailDomain = emailSettingsQuery.data?.defaultEmailDomain ?? ''
 
   const roleOptions = useMemo(() => {
     if (member?.role === 'OWNER' && ownerCount <= 1) {
@@ -176,7 +188,26 @@ export function MemberFormDrawer({
                     <Input
                       placeholder='输入成员姓名'
                       disabled={isEditMode || mutation.isPending}
-                      {...field}
+                      name={field.name}
+                      ref={field.ref}
+                      value={field.value}
+                      onBlur={field.onBlur}
+                      onChange={(event) => {
+                        field.onChange(event)
+                        if (!isEditMode && defaultEmailDomain) {
+                          form.setValue(
+                            'email',
+                            buildOrganizationMemberEmail(
+                              event.target.value,
+                              defaultEmailDomain
+                            ),
+                            {
+                              shouldDirty: true,
+                              shouldValidate: true,
+                            }
+                          )
+                        }
+                      }}
                     />
                   </FormControl>
                   <FormMessage />

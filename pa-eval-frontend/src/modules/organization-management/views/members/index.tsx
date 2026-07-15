@@ -474,7 +474,12 @@ export function SettingsOrganizationMembers() {
           desc={
             deletingMember ? (
               <div className='flex flex-col gap-2'>
-                <p>确定要删除该成员吗？删除后需要重新邀请才能恢复。</p>
+                <p>
+                  确定要删除该成员吗？删除组织成员会移除该用户在组织下所有项目角色，需要谨慎。
+                </p>
+                <p className='text-muted-foreground'>
+                  删除后需要重新添加成员，并重新配置项目角色才能恢复。
+                </p>
                 <div className='bg-muted/20 rounded-md border px-3 py-2 text-sm'>
                   <div>{deletingMember.name || '-'}</div>
                   <div className='text-muted-foreground'>

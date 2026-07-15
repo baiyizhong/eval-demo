@@ -5,6 +5,7 @@ import {
   parseMemberImportCsv,
 } from '../../modules/organization-management/data/member-import.ts'
 import {
+  buildOrganizationMemberEmail,
   createOrganizationMemberPayloadSchema,
   importOrganizationMembersPayloadSchema,
 } from '../../modules/organization-management/data/schema.ts'
@@ -113,4 +114,16 @@ test('成员 payload schema 支持可选 name，且 CSV 解析会保留 name', (
       rawData: '张三,zhangsan@example.com,MEMBER',
     },
   ])
+})
+
+test('buildOrganizationMemberEmail 使用姓名和默认域名生成邮箱', () => {
+  assert.equal(
+    buildOrganizationMemberEmail(' WangJing ', '163.com'),
+    'wangjing@163.com'
+  )
+  assert.equal(
+    buildOrganizationMemberEmail('wangjing', '@example.com'),
+    'wangjing@example.com'
+  )
+  assert.equal(buildOrganizationMemberEmail('中文用户', '163.com'), '')
 })

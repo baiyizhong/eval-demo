@@ -121,6 +121,14 @@ async def list_organizations(
     return success(_paginate(filtered, page, page_size))
 
 
+@router.get("/member-email-settings")
+async def get_member_email_settings(
+    settings: Settings = Depends(get_settings),
+) -> dict[str, Any]:
+    domain = settings.pa_eval_default_owner_email_domain.strip().lower()
+    return success({"defaultEmailDomain": domain.removeprefix("@")})
+
+
 @router.post("")
 async def create_organization(
     payload: CreateOrganizationPayload,

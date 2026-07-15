@@ -25,6 +25,7 @@ class ProjectApiKeyPayload(BaseModel):
 
 
 class ProjectMemberPayload(BaseModel):
+    name: str | None = Field(default=None, max_length=120)
     email: str = Field(pattern=r"^[^@\s]+@[^@\s]+\.[^@\s]+$")
     role: str = Field(pattern="^(OWNER|ADMIN|MEMBER|VIEWER)$")
 

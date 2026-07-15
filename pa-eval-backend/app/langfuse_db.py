@@ -2609,50 +2609,10 @@ class LangfuseDatabaseReader:
                 )
                 member = await self._get_user_by_email_cursor(cursor, payload["email"])
                 if member is None:
-                    await self._ensure_project_invitation_can_be_created(
+                    member = await self._ensure_user_by_email_cursor(
                         cursor,
-                        project["org_id"],
+                        _organization_member_account(payload),
                         payload["email"],
-                    )
-                    invitation_id = _new_langfuse_id("invite")
-                    await cursor.execute(
-                        """
-                        INSERT INTO membership_invitations (
-                            id,
-                            email,
-                            org_id,
-                            org_role,
-                            project_id,
-                            project_role,
-                            invited_by_user_id,
-                            created_at,
-                            updated_at
-                        )
-                        VALUES (
-                            %(id)s,
-                            %(email)s,
-                            %(org_id)s,
-                            'NONE'::"Role",
-                            %(project_id)s,
-                            %(project_role)s::"Role",
-                            %(invited_by_user_id)s,
-                            NOW(),
-                            NOW()
-                        )
-                        """,
-                        {
-                            "id": invitation_id,
-                            "email": payload["email"].strip().lower(),
-                            "org_id": project["org_id"],
-                            "project_id": project_id,
-                            "project_role": payload["role"],
-                            "invited_by_user_id": user_id,
-                        },
-                    )
-                    return await self._get_project_invitation_cursor(
-                        cursor,
-                        project_id,
-                        invitation_id,
                     )
                 org_membership = await self._ensure_project_org_membership(
                     cursor,
@@ -2699,6 +2659,19 @@ class LangfuseDatabaseReader:
                         "user_id": member["id"],
                         "org_membership_id": org_membership["id"],
                         "role": payload["role"],
+                    },
+                )
+                await cursor.execute(
+                    """
+                    DELETE FROM membership_invitations
+                    WHERE org_id = %(organization_id)s
+                      AND project_id = %(project_id)s
+                      AND lower(email) = lower(%(email)s)
+                    """,
+                    {
+                        "organization_id": project["org_id"],
+                        "project_id": project_id,
+                        "email": payload["email"],
                     },
                 )
         return await self._get_project_user_for_user(project_id, member["id"], user_id)
@@ -4744,6 +4717,7 @@ class LangfuseDatabaseReader:
             FROM membership_invitations mi
             LEFT JOIN users u ON u.id = mi.invited_by_user_id
             WHERE mi.org_id = %(organization_id)s
+              AND mi.project_id IS NULL
             ORDER BY mi.created_at DESC, mi.email
             """,
             {"organization_id": organization_id},
@@ -4784,49 +4758,10 @@ class LangfuseDatabaseReader:
                     payload["email"],
                 )
                 if user is None:
-                    await self._ensure_organization_invitation_can_be_created(
+                    user = await self._ensure_user_by_email_cursor(
                         cursor,
-                        organization_id,
+                        _organization_member_account(payload),
                         payload["email"],
-                    )
-                    invitation_id = _new_langfuse_id("invite")
-                    await cursor.execute(
-                        """
-                        INSERT INTO membership_invitations (
-                            id,
-                            email,
-                            org_id,
-                            org_role,
-                            project_id,
-                            project_role,
-                            invited_by_user_id,
-                            created_at,
-                            updated_at
-                        )
-                        VALUES (
-                            %(id)s,
-                            %(email)s,
-                            %(organization_id)s,
-                            %(org_role)s::"Role",
-                            NULL,
-                            NULL,
-                            %(invited_by_user_id)s,
-                            NOW(),
-                            NOW()
-                        )
-                        """,
-                        {
-                            "id": invitation_id,
-                            "email": payload["email"].strip().lower(),
-                            "organization_id": organization_id,
-                            "org_role": payload["role"],
-                            "invited_by_user_id": actor_user_id,
-                        },
-                    )
-                    return await self._get_organization_invitation_cursor(
-                        cursor,
-                        organization_id,
-                        invitation_id,
                     )
 
                 try:
@@ -4854,6 +4789,18 @@ class LangfuseDatabaseReader:
                     )
                 except psycopg.errors.UniqueViolation as exc:
                     raise BusinessError(1016, "用户已在该组织中", 409) from exc
+                await cursor.execute(
+                    """
+                    DELETE FROM membership_invitations
+                    WHERE org_id = %(organization_id)s
+                      AND lower(email) = lower(%(email)s)
+                      AND project_id IS NULL
+                    """,
+                    {
+                        "organization_id": organization_id,
+                        "email": payload["email"],
+                    },
+                )
                 return await self._get_organization_member_cursor(
                     cursor,
                     organization_id,
@@ -6970,6 +6917,14 @@ def _format_datetime(value: Any) -> str:
             return f"{formatted}Z"
         return formatted.replace("+00:00", "Z")
     return str(value)
+
+
+def _organization_member_account(payload: dict[str, Any]) -> str:
+    name = str(payload.get("name") or "").strip()
+    if name:
+        return name
+    email = str(payload.get("email") or "").strip()
+    return email.split("@")[0] or "user"
 
 
 def _create_sha_hash(secret_key: str, salt: str) -> str:

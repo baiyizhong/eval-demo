@@ -2,7 +2,9 @@ from fastapi.testclient import TestClient
 import pytest
 
 from app.auth_context import CurrentUserContext, get_current_user_context
+from app.config import Settings
 from app.errors import BusinessError
+import app.langfuse_db as langfuse_db
 from app.langfuse_db import LangfuseDatabaseReader, get_langfuse_db_reader
 from app.main import app
 
@@ -248,6 +250,117 @@ class RecordingLangfuseReader(LangfuseDatabaseReader):
         return self.rows
 
 
+class FakeAsyncConnection:
+    def __init__(self, cursor: "CreateMissingProjectMemberCursor") -> None:
+        self._cursor = cursor
+
+    async def __aenter__(self) -> "FakeAsyncConnection":
+        return self
+
+    async def __aexit__(self, *args) -> None:
+        return None
+
+    def cursor(self) -> "CreateMissingProjectMemberCursor":
+        return self._cursor
+
+
+class CreateMissingProjectMemberCursor:
+    def __init__(self) -> None:
+        self.queries: list[tuple[str, dict]] = []
+        self._next_fetchone: dict | None = None
+        self._user_lookup_count = 0
+        self._org_lookup_count = 0
+
+    async def __aenter__(self) -> "CreateMissingProjectMemberCursor":
+        return self
+
+    async def __aexit__(self, *args) -> None:
+        return None
+
+    async def execute(self, sql: str, params: dict | None = None) -> None:
+        params = params or {}
+        self.queries.append((sql, params))
+        if "SELECT DISTINCT" in sql and "JOIN users u ON u.id = om.user_id" in sql:
+            self._next_fetchone = {
+                "id": "user-wangjing",
+                "name": "wangjing",
+                "email": "wangjing@163.com",
+                "role": "MEMBER",
+                "organization_role": "NONE",
+                "project_role": "MEMBER",
+            }
+            return
+        if "FROM projects p" in sql and "p.id = %(project_id)s" in sql:
+            self._next_fetchone = {"id": "project-1", "org_id": "org-1"}
+            return
+        if (
+            "FROM organization_memberships om" in sql
+            and "om.user_id = %(member_id)s" in sql
+        ):
+            member_id = params["member_id"]
+            if member_id == "actor-1":
+                self._next_fetchone = {
+                    "org_membership_id": "orgmem-actor",
+                    "user_id": "actor-1",
+                    "organization_role": "OWNER",
+                    "project_role": None,
+                }
+                return
+            self._next_fetchone = {
+                "org_membership_id": "orgmem-wangjing",
+                "user_id": "user-wangjing",
+                "organization_role": "NONE",
+                "project_role": None,
+            }
+            return
+        if "FROM users" in sql and "lower(email)" in sql:
+            self._user_lookup_count += 1
+            self._next_fetchone = (
+                None
+                if self._user_lookup_count <= 2
+                else {
+                    "id": "user-wangjing",
+                    "name": "wangjing",
+                    "email": "wangjing@163.com",
+                }
+            )
+            return
+        if "INSERT INTO users" in sql:
+            self._next_fetchone = {
+                "id": "user-wangjing",
+                "name": params["name"],
+                "email": params["email"],
+            }
+            return
+        if (
+            "FROM organization_memberships" in sql
+            and "WHERE org_id = %(organization_id)s" in sql
+            and "user_id = %(member_id)s" in sql
+        ):
+            self._org_lookup_count += 1
+            self._next_fetchone = (
+                None
+                if self._org_lookup_count == 1
+                else {"id": "orgmem-wangjing", "role": "NONE"}
+            )
+            return
+        if "INSERT INTO organization_memberships" in sql:
+            self._next_fetchone = {"id": "orgmem-wangjing", "role": "NONE"}
+            return
+        if "INSERT INTO project_memberships" in sql:
+            self._next_fetchone = None
+            return
+        self._next_fetchone = None
+
+    async def fetchone(self) -> dict | None:
+        return self._next_fetchone
+
+    async def fetchall(self) -> list[dict]:
+        if self._next_fetchone is None:
+            return []
+        return [self._next_fetchone]
+
+
 def test_lists_projects_with_pa_pagination_and_keyword_filter() -> None:
     override_reader(FakeDatabaseReader())
 
@@ -391,7 +504,7 @@ def test_creates_project_settings_member() -> None:
     try:
         response = TestClient(app).post(
             "/api/projects/project-1/settings/members",
-            json={"email": "member@example.com", "role": "MEMBER"},
+            json={"name": "项目成员", "email": "member@example.com", "role": "MEMBER"},
         )
     finally:
         clear_overrides()
@@ -401,8 +514,55 @@ def test_creates_project_settings_member() -> None:
     assert fake_reader.created_project_member_payload == {
         "project_id": "project-1",
         "user_id": "user-1",
-        "payload": {"email": "member@example.com", "role": "MEMBER"},
+        "payload": {
+            "name": "项目成员",
+            "email": "member@example.com",
+            "role": "MEMBER",
+        },
     }
+
+
+@pytest.mark.anyio
+async def test_create_project_member_creates_missing_user_and_org_member(
+    monkeypatch,
+) -> None:
+    cursor = CreateMissingProjectMemberCursor()
+
+    async def fake_connect(*args, **kwargs):
+        return FakeAsyncConnection(cursor)
+
+    monkeypatch.setattr(langfuse_db.psycopg.AsyncConnection, "connect", fake_connect)
+    reader = LangfuseDatabaseReader(
+        Settings(langfuse_database_url="postgresql://example")
+    )
+
+    member = await reader.create_project_member_for_user(
+        "project-1",
+        "actor-1",
+        {
+            "name": "wangjing",
+            "email": "wangjing@163.com",
+            "role": "MEMBER",
+        },
+    )
+
+    assert member["status"] == "active"
+    assert member["email"] == "wangjing@163.com"
+    user_insert = next(
+        item for item in cursor.queries if "INSERT INTO users" in item[0]
+    )
+    assert user_insert[1]["name"] == "wangjing"
+    assert user_insert[1]["email"] == "wangjing@163.com"
+    org_membership_insert = next(
+        item for item in cursor.queries if "INSERT INTO organization_memberships" in item[0]
+    )
+    assert org_membership_insert[1]["member_id"] == "user-wangjing"
+    project_membership_insert = next(
+        item for item in cursor.queries if "INSERT INTO project_memberships" in item[0]
+    )
+    assert project_membership_insert[1]["org_membership_id"] == "orgmem-wangjing"
+    assert project_membership_insert[1]["role"] == "MEMBER"
+    assert not any("INSERT INTO membership_invitations" in item[0] for item in cursor.queries)
 
 
 def test_updates_project_settings_member_role() -> None:

@@ -1,7 +1,9 @@
-import { type FormEvent, useMemo, useState } from 'react'
+import { useId, useMemo, useState } from 'react'
+import { z } from 'zod'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { type ColumnDef } from '@tanstack/react-table'
 import type { ProjectUserRecord } from '@/modules/app-evaluation/types'
+import { buildOrganizationMemberEmail } from '@/modules/organization-management/data/schema'
 import { MoreHorizontal, Plus } from 'lucide-react'
 import { useParams } from 'react-router'
 import { toast } from 'sonner'
@@ -13,20 +15,19 @@ import { usePermission } from '@/hooks/use-permission'
 import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
 import {
-  Dialog,
-  DialogContent,
-  DialogFooter,
-  DialogHeader,
-  DialogTitle,
-} from '@/components/ui/dialog'
-import {
   DropdownMenu,
   DropdownMenuContent,
   DropdownMenuItem,
   DropdownMenuTrigger,
 } from '@/components/ui/dropdown-menu'
+import {
+  FormControl,
+  FormField,
+  FormItem,
+  FormLabel,
+  FormMessage,
+} from '@/components/ui/form'
 import { Input } from '@/components/ui/input'
-import { Label } from '@/components/ui/label'
 import {
   Select,
   SelectContent,
@@ -34,6 +35,7 @@ import {
   SelectTrigger,
   SelectValue,
 } from '@/components/ui/select'
+import { BaseForm } from '@/components/common/base-form'
 import { ConfirmDialog } from '@/components/common/confirm-dialog'
 import { ContentSection } from '@/components/common/content-section'
 import {
@@ -42,6 +44,7 @@ import {
   type DataTableQueryState,
   type DataTableToolbarFilter,
 } from '@/components/common/data-table'
+import { Drawer } from '@/components/common/drawer'
 
 type ProjectRole = 'OWNER' | 'ADMIN' | 'MEMBER' | 'VIEWER' | 'NONE'
 
@@ -90,6 +93,18 @@ const PROJECT_ROLE_OPTIONS = [
 const CREATE_PROJECT_ROLE_OPTIONS = PROJECT_ROLE_OPTIONS.filter(
   (role) => role !== 'NONE'
 )
+
+const projectMemberFormSchema = z.object({
+  name: z.string().trim().optional(),
+  email: z.string().trim().email('请输入正确的邮箱地址'),
+  role: z.enum(PROJECT_ROLE_OPTIONS),
+})
+
+type ProjectMemberFormValues = z.infer<typeof projectMemberFormSchema>
+
+type MemberEmailSettings = {
+  defaultEmailDomain: string
+}
 
 function normalizeRole(role?: string | null): ProjectRole {
   if (
@@ -209,7 +224,7 @@ export function ProjectMembersSettings() {
   const { can } = usePermission({ type: 'project', projectId })
   const canEditProjectMembers = can('project:member:edit')
   const currentUser = useSessionStore((state) => state.user)
-  const [dialogOpen, setDialogOpen] = useState(false)
+  const [drawerOpen, setDrawerOpen] = useState(false)
   const [editingMember, setEditingMember] = useState<ProjectUserRecord | null>(
     null
   )
@@ -244,14 +259,14 @@ export function ProjectMembersSettings() {
   }
 
   const createMutation = useMutation({
-    mutationFn: (input: { email: string; role: ProjectRole }) =>
+    mutationFn: (input: { name?: string; email: string; role: ProjectRole }) =>
       $api.createProjectMember<ProjectUserRecord>({
         path: { projectId },
         body: input,
       }),
     onSuccess: async () => {
       await Promise.all([invalidateMembers(), refreshProjectSession()])
-      setDialogOpen(false)
+      setDrawerOpen(false)
       toast.success('项目成员已添加')
     },
   })
@@ -264,7 +279,7 @@ export function ProjectMembersSettings() {
     }),
     onSuccess: async (_data, variables) => {
       await Promise.all([invalidateMembers(), refreshProjectSession()])
-      setDialogOpen(false)
+      setDrawerOpen(false)
       setEditingMember(null)
       toast.success(
         variables.role === 'NONE' ? '项目角色覆盖已移除' : '项目成员角色已更新'
@@ -403,7 +418,7 @@ export function ProjectMembersSettings() {
                   disabled={!canOperate}
                   onClick={() => {
                     setEditingMember(member)
-                    setDialogOpen(true)
+                    setDrawerOpen(true)
                   }}
                 >
                   设置项目角色
@@ -434,7 +449,7 @@ export function ProjectMembersSettings() {
           <Button
             onClick={() => {
               setEditingMember(null)
-              setDialogOpen(true)
+              setDrawerOpen(true)
             }}
             disabled={!canManage}
           >
@@ -504,9 +519,9 @@ export function ProjectMembersSettings() {
           />
         </section>
 
-        <ProjectMemberDialog
+        <ProjectMemberDrawer
           key={editingMember?.id ?? 'create'}
-          open={dialogOpen}
+          open={drawerOpen}
           member={editingMember}
           actorRole={actorRole}
           saving={createMutation.isPending || updateMutation.isPending}
@@ -516,7 +531,7 @@ export function ProjectMembersSettings() {
               : getApiErrorMessage(createMutation.error)
           }
           onOpenChange={(open) => {
-            setDialogOpen(open)
+            setDrawerOpen(open)
             if (!open) {
               setEditingMember(null)
               createMutation.reset()
@@ -556,7 +571,7 @@ export function ProjectMembersSettings() {
   )
 }
 
-function ProjectMemberDialog({
+function ProjectMemberDrawer({
   open,
   member,
   actorRole,
@@ -571,85 +586,150 @@ function ProjectMemberDialog({
   saving: boolean
   errorMessage?: string
   onOpenChange: (open: boolean) => void
-  onSubmit: (input: { email: string; role: ProjectRole }) => void
+  onSubmit: (input: { name?: string; email: string; role: ProjectRole }) => void
 }) {
+  const formId = useId()
+  const $api = useAPI()
   const isEditMode = Boolean(member)
   const roleOptions = getProjectRoleOptions(actorRole, isEditMode)
   const fallbackRole = isEditMode ? 'NONE' : 'MEMBER'
-  const [email, setEmail] = useState(member?.email ?? '')
-  const [role, setRole] = useState<ProjectRole>(
-    normalizeRole(member?.projectRole ?? fallbackRole)
+  const emailSettingsQuery = useQuery({
+    queryKey: ['organization-member-email-settings', $api],
+    enabled: open && !isEditMode,
+    queryFn: () => $api.getOrganizationMemberEmailSettings<MemberEmailSettings>(),
+    staleTime: Infinity,
+  })
+  const defaultEmailDomain = emailSettingsQuery.data?.defaultEmailDomain ?? ''
+
+  const defaultValues = useMemo<ProjectMemberFormValues>(
+    () => ({
+      name: member?.name ?? '',
+      email: member?.email ?? '',
+      role: normalizeRole(member?.projectRole ?? fallbackRole),
+    }),
+    [fallbackRole, member?.email, member?.name, member?.projectRole]
   )
 
-  const handleSubmit = (event: FormEvent<HTMLFormElement>) => {
-    event.preventDefault()
-    onSubmit({ email: email.trim(), role })
+  const handleSubmit = (values: ProjectMemberFormValues) => {
+    onSubmit({
+      name: values.name?.trim(),
+      email: values.email.trim(),
+      role: values.role,
+    })
   }
 
   return (
-    <Dialog open={open} onOpenChange={onOpenChange}>
-      <DialogContent>
-        <DialogHeader>
-          <DialogTitle>
-            {isEditMode ? '设置项目角色' : '新增项目成员'}
-          </DialogTitle>
-        </DialogHeader>
-        <form className='flex flex-col gap-4' onSubmit={handleSubmit}>
-          <div className='flex flex-col gap-2'>
-            <Label htmlFor='project-member-email'>邮箱</Label>
-            <Input
-              id='project-member-email'
-              value={email}
-              disabled={isEditMode || saving}
-              onChange={(event) => setEmail(event.target.value)}
-              placeholder='member@example.com'
-              required
+    <Drawer
+      open={open}
+      onOpenChange={onOpenChange}
+      title={isEditMode ? '设置项目角色' : '新增项目成员'}
+      confirmText={isEditMode ? '保存' : '添加'}
+      confirmProps={{
+        form: formId,
+        type: 'submit',
+        disabled: saving || roleOptions.length === 0,
+      }}
+      cancelProps={{ disabled: saving }}
+    >
+      <BaseForm
+        key={member?.id ?? 'create-project-member'}
+        id={formId}
+        schema={projectMemberFormSchema}
+        defaultValues={defaultValues}
+        onSubmit={handleSubmit}
+        className='gap-4 overflow-visible'
+      >
+        {(form) => (
+          <>
+            <FormField
+              control={form.control}
+              name='name'
+              render={({ field }) => (
+                <FormItem>
+                  <FormLabel>姓名</FormLabel>
+                  <FormControl>
+                    <Input
+                      placeholder='输入成员姓名'
+                      disabled={isEditMode || saving}
+                      name={field.name}
+                      ref={field.ref}
+                      value={field.value}
+                      onBlur={field.onBlur}
+                      onChange={(event) => {
+                        field.onChange(event)
+                        if (!isEditMode && defaultEmailDomain) {
+                          form.setValue(
+                            'email',
+                            buildOrganizationMemberEmail(
+                              event.target.value,
+                              defaultEmailDomain
+                            ),
+                            {
+                              shouldDirty: true,
+                              shouldValidate: true,
+                            }
+                          )
+                        }
+                      }}
+                    />
+                  </FormControl>
+                  <FormMessage />
+                </FormItem>
+              )}
             />
-            {!isEditMode ? (
-              <p className='text-muted-foreground text-xs'>
-                如果该邮箱尚未注册 Langfuse，将创建待邀请项目成员。
-              </p>
-            ) : null}
-          </div>
-          <div className='flex flex-col gap-2'>
-            <Label>项目角色</Label>
-            <Select
-              value={role}
-              onValueChange={(value) => setRole(normalizeRole(value))}
-              disabled={saving || roleOptions.length === 0}
-            >
-              <SelectTrigger>
-                <SelectValue />
-              </SelectTrigger>
-              <SelectContent>
-                {roleOptions.map((option) => (
-                  <SelectItem key={option} value={option}>
-                    {formatRole(option)}
-                  </SelectItem>
-                ))}
-              </SelectContent>
-            </Select>
-          </div>
-          {errorMessage ? (
-            <div className='border-destructive/30 bg-destructive/5 text-destructive rounded-md border px-3 py-2 text-sm'>
-              {errorMessage}
-            </div>
-          ) : null}
-          <DialogFooter>
-            <Button
-              type='button'
-              variant='outline'
-              onClick={() => onOpenChange(false)}
-              disabled={saving}
-            >
-              取消
-            </Button>
-            <Button type='submit' disabled={saving || roleOptions.length === 0}>
-              {saving ? '保存中...' : isEditMode ? '保存' : '添加'}
-            </Button>
-          </DialogFooter>
-        </form>
-      </DialogContent>
-    </Dialog>
+            <FormField
+              control={form.control}
+              name='email'
+              render={({ field }) => (
+                <FormItem>
+                  <FormLabel>邮箱</FormLabel>
+                  <FormControl>
+                    <Input
+                      placeholder='输入成员邮箱'
+                      disabled={isEditMode || saving}
+                      {...field}
+                    />
+                  </FormControl>
+                  <FormMessage />
+                </FormItem>
+              )}
+            />
+            <FormField
+              control={form.control}
+              name='role'
+              render={({ field }) => (
+                <FormItem>
+                  <FormLabel>项目角色</FormLabel>
+                  <Select
+                    value={field.value}
+                    onValueChange={(value) => field.onChange(normalizeRole(value))}
+                    disabled={saving || roleOptions.length === 0}
+                  >
+                    <FormControl>
+                      <SelectTrigger>
+                        <SelectValue placeholder='选择项目角色' />
+                      </SelectTrigger>
+                    </FormControl>
+                    <SelectContent>
+                      {roleOptions.map((option) => (
+                        <SelectItem key={option} value={option}>
+                          {formatRole(option)}
+                        </SelectItem>
+                      ))}
+                    </SelectContent>
+                  </Select>
+                  <FormMessage />
+                </FormItem>
+              )}
+            />
+          </>
+        )}
+      </BaseForm>
+      {errorMessage ? (
+        <div className='border-destructive/30 bg-destructive/5 text-destructive mx-4 mb-4 rounded-md border px-3 py-2 text-sm'>
+          {errorMessage}
+        </div>
+      ) : null}
+    </Drawer>
   )
 }

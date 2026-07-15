@@ -53,6 +53,12 @@ export type PaginatedResult<T> = {
 export const normalizeOrganizationOwnerAccount = (value: string) =>
   value.toLowerCase().replace(/[^a-z0-9]/g, '')
 
+export const buildOrganizationMemberEmail = (name: string, domain: string) => {
+  const account = normalizeOrganizationOwnerAccount(name.trim())
+  const normalizedDomain = domain.trim().toLowerCase().replace(/^@/, '')
+  return account && normalizedDomain ? `${account}@${normalizedDomain}` : ''
+}
+
 export const createOrganizationPayloadSchema = z.object({
   name: z.string(),
   subsystem: z.string(),
