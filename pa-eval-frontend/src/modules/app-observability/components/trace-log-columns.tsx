@@ -77,6 +77,36 @@ export function createTraceLogColumns({
       ),
       cell: ({ row }) => <StatusBadge status={row.original.status} />,
     },
+    {
+      accessorKey: 'input',
+      header: ({ column }) => (
+        <DataTableColumnHeader column={column} title='Input' />
+      ),
+      cell: ({ row }) => renderTracePayloadPreview(row.original.input),
+      meta: {
+        className: 'min-w-[220px] max-w-[280px]',
+      },
+    },
+    {
+      accessorKey: 'output',
+      header: ({ column }) => (
+        <DataTableColumnHeader column={column} title='Output' />
+      ),
+      cell: ({ row }) => renderTracePayloadPreview(row.original.output),
+      meta: {
+        className: 'min-w-[220px] max-w-[280px]',
+      },
+    },
+    {
+      accessorKey: 'metadata',
+      header: ({ column }) => (
+        <DataTableColumnHeader column={column} title='Metadata' />
+      ),
+      cell: ({ row }) => renderTracePayloadPreview(row.original.metadata),
+      meta: {
+        className: 'min-w-[220px] max-w-[280px]',
+      },
+    },
     ...createTraceScoreColumns(rows),
     {
       accessorKey: 'latency',
@@ -157,4 +187,42 @@ export function formatTraceScoreValue(score: TraceScore | undefined) {
     return String(score.value)
   }
   return '-'
+}
+
+function renderTracePayloadPreview(value: unknown) {
+  const text = formatTracePayloadPreview(value)
+  if (text === '-') {
+    return <span className='text-muted-foreground'>-</span>
+  }
+
+  return (
+    <span
+      title={text}
+      className='text-muted-foreground block max-w-[260px] truncate font-mono text-xs'
+    >
+      {text}
+    </span>
+  )
+}
+
+function formatTracePayloadPreview(value: unknown): string {
+  if (value === undefined || value === null) {
+    return '-'
+  }
+  if (typeof value === 'string') {
+    const text = value.trim()
+    if (!text) {
+      return '-'
+    }
+    try {
+      return JSON.stringify(JSON.parse(text))
+    } catch {
+      return text.replace(/\s+/g, ' ')
+    }
+  }
+  try {
+    return JSON.stringify(value)
+  } catch {
+    return String(value)
+  }
 }

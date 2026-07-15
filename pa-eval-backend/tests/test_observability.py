@@ -674,7 +674,10 @@ async def test_fetches_trace_rows_with_session_filter_and_optional_io_fields(mon
 async def test_list_traces_includes_input_and_output_when_io_fields_requested(monkeypatch) -> None:
     reader = LangfuseClickHouseReader(Settings())
 
+    captured: dict[str, object] = {}
+
     async def fake_fetch_trace_rows(*args, **kwargs):
+        captured["include_io"] = kwargs.get("include_io")
         return [
             {
                 "traceId": "trace-1",
@@ -687,12 +690,26 @@ async def test_list_traces_includes_input_and_output_when_io_fields_requested(mo
                 "metadata": {},
                 "tags": [],
                 "scores": [],
-                "input": '{"question":"如何重置密码？"}',
-                "output": {"answer": "请在账户设置中重置密码"},
             }
         ]
 
+    async def fake_fetch_trace_payloads(project_id: str, trace_ids: list[str]):
+        captured["payload_project_id"] = project_id
+        captured["payload_trace_ids"] = trace_ids
+        return {
+            "trace-1": {
+                "input": '{"question":"如何重置密码？"}',
+                "output": {"answer": "请在账户设置中重置密码"},
+            }
+        }
+
     monkeypatch.setattr(reader, "_fetch_trace_rows", fake_fetch_trace_rows)
+    monkeypatch.setattr(
+        reader,
+        "_fetch_trace_payloads",
+        fake_fetch_trace_payloads,
+        raising=False,
+    )
 
     result = await reader.list_traces(
         "project-1",
@@ -702,8 +719,86 @@ async def test_list_traces_includes_input_and_output_when_io_fields_requested(mo
         time_range=None,
     )
 
+    assert captured.get("include_io") in (None, False)
+    assert captured["payload_project_id"] == "project-1"
+    assert captured["payload_trace_ids"] == ["trace-1"]
     assert result["datas"][0]["input"] == '{\n  "question": "如何重置密码？"\n}'
     assert result["datas"][0]["output"] == '{\n  "answer": "请在账户设置中重置密码"\n}'
+
+
+@pytest.mark.anyio
+async def test_list_traces_only_fetches_payloads_for_current_page(monkeypatch) -> None:
+    reader = LangfuseClickHouseReader(Settings())
+    captured: dict[str, object] = {}
+
+    async def fake_fetch_trace_rows(*args, **kwargs):
+        captured["include_io"] = kwargs.get("include_io")
+        return [
+            {
+                "traceId": f"trace-{index}",
+                "projectId": "project-1",
+                "environment": "default",
+                "status": "success",
+                "latency": 120,
+                "createdAt": f"2026-07-05 01:0{index}:00.000",
+                "userId": "user-1",
+                "metadata": {"businessId": f"biz-{index}"},
+                "tags": [],
+                "scores": [],
+            }
+            for index in range(1, 4)
+        ]
+
+    async def fake_fetch_trace_payloads(project_id: str, trace_ids: list[str]):
+        captured["payload_project_id"] = project_id
+        captured["payload_trace_ids"] = trace_ids
+        return {
+            "trace-2": {
+                "input": {"question": "page 2 input"},
+                "output": {"answer": "page 2 output"},
+            }
+        }
+
+    monkeypatch.setattr(reader, "_fetch_trace_rows", fake_fetch_trace_rows)
+    monkeypatch.setattr(
+        reader,
+        "_fetch_trace_payloads",
+        fake_fetch_trace_payloads,
+        raising=False,
+    )
+
+    result = await reader.list_traces(
+        "project-1",
+        page=2,
+        page_size=1,
+        fields="io,metadata",
+        time_range=None,
+    )
+
+    assert result["total"] == 3
+    assert captured.get("include_io") in (None, False)
+    assert captured["payload_project_id"] == "project-1"
+    assert captured["payload_trace_ids"] == ["trace-2"]
+    assert result["datas"] == [
+        {
+            "traceId": "trace-2",
+            "sessionId": "",
+            "projectId": "project-1",
+            "projectName": "",
+            "environment": "default",
+            "status": "success",
+            "latency": 120,
+            "createdAt": "2026-07-05T01:02:00.000Z",
+            "userId": "user-1",
+            "businessId": "biz-2",
+            "tags": [],
+            "scores": [],
+            "scoreSummary": "",
+            "input": '{\n  "question": "page 2 input"\n}',
+            "output": '{\n  "answer": "page 2 output"\n}',
+            "metadata": {"businessId": "biz-2"},
+        }
+    ]
 
 
 @pytest.mark.anyio

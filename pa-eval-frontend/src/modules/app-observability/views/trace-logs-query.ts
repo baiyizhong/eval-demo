@@ -13,6 +13,7 @@ import type {
 
 const DEFAULT_TRACE_LOG_TIME_RANGE: NonNullable<TraceListQuery['timeRange']> =
   DEFAULT_TRACE_QUICK_TIME_RANGE
+const DEFAULT_TRACE_LOG_FIELDS = 'io,metadata'
 
 function optionalString(value: unknown): string | undefined {
   const text = String(value ?? '').trim()
@@ -69,7 +70,7 @@ export function buildTraceListQuery(
       ? JSON.stringify(categoricalScoreFilters)
       : undefined,
     numericScoreFilters: serializeJsonFilter(numericScoreFilters),
-    fields: optionalString(state.filters.fields),
+    fields: optionalString(state.filters.fields) ?? DEFAULT_TRACE_LOG_FIELDS,
   }
 }
 

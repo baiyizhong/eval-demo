@@ -47,6 +47,9 @@ export type TraceLogRow = {
   userId: string
   businessId: string
   tags: string[]
+  input?: string
+  output?: string
+  metadata?: Record<string, unknown>
   scores?: TraceScore[]
   scoreSummary?: string
 }

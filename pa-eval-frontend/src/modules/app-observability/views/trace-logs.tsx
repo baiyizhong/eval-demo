@@ -60,7 +60,10 @@ export function TraceLogs() {
       }),
     staleTime: 5 * 60 * 1000,
   })
-  const scoreConfigs = scoreConfigsQuery.data ?? []
+  const scoreConfigs = useMemo(
+    () => scoreConfigsQuery.data ?? [],
+    [scoreConfigsQuery.data]
+  )
   const traceLogFilterGroups = useMemo(
     () => buildTraceLogFilterGroups(scoreConfigs),
     [scoreConfigs]
@@ -96,6 +99,9 @@ export function TraceLogs() {
                 sessionId: 'Session ID',
                 environment: '环境',
                 status: '状态',
+                input: 'Input',
+                output: 'Output',
+                metadata: 'Metadata',
                 latency: '延迟',
                 createdAt: '创建时间',
               },
@@ -120,7 +126,7 @@ export function TraceLogs() {
               />
             }
             emptyText='当前筛选条件下暂无 Trace 数据'
-            minTableWidth={1280}
+            minTableWidth={1880}
           />
           <TraceDetailDrawer
             projectId={projectId}

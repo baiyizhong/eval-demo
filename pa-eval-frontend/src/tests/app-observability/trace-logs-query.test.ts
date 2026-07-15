@@ -16,6 +16,7 @@ test('trace logs query defaults to the last 1 day when no time filter is selecte
 
   assert.equal(query.timeRange, '1d')
   assert.equal(query.createdAtRange, undefined)
+  assert.equal(query.fields, 'io,metadata')
 })
 
 test('trace logs query does not apply default time range when keyword is active', () => {

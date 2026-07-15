@@ -41,6 +41,7 @@ class LangfuseClickHouseReader:
         fields: str | None = None,
     ) -> dict[str, Any]:
         include_io = _trace_fields_include(fields, "io")
+        include_metadata = _trace_fields_include(fields, "metadata")
         start_time, end_time = _resolve_time_window(
             time_range=time_range,
             created_at_range=created_at_range,
@@ -51,7 +52,6 @@ class LangfuseClickHouseReader:
             end_time=end_time,
             environments=_normalize_environments(environments),
             session_id=session_id,
-            include_io=include_io,
         )
         filtered = [
             row
@@ -77,11 +77,27 @@ class LangfuseClickHouseReader:
         if session_id:
             filtered = sorted(filtered, key=_trace_created_at_sort_key)
         start = (page - 1) * page_size
+        page_rows = filtered[start : start + page_size]
+        if include_io:
+            trace_ids = [
+                str(row.get("traceId") or "")
+                for row in page_rows
+                if row.get("traceId")
+            ]
+            payloads_by_trace = await self._fetch_trace_payloads(project_id, trace_ids)
+            for row in page_rows:
+                payload = payloads_by_trace.get(str(row.get("traceId") or ""))
+                if payload:
+                    row.update(payload)
         return {
             "total": len(filtered),
             "datas": [
-                self._to_trace_row(row, include_io=include_io)
-                for row in filtered[start : start + page_size]
+                self._to_trace_row(
+                    row,
+                    include_io=include_io,
+                    include_metadata=include_metadata,
+                )
+                for row in page_rows
             ],
         }
 
@@ -495,6 +511,47 @@ class LangfuseClickHouseReader:
             row["scoreSummary"] = _score_summary(scores)
         return rows
 
+    async def _fetch_trace_payloads(
+        self,
+        project_id: str,
+        trace_ids: list[str],
+    ) -> dict[str, dict[str, Any]]:
+        unique_trace_ids = list(dict.fromkeys(trace_id for trace_id in trace_ids if trace_id))
+        if not unique_trace_ids:
+            return {}
+
+        payloads_by_trace: dict[str, dict[str, Any]] = {}
+        for chunk in _chunked(unique_trace_ids, 100):
+            params: dict[str, Any] = {"project_id": project_id}
+            trace_id_placeholders = []
+            for index, trace_id in enumerate(chunk):
+                param_key = f"payload_trace_id_{index}"
+                trace_id_placeholders.append(f"{{{param_key}:String}}")
+                params[param_key] = trace_id
+
+            rows = await self._query_json_each_row(
+                """
+                SELECT
+                    id AS traceId,
+                    input,
+                    output
+                FROM traces
+                WHERE project_id = {project_id:String}
+                  AND id IN (__TRACE_IDS__)
+                  AND is_deleted = 0
+                FORMAT JSONEachRow
+                """.replace("__TRACE_IDS__", ", ".join(trace_id_placeholders)),
+                params,
+            )
+            for row in rows:
+                trace_id = str(row.get("traceId") or "")
+                if trace_id:
+                    payloads_by_trace[trace_id] = {
+                        "input": row.get("input"),
+                        "output": row.get("output"),
+                    }
+        return payloads_by_trace
+
     async def _fetch_scores_for_trace(
         self,
         project_id: str,
@@ -688,7 +745,12 @@ class LangfuseClickHouseReader:
         return [json.loads(line) for line in lines]
 
     @staticmethod
-    def _to_trace_row(row: dict[str, Any], *, include_io: bool = False) -> dict[str, Any]:
+    def _to_trace_row(
+        row: dict[str, Any],
+        *,
+        include_io: bool = False,
+        include_metadata: bool = False,
+    ) -> dict[str, Any]:
         trace_row = {
             "traceId": row["traceId"],
             "sessionId": row.get("sessionId") or "",
@@ -707,6 +769,8 @@ class LangfuseClickHouseReader:
         if include_io:
             trace_row["input"] = _format_payload(row.get("input"))
             trace_row["output"] = _format_payload(row.get("output"))
+        if include_metadata:
+            trace_row["metadata"] = row.get("metadata") or {}
         return trace_row
 
 
