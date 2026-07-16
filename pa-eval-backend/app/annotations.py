@@ -212,10 +212,7 @@ def _to_public_annotation_export_job(job: dict[str, Any]) -> dict[str, Any]:
 def _safe_annotation_export_base_name(value: str) -> str:
     sanitized = re.sub(r'[\\/:*?"<>|]+', "-", value)
     sanitized = re.sub(r"\s+", " ", sanitized).strip(".- ")
-    return (
-        sanitized[:MAX_EXPORT_BASE_NAME_LENGTH].rstrip(".- ")
-        or "annotation-export"
-    )
+    return sanitized[:MAX_EXPORT_BASE_NAME_LENGTH].rstrip(".- ") or "annotation-export"
 
 
 def _default_annotation_export_base_name(
@@ -224,9 +221,7 @@ def _default_annotation_export_base_name(
 ) -> str:
     exported_at = datetime.now(timezone.utc).strftime("%Y%m%d%H%M")
     queue_name = str(queue.get("name") or queue.get("id") or "annotation-export")
-    return _safe_annotation_export_base_name(
-        f"{queue_name}_{exported_at}_批量导出"
-    )
+    return _safe_annotation_export_base_name(f"{queue_name}_{exported_at}_批量导出")
 
 
 def _annotation_export_base_name_from_payload(
@@ -560,7 +555,7 @@ def _score_config_payload(payload: ScoreConfigPayload) -> dict[str, Any]:
     elif payload.data_type == "BOOLEAN":
         min_value = None
         max_value = None
-        categories = LANGFUSE_BOOLEAN_CATEGORIES
+        categories = _normalize_boolean_score_categories(categories)
     elif payload.data_type == "CATEGORICAL":
         min_value = None
         max_value = None
@@ -585,6 +580,36 @@ def _score_config_payload(payload: ScoreConfigPayload) -> dict[str, Any]:
         "maxValue": max_value,
         "categories": categories,
     }
+
+
+def _normalize_boolean_score_categories(
+    categories: list[dict[str, Any]],
+) -> list[dict[str, float | str]]:
+    true_label = LANGFUSE_BOOLEAN_CATEGORIES[0]["label"]
+    false_label = LANGFUSE_BOOLEAN_CATEGORIES[1]["label"]
+    ordered_labels = [
+        str(category.get("label") or "").strip() for category in categories
+    ]
+    labels_by_value = {
+        category.get("value"): str(category.get("label") or "").strip()
+        for category in categories
+        if str(category.get("label") or "").strip()
+    }
+
+    if labels_by_value.get(1):
+        true_label = labels_by_value[1]
+    elif ordered_labels and ordered_labels[0]:
+        true_label = ordered_labels[0]
+
+    if labels_by_value.get(0):
+        false_label = labels_by_value[0]
+    elif len(ordered_labels) > 1 and ordered_labels[1]:
+        false_label = ordered_labels[1]
+
+    return [
+        {"label": true_label, "value": 1},
+        {"label": false_label, "value": 0},
+    ]
 
 
 def _first_non_empty_list(

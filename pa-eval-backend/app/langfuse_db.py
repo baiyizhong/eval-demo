@@ -3545,9 +3545,7 @@ class LangfuseDatabaseReader:
         unique_item_ids = list(dict.fromkeys(item_ids))
         project_users = await self.list_project_users_for_user(project_id, user_id)
         active_user_ids = {
-            user["id"]
-            for user in project_users
-            if user.get("status") != "pending"
+            user["id"] for user in project_users if user.get("status") != "pending"
         }
         if assignee_user_id not in active_user_ids:
             raise BusinessError(
@@ -3826,7 +3824,9 @@ class LangfuseDatabaseReader:
                 observation_id = (
                     item["object_id"] if item["object_type"] == "OBSERVATION" else None
                 )
-                session_id = item["object_id"] if item["object_type"] == "SESSION" else None
+                session_id = (
+                    item["object_id"] if item["object_type"] == "SESSION" else None
+                )
 
                 for score in payload.get("scores") or []:
                     config_id = score["configId"]
@@ -7006,6 +7006,37 @@ def _normalize_score_config_object(config: dict[str, Any]) -> dict[str, Any]:
     }
 
 
+def _normalize_boolean_score_categories(value: Any) -> list[dict[str, float | str]]:
+    categories = _normalize_score_categories(value)
+    true_label = LANGFUSE_BOOLEAN_SCORE_CATEGORIES[0]["label"]
+    false_label = LANGFUSE_BOOLEAN_SCORE_CATEGORIES[1]["label"]
+    labels_by_value = {
+        category["value"]: str(category["label"]).strip()
+        for category in categories
+        if str(category.get("label") or "").strip()
+    }
+    ordered_labels = [
+        str(category["label"]).strip()
+        for category in categories
+        if str(category.get("label") or "").strip()
+    ]
+
+    if labels_by_value.get(1):
+        true_label = labels_by_value[1]
+    elif ordered_labels:
+        true_label = ordered_labels[0]
+
+    if labels_by_value.get(0):
+        false_label = labels_by_value[0]
+    elif len(ordered_labels) > 1:
+        false_label = ordered_labels[1]
+
+    return [
+        {"label": true_label, "value": 1},
+        {"label": false_label, "value": 0},
+    ]
+
+
 def _legacy_string_score_category(
     item: str,
     index: int,
@@ -7148,7 +7179,9 @@ def _score_config_storage_payload(payload: dict[str, Any]) -> dict[str, Any]:
     max_value = payload.get("maxValue") if data_type == "NUMERIC" else None
     categories: Jsonb | None = None
     if data_type == "BOOLEAN":
-        categories = Jsonb(LANGFUSE_BOOLEAN_SCORE_CATEGORIES)
+        categories = Jsonb(
+            _normalize_boolean_score_categories(payload.get("categories"))
+        )
     elif data_type == "CATEGORICAL":
         categories = Jsonb(_normalize_score_categories(payload.get("categories") or []))
 

@@ -85,13 +85,15 @@ function getConfigRange(config: ScoreConfig) {
     return config.categories?.map(formatScoreOption).join(', ') || '-'
   }
   if (config.dataType === 'BOOLEAN') {
-    return formatBooleanScoreOptions()
+    return formatBooleanScoreOptions(config.categories)
   }
   return '-'
 }
 
-function formatBooleanScoreOptions() {
-  return BOOLEAN_SCORE_OPTIONS.map((option) => option.label).join(' / ')
+function formatBooleanScoreOptions(categories?: ScoreConfigCategory[]) {
+  return getBooleanScoreCategories(categories)
+    .map((option) => option.label)
+    .join(' / ')
 }
 
 export function ProjectScoreConfigsSettings() {
@@ -199,9 +201,9 @@ export function ProjectScoreConfigsSettings() {
                   <TableHead>范围/选项</TableHead>
                   <TableHead>状态</TableHead>
                   <TableHead>更新时间</TableHead>
-                    {canEditScoreConfigs ? (
-                      <TableHead className='text-end'>操作</TableHead>
-                    ) : null}
+                  {canEditScoreConfigs ? (
+                    <TableHead className='text-end'>操作</TableHead>
+                  ) : null}
                 </TableRow>
               </TableHeader>
               <TableBody>
@@ -219,7 +221,7 @@ export function ProjectScoreConfigsSettings() {
                                 {config.description}
                               </span>
                             </TooltipTrigger>
-                            <TooltipContent className='max-w-80 whitespace-normal break-words'>
+                            <TooltipContent className='max-w-80 break-words whitespace-normal'>
                               {config.description}
                             </TooltipContent>
                           </Tooltip>
@@ -231,7 +233,7 @@ export function ProjectScoreConfigsSettings() {
                       </div>
                     </TableCell>
                     <TableCell>{DATA_TYPE_LABELS[config.dataType]}</TableCell>
-                    <TableCell className='max-w-80 whitespace-normal break-words'>
+                    <TableCell className='max-w-80 break-words whitespace-normal'>
                       {getConfigRange(config)}
                     </TableCell>
                     <TableCell>
@@ -360,6 +362,10 @@ function ScoreConfigDialog({
       toast.error('请至少配置一个有效分类选项')
       return
     }
+    if (dataType === 'BOOLEAN' && categoryValues.length < 2) {
+      toast.error('请配置两个有效布尔标签')
+      return
+    }
     onSubmit({
       name: trimmedName,
       dataType,
@@ -368,17 +374,20 @@ function ScoreConfigDialog({
         dataType === 'NUMERIC' && minValue !== '' ? Number(minValue) : null,
       maxValue:
         dataType === 'NUMERIC' && maxValue !== '' ? Number(maxValue) : null,
-      categories: dataType === 'CATEGORICAL' ? categoryValues : undefined,
+      categories:
+        dataType === 'CATEGORICAL' || dataType === 'BOOLEAN'
+          ? categoryValues
+          : undefined,
     })
   }
 
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
-      <DialogContent className='sm:max-w-xl'>
-        <DialogHeader>
+      <DialogContent className='flex max-h-[calc(100svh-2rem)] flex-col gap-0 overflow-hidden p-0 sm:max-w-xl'>
+        <DialogHeader className='border-b p-6 pb-4 text-start'>
           <DialogTitle>{config ? '编辑评分指标' : '新增评分指标'}</DialogTitle>
         </DialogHeader>
-        <div className='grid gap-4'>
+        <div className='grid min-h-0 flex-1 gap-4 overflow-y-auto p-6'>
           <Field label='名称'>
             <Input
               value={name}
@@ -440,11 +449,10 @@ function ScoreConfigDialog({
               rows={categoryRows}
               onChange={setCategoryRows}
               readOnlyValue
-              readOnlyLabel
             />
           ) : null}
         </div>
-        <DialogFooter>
+        <DialogFooter className='border-t p-6 pt-4'>
           <Button
             type='button'
             variant='outline'
@@ -548,7 +556,7 @@ function ScoreOptionRows({
         </Button>
       ) : (
         <p className='text-muted-foreground text-xs'>
-          布尔类型固定为 True / False，不支持自定义修改。
+          布尔类型固定使用 1 / 0，标签可按业务含义修改。
         </p>
       )}
     </div>
@@ -565,7 +573,7 @@ function getInitialScoreOptionRows(
     | null
 ): ScoreOptionRow[] {
   if (config?.dataType === 'BOOLEAN') {
-    return BOOLEAN_SCORE_OPTIONS.map((option) => ({
+    return getBooleanScoreCategories(config.categories).map((option) => ({
       value: String(option.value),
       label: option.label,
     }))
@@ -576,9 +584,7 @@ function getInitialScoreOptionRows(
       label: category.label,
     }))
   }
-  return [
-    { value: '0', label: '' },
-  ]
+  return [{ value: '0', label: '' }]
 }
 
 function getNextScoreOptionRow(rows: ScoreOptionRow[]): ScoreOptionRow {
@@ -591,6 +597,28 @@ function getNextScoreOptionRow(rows: ScoreOptionRow[]): ScoreOptionRow {
 
 function formatScoreOption(option: ScoreConfigCategory) {
   return `${option.label}（${option.value}）`
+}
+
+function getBooleanScoreCategories(
+  categories?: ScoreConfigCategory[]
+): ScoreConfigCategory[] {
+  const trueOption =
+    categories?.find((category) => Number(category.value) === 1) ??
+    categories?.[0]
+  const falseOption =
+    categories?.find((category) => Number(category.value) === 0) ??
+    categories?.[1]
+
+  return [
+    {
+      value: 1,
+      label: trueOption?.label?.trim() || BOOLEAN_SCORE_OPTIONS[0].label,
+    },
+    {
+      value: 0,
+      label: falseOption?.label?.trim() || BOOLEAN_SCORE_OPTIONS[1].label,
+    },
+  ]
 }
 
 function Field({ label, children }: { label: string; children: ReactNode }) {

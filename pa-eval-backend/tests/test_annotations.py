@@ -727,7 +727,7 @@ def test_score_config_payload_uses_langfuse_category_objects() -> None:
     )
 
 
-def test_boolean_score_config_forces_langfuse_boolean_categories() -> None:
+def test_boolean_score_config_keeps_editable_labels_with_fixed_boolean_values() -> None:
     fake_reader = FakeAnnotationDatabaseReader()
     override_reader(fake_reader)
 
@@ -738,7 +738,10 @@ def test_boolean_score_config_forces_langfuse_boolean_categories() -> None:
                 "name": "是否合格",
                 "dataType": "BOOLEAN",
                 "description": "",
-                "categories": [{"label": "自定义", "value": 99}],
+                "categories": [
+                    {"label": "合格", "value": 99},
+                    {"label": "不合格", "value": -1},
+                ],
             },
         )
     finally:
@@ -746,8 +749,8 @@ def test_boolean_score_config_forces_langfuse_boolean_categories() -> None:
 
     assert response.status_code == 200
     assert fake_reader.calls[0][1][2]["categories"] == [
-        {"label": "True", "value": 1},
-        {"label": "False", "value": 0},
+        {"label": "合格", "value": 1},
+        {"label": "不合格", "value": 0},
     ]
 
 
@@ -1256,7 +1259,9 @@ def test_counts_large_annotation_queue_filters_without_trace_enrichment() -> Non
     assert fake_trace_reader.calls == []
 
 
-def test_lists_large_annotation_queue_with_metadata_filter_uses_batch_trace_sources() -> None:
+def test_lists_large_annotation_queue_with_metadata_filter_uses_batch_trace_sources() -> (
+    None
+):
     class LargeQueueReader(FakeAnnotationDatabaseReader):
         async def list_annotation_queue_items_for_user(
             self,
@@ -1326,7 +1331,9 @@ def test_lists_large_annotation_queue_with_metadata_filter_uses_batch_trace_sour
     ]
 
 
-def test_counts_large_annotation_queue_with_metadata_filter_uses_batch_trace_sources() -> None:
+def test_counts_large_annotation_queue_with_metadata_filter_uses_batch_trace_sources() -> (
+    None
+):
     class LargeQueueReader(FakeAnnotationDatabaseReader):
         async def list_annotation_queue_items_for_user(
             self,
@@ -1514,12 +1521,23 @@ def test_bulk_saves_annotation_scores_only_for_pending_filtered_items() -> None:
         "queue-1",
         "item-1",
         "user-1",
-        {"scores": [{"configId": "score-1", "value": 2.0, "stringValue": "", "comment": "同类错误统一低分"}]},
+        {
+            "scores": [
+                {
+                    "configId": "score-1",
+                    "value": 2.0,
+                    "stringValue": "",
+                    "comment": "同类错误统一低分",
+                }
+            ]
+        },
     )
     assert fake_reader.calls[5][1][2] == "item-2"
 
 
-def test_bulk_saves_large_annotation_batch_by_item_ids_without_trace_enrichment() -> None:
+def test_bulk_saves_large_annotation_batch_by_item_ids_without_trace_enrichment() -> (
+    None
+):
     class LargeQueueReader(FakeAnnotationDatabaseReader):
         async def list_annotation_queue_items_for_user(
             self,
@@ -1642,7 +1660,16 @@ def test_bulk_saves_annotation_scores_with_input_output_filters() -> None:
         "queue-1",
         "item-2",
         "user-1",
-        {"scores": [{"configId": "score-1", "value": 5.0, "stringValue": "", "comment": "发票回答准确"}]},
+        {
+            "scores": [
+                {
+                    "configId": "score-1",
+                    "value": 5.0,
+                    "stringValue": "",
+                    "comment": "发票回答准确",
+                }
+            ]
+        },
     )
 
 

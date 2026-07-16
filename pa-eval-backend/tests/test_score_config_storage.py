@@ -33,17 +33,22 @@ def test_text_score_config_stores_null_categories_for_langfuse_ui() -> None:
     assert payload["categories"] is None
 
 
-def test_boolean_score_config_stores_langfuse_boolean_categories() -> None:
+def test_boolean_score_config_stores_editable_labels_with_fixed_boolean_values() -> (
+    None
+):
     payload = _score_config_storage_payload(
         {
             "name": "passed",
             "dataType": "BOOLEAN",
             "description": "",
-            "categories": [{"label": "自定义", "value": 99}],
+            "categories": [
+                {"label": "合格", "value": 99},
+                {"label": "不合格", "value": -1},
+            ],
         }
     )
 
     assert _jsonb_value(payload["categories"]) == [
-        {"label": "True", "value": 1},
-        {"label": "False", "value": 0},
+        {"label": "合格", "value": 1},
+        {"label": "不合格", "value": 0},
     ]
