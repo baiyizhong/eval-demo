@@ -5,7 +5,6 @@ import {
   MoreHorizontal,
   RefreshCw,
   RotateCcw,
-  Send,
   Trash2,
 } from 'lucide-react'
 import { Link } from 'react-router'
@@ -25,7 +24,6 @@ type Props = {
   projectId: string
   onExport: (report: EvaluationReportRecord) => void
   onRegenerate: (report: EvaluationReportRecord) => void
-  onFlowback: (report: EvaluationReportRecord) => void
   onViewUnavailable: (report: EvaluationReportRecord) => void
   onDelete: (report: EvaluationReportRecord) => void
   canEdit?: boolean
@@ -36,7 +34,6 @@ export function EvaluationReportRowActions({
   projectId,
   onExport,
   onRegenerate,
-  onFlowback,
   onViewUnavailable,
   onDelete,
   canEdit,
@@ -70,20 +67,13 @@ export function EvaluationReportRowActions({
           )}
           <DropdownMenuItem disabled={!ready} onSelect={() => onExport(report)}>
             <Download data-icon='inline-start' />
-            导出
+            导出报告
           </DropdownMenuItem>
           {canEdit ? (
             <>
               <DropdownMenuItem onSelect={() => onRegenerate(report)}>
                 <RotateCcw data-icon='inline-start' />
                 重新生成
-              </DropdownMenuItem>
-              <DropdownMenuItem
-                disabled={!ready}
-                onSelect={() => onFlowback(report)}
-              >
-                <Send data-icon='inline-start' />
-                回流数据
               </DropdownMenuItem>
               <DropdownMenuSeparator />
               <DropdownMenuItem

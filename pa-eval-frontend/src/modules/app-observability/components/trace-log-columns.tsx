@@ -2,6 +2,7 @@ import type { ColumnDef } from '@tanstack/react-table'
 import { Button } from '@/components/ui/button'
 import { Checkbox } from '@/components/ui/checkbox'
 import { DataTableColumnHeader } from '@/components/common/data-table'
+import { HoverPreviewCell } from '@/components/common/hover-preview-cell'
 import { formatDateTime, formatLatency } from '../lib/format'
 import type { TraceLogRow, TraceScore } from '../types'
 import { CopyableText } from './copyable-text'
@@ -82,7 +83,7 @@ export function createTraceLogColumns({
       header: ({ column }) => (
         <DataTableColumnHeader column={column} title='Input' />
       ),
-      cell: ({ row }) => renderTracePayloadPreview(row.original.input),
+      cell: ({ row }) => renderTracePayloadPreview('Input', row.original.input),
       meta: {
         className: 'min-w-[220px] max-w-[280px]',
       },
@@ -92,7 +93,8 @@ export function createTraceLogColumns({
       header: ({ column }) => (
         <DataTableColumnHeader column={column} title='Output' />
       ),
-      cell: ({ row }) => renderTracePayloadPreview(row.original.output),
+      cell: ({ row }) =>
+        renderTracePayloadPreview('Output', row.original.output),
       meta: {
         className: 'min-w-[220px] max-w-[280px]',
       },
@@ -102,7 +104,8 @@ export function createTraceLogColumns({
       header: ({ column }) => (
         <DataTableColumnHeader column={column} title='Metadata' />
       ),
-      cell: ({ row }) => renderTracePayloadPreview(row.original.metadata),
+      cell: ({ row }) =>
+        renderTracePayloadPreview('Metadata', row.original.metadata),
       meta: {
         className: 'min-w-[220px] max-w-[280px]',
       },
@@ -189,19 +192,19 @@ export function formatTraceScoreValue(score: TraceScore | undefined) {
   return '-'
 }
 
-function renderTracePayloadPreview(value: unknown) {
+function renderTracePayloadPreview(label: string, value: unknown) {
   const text = formatTracePayloadPreview(value)
   if (text === '-') {
     return <span className='text-muted-foreground'>-</span>
   }
 
   return (
-    <span
-      title={text}
-      className='text-muted-foreground block max-w-[260px] truncate font-mono text-xs'
-    >
-      {text}
-    </span>
+    <HoverPreviewCell
+      label={label}
+      value={text}
+      detailValue={formatTracePayloadDetail(value)}
+      triggerClassName='max-w-[260px] font-mono'
+    />
   )
 }
 
@@ -222,6 +225,28 @@ function formatTracePayloadPreview(value: unknown): string {
   }
   try {
     return JSON.stringify(value)
+  } catch {
+    return String(value)
+  }
+}
+
+function formatTracePayloadDetail(value: unknown): string {
+  if (value === undefined || value === null) {
+    return '-'
+  }
+  if (typeof value === 'string') {
+    const text = value.trim()
+    if (!text) {
+      return '-'
+    }
+    try {
+      return JSON.stringify(JSON.parse(text), null, 2)
+    } catch {
+      return text
+    }
+  }
+  try {
+    return JSON.stringify(value, null, 2)
   } catch {
     return String(value)
   }

@@ -1,6 +1,5 @@
-import { useState } from 'react'
 import { useQuery, useQueryClient } from '@tanstack/react-query'
-import { Download, RefreshCw, Send } from 'lucide-react'
+import { Download, RefreshCw } from 'lucide-react'
 import { useNavigate, useParams, useSearchParams } from 'react-router'
 import { toast } from 'sonner'
 import { confirm } from '@/lib/confirm'
@@ -17,16 +16,11 @@ import {
 } from '../api/evaluation-report-api'
 import { EvaluationReportAnalysis } from '../components/evaluation-report-analysis'
 import { EvaluationReportBadcaseTable } from '../components/evaluation-report-badcase-table'
-import { EvaluationReportFlowbackDialog } from '../components/evaluation-report-flowback-dialog'
 import { EvaluationReportFlowbackHistory } from '../components/evaluation-report-flowback-history'
 import { EvaluationReportItemTable } from '../components/evaluation-report-item-table'
 import { EvaluationReportSourceBadge } from '../components/evaluation-report-source-badge'
 import { EvaluationReportStatusBadge } from '../components/evaluation-report-status-badge'
 import { EvaluationReportSummary } from '../components/evaluation-report-summary'
-import type {
-  EvaluationReportFlowbackInput,
-  EvaluationReportFlowbackType,
-} from '../types'
 
 export function ProjectEvaluationReportDetail() {
   const { projectId = 'project_customer_agent', reportId = '' } = useParams()
@@ -36,12 +30,6 @@ export function ProjectEvaluationReportDetail() {
   const [searchParams, setSearchParams] = useSearchParams()
   const navigate = useNavigate()
   const queryClient = useQueryClient()
-  const [flowbackOpen, setFlowbackOpen] = useState(false)
-  const [flowbackType, setFlowbackType] =
-    useState<EvaluationReportFlowbackType>('BADCASE')
-  const [selectedFlowbackIds, setSelectedFlowbackIds] = useState<string[]>([])
-  const [defaultRange, setDefaultRange] =
-    useState<EvaluationReportFlowbackInput['range']>('BADCASE_ONLY')
 
   const reportQuery = useQuery({
     queryKey: ['project-evaluation-report', projectId, reportId],
@@ -78,19 +66,6 @@ export function ProjectEvaluationReportDetail() {
   const sections = report?.reportTemplateSnapshot?.sections
   const showBadcases = sections?.badcases ?? true
   const showItems = sections?.items ?? true
-
-  const openFlowback = (
-    type: EvaluationReportFlowbackType,
-    range: EvaluationReportFlowbackInput['range'],
-    ids: string[] = []
-  ) => {
-    if (!canEditReport) return
-
-    setFlowbackType(type)
-    setDefaultRange(range)
-    setSelectedFlowbackIds(ids)
-    setFlowbackOpen(true)
-  }
 
   const handleExport = async () => {
     if (!report) return
@@ -133,7 +108,7 @@ export function ProjectEvaluationReportDetail() {
             buttons: [
               {
                 id: 'export',
-                label: '导出',
+                label: '导出报告',
                 icon: Download,
                 iconPosition: 'start',
                 variant: 'outline',
@@ -152,26 +127,6 @@ export function ProjectEvaluationReportDetail() {
                       size: 'sm' as const,
                       disabled: !report,
                       onClick: () => void handleRegenerate(),
-                    },
-                    {
-                      id: 'badcase-flowback',
-                      label: '回流 Badcase',
-                      icon: Send,
-                      iconPosition: 'start' as const,
-                      size: 'sm' as const,
-                      disabled:
-                        !report || report.status !== 'READY' || !showBadcases,
-                      onClick: () => openFlowback('BADCASE', 'BADCASE_ONLY'),
-                    },
-                    {
-                      id: 'data-flowback',
-                      label: '回流评测数据',
-                      icon: Send,
-                      iconPosition: 'start' as const,
-                      variant: 'outline' as const,
-                      size: 'sm' as const,
-                      disabled: !report || report.status !== 'READY' || !showItems,
-                      onClick: () => openFlowback('EVALUATION_DATA', 'ALL'),
                     },
                   ]
                 : []),
@@ -219,28 +174,16 @@ export function ProjectEvaluationReportDetail() {
                 <EvaluationReportBadcaseTable
                   projectId={projectId}
                   reportId={reportId}
+                  reportTitle={report.title}
                   canEdit={canEditReport}
-                  onFlowback={(ids) =>
-                    openFlowback(
-                      'BADCASE',
-                      ids.length ? 'SELECTED' : 'BADCASE_ONLY',
-                      ids
-                    )
-                  }
                 />
               </TabsContent>
               <TabsContent value='items' className='min-h-0'>
                 <EvaluationReportItemTable
                   projectId={projectId}
                   reportId={reportId}
+                  reportTitle={report.title}
                   canEdit={canEditReport}
-                  onFlowback={(ids) =>
-                    openFlowback(
-                      'EVALUATION_DATA',
-                      ids.length ? 'SELECTED' : 'ALL',
-                      ids
-                    )
-                  }
                 />
               </TabsContent>
               <TabsContent value='flowbacks'>
@@ -249,17 +192,6 @@ export function ProjectEvaluationReportDetail() {
                 />
               </TabsContent>
             </Tabs>
-            <EvaluationReportFlowbackDialog
-              key={`${flowbackType}-${defaultRange}-${selectedFlowbackIds.join(',')}`}
-              open={flowbackOpen}
-              onOpenChange={setFlowbackOpen}
-              projectId={projectId}
-              reportId={reportId}
-              flowbackType={flowbackType}
-              selectedItemIds={selectedFlowbackIds}
-              defaultRange={defaultRange}
-              onCompleted={invalidateReport}
-            />
           </>
         ) : (
           <section className='bg-card text-card-foreground rounded-lg border p-4'>

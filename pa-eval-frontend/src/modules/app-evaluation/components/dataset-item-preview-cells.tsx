@@ -1,9 +1,10 @@
+import { cn } from '@/lib/utils'
 import {
   HoverCard,
   HoverCardContent,
   HoverCardTrigger,
 } from '@/components/ui/hover-card'
-import { cn } from '@/lib/utils'
+import { HoverPreviewCell } from '@/components/common/hover-preview-cell'
 
 export function JsonPreviewCell({
   label,
@@ -18,28 +19,13 @@ export function JsonPreviewCell({
   const pretty = stringifyPretty(value)
 
   return (
-    <HoverCard openDelay={250} closeDelay={100}>
-      <HoverCardTrigger asChild>
-        <button
-          type='button'
-          className={cn(
-            'hover:text-foreground block max-w-64 truncate text-left font-mono text-xs text-muted-foreground',
-            className
-          )}
-        >
-          {brief || '-'}
-        </button>
-      </HoverCardTrigger>
-      <HoverCardContent
-        align='start'
-        className='w-[560px] max-w-[calc(100vw-2rem)] p-3'
-      >
-        <div className='text-xs font-medium'>{label}</div>
-        <pre className='mt-2 max-h-80 overflow-auto whitespace-pre-wrap break-words font-mono text-xs leading-relaxed'>
-          {pretty || '-'}
-        </pre>
-      </HoverCardContent>
-    </HoverCard>
+    <HoverPreviewCell
+      label={label}
+      value={brief}
+      detailValue={pretty}
+      triggerClassName={cn('max-w-64 font-mono', className)}
+      contentClassName='w-[560px] max-w-[calc(100vw-2rem)]'
+    />
   )
 }
 
@@ -61,7 +47,7 @@ export function SourcePreviewCell({
       <HoverCardTrigger asChild>
         <button
           type='button'
-          className='hover:text-foreground block max-w-[320px] break-all text-left font-mono text-xs text-muted-foreground'
+          className='hover:text-foreground text-muted-foreground block max-w-[320px] text-left font-mono text-xs break-all'
           onClick={() => onOpenTrace?.(traceId)}
         >
           {traceId}

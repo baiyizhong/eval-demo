@@ -15,7 +15,8 @@ test('dataset item json columns use formatted hover previews', () => {
   assert.match(columnsSource, /JsonPreviewCell/)
   assert.match(columnsSource, /Expected Output/)
   assert.match(columnsSource, /Metadata/)
-  assert.match(previewCellsSource, /HoverCard/)
+  assert.match(previewCellsSource, /HoverPreviewCell/)
+  assert.match(previewCellsSource, /@\/components\/common\/hover-preview-cell/)
   assert.match(previewCellsSource, /stringifyPretty/)
   assert.match(previewCellsSource, /JSON\.stringify\(value, null, 2\)/)
   assert.doesNotMatch(columnsSource, /JSON\.stringify\(row\.original\.input\)/)
@@ -23,7 +24,10 @@ test('dataset item json columns use formatted hover previews', () => {
     columnsSource,
     /JSON\.stringify\(row\.original\.expectedOutput\)/
   )
-  assert.doesNotMatch(columnsSource, /JSON\.stringify\(row\.original\.metadata\)/)
+  assert.doesNotMatch(
+    columnsSource,
+    /JSON\.stringify\(row\.original\.metadata\)/
+  )
 })
 
 test('dataset item source column only shows trace id and supports opening trace detail', () => {

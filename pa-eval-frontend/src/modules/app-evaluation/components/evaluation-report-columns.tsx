@@ -12,7 +12,6 @@ type Options = {
   projectId: string
   onExport: (report: EvaluationReportRecord) => void
   onRegenerate: (report: EvaluationReportRecord) => void
-  onFlowback: (report: EvaluationReportRecord) => void
   onViewUnavailable: (report: EvaluationReportRecord) => void
   onDelete: (report: EvaluationReportRecord) => void
   canEdit?: boolean
@@ -22,7 +21,6 @@ export function createEvaluationReportColumns({
   projectId,
   onExport,
   onRegenerate,
-  onFlowback,
   onViewUnavailable,
   onDelete,
   canEdit,
@@ -94,7 +92,6 @@ export function createEvaluationReportColumns({
           projectId={projectId}
           onExport={onExport}
           onRegenerate={onRegenerate}
-          onFlowback={onFlowback}
           onViewUnavailable={onViewUnavailable}
           onDelete={onDelete}
           canEdit={canEdit}

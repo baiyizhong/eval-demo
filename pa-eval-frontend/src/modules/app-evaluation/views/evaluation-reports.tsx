@@ -1,7 +1,7 @@
 import { useCallback, useMemo, useState } from 'react'
 import { useQueryClient } from '@tanstack/react-query'
 import { FileSliders, RefreshCw } from 'lucide-react'
-import { useNavigate, useParams } from 'react-router'
+import { useParams } from 'react-router'
 import { toast } from 'sonner'
 import { confirm } from '@/lib/confirm'
 import { useAPI } from '@/hooks/use-api'
@@ -26,7 +26,6 @@ import {
 export function ProjectEvaluationReports() {
   const { projectId = 'project_customer_agent' } = useParams()
   const $api = useAPI()
-  const navigate = useNavigate()
   const queryClient = useQueryClient()
   const { can } = usePermission({ type: 'project', projectId })
   const canEditReports = can('project:evaluation-report:edit')
@@ -58,10 +57,6 @@ export function ProjectEvaluationReports() {
         onExport: (report) => void handleExport($api, projectId, report),
         onRegenerate: (report) =>
           void handleRegenerate(report, invalidateReports),
-        onFlowback: (report) =>
-          navigate(
-            `/projects/${projectId}/evaluation/reports/${report.id}?tab=badcases`
-          ),
         onViewUnavailable: (report) =>
           toast.warning(
             report.status === 'GENERATING'
@@ -71,7 +66,7 @@ export function ProjectEvaluationReports() {
         onDelete: (report) =>
           void handleDelete($api, projectId, report, invalidateReports),
       }),
-    [$api, canEditReports, invalidateReports, navigate, projectId]
+    [$api, canEditReports, invalidateReports, projectId]
   )
 
   const handleRefresh = async () => {

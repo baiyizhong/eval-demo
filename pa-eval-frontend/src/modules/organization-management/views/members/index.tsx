@@ -15,9 +15,9 @@ import { useCurrentOrganizationRole } from '@/modules/organization-management/ho
 import { useOrganizations } from '@/modules/organization-management/hooks/use-organizations'
 import { MoreHorizontal, Plus } from 'lucide-react'
 import { toast } from 'sonner'
-import { refreshSessionStore } from '@/lib/session-refresh'
 import { useOrganizationStore } from '@/stores/organization.store'
 import { useSessionStore } from '@/stores/session.store'
+import { refreshSessionStore } from '@/lib/session-refresh'
 import { useAPI } from '@/hooks/use-api'
 import { usePermission } from '@/hooks/use-permission'
 import { Badge } from '@/components/ui/badge'
@@ -375,10 +375,7 @@ export function SettingsOrganizationMembers() {
   )
 
   return (
-    <ContentSection
-      title='组织人员'
-      desc='管理当前组织成员和角色权限。'
-    >
+    <ContentSection title='组织人员' desc='管理当前组织成员和角色权限。'>
       <>
         {isLoading ? (
           <OrganizationMembersLoading />
@@ -460,6 +457,7 @@ export function SettingsOrganizationMembers() {
             actorRole={actorRole}
             ownerCount={ownerCount}
             member={editingMember}
+            existingMembers={actorMembersQuery.data?.datas ?? []}
           />
         ) : null}
 

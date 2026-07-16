@@ -64,6 +64,7 @@ type TraceAnnotationDialogProps = {
   selectedCount?: number
   isCrossPageSelection?: boolean
   projectName?: string
+  defaultDescription?: string
   onOpenChange: (open: boolean) => void
   onSubmitExisting: (queueId: string) => Promise<void> | void
   onSubmitNew: (input: AnnotationQueueFormInput) => Promise<void> | void
@@ -84,6 +85,7 @@ export function TraceAnnotationDialog({
   selectedCount,
   isCrossPageSelection = false,
   projectName,
+  defaultDescription = '',
   onOpenChange,
   onSubmitExisting,
   onSubmitNew,
@@ -196,7 +198,7 @@ export function TraceAnnotationDialog({
             schema={newQueueSchema}
             defaultValues={{
               name: buildDefaultAnnotationTaskName(projectName || projectId),
-              description: '',
+              description: defaultDescription,
               scoreConfigIds: [],
               assigneeIds: [],
               assignmentStrategy: 'average',

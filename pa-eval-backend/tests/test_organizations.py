@@ -86,9 +86,13 @@ class FakeDatabaseReader:
         actor_user_id: str,
         payload: dict,
     ) -> dict:
+        if payload["email"] == "viewer@example.com":
+            raise BusinessError(
+                1016,
+                "用户已在该组织中，请使用设置组织角色调整权限",
+                409,
+            )
         if payload["email"] == "missing@example.com":
-            from app.errors import BusinessError
-
             raise BusinessError(1015, "用户不存在，请先让该用户登录 Langfuse", 404)
         self.created_member_payload = {
             "organization_id": organization_id,
@@ -436,6 +440,27 @@ def test_creates_organization_member_through_database_reader() -> None:
         },
     }
     assert response.json()["data"]["id"] == "mem-created"
+
+
+def test_create_organization_member_returns_friendly_duplicate_message() -> None:
+    fake_reader = FakeDatabaseReader()
+    override_reader(fake_reader)
+
+    try:
+        response = TestClient(app).post(
+            "/api/organizations/org-1/members",
+            json={
+                "email": "viewer@example.com",
+                "name": "Viewer",
+                "role": "VIEWER",
+            },
+        )
+    finally:
+        clear_overrides()
+
+    assert response.status_code == 409
+    assert response.json()["code"] == 1016
+    assert response.json()["message"] == "用户已在该组织中，请使用设置组织角色调整权限"
 
 
 def test_creates_organization_member_with_none_role_for_project_only_access() -> None:

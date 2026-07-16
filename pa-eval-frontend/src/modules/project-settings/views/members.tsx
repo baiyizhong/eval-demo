@@ -8,8 +8,8 @@ import { MoreHorizontal, Plus } from 'lucide-react'
 import { useParams } from 'react-router'
 import { toast } from 'sonner'
 import type { ApiErrorPayload } from '@/api/types'
-import { refreshSessionStore } from '@/lib/session-refresh'
 import { useSessionStore } from '@/stores/session.store'
+import { refreshSessionStore } from '@/lib/session-refresh'
 import { useAPI } from '@/hooks/use-api'
 import { usePermission } from '@/hooks/use-permission'
 import { Badge } from '@/components/ui/badge'
@@ -102,6 +102,9 @@ const projectMemberFormSchema = z.object({
 
 type ProjectMemberFormValues = z.infer<typeof projectMemberFormSchema>
 
+const PROJECT_MEMBER_EXISTS_MESSAGE =
+  '用户已在该项目中，请使用设置项目角色调整权限'
+
 type MemberEmailSettings = {
   defaultEmailDomain: string
 }
@@ -163,6 +166,19 @@ function getApiErrorMessage(error: unknown) {
   if (!error) return ''
   const payload = error as Partial<ApiErrorPayload>
   return payload.message || '操作失败，请稍后重试'
+}
+
+function getProjectMemberFormErrorMessage(error: unknown) {
+  const message = getApiErrorMessage(error)
+
+  if (
+    message.includes('已经为该项目成员') ||
+    message.includes('已在该项目中')
+  ) {
+    return PROJECT_MEMBER_EXISTS_MESSAGE
+  }
+
+  return message || '项目成员保存失败'
 }
 
 function getRoleFilter(state: DataTableQueryState, field: string) {
@@ -230,6 +246,7 @@ export function ProjectMembersSettings() {
   )
   const [removingMember, setRemovingMember] =
     useState<ProjectUserRecord | null>(null)
+  const [formError, setFormError] = useState<string | null>(null)
   const membersMetaQuery = useQuery({
     queryKey: ['project-settings-members-meta', $api, projectId],
     enabled: Boolean(projectId),
@@ -266,8 +283,12 @@ export function ProjectMembersSettings() {
       }),
     onSuccess: async () => {
       await Promise.all([invalidateMembers(), refreshProjectSession()])
+      setFormError(null)
       setDrawerOpen(false)
       toast.success('项目成员已添加')
+    },
+    onError: (error) => {
+      setFormError(getProjectMemberFormErrorMessage(error))
     },
   })
 
@@ -276,9 +297,10 @@ export function ProjectMembersSettings() {
       $api.updateProjectMember<ProjectUserRecord>({
         path: { projectId, memberId: input.memberId },
         body: { role: input.role },
-    }),
+      }),
     onSuccess: async (_data, variables) => {
       await Promise.all([invalidateMembers(), refreshProjectSession()])
+      setFormError(null)
       setDrawerOpen(false)
       setEditingMember(null)
       toast.success(
@@ -291,7 +313,7 @@ export function ProjectMembersSettings() {
     mutationFn: (memberId: string) =>
       $api.deleteProjectMember<{ id: string }>({
         path: { projectId, memberId },
-    }),
+      }),
     onSuccess: async () => {
       await Promise.all([invalidateMembers(), refreshProjectSession()])
       setRemovingMember(null)
@@ -449,6 +471,9 @@ export function ProjectMembersSettings() {
           <Button
             onClick={() => {
               setEditingMember(null)
+              setFormError(null)
+              createMutation.reset()
+              updateMutation.reset()
               setDrawerOpen(true)
             }}
             disabled={!canManage}
@@ -526,14 +551,22 @@ export function ProjectMembersSettings() {
           actorRole={actorRole}
           saving={createMutation.isPending || updateMutation.isPending}
           errorMessage={
-            editingMember
+            formError ??
+            (editingMember
               ? getApiErrorMessage(updateMutation.error)
-              : getApiErrorMessage(createMutation.error)
+              : getApiErrorMessage(createMutation.error))
           }
+          onInputChange={() => {
+            if (!editingMember) {
+              setFormError(null)
+              createMutation.reset()
+            }
+          }}
           onOpenChange={(open) => {
             setDrawerOpen(open)
             if (!open) {
               setEditingMember(null)
+              setFormError(null)
               createMutation.reset()
               updateMutation.reset()
             }
@@ -544,6 +577,16 @@ export function ProjectMembersSettings() {
                 memberId: editingMember.id,
                 role: input.role,
               })
+              return
+            }
+            setFormError(null)
+            if (
+              findExistingProjectMemberByEmail(
+                membersMetaQuery.data ?? [],
+                input.email
+              )
+            ) {
+              setFormError(PROJECT_MEMBER_EXISTS_MESSAGE)
               return
             }
             createMutation.mutate(input)
@@ -577,6 +620,7 @@ function ProjectMemberDrawer({
   actorRole,
   saving,
   errorMessage,
+  onInputChange,
   onOpenChange,
   onSubmit,
 }: {
@@ -585,6 +629,7 @@ function ProjectMemberDrawer({
   actorRole: ProjectRole
   saving: boolean
   errorMessage?: string
+  onInputChange?: () => void
   onOpenChange: (open: boolean) => void
   onSubmit: (input: { name?: string; email: string; role: ProjectRole }) => void
 }) {
@@ -596,7 +641,8 @@ function ProjectMemberDrawer({
   const emailSettingsQuery = useQuery({
     queryKey: ['organization-member-email-settings', $api],
     enabled: open && !isEditMode,
-    queryFn: () => $api.getOrganizationMemberEmailSettings<MemberEmailSettings>(),
+    queryFn: () =>
+      $api.getOrganizationMemberEmailSettings<MemberEmailSettings>(),
     staleTime: Infinity,
   })
   const defaultEmailDomain = emailSettingsQuery.data?.defaultEmailDomain ?? ''
@@ -657,6 +703,7 @@ function ProjectMemberDrawer({
                       onBlur={field.onBlur}
                       onChange={(event) => {
                         field.onChange(event)
+                        onInputChange?.()
                         if (!isEditMode && defaultEmailDomain) {
                           form.setValue(
                             'email',
@@ -687,7 +734,14 @@ function ProjectMemberDrawer({
                     <Input
                       placeholder='输入成员邮箱'
                       disabled={isEditMode || saving}
-                      {...field}
+                      name={field.name}
+                      ref={field.ref}
+                      value={field.value}
+                      onBlur={field.onBlur}
+                      onChange={(event) => {
+                        field.onChange(event)
+                        onInputChange?.()
+                      }}
                     />
                   </FormControl>
                   <FormMessage />
@@ -702,7 +756,9 @@ function ProjectMemberDrawer({
                   <FormLabel>项目角色</FormLabel>
                   <Select
                     value={field.value}
-                    onValueChange={(value) => field.onChange(normalizeRole(value))}
+                    onValueChange={(value) =>
+                      field.onChange(normalizeRole(value))
+                    }
                     disabled={saving || roleOptions.length === 0}
                   >
                     <FormControl>
@@ -731,5 +787,18 @@ function ProjectMemberDrawer({
         </div>
       ) : null}
     </Drawer>
+  )
+}
+
+function findExistingProjectMemberByEmail(
+  members: ProjectUserRecord[],
+  email: string
+) {
+  const normalizedEmail = normalizeEmail(email)
+
+  return members.find(
+    (member) =>
+      normalizeEmail(member.email) === normalizedEmail &&
+      roleLevel(getEffectiveRole(member)) > ROLE_LEVELS.NONE
   )
 }

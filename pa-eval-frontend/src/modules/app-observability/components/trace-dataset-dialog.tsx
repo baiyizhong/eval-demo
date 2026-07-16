@@ -16,6 +16,7 @@ import {
   FormMessage,
 } from '@/components/ui/form'
 import { Input } from '@/components/ui/input'
+import { Label } from '@/components/ui/label'
 import {
   Select,
   SelectContent,
@@ -32,6 +33,18 @@ import { FormDialog } from '@/components/common/form-dialog'
 import type { TraceLogRow } from '../types'
 
 type TraceDatasetMode = 'existing' | 'create'
+export type TraceDatasetDataRange = 'BADCASE_ONLY' | 'ALL'
+
+type TraceDatasetDataRangeOption = {
+  value: TraceDatasetDataRange
+  label: string
+}
+
+const DEFAULT_TRACE_DATASET_DATA_RANGE_OPTIONS: TraceDatasetDataRangeOption[] =
+  [
+    { value: 'BADCASE_ONLY', label: '仅 Badcase' },
+    { value: 'ALL', label: '全部数据' },
+  ]
 
 const existingDatasetSchema = z.object({
   datasetId: z.string().min(1, '请选择目标数据集'),
@@ -49,10 +62,12 @@ type CreateDatasetFormValues = z.infer<typeof createDatasetSchema>
 export type TraceDatasetSubmitValues =
   | ({
       mode: 'existing'
+      dataRange?: TraceDatasetDataRange
     } & ExistingDatasetFormValues)
   | ({
       mode: 'create'
       datasetType: DatasetType
+      dataRange?: TraceDatasetDataRange
     } & CreateDatasetFormValues)
 
 type TraceDatasetDialogProps = {
@@ -62,6 +77,10 @@ type TraceDatasetDialogProps = {
   selectedCount?: number
   isCrossPageSelection?: boolean
   projectName?: string
+  description?: string
+  dataRange?: TraceDatasetDataRange
+  dataRangeOptions?: TraceDatasetDataRangeOption[]
+  onDataRangeChange?: (range: TraceDatasetDataRange) => void
   onOpenChange: (open: boolean) => void
   onSubmit: (values: TraceDatasetSubmitValues) => Promise<void> | void
 }
@@ -81,6 +100,10 @@ export function TraceDatasetDialog({
   selectedCount,
   isCrossPageSelection = false,
   projectName,
+  description: descriptionProp,
+  dataRange,
+  dataRangeOptions = DEFAULT_TRACE_DATASET_DATA_RANGE_OPTIONS,
+  onDataRangeChange,
   onOpenChange,
   onSubmit,
 }: TraceDatasetDialogProps) {
@@ -93,15 +116,18 @@ export function TraceDatasetDialog({
   })
   const existingFormId = 'trace-existing-dataset-form'
   const createFormId = 'trace-create-dataset-form'
+  const dataRangeSelectId = 'trace-dataset-data-range'
   const confirmFormId = mode === 'existing' ? existingFormId : createFormId
   const datasets = datasetsQuery.data?.datas ?? []
-  const description = useMemo(
-    () =>
-      isCrossPageSelection
-        ? `将符合当前筛选条件的 ${selectedCount ?? traces.length} 条 Trace 写入目标数据集。`
-        : `将 ${selectedCount ?? traces.length} 条 Trace 写入目标数据集。`,
-    [isCrossPageSelection, selectedCount, traces.length]
-  )
+  const description = useMemo(() => {
+    if (descriptionProp) {
+      return descriptionProp
+    }
+
+    return isCrossPageSelection
+      ? `将符合当前筛选条件的 ${selectedCount ?? traces.length} 条 Trace 写入目标数据集。`
+      : `将 ${selectedCount ?? traces.length} 条 Trace 写入目标数据集。`
+  }, [descriptionProp, isCrossPageSelection, selectedCount, traces.length])
 
   return (
     <FormDialog
@@ -114,13 +140,38 @@ export function TraceDatasetDialog({
       bodyProps={{ className: 'max-h-[70vh] overflow-auto' }}
     >
       <div className='flex flex-col gap-4'>
+        {dataRange ? (
+          <div className='grid gap-2'>
+            <Label htmlFor={dataRangeSelectId}>数据范围</Label>
+            <Select
+              value={dataRange}
+              onValueChange={(value) =>
+                onDataRangeChange?.(value as TraceDatasetDataRange)
+              }
+            >
+              <SelectTrigger id={dataRangeSelectId} className='w-full'>
+                <SelectValue />
+              </SelectTrigger>
+              <SelectContent>
+                <SelectGroup>
+                  {dataRangeOptions.map((option) => (
+                    <SelectItem key={option.value} value={option.value}>
+                      {option.label}
+                    </SelectItem>
+                  ))}
+                </SelectGroup>
+              </SelectContent>
+            </Select>
+          </div>
+        ) : null}
+
         <Tabs
           value={mode}
           onValueChange={(value) => setMode(value as TraceDatasetMode)}
         >
           <TabsList>
             <TabsTrigger value='existing'>选择已有数据集</TabsTrigger>
-            <TabsTrigger value='create'>新建评测集</TabsTrigger>
+            <TabsTrigger value='create'>新建数据集</TabsTrigger>
           </TabsList>
         </Tabs>
 
@@ -131,7 +182,7 @@ export function TraceDatasetDialog({
             schema={existingDatasetSchema}
             defaultValues={{ datasetId: '' }}
             onSubmit={async (values) => {
-              await onSubmit({ mode: 'existing', ...values })
+              await onSubmit({ mode: 'existing', ...values, dataRange })
               onOpenChange(false)
             }}
             className='flex flex-col gap-4 p-0'
@@ -174,14 +225,18 @@ export function TraceDatasetDialog({
             id={createFormId}
             schema={createDatasetSchema}
             defaultValues={{
-              name: buildDefaultTraceDatasetName('badcase', projectName || projectId),
+              name: buildDefaultTraceDatasetName(
+                'evaluation',
+                projectName || projectId
+              ),
               description: '',
-              datasetType: 'badcase',
+              datasetType: 'evaluation',
             }}
             onSubmit={async (values: CreateDatasetFormValues) => {
               await onSubmit({
                 mode: 'create',
                 ...values,
+                dataRange,
               })
               onOpenChange(false)
             }}

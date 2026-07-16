@@ -23,11 +23,6 @@ import {
   DropdownMenuSeparator,
   DropdownMenuTrigger,
 } from '@/components/ui/dropdown-menu'
-import {
-  HoverCard,
-  HoverCardContent,
-  HoverCardTrigger,
-} from '@/components/ui/hover-card'
 import { Input } from '@/components/ui/input'
 import { Label } from '@/components/ui/label'
 import {
@@ -50,6 +45,7 @@ import {
   TableHeader,
   TableRow,
 } from '@/components/ui/table'
+import { HoverPreviewCell } from '@/components/common/hover-preview-cell'
 import { Loading } from '@/components/common/loading'
 import { Page } from '@/components/common/page'
 import { PageAction } from '@/components/common/page-action'
@@ -1588,23 +1584,7 @@ function SummaryTableCell({
 }) {
   return (
     <TableCell className={cn('max-w-[240px]', className)}>
-      <HoverCard openDelay={250} closeDelay={100}>
-        <HoverCardTrigger asChild>
-          <button
-            type='button'
-            className='hover:text-foreground text-muted-foreground block w-full truncate text-left text-xs'
-            onClick={(event) => event.stopPropagation()}
-          >
-            {value || '-'}
-          </button>
-        </HoverCardTrigger>
-        <HoverCardContent align='start' className='w-[520px] p-3'>
-          <div className='text-xs font-medium'>{label}</div>
-          <pre className='mt-2 max-h-80 overflow-auto font-mono text-xs leading-relaxed break-words whitespace-pre-wrap'>
-            {value || '-'}
-          </pre>
-        </HoverCardContent>
-      </HoverCard>
+      <HoverPreviewCell label={label} value={value} />
     </TableCell>
   )
 }

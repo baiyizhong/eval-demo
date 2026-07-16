@@ -4788,7 +4788,11 @@ class LangfuseDatabaseReader:
                         },
                     )
                 except psycopg.errors.UniqueViolation as exc:
-                    raise BusinessError(1016, "用户已在该组织中", 409) from exc
+                    raise BusinessError(
+                        1016,
+                        "用户已在该组织中，请使用设置组织角色调整权限",
+                        409,
+                    ) from exc
                 await cursor.execute(
                     """
                     DELETE FROM membership_invitations
