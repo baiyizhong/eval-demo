@@ -19,6 +19,23 @@ class ModelConfigPayload(BaseModel):
     model: str = Field(min_length=1)
 
 
+class OutputVariableMappingPayload(BaseModel):
+    variable_name: str = Field(alias="variableName", min_length=1)
+    score_config_name: str = Field(alias="scoreConfigName", min_length=1)
+    score_config_id: str | None = Field(default=None, alias="scoreConfigId")
+
+    model_config = ConfigDict(populate_by_name=True)
+
+    def to_storage_payload(self) -> dict[str, Any]:
+        payload = {
+            "variableName": self.variable_name,
+            "scoreConfigName": self.score_config_name,
+        }
+        if self.score_config_id:
+            payload["scoreConfigId"] = self.score_config_id
+        return payload
+
+
 class CreateEvaluatorPayload(BaseModel):
     name: str = Field(min_length=1, max_length=120)
     type: EvaluatorType
@@ -28,6 +45,10 @@ class CreateEvaluatorPayload(BaseModel):
     variables: list[str] = Field(default_factory=list)
     input_variables: list[str] = Field(default_factory=list, alias="inputVariables")
     output_variables: list[str] = Field(default_factory=list, alias="outputVariables")
+    output_variable_mappings: list[OutputVariableMappingPayload] = Field(
+        default_factory=list,
+        alias="outputVariableMappings",
+    )
     prompt: str | None = None
     model_config_payload: ModelConfigPayload | None = Field(
         default=None,
@@ -60,6 +81,12 @@ class CreateEvaluatorPayload(BaseModel):
             self.input_variables = self.variables
         if not self.variables:
             self.variables = self.input_variables
+        if not self.output_variables:
+            self.output_variables = [
+                mapping.variable_name
+                for mapping in self.output_variable_mappings
+                if mapping.variable_name
+            ]
 
         if self.type in {"LLM_AS_JUDGE", "CODE"} and self.provider != "LANGFUSE":
             raise ValueError("Langfuse 原生评估器 provider 必须为 LANGFUSE")
@@ -132,6 +159,7 @@ class CreateEvaluatorPayload(BaseModel):
                     "authToken": self.auth_token,
                     "inputMapping": self.input_mapping or {},
                     "outputMapping": self.output_mapping or {},
+                    "outputVariableMappings": self._output_variable_mappings(),
                 },
             }
 
@@ -141,8 +169,15 @@ class CreateEvaluatorPayload(BaseModel):
                 "sdkPackage": self.sdk_package,
                 "inputMapping": self.input_mapping or {},
                 "outputMapping": self.output_mapping or {},
+                "outputVariableMappings": self._output_variable_mappings(),
             },
         }
+
+    def _output_variable_mappings(self) -> list[dict[str, Any]]:
+        return [
+            mapping.to_storage_payload()
+            for mapping in self.output_variable_mappings
+        ]
 
 
 def _paginate(items: list[dict[str, Any]], page: int, page_size: int) -> dict[str, Any]:

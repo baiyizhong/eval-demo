@@ -370,6 +370,9 @@ class LangfuseDatabaseReader:
             "orgs": list(orgs_by_id.values()),
         }
 
+    async def is_super_admin(self, user_id: str) -> bool:
+        return await self._is_super_admin(user_id)
+
     async def _is_super_admin(self, user_id: str) -> bool:
         rows = await self._fetch_all(
             """
@@ -4253,6 +4256,7 @@ class LangfuseDatabaseReader:
                 pe.description,
                 pe.variables,
                 {output_variables_select}
+                pe.config,
                 pe.project_id,
                 p.name AS project_name,
                 pe.update_date AS updated_at
@@ -4593,6 +4597,7 @@ class LangfuseDatabaseReader:
                         description,
                         variables,
                         output_variables,
+                        config,
                         project_id,
                         update_date AS updated_at
                     """,
@@ -6626,6 +6631,9 @@ class LangfuseDatabaseReader:
             "variables": row.get("variables") or [],
             "inputVariables": row.get("variables") or [],
             "outputVariables": row.get("output_variables") or [],
+            "outputVariableMappings": _output_variable_mappings_from_config(
+                row.get("config")
+            ),
             "description": row.get("description") or "",
             "provider": row["provider"],
             "projectId": row.get("project_id"),
@@ -7197,6 +7205,31 @@ def _score_config_storage_payload(payload: dict[str, Any]) -> dict[str, Any]:
         "max_value": max_value,
         "categories": categories,
     }
+
+
+def _output_variable_mappings_from_config(value: Any) -> list[dict[str, Any]]:
+    config = value if isinstance(value, dict) else {}
+    mappings = config.get("outputVariableMappings")
+    if not isinstance(mappings, list):
+        return []
+
+    normalized: list[dict[str, Any]] = []
+    for item in mappings:
+        if not isinstance(item, dict):
+            continue
+        variable_name = str(item.get("variableName") or "").strip()
+        score_config_name = str(item.get("scoreConfigName") or "").strip()
+        if not variable_name or not score_config_name:
+            continue
+        mapping = {
+            "variableName": variable_name,
+            "scoreConfigName": score_config_name,
+        }
+        score_config_id = str(item.get("scoreConfigId") or "").strip()
+        if score_config_id:
+            mapping["scoreConfigId"] = score_config_id
+        normalized.append(mapping)
+    return normalized
 
 
 def _trace_dataset_metadata(trace: dict[str, Any]) -> dict[str, Any]:

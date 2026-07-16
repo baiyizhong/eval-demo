@@ -66,6 +66,7 @@ test('buildCreateEvaluatorPayload maps Langfuse code evaluator fields', () => {
       variables: 'input, output',
       inputVariables: 'input, output',
       outputVariables: '',
+      outputVariableMappings: [],
       prompt: '',
       modelProvider: '',
       model: '',
@@ -87,6 +88,7 @@ test('buildCreateEvaluatorPayload maps Langfuse code evaluator fields', () => {
       variables: ['input', 'output'],
       inputVariables: ['input', 'output'],
       outputVariables: [],
+      outputVariableMappings: [],
       sourceCodeLanguage: 'PYTHON',
       sourceCode: 'def evaluate(context):\n    return {"score": 1}',
     }
@@ -104,6 +106,16 @@ test('buildCreateEvaluatorPayload maps workflow evaluator config', () => {
       variables: 'input, output',
       inputVariables: 'input, output',
       outputVariables: 'quality_score, risk_score',
+      outputVariableMappings: [
+        {
+          variableName: 'quality_score',
+          scoreConfigName: '回答质量',
+        },
+        {
+          variableName: 'risk_score',
+          scoreConfigName: '风险评分',
+        },
+      ],
       prompt: '',
       modelProvider: '',
       model: '',
@@ -125,6 +137,16 @@ test('buildCreateEvaluatorPayload maps workflow evaluator config', () => {
       variables: ['input', 'output'],
       inputVariables: ['input', 'output'],
       outputVariables: ['quality_score', 'risk_score'],
+      outputVariableMappings: [
+        {
+          variableName: 'quality_score',
+          scoreConfigName: '回答质量',
+        },
+        {
+          variableName: 'risk_score',
+          scoreConfigName: '风险评分',
+        },
+      ],
       endpointUrl: 'https://dify.example.com/v1/workflows/run',
       authType: 'BEARER',
       authToken: 'secret-token',

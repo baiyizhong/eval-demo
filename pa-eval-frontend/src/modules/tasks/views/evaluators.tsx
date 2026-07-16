@@ -1,8 +1,13 @@
 import { useCallback, useMemo, useState } from 'react'
 import { z } from 'zod'
-import type { Control } from 'react-hook-form'
-import { useQueryClient } from '@tanstack/react-query'
+import {
+  useFieldArray,
+  type Control,
+  type UseFormReturn,
+} from 'react-hook-form'
+import { useQuery, useQueryClient } from '@tanstack/react-query'
 import type { ColumnDef } from '@tanstack/react-table'
+import { listProjectScoreConfigs } from '@/modules/app-evaluation/api/annotation-api'
 import { EvaluationPageNav } from '@/modules/app-evaluation/components/evaluation-page-nav'
 import { Eye, MoreHorizontal, Plus, RefreshCw, Trash2 } from 'lucide-react'
 import { useParams } from 'react-router'
@@ -45,6 +50,7 @@ import {
   SelectValue,
 } from '@/components/ui/select'
 import { Textarea } from '@/components/ui/textarea'
+import { MixEditor } from '@/components/common/MixEditor'
 import { BaseDetail } from '@/components/common/base-detail'
 import { BaseForm } from '@/components/common/base-form'
 import {
@@ -56,7 +62,6 @@ import {
 import { Drawer } from '@/components/common/drawer'
 import { Loading } from '@/components/common/loading'
 import { LongText } from '@/components/common/long-text'
-import { MixEditor } from '@/components/common/MixEditor'
 import { Page } from '@/components/common/page'
 import {
   createTaskEvaluator,
@@ -119,6 +124,14 @@ const createEvaluatorSchema = z
     variables: z.string(),
     inputVariables: z.string().min(1, '请输入输入变量，多个变量用逗号分隔'),
     outputVariables: z.string(),
+    outputVariableMappings: z
+      .array(
+        z.object({
+          variableName: z.string().min(1, '请输入变量名'),
+          scoreConfigName: z.string().min(1, '请选择评分指标'),
+        })
+      )
+      .min(1, '请至少添加一个输出变量'),
     prompt: z.string(),
     modelProvider: z.string(),
     model: z.string(),
@@ -201,6 +214,15 @@ export function TaskEvaluators({ navigation = 'tasks' }: TaskEvaluatorsProps) {
   const [deletingEvaluator, setDeletingEvaluator] =
     useState<TaskEvaluatorRecord | null>(null)
   const [deleteLoading, setDeleteLoading] = useState(false)
+  const scoreConfigsQuery = useQuery({
+    queryKey: ['project-score-config-names', $api, projectId],
+    enabled: canEditEvaluators && createOpen && Boolean(projectId),
+    queryFn: () => listProjectScoreConfigs($api, projectId),
+  })
+  const scoreConfigNames =
+    scoreConfigsQuery.data
+      ?.filter((item) => !item.archived)
+      .map((item) => item.name) ?? []
 
   const handleViewDetail = useCallback(
     async (evaluator: TaskEvaluatorRecord) => {
@@ -249,8 +271,12 @@ export function TaskEvaluators({ navigation = 'tasks' }: TaskEvaluatorsProps) {
   const handleCreate = async (values: CreateTaskEvaluatorFormValues) => {
     if (!canEditEvaluators) return
 
+    const outputVariables = getOutputVariableNames(
+      values.outputVariableMappings
+    ).join(', ')
+
     try {
-      await createTaskEvaluator($api, { ...values, projectId })
+      await createTaskEvaluator($api, { ...values, projectId, outputVariables })
       await queryClient.invalidateQueries({ queryKey: evaluatorQueryKey })
       setCreateOpen(false)
       toast.success(`已创建评估器：${values.name}`)
@@ -359,7 +385,13 @@ export function TaskEvaluators({ navigation = 'tasks' }: TaskEvaluatorsProps) {
             description: '',
             variables: 'input, output',
             inputVariables: 'input, output',
-            outputVariables: 'score, passed, reason',
+            outputVariables: '',
+            outputVariableMappings: [
+              {
+                variableName: '',
+                scoreConfigName: '',
+              },
+            ],
             prompt: '',
             modelProvider: 'openai',
             model: 'gpt-4.1',
@@ -517,33 +549,34 @@ export function TaskEvaluators({ navigation = 'tasks' }: TaskEvaluatorsProps) {
                       )}
                     />
                   </div>
-	                  <FormField
-	                    control={form.control}
-	                    name='prompt'
-	                    render={({ field }) => (
-	                      <FormItem>
-	                        <div className='flex flex-wrap items-baseline gap-2'>
-	                          <FormLabel>Prompt</FormLabel>
-	                          <span className='text-muted-foreground text-xs'>
-	                            使用 {'{{input}}'}、{'{{output}}'} 等变量编写评估提示词
-	                          </span>
-	                        </div>
-	                        <FormControl>
-	                          <MixEditor
-	                            title='Prompt'
-	                            value={field.value}
-	                            onValueChange={(nextValue) =>
-	                              field.onChange(String(nextValue ?? ''))
-	                            }
-	                            forceTextMode
-	                            defaultEditing
-	                            showEditActions={false}
-	                          />
-	                        </FormControl>
-	                        <FormMessage />
-	                      </FormItem>
-	                    )}
-	                  />
+                  <FormField
+                    control={form.control}
+                    name='prompt'
+                    render={({ field }) => (
+                      <FormItem>
+                        <div className='flex flex-wrap items-baseline gap-2'>
+                          <FormLabel>Prompt</FormLabel>
+                          <span className='text-muted-foreground text-xs'>
+                            使用 {'{{input}}'}、{'{{output}}'}{' '}
+                            等变量编写评估提示词
+                          </span>
+                        </div>
+                        <FormControl>
+                          <MixEditor
+                            title='Prompt'
+                            value={field.value}
+                            onValueChange={(nextValue) =>
+                              field.onChange(String(nextValue ?? ''))
+                            }
+                            forceTextMode
+                            defaultEditing
+                            showEditActions={false}
+                          />
+                        </FormControl>
+                        <FormMessage />
+                      </FormItem>
+                    )}
+                  />
                   <FormField
                     control={form.control}
                     name='outputMapping'
@@ -633,44 +666,31 @@ export function TaskEvaluators({ navigation = 'tasks' }: TaskEvaluatorsProps) {
                   <MappingFields control={form.control} />
                 </>
               ) : null}
-              <div className='grid gap-4 sm:grid-cols-2'>
-                <FormField
-                  control={form.control}
-                  name='inputVariables'
-                  render={({ field }) => (
-                    <FormItem>
-                      <FormLabel>输入变量</FormLabel>
-                      <FormControl>
-                        <Input
-                          placeholder='input, output, expected_output'
-                          {...field}
-                          onChange={(event) => {
-                            field.onChange(event)
-                            form.setValue('variables', event.target.value)
-                          }}
-                        />
-                      </FormControl>
-                      <FormMessage />
-                    </FormItem>
-                  )}
-                />
-                <FormField
-                  control={form.control}
-                  name='outputVariables'
-                  render={({ field }) => (
-                    <FormItem>
-                      <FormLabel>输出变量</FormLabel>
-                      <FormControl>
-                        <Input
-                          placeholder='quality_score, risk_score'
-                          {...field}
-                        />
-                      </FormControl>
-                      <FormMessage />
-                    </FormItem>
-                  )}
-                />
-              </div>
+              <FormField
+                control={form.control}
+                name='inputVariables'
+                render={({ field }) => (
+                  <FormItem>
+                    <FormLabel>输入变量</FormLabel>
+                    <FormControl>
+                      <Input
+                        placeholder='input, output, expected_output'
+                        {...field}
+                        onChange={(event) => {
+                          field.onChange(event)
+                          form.setValue('variables', event.target.value)
+                        }}
+                      />
+                    </FormControl>
+                    <FormMessage />
+                  </FormItem>
+                )}
+              />
+              <OutputVariableMappingsField
+                form={form}
+                scoreConfigNames={scoreConfigNames}
+                loading={scoreConfigsQuery.isLoading}
+              />
               <div className='bg-background sticky bottom-0 -mx-6 mt-2 flex justify-end gap-2 border-t px-6 py-4'>
                 <Button
                   type='button'
@@ -1055,6 +1075,163 @@ function MappingFields({
   )
 }
 
+function OutputVariableMappingsField({
+  form,
+  scoreConfigNames,
+  loading,
+}: {
+  form: UseFormReturn<CreateTaskEvaluatorFormValues>
+  scoreConfigNames: string[]
+  loading: boolean
+}) {
+  const { fields, append, remove } = useFieldArray({
+    control: form.control,
+    name: 'outputVariableMappings',
+  })
+  const mappings = form.watch('outputVariableMappings')
+
+  const syncOutputVariables = useCallback(
+    (nextMappings: CreateTaskEvaluatorFormValues['outputVariableMappings']) => {
+      form.setValue(
+        'outputVariables',
+        getOutputVariableNames(nextMappings).join(', '),
+        { shouldDirty: true, shouldValidate: true }
+      )
+    },
+    [form]
+  )
+
+  return (
+    <FormItem>
+      <div className='flex flex-wrap items-start justify-between gap-3'>
+        <div className='flex flex-col gap-1'>
+          <FormLabel>输出变量</FormLabel>
+          <p className='text-muted-foreground text-sm'>
+            维护评估器返回字段，并绑定项目设置中的评分指标。
+          </p>
+        </div>
+        <div>
+          <Button
+            type='button'
+            variant='outline'
+            size='sm'
+            onClick={() =>
+              append({
+                variableName: '',
+                scoreConfigName: scoreConfigNames[0] ?? '',
+              })
+            }
+          >
+            <Plus data-icon='inline-start' />
+            添加输出变量
+          </Button>
+        </div>
+      </div>
+      <div className='overflow-hidden rounded-md border'>
+        <div className='bg-muted/40 text-muted-foreground hidden grid-cols-[minmax(0,1fr)_minmax(0,1fr)_2.25rem] gap-2 px-3 py-2 text-xs font-medium md:grid'>
+          <span>变量名</span>
+          <span>评分指标</span>
+          <span className='sr-only'>操作</span>
+        </div>
+        {fields.map((field, index) => (
+          <div
+            key={field.id}
+            className='grid gap-2 border-t p-2 first:border-t-0 md:grid-cols-[minmax(0,1fr)_minmax(0,1fr)_2.25rem] md:items-start md:px-3'
+          >
+            <FormField
+              control={form.control}
+              name={`outputVariableMappings.${index}.variableName`}
+              render={({ field: variableField }) => (
+                <FormItem className='gap-1'>
+                  <FormLabel className='text-xs md:sr-only'>变量名</FormLabel>
+                  <FormControl>
+                    <Input
+                      className='h-8'
+                      placeholder='请输入变量名'
+                      {...variableField}
+                      onChange={(event) => {
+                        variableField.onChange(event)
+                        const nextMappings = [...mappings]
+                        nextMappings[index] = {
+                          ...nextMappings[index],
+                          variableName: event.target.value,
+                        }
+                        syncOutputVariables(nextMappings)
+                      }}
+                    />
+                  </FormControl>
+                  <FormMessage />
+                </FormItem>
+              )}
+            />
+            <FormField
+              control={form.control}
+              name={`outputVariableMappings.${index}.scoreConfigName`}
+              render={({ field: scoreConfigField }) => (
+                <FormItem className='gap-1'>
+                  <FormLabel className='text-xs md:sr-only'>
+                    评分指标
+                  </FormLabel>
+                  <Select
+                    value={scoreConfigField.value || undefined}
+                    onValueChange={scoreConfigField.onChange}
+                    disabled={loading || scoreConfigNames.length === 0}
+                  >
+                    <FormControl>
+                      <SelectTrigger className='h-8 w-full'>
+                        <SelectValue
+                          placeholder={
+                            loading ? '加载指标中...' : '选择评分指标'
+                          }
+                        />
+                      </SelectTrigger>
+                    </FormControl>
+                    <SelectContent>
+                      <SelectGroup>
+                        {scoreConfigNames.map((scoreConfigName) => (
+                          <SelectItem
+                            key={scoreConfigName}
+                            value={scoreConfigName}
+                          >
+                            {scoreConfigName}
+                          </SelectItem>
+                        ))}
+                      </SelectGroup>
+                    </SelectContent>
+                  </Select>
+                  <FormMessage />
+                </FormItem>
+              )}
+            />
+            <Button
+              type='button'
+              variant='ghost'
+              size='icon'
+              aria-label='删除输出变量'
+              className='self-end md:self-start'
+              disabled={fields.length <= 1}
+              onClick={() => {
+                const nextMappings = mappings.filter(
+                  (_, itemIndex) => itemIndex !== index
+                )
+                remove(index)
+                syncOutputVariables(nextMappings)
+              }}
+            >
+              <Trash2 />
+            </Button>
+          </div>
+        ))}
+      </div>
+      {scoreConfigNames.length === 0 && !loading ? (
+        <p className='text-muted-foreground mt-2 text-sm'>
+          暂无可用评分指标，请先在项目设置中配置 score config。
+        </p>
+      ) : null}
+    </FormItem>
+  )
+}
+
 function getProviderOptions(type: CreateTaskEvaluatorFormValues['type']) {
   if (type === 'WORKFLOW') {
     return ['DIFY', 'HIAGENT', 'N8N'] as const
@@ -1080,4 +1257,10 @@ function formatDateTime(value: string) {
 
 function formatJson(value: Record<string, unknown>) {
   return JSON.stringify(value, null, 2)
+}
+
+function getOutputVariableNames(
+  mappings: CreateTaskEvaluatorFormValues['outputVariableMappings']
+) {
+  return mappings.map((mapping) => mapping.variableName.trim()).filter(Boolean)
 }

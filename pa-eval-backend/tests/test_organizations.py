@@ -16,6 +16,9 @@ class FakeDatabaseReader:
         self.created_member_payload = None
         self.updated_member_payload = None
         self.deleted_member_payload = None
+        self.super_admin = False
+        self.list_organizations_calls = 0
+        self.list_organizations_for_user_calls: list[str] = []
         self.organizations = [
             {
                 "id": "org-1",
@@ -39,12 +42,18 @@ class FakeDatabaseReader:
                 "projectCount": 0,
             },
         ]
+        self.user_organizations = self.organizations
 
     async def list_organizations(self) -> list[dict]:
+        self.list_organizations_calls += 1
         return self.organizations
 
     async def list_organizations_for_user(self, user_id: str) -> list[dict]:
-        return self.organizations
+        self.list_organizations_for_user_calls.append(user_id)
+        return self.user_organizations
+
+    async def is_super_admin(self, user_id: str) -> bool:
+        return self.super_admin
 
     async def get_organization(self, organization_id: str) -> dict | None:
         return next(
@@ -320,6 +329,30 @@ def test_lists_organizations_with_pa_pagination_and_metadata_mapping() -> None:
             }
         ],
     }
+    assert fake_reader.list_organizations_calls == 0
+    assert fake_reader.list_organizations_for_user_calls == ["user-1"]
+
+
+def test_lists_all_organizations_for_super_admin() -> None:
+    fake_reader = FakeDatabaseReader()
+    fake_reader.super_admin = True
+    fake_reader.user_organizations = [fake_reader.organizations[0]]
+    override_reader(fake_reader)
+
+    try:
+        response = TestClient(app).get(
+            "/api/organizations", params={"page": 1, "pageSize": 100}
+        )
+    finally:
+        clear_overrides()
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["code"] == 0
+    assert body["data"]["total"] == 2
+    assert [item["id"] for item in body["data"]["datas"]] == ["org-1", "org-2"]
+    assert fake_reader.list_organizations_calls == 1
+    assert fake_reader.list_organizations_for_user_calls == []
 
 
 def test_gets_organization_detail_from_database_reader() -> None:

@@ -5,6 +5,7 @@ import { useNavigate } from 'react-router'
 import { toast } from 'sonner'
 import { cn } from '@/lib/utils'
 import { useAPI } from '@/hooks/use-api'
+import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
 import {
   Dialog,
@@ -33,12 +34,12 @@ import {
 } from '@/components/ui/table'
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs'
 import { Textarea } from '@/components/ui/textarea'
+import { ToggleGroup, ToggleGroupItem } from '@/components/ui/toggle-group'
 import {
   Tooltip,
   TooltipContent,
   TooltipTrigger,
 } from '@/components/ui/tooltip'
-import { ToggleGroup, ToggleGroupItem } from '@/components/ui/toggle-group'
 import { Stepper } from '@/components/common/stepper'
 import {
   countProjectAutoEvaluationTraces,
@@ -46,7 +47,6 @@ import {
   listProjectAutoEvaluationTracePreview,
   type TraceLogRow,
 } from '../api/auto-evaluation-api'
-import { listProjectScoreConfigs } from '../api/annotation-api'
 import { listProjectAutoEvaluationDatasets } from '../api/dataset-api'
 import { listProjectEvaluationReportTemplates } from '../api/report-template-api'
 import type {
@@ -54,7 +54,6 @@ import type {
   EvaluationReportTemplateRecord,
   MockAutoEvaluationDataset,
   MockAutoEvaluationEvaluator,
-  ScoreConfigRecord,
 } from '../types'
 import { autoEvaluationStepLabels } from './auto-evaluation-steps'
 
@@ -164,7 +163,6 @@ export function AutoEvaluationTaskForm({
   const [reportTemplates, setReportTemplates] = useState<
     EvaluationReportTemplateRecord[]
   >([])
-  const [scoreConfigs, setScoreConfigs] = useState<ScoreConfigRecord[]>([])
   const [traceCountState, setTraceCountState] = useState<
     'idle' | 'loading' | 'success' | 'error'
   >('idle')
@@ -182,7 +180,7 @@ export function AutoEvaluationTaskForm({
       page: 1,
       pageSize: 50,
       keyword: evaluatorKeyword,
-      filters: {},
+      filters: { type: ['WORKFLOW'] },
       sorting: [],
     }).then((result) => {
       setEvaluators(
@@ -201,6 +199,7 @@ export function AutoEvaluationTaskForm({
             version: evaluator.version,
             variables: evaluator.variables,
             outputVariables: evaluator.outputVariables ?? [],
+            outputVariableMappings: evaluator.outputVariableMappings ?? [],
             description: evaluator.description,
             updatedAt: evaluator.updatedAt,
           }))
@@ -224,12 +223,6 @@ export function AutoEvaluationTaskForm({
     )
   }, [$api, projectId])
 
-  useEffect(() => {
-    void listProjectScoreConfigs($api, projectId).then((result) => {
-      setScoreConfigs(result.filter((item) => !item.archived))
-    })
-  }, [$api, projectId])
-
   const traceFilterKey =
     form.dataSource.type === 'TRACE_FILTER'
       ? getTraceFilterKey(form.dataSource)
@@ -246,11 +239,7 @@ export function AutoEvaluationTaskForm({
     void Promise.resolve()
       .then(() => {
         if (!canceled) setTraceCountState('loading')
-        return countProjectAutoEvaluationTraces(
-          $api,
-          projectId,
-          traceFilter
-        )
+        return countProjectAutoEvaluationTraces($api, projectId, traceFilter)
       })
       .then((result) => {
         if (canceled) return
@@ -491,22 +480,18 @@ export function AutoEvaluationTaskForm({
       ) : null}
 
       {step === 1 ? (
-        <section className='grid gap-4 lg:grid-cols-[320px_1fr]'>
-          <div className='bg-card text-card-foreground flex min-h-[420px] flex-col gap-3 rounded-lg border p-4'>
-            <div className='flex flex-col gap-1'>
+        <section className='grid min-h-0 gap-4 lg:grid-cols-[320px_1fr]'>
+          <div className='bg-card text-card-foreground flex max-h-[min(560px,calc(100vh-320px))] min-h-[420px] flex-col gap-3 rounded-lg border p-4'>
+            <div>
               <h3 className='text-sm font-semibold'>评估器列表</h3>
-              <p className='text-muted-foreground text-sm'>
-                选择一个工作流评估器用于批量打分。
-              </p>
             </div>
-            <Field label='搜索评估器'>
-              <Input
-                placeholder='搜索名称或描述'
-                value={evaluatorKeyword}
-                onChange={(event) => setEvaluatorKeyword(event.target.value)}
-              />
-            </Field>
-            <div className='flex flex-1 flex-col gap-2 overflow-y-auto pr-1'>
+            <Input
+              aria-label='搜索评估器'
+              placeholder='输入评估器名称或描述'
+              value={evaluatorKeyword}
+              onChange={(event) => setEvaluatorKeyword(event.target.value)}
+            />
+            <div className='flex min-h-0 flex-1 flex-col gap-2 overflow-y-auto pr-1'>
               {evaluators.map((evaluator) => (
                 <button
                   key={evaluator.id}
@@ -620,62 +605,41 @@ export function AutoEvaluationTaskForm({
                   <div className='flex flex-col gap-1'>
                     <h4 className='text-sm font-medium'>输出变量绑定</h4>
                     <p className='text-muted-foreground text-sm'>
-                      将评估器输出变量绑定到项目评分指标。
+                      评分指标绑定已在评估器配置中完成，此处仅展示绑定关系。如需调整，请返回评估器页面编辑。
                     </p>
                   </div>
                   {getEvaluatorOutputVariables(selectedEvaluator).length ? (
                     getEvaluatorOutputVariables(selectedEvaluator).map(
-                      (variable) => (
-                        <div
-                          key={variable}
-                          className='bg-background grid gap-2 rounded-lg border p-3 md:grid-cols-[minmax(160px,220px)_1fr] md:items-center'
-                        >
-                          <Label className='text-sm font-medium'>
-                            {variable}
-                          </Label>
-                          <Select
-                            value={
-                              form.scoreMapping[variable]?.scoreConfigId ||
-                              undefined
-                            }
-                            onValueChange={(value) => {
-                              const scoreConfig = scoreConfigs.find(
-                                (item) => item.id === value
-                              )
-                              const nextScoreMapping = {
-                                ...form.scoreMapping,
-                                [variable]: {
-                                  scoreConfigId: value,
-                                  scoreConfigName:
-                                    scoreConfig?.name ?? value,
-                                },
-                              }
-                              updateForm({
-                                ...form,
-                                scoreMapping: nextScoreMapping,
-                                scoreName:
-                                  getPrimaryScoreName(nextScoreMapping),
-                              })
-                            }}
+                      (variable) => {
+                        const mapping = form.scoreMapping[variable]
+                        return (
+                          <div
+                            key={variable}
+                            className='bg-background grid gap-2 rounded-lg border p-3 md:grid-cols-[minmax(160px,220px)_1fr] md:items-center'
                           >
-                            <SelectTrigger className='w-full'>
-                              <SelectValue placeholder='选择评分指标' />
-                            </SelectTrigger>
-                            <SelectContent>
-                              <SelectGroup>
-                                {scoreConfigs.map((scoreConfig) => (
-                                  <SelectItem
-                                    key={scoreConfig.id}
-                                    value={scoreConfig.id}
-                                  >
-                                    {scoreConfig.name}
-                                  </SelectItem>
-                                ))}
-                              </SelectGroup>
-                            </SelectContent>
-                          </Select>
-                        </div>
-                      )
+                            <Label className='text-sm font-medium'>
+                              {variable}
+                            </Label>
+                            <div className='flex min-w-0 items-center gap-2'>
+                              <Badge
+                                variant={
+                                  mapping?.scoreConfigName
+                                    ? 'secondary'
+                                    : 'outline'
+                                }
+                                className='max-w-full truncate'
+                              >
+                                {mapping?.scoreConfigName || '未绑定评分指标'}
+                              </Badge>
+                              {!mapping?.scoreConfigName ? (
+                                <span className='text-muted-foreground text-xs'>
+                                  请先在评估器中完成输出变量绑定
+                                </span>
+                              ) : null}
+                            </div>
+                          </div>
+                        )
+                      }
                     )
                   ) : (
                     <div className='text-muted-foreground rounded-lg border border-dashed p-4 text-sm'>
@@ -1292,7 +1256,8 @@ function getStepError(
       return '采样率必须在 1% 到 100% 之间'
     }
     if (
-      (form.badcase.threshold === null || Number.isNaN(form.badcase.threshold))
+      form.badcase.threshold === null ||
+      Number.isNaN(form.badcase.threshold)
     ) {
       return 'Badcase 阈值必须为数字'
     }
@@ -1310,18 +1275,28 @@ function getEvaluatorOutputVariables(evaluator: MockAutoEvaluationEvaluator) {
     : ['score']
 }
 
-function createDefaultScoreMapping(
-  evaluator: MockAutoEvaluationEvaluator
-) {
+function createDefaultScoreMapping(evaluator: MockAutoEvaluationEvaluator) {
+  return getEvaluatorScoreMapping(evaluator)
+}
+
+function getEvaluatorScoreMapping(evaluator: MockAutoEvaluationEvaluator) {
   const outputVariables = getEvaluatorOutputVariables(evaluator)
+  const scoreConfigNameByVariable = new Map(
+    (evaluator.outputVariableMappings ?? [])
+      .filter((item) => item.variableName.trim())
+      .map((item) => [item.variableName, item.scoreConfigName.trim()])
+  )
   return Object.fromEntries(
-    outputVariables.map((variable) => [
-      variable,
-      {
-        scoreConfigId: '',
-        scoreConfigName: '',
-      },
-    ])
+    outputVariables.map((variable) => {
+      const scoreConfigName = scoreConfigNameByVariable.get(variable) ?? ''
+      return [
+        variable,
+        {
+          scoreConfigId: scoreConfigName,
+          scoreConfigName,
+        },
+      ]
+    })
   )
 }
 
@@ -1375,8 +1350,10 @@ function getBoundScoreMapping(
 function getPrimaryScoreName(
   scoreMapping: AutoEvaluationTaskFormInput['scoreMapping']
 ) {
-  return Object.values(scoreMapping).find((item) => item.scoreConfigName)
-    ?.scoreConfigName ?? 'dify_score'
+  return (
+    Object.values(scoreMapping).find((item) => item.scoreConfigName)
+      ?.scoreConfigName ?? 'dify_score'
+  )
 }
 
 function createDefaultTraceFilter(): Extract<

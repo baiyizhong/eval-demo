@@ -212,6 +212,50 @@ async def test_pa_evaluator_list_falls_back_when_output_variables_column_missing
     assert evaluators[0]["outputVariables"] == []
 
 
+@pytest.mark.anyio
+async def test_pa_evaluator_list_exposes_output_variable_mappings(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    reader = LangfuseDatabaseReader(Settings())
+
+    async def fake_fetch_all(sql: str, params: dict) -> list[dict]:
+        assert "pe.config" in sql
+        return [
+            {
+                "id": "pa-evaluator-1",
+                "name": "Dify 客诉判断",
+                "type": "WORKFLOW",
+                "provider": "DIFY",
+                "version": 1,
+                "description": "Dify 工作流评估器",
+                "variables": ["input", "output"],
+                "output_variables": ["quality_score"],
+                "config": {
+                    "outputVariableMappings": [
+                        {
+                            "variableName": "quality_score",
+                            "scoreConfigName": "回答质量",
+                        },
+                    ],
+                },
+                "project_id": "project-1",
+                "project_name": "默认项目",
+                "updated_at": "2026-07-03T09:00:00.000Z",
+            }
+        ]
+
+    monkeypatch.setattr(reader, "_fetch_all", fake_fetch_all)
+
+    evaluators = await reader._list_pa_evaluators_for_user("user-1")
+
+    assert evaluators[0]["outputVariableMappings"] == [
+        {
+            "variableName": "quality_score",
+            "scoreConfigName": "回答质量",
+        },
+    ]
+
+
 def test_lists_evaluators_from_langfuse_with_pa_pagination_and_keyword() -> None:
     override_reader(FakeDatabaseReader())
 
@@ -365,6 +409,16 @@ def test_creates_workflow_evaluator_in_pa_table() -> None:
                 "variables": ["input", "output"],
                 "inputVariables": ["input", "output"],
                 "outputVariables": ["quality_score", "risk_score"],
+                "outputVariableMappings": [
+                    {
+                        "variableName": "quality_score",
+                        "scoreConfigName": "回答质量",
+                    },
+                    {
+                        "variableName": "risk_score",
+                        "scoreConfigName": "风险分",
+                    },
+                ],
                 "endpointUrl": "https://dify.example.com/v1/workflows/run",
                 "authType": "BEARER",
                 "authToken": "secret-token",
@@ -395,6 +449,16 @@ def test_creates_workflow_evaluator_in_pa_table() -> None:
                 "authToken": "secret-token",
                 "inputMapping": {"query": "{{input}}"},
                 "outputMapping": {"score": "$.data.score"},
+                "outputVariableMappings": [
+                    {
+                        "variableName": "quality_score",
+                        "scoreConfigName": "回答质量",
+                    },
+                    {
+                        "variableName": "risk_score",
+                        "scoreConfigName": "风险分",
+                    },
+                ],
             },
         },
     }

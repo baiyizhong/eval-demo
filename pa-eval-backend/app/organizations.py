@@ -115,7 +115,10 @@ async def list_organizations(
     current_user: CurrentUserContext = Depends(get_current_user_context),
     reader: LangfuseDatabaseReader = Depends(get_langfuse_db_reader),
 ) -> dict[str, Any]:
-    rows = await reader.list_organizations_for_user(current_user.user_id)
+    if await reader.is_super_admin(current_user.user_id):
+        rows = await reader.list_organizations()
+    else:
+        rows = await reader.list_organizations_for_user(current_user.user_id)
     organizations = [_to_pa_organization(raw) for raw in rows]
     filtered = [item for item in organizations if _matches_keyword(item, keyword)]
     return success(_paginate(filtered, page, page_size))

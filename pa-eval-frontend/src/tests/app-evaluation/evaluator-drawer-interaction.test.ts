@@ -30,9 +30,28 @@ test('新建评估器默认使用当前项目且隐藏所属项目选择', () =>
   assert.match(evaluatorsSource, /projectId:\s*projectId/)
   assert.match(
     evaluatorsSource,
-    /createTaskEvaluator\(\$api,\s*\{\s*\.\.\.values,\s*projectId\s*,?\s*\}\)/
+    /createTaskEvaluator\(\$api,\s*\{\s*\.\.\.values,\s*projectId,\s*outputVariables\s*\}\)/
   )
   assert.doesNotMatch(evaluatorsSource, /name='projectId'/)
   assert.doesNotMatch(evaluatorsSource, /<FormLabel>所属项目<\/FormLabel>/)
   assert.doesNotMatch(evaluatorsSource, /getProjects<PaginatedResult/)
+})
+
+test('新建评估器输出变量使用独立卡片并绑定评分指标', () => {
+  assert.match(evaluatorsSource, /listProjectScoreConfigs/)
+  assert.match(
+    evaluatorsSource,
+    /queryKey:\s*\['project-score-config-names',\s*\$api,\s*projectId\]/
+  )
+  assert.match(evaluatorsSource, /<OutputVariableMappingsField\b/)
+  assert.match(evaluatorsSource, /outputVariableMappings/)
+  assert.match(evaluatorsSource, /添加输出变量/)
+  assert.match(evaluatorsSource, /<FormLabel[^>]*>变量名<\/FormLabel>/)
+  assert.match(evaluatorsSource, /<FormLabel[^>]*>\s*评分指标\s*<\/FormLabel>/)
+  assert.match(evaluatorsSource, /overflow-hidden rounded-md border/)
+  assert.match(evaluatorsSource, /scoreConfigNames\.map\(\(scoreConfigName\)/)
+  assert.doesNotMatch(
+    evaluatorsSource,
+    /<FormLabel>输出变量<\/FormLabel>[\s\S]{0,120}<Input/
+  )
 })

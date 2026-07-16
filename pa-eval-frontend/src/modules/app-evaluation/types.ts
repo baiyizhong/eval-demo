@@ -495,6 +495,10 @@ export type AutoEvaluationTaskRecord = {
 export type MockAutoEvaluationEvaluator = AutoEvaluationEvaluatorSummary & {
   variables: string[]
   outputVariables?: string[]
+  outputVariableMappings?: {
+    variableName: string
+    scoreConfigName: string
+  }[]
   description: string
   updatedAt: string
 }

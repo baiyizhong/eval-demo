@@ -48,6 +48,17 @@ export default [
         type: input.type ?? 'LLM_AS_JUDGE',
         version: input.version ?? '1.0.0',
         variables: Array.isArray(input.variables) ? input.variables : [],
+        inputVariables: Array.isArray(input.inputVariables)
+          ? input.inputVariables
+          : Array.isArray(input.variables)
+            ? input.variables
+            : [],
+        outputVariables: Array.isArray(input.outputVariables)
+          ? input.outputVariables
+          : [],
+        outputVariableMappings: Array.isArray(input.outputVariableMappings)
+          ? input.outputVariableMappings
+          : [],
         description: input.description ?? '',
         provider: input.provider ?? 'LANGFUSE',
         projectId: input.projectId ?? null,
