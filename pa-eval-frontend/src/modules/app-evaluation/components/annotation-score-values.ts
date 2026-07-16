@@ -1,4 +1,5 @@
 import type {
+  AnnotationScoreRecord,
   AnnotationQueueItemRecord,
   AnnotationScoreFormInput,
   ScoreConfigRecord,
@@ -41,7 +42,20 @@ export function normalizeBooleanScoreOptionValue(value: string) {
   return getBooleanScoreRadioValue(value) || value
 }
 
-export function getBooleanScoreOptions(): ScoreOption[] {
+export function getBooleanScoreOptions(
+  config?: Pick<ScoreConfigRecord, 'categories'>
+): ScoreOption[] {
+  const options = (config?.categories ?? [])
+    .map((category) => ({
+      value: getBooleanScoreRadioValue(category.value),
+      label: category.label,
+    }))
+    .filter((option) => option.value && option.label)
+
+  if (options.length) {
+    return options
+  }
+
   return [
     { value: '1', label: '通过' },
     { value: '0', label: '不通过' },
@@ -63,7 +77,9 @@ export function buildAnnotationScoreDefaultValues(
 ): AnnotationScoreFormInput {
   return {
     scores: scoreConfigs.map((config) => {
-      const existing = item.scores.find((score) => score.configId === config.id)
+      const existing = item.scores.find((score) =>
+        isScoreForConfig(score, config)
+      )
       const comment = existing?.comment ?? ''
 
       if (config.dataType === 'NUMERIC') {
@@ -95,6 +111,33 @@ export function buildAnnotationScoreDefaultValues(
       }
     }),
   }
+}
+
+type AnnotationScoreWithFallbackIds = AnnotationScoreRecord & {
+  scoreConfigId?: string
+  metadata?: {
+    configId?: string
+    scoreConfigId?: string
+  }
+}
+
+function isScoreForConfig(
+  score: AnnotationScoreRecord,
+  config: ScoreConfigRecord
+) {
+  const normalizedScore = score as AnnotationScoreWithFallbackIds
+  const candidateConfigId =
+    score.configId ||
+    normalizedScore.scoreConfigId ||
+    normalizedScore.metadata?.configId ||
+    normalizedScore.metadata?.scoreConfigId ||
+    ''
+
+  if (candidateConfigId) {
+    return candidateConfigId === config.id
+  }
+
+  return Boolean(score.name) && score.name === config.name
 }
 
 export function normalizeAnnotationScoreFormInput(

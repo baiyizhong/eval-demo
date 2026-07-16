@@ -27,6 +27,12 @@ test('createProjectAutoEvaluationTask sends task variable mapping', async () => 
     },
     evaluatorId: 'eval-1',
     sampleRate: 100,
+    badcase: {
+      enabled: true,
+      scoreName: '',
+      operator: 'LTE',
+      threshold: 0.6,
+    },
     dataSource: { type: 'DATASET', datasetId: 'dataset-1' },
     variableMapping: {
       input: '{{ sample.input }}',
@@ -44,6 +50,12 @@ test('createProjectAutoEvaluationTask sends task variable mapping', async () => 
       scoreConfigId: 'score-config-quality',
       scoreConfigName: '回答质量',
     },
+  })
+  assert.deepEqual(captured.requestBody?.badcase, {
+    enabled: true,
+    scoreName: '',
+    operator: 'LTE',
+    threshold: 0.6,
   })
 })
 
@@ -63,6 +75,12 @@ test('createProjectAutoEvaluationTask sends selected report template', async () 
     scoreMapping: {},
     evaluatorId: 'eval-1',
     sampleRate: 100,
+    badcase: {
+      enabled: true,
+      scoreName: '',
+      operator: 'LTE',
+      threshold: 0.6,
+    },
     dataSource: { type: 'DATASET', datasetId: 'dataset-1' },
     variableMapping: {},
     reportTemplateId: 'template-1',

@@ -52,6 +52,13 @@ DEFAULT_REPORT_TEMPLATE = {
 }
 
 
+class AutoEvaluationBadcaseConfig(BaseModel):
+    enabled: bool = True
+    score_name: str = Field(default="", alias="scoreName")
+    operator: str = Field(default="LTE", pattern="^(LT|LTE|GT|GTE|EQ)$")
+    threshold: float | None = None
+
+
 class CreateAutoEvaluationPayload(BaseModel):
     name: str = Field(min_length=1, max_length=120)
     description: str = Field(default="", max_length=1000)
@@ -75,6 +82,9 @@ class CreateAutoEvaluationPayload(BaseModel):
     report_template_snapshot: dict[str, Any] | None = Field(
         default=None,
         alias="reportTemplateSnapshot",
+    )
+    badcase: AutoEvaluationBadcaseConfig = Field(
+        default_factory=AutoEvaluationBadcaseConfig
     )
 
 
@@ -1000,6 +1010,28 @@ def _normalize_report_template_snapshot(
     }
 
 
+def _apply_auto_evaluation_badcase_config(
+    template_snapshot: dict[str, Any],
+    badcase: AutoEvaluationBadcaseConfig,
+) -> dict[str, Any]:
+    if not badcase.enabled or badcase.threshold is None:
+        return template_snapshot
+
+    return {
+        **template_snapshot,
+        "sections": {
+            **(template_snapshot.get("sections") or {}),
+            "badcases": True,
+        },
+        "badcaseRule": {
+            **(template_snapshot.get("badcaseRule") or {}),
+            "mode": "SCORE_THRESHOLD",
+            "operator": badcase.operator,
+            "threshold": badcase.threshold,
+        },
+    }
+
+
 def _compare_score(score: float, operator: str, threshold: float) -> bool:
     normalized = operator.upper()
     if normalized == "LT":
@@ -1440,6 +1472,10 @@ async def create_auto_evaluation(
                 cursor,
                 project_id=project_id,
                 template_id=payload.report_template_id,
+            )
+            report_template_snapshot = _apply_auto_evaluation_badcase_config(
+                report_template_snapshot,
+                payload.badcase,
             )
             payload = payload.model_copy(
                 update={

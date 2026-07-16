@@ -388,7 +388,7 @@ function ScoreValueField({
                   field.onChange(parseBooleanScoreInput(value))
                 }}
               >
-                {getBooleanScoreOptions().map((option) => (
+                {getBooleanScoreOptions(config).map((option) => (
                   <ToggleGroupItem
                     key={option.value}
                     value={option.value}

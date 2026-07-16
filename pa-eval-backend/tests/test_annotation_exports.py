@@ -568,6 +568,65 @@ def test_previews_annotation_export_with_selected_scope() -> None:
     assert [item["id"] for item in data["previewItems"]] == ["item-1"]
 
 
+def test_previews_annotation_export_uses_latest_clickhouse_scores() -> None:
+    class EmptyScoreAnnotationExportReader(FakeAnnotationExportReader):
+        async def list_annotation_queue_items_for_user(
+            self,
+            project_id: str,
+            queue_id: str,
+            user_id: str,
+        ) -> list[dict]:
+            items = await super().list_annotation_queue_items_for_user(
+                project_id,
+                queue_id,
+                user_id,
+            )
+            return [{**item, "scores": []} for item in items]
+
+    fake_reader = EmptyScoreAnnotationExportReader()
+    fake_trace_reader = FakeAnnotationExportTraceReader()
+    fake_trace_reader.scores_by_queue["queue-1"] = [
+        {
+            "id": "score-latest",
+            "traceId": "trace-1",
+            "observationId": "",
+            "sessionId": "",
+            "name": "准确性",
+            "value": 7,
+            "source": "ANNOTATION",
+            "comment": "来自 ClickHouse 的最新评分",
+            "metadata": {"annotationItemId": "item-1"},
+            "authorUserId": "user-1",
+            "configId": "score-1",
+            "dataType": "NUMERIC",
+            "stringValue": "",
+            "longStringValue": "",
+            "queueId": "queue-1",
+            "createdAt": "2026-07-11T09:00:00.000Z",
+            "updatedAt": "2026-07-11T09:00:00.000Z",
+        }
+    ]
+    override_export_reader(fake_reader, trace_reader=fake_trace_reader)
+
+    try:
+        response = TestClient(app).post(
+            "/api/projects/project-1/annotation-queues/queue-1/export-preview",
+            json={
+                "scope": "selected",
+                "itemIds": ["item-1"],
+                "previewLimit": 20,
+                "splitMetadata": False,
+            },
+        )
+    finally:
+        clear_export_overrides()
+
+    assert response.status_code == 200
+    row = response.json()["data"]["previewItems"][0]
+    assert row["id"] == "item-1"
+    assert row["准确性"] == "7"
+
+
 def test_previews_large_annotation_export_enriches_only_preview_items() -> None:
     class LargeAnnotationExportReader(FakeAnnotationExportReader):
         async def list_annotation_queue_items_for_user(
@@ -683,6 +742,71 @@ def test_creates_large_annotation_export_job_before_background_item_scan(
         "list_items"
     )
     assert fake_trace_reader.calls == []
+
+
+def test_annotation_export_job_uses_latest_clickhouse_scores(tmp_path: Path) -> None:
+    class EmptyScoreAnnotationExportReader(FakeAnnotationExportReader):
+        async def list_annotation_queue_items_for_user(
+            self,
+            project_id: str,
+            queue_id: str,
+            user_id: str,
+        ) -> list[dict]:
+            items = await super().list_annotation_queue_items_for_user(
+                project_id,
+                queue_id,
+                user_id,
+            )
+            return [{**item, "scores": []} for item in items]
+
+    fake_reader = EmptyScoreAnnotationExportReader()
+    fake_trace_reader = FakeAnnotationExportTraceReader()
+    fake_trace_reader.scores_by_queue["queue-1"] = [
+        {
+            "id": "score-latest",
+            "traceId": "trace-1",
+            "observationId": "",
+            "sessionId": "",
+            "name": "准确性",
+            "value": 7,
+            "source": "ANNOTATION",
+            "comment": "来自 ClickHouse 的最新评分",
+            "metadata": {"annotationItemId": "item-1"},
+            "authorUserId": "user-1",
+            "configId": "score-1",
+            "dataType": "NUMERIC",
+            "stringValue": "",
+            "longStringValue": "",
+            "queueId": "queue-1",
+            "createdAt": "2026-07-11T09:00:00.000Z",
+            "updatedAt": "2026-07-11T09:00:00.000Z",
+        }
+    ]
+    override_export_reader(
+        fake_reader,
+        trace_reader=fake_trace_reader,
+        export_dir=tmp_path,
+    )
+
+    try:
+        response = TestClient(app).post(
+            "/api/projects/project-1/annotation-queues/queue-1/export-jobs",
+            json={
+                "scope": "selected",
+                "itemIds": ["item-1"],
+                "format": "csv",
+                "splitMetadata": False,
+                "fileName": "人工标注导出.zip",
+            },
+        )
+    finally:
+        clear_export_overrides()
+
+    assert response.status_code == 200
+    archive_path = Path(fake_reader.export_job["filePath"])
+    row = _csv_export_row(archive_path, "人工标注导出.csv")
+    assert row["id"] == "item-1"
+    assert row["准确性"] == "7"
 
 
 def test_rejects_empty_selected_annotation_export_job() -> None:
@@ -1038,6 +1162,8 @@ class FakeAnnotationExportTraceReader:
     def __init__(self) -> None:
         self.calls: list[tuple[str, str]] = []
         self.source_calls: list[tuple[str, list[str]]] = []
+        self.score_calls: list[tuple[str, str, str | None]] = []
+        self.scores_by_queue: dict[str, list[dict]] = {}
 
     async def get_trace(self, project_id: str, trace_id: str) -> dict:
         self.calls.append((project_id, trace_id))
@@ -1063,6 +1189,16 @@ class FakeAnnotationExportTraceReader:
             }
             for trace_id in trace_ids
         }
+
+    async def list_scores_by_queue(
+        self,
+        project_id: str,
+        queue_id: str,
+        *,
+        run_id: str | None = None,
+    ) -> list[dict]:
+        self.score_calls.append((project_id, queue_id, run_id))
+        return self.scores_by_queue.get(queue_id, [])
 
 
 def override_export_reader(

@@ -17,6 +17,7 @@ import {
   type AnnotationQueueFormInput,
 } from '@/modules/app-evaluation/types'
 import { useAPI } from '@/hooks/use-api'
+import { Badge } from '@/components/ui/badge'
 import { Checkbox } from '@/components/ui/checkbox'
 import {
   FormControl,
@@ -260,9 +261,10 @@ export function TraceAnnotationDialog({
                             control={form.control}
                             name='scoreConfigIds'
                             render={({ field }) => (
-                              <FormItem className='flex items-center gap-2'>
+                              <FormItem className='flex items-start gap-3 rounded-md border px-3 py-2'>
                                 <FormControl>
                                   <Checkbox
+                                    className='mt-0.5'
                                     checked={field.value.includes(config.id)}
                                     onCheckedChange={(checked) => {
                                       const next = checked
@@ -274,9 +276,13 @@ export function TraceAnnotationDialog({
                                     }}
                                   />
                                 </FormControl>
-                                <FormLabel className='font-normal'>
-                                  {config.name} ·{' '}
-                                  {scoreDataTypeLabels[config.dataType]}
+                                <FormLabel className='flex min-w-0 flex-1 cursor-pointer items-center gap-2 font-normal'>
+                                  <span className='truncate'>
+                                    {config.name}
+                                  </span>
+                                  <Badge variant='secondary' className='shrink-0'>
+                                    {scoreDataTypeLabels[config.dataType]}
+                                  </Badge>
                                 </FormLabel>
                               </FormItem>
                             )}

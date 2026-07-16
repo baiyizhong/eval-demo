@@ -9,6 +9,7 @@ from app.auto_evaluations import (
     _build_workflow_headers,
     _complete_auto_evaluation_success,
     _create_report_flowback,
+    _apply_auto_evaluation_badcase_config,
     _count_trace_generation_samples,
     _ensure_report_exists,
     _get_path_value,
@@ -28,6 +29,7 @@ from app.auto_evaluations import (
     _sample_dataset_items,
     _delete_auto_evaluation_task,
     _to_report_badcase,
+    AutoEvaluationBadcaseConfig,
     CreateAutoEvaluationPayload,
     EvaluationReportFlowbackPayload,
 )
@@ -923,6 +925,32 @@ def test_build_report_from_template_applies_title_summary_sections_and_badcase_r
     assert report["risks"] == ["模板风险"]
     assert report["reproduction"] == {}
     assert report["itemResults"] == ["normal", "badcase"]
+
+
+def test_apply_auto_evaluation_badcase_config_overrides_template_threshold() -> None:
+    snapshot = {
+        "id": "template-1",
+        "sections": {"badcases": False, "items": True},
+        "badcaseRule": {"mode": "EVALUATOR_RESULT"},
+    }
+
+    result = _apply_auto_evaluation_badcase_config(
+        snapshot,
+        AutoEvaluationBadcaseConfig.model_validate(
+            {
+                "enabled": True,
+                "operator": "LTE",
+                "threshold": 0.72,
+            }
+        ),
+    )
+
+    assert result["sections"]["badcases"] is True
+    assert result["badcaseRule"] == {
+        "mode": "SCORE_THRESHOLD",
+        "operator": "LTE",
+        "threshold": 0.72,
+    }
 
 
 @pytest.mark.anyio

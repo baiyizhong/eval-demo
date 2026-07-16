@@ -37,6 +37,7 @@ export function createProjectAutoEvaluationTask(
     scoreMapping: AutoEvaluationTaskFormInput['scoreMapping']
     evaluatorId: string
     sampleRate: number
+    badcase: AutoEvaluationTaskFormInput['badcase']
     dataSource: AutoEvaluationTaskFormInput['dataSource']
     variableMapping: AutoEvaluationTaskFormInput['variableMapping']
     reportTemplateId: string

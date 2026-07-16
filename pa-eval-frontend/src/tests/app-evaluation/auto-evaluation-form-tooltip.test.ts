@@ -12,25 +12,15 @@ const autoEvaluationsSource = readFileSync(
   'utf8'
 )
 
-test('Score Name 说明通过 Tooltip 图标展示', () => {
-  assert.match(formSource, /TooltipContent/)
-  assert.match(formSource, /Info/)
-  assert.match(formSource, /仅支持英文、数字、下划线和短横线。/)
-  assert.doesNotMatch(
-    formSource,
-    /description='仅支持英文、数字、下划线和短横线。'/
-  )
-})
-
-test('Badcase 说明通过 Tooltip 图标展示', () => {
+test('新建自动评测只展示 Badcase 阈值输入', () => {
+  assert.match(formSource, /label='Badcase 阈值'/)
   assert.match(
     formSource,
-    /label='Badcase'\s+tooltip='关闭后不再生成 Badcase。'/
+    /badcase:\s*\{\s*...form\.badcase,\s*enabled:\s*true\s*\}/
   )
-  assert.doesNotMatch(
-    formSource,
-    /label='Badcase'\s+description='关闭后不再生成 Badcase。'/
-  )
+  assert.doesNotMatch(formSource, /label='Badcase'\s+tooltip=/)
+  assert.doesNotMatch(formSource, /<Switch/)
+  assert.doesNotMatch(formSource, /disabled=\{!form\.badcase\.enabled\}/)
 })
 
 test('新建自动评测抽屉显示 overlay', () => {

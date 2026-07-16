@@ -7106,8 +7106,10 @@ def _annotation_score_api_payload(
 ) -> dict[str, Any]:
     data_type = config.get("data_type") or "NUMERIC"
     score_value: float | int | str | None
+    boolean_string_value: str | None = None
     if data_type == "BOOLEAN":
         score_value = 1 if value == 1 else 0
+        boolean_string_value = string_value or ("true" if score_value == 1 else "false")
     elif data_type in {"CATEGORICAL", "TEXT"}:
         score_value = string_value or ""
     else:
@@ -7135,6 +7137,8 @@ def _annotation_score_api_payload(
             "annotatorUserId": user_id,
         },
     }
+    if boolean_string_value is not None:
+        payload["stringValue"] = boolean_string_value
     if session_id:
         payload["sessionId"] = session_id
     else:

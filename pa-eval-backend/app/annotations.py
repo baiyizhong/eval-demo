@@ -18,7 +18,9 @@ from app.config import Settings, get_settings
 from app.errors import BusinessError
 from app.langfuse_clickhouse import (
     LangfuseClickHouseReader,
+    LangfuseClickHouseScoreWriter,
     get_langfuse_clickhouse_reader,
+    get_langfuse_clickhouse_score_writer,
 )
 from app.langfuse_client import LangfuseAdminClient, get_langfuse_client
 from app.langfuse_db import LangfuseDatabaseReader, get_langfuse_db_reader
@@ -457,6 +459,78 @@ async def _enrich_annotation_items_with_trace_sources(
     ]
 
 
+async def _enrich_annotation_items_with_clickhouse_scores(
+    project_id: str,
+    queue_id: str,
+    items: list[dict[str, Any]],
+    trace_reader: LangfuseClickHouseReader,
+) -> list[dict[str, Any]]:
+    if not items:
+        return items
+
+    scores = await trace_reader.list_scores_by_queue(project_id, queue_id)
+    annotation_scores = [
+        score
+        for score in scores
+        if str(score.get("source") or "") == "ANNOTATION"
+        and str(score.get("queueId") or queue_id) == queue_id
+    ]
+    if not annotation_scores:
+        return items
+
+    scores_by_item_id: dict[str, list[dict[str, Any]]] = {}
+    scores_by_object: dict[tuple[str, str], list[dict[str, Any]]] = {}
+
+    for score in annotation_scores:
+        metadata = score.get("metadata") if isinstance(score.get("metadata"), dict) else {}
+        annotation_item_id = str(metadata.get("annotationItemId") or "")
+        if annotation_item_id:
+            scores_by_item_id.setdefault(annotation_item_id, []).append(score)
+
+        object_key = _annotation_score_object_key(score)
+        if object_key:
+            scores_by_object.setdefault(object_key, []).append(score)
+
+    enriched_items: list[dict[str, Any]] = []
+    for item in items:
+        item_id = str(item.get("id") or "")
+        item_scores = scores_by_item_id.get(item_id)
+        if item_scores is None:
+            item_scores = scores_by_object.get(_annotation_item_object_key(item))
+
+        enriched_items.append(
+            {
+                **item,
+                "scores": item_scores if item_scores is not None else item.get("scores", []),
+            }
+        )
+
+    return enriched_items
+
+
+def _annotation_item_object_key(item: dict[str, Any]) -> tuple[str, str]:
+    return (
+        str(item.get("objectType") or ""),
+        str(item.get("objectId") or ""),
+    )
+
+
+def _annotation_score_object_key(score: dict[str, Any]) -> tuple[str, str] | None:
+    session_id = str(score.get("sessionId") or "")
+    if session_id:
+        return ("SESSION", session_id)
+
+    observation_id = str(score.get("observationId") or "")
+    if observation_id:
+        return ("OBSERVATION", observation_id)
+
+    trace_id = str(score.get("traceId") or "")
+    if trace_id:
+        return ("TRACE", trace_id)
+
+    return None
+
+
 def _needs_trace_source(item: dict[str, Any]) -> bool:
     source = item.get("source") if isinstance(item.get("source"), dict) else {}
     return (
@@ -644,6 +718,7 @@ async def _save_annotation_scores_with_langfuse_api(
     score_payload: dict[str, Any],
     reader: LangfuseDatabaseReader,
     langfuse_client: LangfuseAdminClient,
+    score_writer: LangfuseClickHouseScoreWriter | None = None,
 ) -> dict[str, Any]:
     score_requests = await reader.prepare_annotation_score_payloads_for_user(
         project_id,
@@ -663,11 +738,26 @@ async def _save_annotation_scores_with_langfuse_api(
                 api_key["secretKey"],
                 score_request,
             )
+            if score_writer and _requires_annotation_score_clickhouse_upsert(
+                score_request
+            ):
+                await score_writer.upsert_annotation_score(
+                    project_id,
+                    user_id,
+                    score_request,
+                )
     return await reader.complete_annotation_queue_item_for_user(
         project_id,
         queue_id,
         item_id,
         user_id,
+    )
+
+
+def _requires_annotation_score_clickhouse_upsert(score_request: dict[str, Any]) -> bool:
+    return (
+        score_request.get("source") == "ANNOTATION"
+        and score_request.get("dataType") == "BOOLEAN"
     )
 
 
@@ -803,6 +893,12 @@ async def _get_scoped_annotation_export_items(
         project_id,
         queue_id,
         user_id,
+    )
+    items = await _enrich_annotation_items_with_clickhouse_scores(
+        project_id,
+        queue_id,
+        items,
+        trace_reader,
     )
     items = _apply_annotation_export_scope(items, scope, item_ids)
     scoped_items = _filter_annotation_items(
@@ -1511,6 +1607,12 @@ async def count_annotation_queue_item_filters(
         queue_id,
         current_user.user_id,
     )
+    items = await _enrich_annotation_items_with_clickhouse_scores(
+        project_id,
+        queue_id,
+        items,
+        trace_reader,
+    )
     if _annotation_filters_require_source(filters_payload):
         items = await _enrich_annotation_items_with_trace_sources(
             project_id,
@@ -1613,6 +1715,12 @@ async def list_annotation_queue_items(
         queue_id,
         current_user.user_id,
     )
+    items = await _enrich_annotation_items_with_clickhouse_scores(
+        project_id,
+        queue_id,
+        items,
+        trace_reader,
+    )
     needs_source_for_filtering = _annotation_filters_require_source(filters_payload)
     if needs_source_for_filtering:
         items = await _enrich_annotation_items_with_trace_sources(
@@ -1663,9 +1771,15 @@ async def get_annotation_queue_item(
         item_id,
         current_user.user_id,
     )
+    items = await _enrich_annotation_items_with_clickhouse_scores(
+        project_id,
+        queue_id,
+        [item],
+        trace_reader,
+    )
     enriched_items = await _enrich_annotation_items_with_trace_source(
         project_id,
-        [item],
+        items,
         trace_reader,
     )
     item = enriched_items[0]
@@ -1749,6 +1863,9 @@ async def save_annotation_batch_scores(
     reader: LangfuseDatabaseReader = Depends(get_langfuse_db_reader),
     trace_reader: LangfuseClickHouseReader = Depends(get_langfuse_clickhouse_reader),
     langfuse_client: LangfuseAdminClient = Depends(get_langfuse_client),
+    score_writer: LangfuseClickHouseScoreWriter = Depends(
+        get_langfuse_clickhouse_score_writer
+    ),
 ) -> dict[str, Any]:
     items = await reader.list_annotation_queue_items_for_user(
         project_id,
@@ -1793,6 +1910,7 @@ async def save_annotation_batch_scores(
                 score_payload=score_payload,
                 reader=reader,
                 langfuse_client=langfuse_client,
+                score_writer=score_writer,
             )
             success_item_ids.append(item["id"])
         except BusinessError as exc:
@@ -1822,6 +1940,9 @@ async def save_annotation_scores(
     current_user: CurrentUserContext = Depends(get_current_user_context),
     reader: LangfuseDatabaseReader = Depends(get_langfuse_db_reader),
     langfuse_client: LangfuseAdminClient = Depends(get_langfuse_client),
+    score_writer: LangfuseClickHouseScoreWriter = Depends(
+        get_langfuse_clickhouse_score_writer
+    ),
 ) -> dict[str, Any]:
     item = await _save_annotation_scores_with_langfuse_api(
         project_id=project_id,
@@ -1831,6 +1952,7 @@ async def save_annotation_scores(
         score_payload=_score_payload(payload),
         reader=reader,
         langfuse_client=langfuse_client,
+        score_writer=score_writer,
     )
     return success(item)
 

@@ -35,6 +35,7 @@ test('boolean score form uses a segmented toggle control instead of tiny radio d
   assert.match(source, /ToggleGroupItem/)
   assert.match(source, /type='single'/)
   assert.match(source, /parseBooleanScoreInput/)
+  assert.match(source, /getBooleanScoreOptions\(config\)/)
   assert.match(source, /是否通过/)
 })
 
@@ -94,5 +95,15 @@ test('annotation detail loads current item without large page navigation fetch',
   assert.doesNotMatch(
     apiSource,
     /getProjectAnnotationNavigation[\s\S]{0,900}pageSize:\s*5000/
+  )
+})
+
+test('annotation detail only shows blocking loading before core data is ready', () => {
+  assert.match(pageSource, /const isInitialLoading =/)
+  assert.match(pageSource, /!\(item && queue\)/)
+  assert.match(pageSource, /\{isInitialLoading \? \(/)
+  assert.doesNotMatch(
+    pageSource,
+    /\{itemQuery\.isLoading \|\| navigationQuery\.isLoading \|\| queueQuery\.isLoading \? \(\s*<Loading/
   )
 })

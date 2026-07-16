@@ -1,10 +1,16 @@
+import anyio
 from fastapi.testclient import TestClient
 
 from app.auth_context import CurrentUserContext, get_current_user_context
 from app.errors import BusinessError
 from app.langfuse_clickhouse import get_langfuse_clickhouse_reader
 from app.langfuse_client import get_langfuse_client
-from app.langfuse_db import LangfuseDatabaseReader, get_langfuse_db_reader
+from app.annotations import _save_annotation_scores_with_langfuse_api
+from app.langfuse_db import (
+    LangfuseDatabaseReader,
+    _annotation_score_api_payload,
+    get_langfuse_db_reader,
+)
 from app.main import app
 
 
@@ -424,6 +430,8 @@ class FakeAnnotationTraceReader:
     def __init__(self) -> None:
         self.calls: list[tuple[str, str]] = []
         self.source_calls: list[tuple[str, list[str]]] = []
+        self.score_calls: list[tuple[str, str, str | None]] = []
+        self.scores_by_queue: dict[str, list[dict]] = {}
 
     async def get_trace(self, project_id: str, trace_id: str) -> dict:
         self.calls.append((project_id, trace_id))
@@ -475,6 +483,16 @@ class FakeAnnotationTraceReader:
             for trace_id in trace_ids
         }
 
+    async def list_scores_by_queue(
+        self,
+        project_id: str,
+        queue_id: str,
+        *,
+        run_id: str | None = None,
+    ) -> list[dict]:
+        self.score_calls.append((project_id, queue_id, run_id))
+        return self.scores_by_queue.get(queue_id, [])
+
 
 class FakeLangfuseClient:
     def __init__(self) -> None:
@@ -488,6 +506,19 @@ class FakeLangfuseClient:
     ) -> dict:
         self.created_scores.append((public_key, secret_key, payload))
         return {"id": payload["id"]}
+
+
+class FakeClickHouseScoreWriter:
+    def __init__(self) -> None:
+        self.upserted_scores: list[tuple[str, str, dict]] = []
+
+    async def upsert_annotation_score(
+        self,
+        project_id: str,
+        user_id: str,
+        score_request: dict,
+    ) -> None:
+        self.upserted_scores.append((project_id, user_id, score_request))
 
 
 def override_reader(fake_reader: FakeAnnotationDatabaseReader) -> None:
@@ -862,6 +893,74 @@ def test_saves_annotation_scores_and_completes_queue_item() -> None:
     )
 
 
+def test_saves_boolean_annotation_score_with_clickhouse_upsert_fallback() -> None:
+    class BooleanAnnotationReader(FakeAnnotationDatabaseReader):
+        async def prepare_annotation_score_payloads_for_user(
+            self,
+            project_id: str,
+            queue_id: str,
+            item_id: str,
+            user_id: str,
+            payload: dict,
+        ) -> list[dict]:
+            self.calls.append(
+                ("prepare_scores", (project_id, queue_id, item_id, user_id, payload))
+            )
+            return [
+                {
+                    "id": "pa-ann-score-bool",
+                    "name": "内容是否全",
+                    "traceId": "trace-1",
+                    "observationId": None,
+                    "value": 0,
+                    "stringValue": "false",
+                    "dataType": "BOOLEAN",
+                    "source": "ANNOTATION",
+                    "configId": "score-bool",
+                    "queueId": queue_id,
+                    "comment": "",
+                    "metadata": {"annotationItemId": item_id},
+                }
+            ]
+
+    fake_reader = BooleanAnnotationReader()
+    fake_langfuse_client = FakeLangfuseClient()
+    fake_score_writer = FakeClickHouseScoreWriter()
+    score_payload = {
+        "scores": [
+            {
+                "configId": "score-bool",
+                "value": False,
+                "stringValue": "",
+                "comment": "",
+            }
+        ]
+    }
+
+    async def _run_save() -> None:
+        await _save_annotation_scores_with_langfuse_api(
+            project_id="project-1",
+            queue_id="queue-1",
+            item_id="item-1",
+            user_id="user-1",
+            score_payload=score_payload,
+            reader=fake_reader,  # type: ignore[arg-type]
+            langfuse_client=fake_langfuse_client,  # type: ignore[arg-type]
+            score_writer=fake_score_writer,  # type: ignore[arg-type]
+        )
+
+    anyio.run(_run_save)
+
+    assert fake_langfuse_client.created_scores[0][2]["value"] == 0
+    assert fake_score_writer.upserted_scores == [
+        (
+            "project-1",
+            "user-1",
+            fake_langfuse_client.created_scores[0][2],
+        )
+    ]
+
+
 def test_previews_annotation_batch_scope_without_overwriting_completed_items() -> None:
     fake_reader = FakeAnnotationDatabaseReader()
     override_reader(fake_reader)
@@ -1114,6 +1213,45 @@ def test_lists_annotation_items_enriches_empty_trace_source() -> None:
     assert item["source"]["userId"] == "user-1"
 
 
+def test_lists_annotation_items_uses_latest_clickhouse_scores() -> None:
+    fake_reader = FakeAnnotationDatabaseReader()
+    fake_trace_reader = FakeAnnotationTraceReader()
+    fake_trace_reader.scores_by_queue["queue-1"] = [
+        {
+            "id": "score-latest",
+            "traceId": "trace-done",
+            "observationId": "",
+            "name": "准确性",
+            "value": 5,
+            "source": "ANNOTATION",
+            "comment": "来自 ClickHouse 的最新评分",
+            "metadata": {"annotationItemId": "item-done"},
+            "authorUserId": "user-1",
+            "configId": "score-1",
+            "dataType": "NUMERIC",
+            "stringValue": "",
+            "longStringValue": "",
+            "queueId": "queue-1",
+            "createdAt": "2026-07-06T03:00:00.000Z",
+            "updatedAt": "2026-07-06T03:00:00.000Z",
+        }
+    ]
+    override_reader_and_trace_reader(fake_reader, fake_trace_reader)
+
+    try:
+        response = TestClient(app).get(
+            "/api/projects/project-1/annotation-queues/queue-1/items",
+            params={"status": "COMPLETED"},
+        )
+    finally:
+        clear_overrides()
+
+    assert response.status_code == 200
+    item = response.json()["data"]["datas"][0]
+    assert item["id"] == "item-done"
+    assert item["scores"] == fake_trace_reader.scores_by_queue["queue-1"]
+
+
 def test_gets_annotation_item_enriches_only_current_trace_source() -> None:
     fake_reader = FakeAnnotationDatabaseReader()
     fake_trace_reader = FakeAnnotationTraceReader()
@@ -1133,6 +1271,44 @@ def test_gets_annotation_item_enriches_only_current_trace_source() -> None:
     assert item["source"]["output"] == '{"answer":"通常 1-3 个工作日到账"}'
     assert item["source"]["metadata"] == {"app_id": "app-1"}
     assert fake_trace_reader.calls == [("project-1", "trace-1")]
+
+
+def test_gets_annotation_item_uses_latest_clickhouse_scores() -> None:
+    fake_reader = FakeAnnotationDatabaseReader()
+    fake_trace_reader = FakeAnnotationTraceReader()
+    fake_trace_reader.scores_by_queue["queue-1"] = [
+        {
+            "id": "score-latest",
+            "traceId": "trace-done",
+            "observationId": "",
+            "name": "准确性",
+            "value": 5,
+            "source": "ANNOTATION",
+            "comment": "来自 ClickHouse 的最新评分",
+            "metadata": {"annotationItemId": "item-done"},
+            "authorUserId": "user-1",
+            "configId": "score-1",
+            "dataType": "NUMERIC",
+            "stringValue": "",
+            "longStringValue": "",
+            "queueId": "queue-1",
+            "createdAt": "2026-07-06T03:00:00.000Z",
+            "updatedAt": "2026-07-06T03:00:00.000Z",
+        }
+    ]
+    override_reader_and_trace_reader(fake_reader, fake_trace_reader)
+
+    try:
+        response = TestClient(app).get(
+            "/api/projects/project-1/annotation-queues/queue-1/items/item-done"
+        )
+    finally:
+        clear_overrides()
+
+    assert response.status_code == 200
+    item = response.json()["data"]
+    assert item["id"] == "item-done"
+    assert item["scores"] == fake_trace_reader.scores_by_queue["queue-1"]
 
 
 def test_lists_large_annotation_queue_enriches_only_current_page() -> None:
@@ -1725,6 +1901,46 @@ def test_normalizes_boolean_annotation_score_values() -> None:
     assert normalize("BOOLEAN", "false", "") == (0.0, "false")
     assert normalize("BOOLEAN", "否", "") == (0.0, "false")
     assert normalize("BOOLEAN", None, "") == (None, None)
+
+
+def test_annotation_score_api_payload_keeps_boolean_string_value() -> None:
+    payload = _annotation_score_api_payload(
+        project_id="project-1",
+        queue_id="queue-1",
+        item_id="item-1",
+        user_id="user-1",
+        trace_id="trace-1",
+        observation_id=None,
+        session_id=None,
+        config={"name": "是否合格", "data_type": "BOOLEAN"},
+        config_id="score-bool",
+        value=1.0,
+        string_value="true",
+        comment="人工确认合格",
+    )
+
+    assert payload["value"] == 1
+    assert payload["dataType"] == "BOOLEAN"
+    assert payload["stringValue"] == "true"
+
+    false_payload = _annotation_score_api_payload(
+        project_id="project-1",
+        queue_id="queue-1",
+        item_id="item-1",
+        user_id="user-1",
+        trace_id="trace-1",
+        observation_id=None,
+        session_id=None,
+        config={"name": "是否合格", "data_type": "BOOLEAN"},
+        config_id="score-bool",
+        value=0.0,
+        string_value="false",
+        comment="人工确认不合格",
+    )
+
+    assert false_payload["value"] == 0
+    assert false_payload["dataType"] == "BOOLEAN"
+    assert false_payload["stringValue"] == "false"
 
 
 def test_normalizes_categorical_annotation_score_with_langfuse_category() -> None:

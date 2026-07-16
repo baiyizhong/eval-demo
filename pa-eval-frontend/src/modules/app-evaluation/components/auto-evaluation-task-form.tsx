@@ -23,7 +23,6 @@ import {
   SelectTrigger,
   SelectValue,
 } from '@/components/ui/select'
-import { Switch } from '@/components/ui/switch'
 import {
   Table,
   TableBody,
@@ -98,6 +97,36 @@ const sampleFieldOptions = [
   'sample.observation.id',
   'sample.datasetItem.id',
 ]
+const defaultSampleMappingByVariable: Record<string, string> = {
+  input: 'sample.input',
+  output: 'sample.output',
+  expected_output: 'sample.expectedOutput',
+  expectedoutput: 'sample.expectedOutput',
+  context: 'sample.context',
+  conversation_context: 'sample.context',
+  trace_id: 'sample.trace.id',
+  observation_id: 'sample.observation.id',
+  dataset_item_id: 'sample.datasetItem.id',
+  datasetitem_id: 'sample.datasetItem.id',
+  metadata: 'sample.metadata',
+}
+const legacyMappingAliases: Record<string, string> = {
+  'trace.input': 'sample.input',
+  'dataset.input': 'sample.input',
+  'trace.output': 'sample.output',
+  'dataset.output': 'sample.output',
+  'trace.expectedoutput': 'sample.expectedOutput',
+  'dataset.expectedoutput': 'sample.expectedOutput',
+  'trace.expected_output': 'sample.expectedOutput',
+  'dataset.expected_output': 'sample.expectedOutput',
+  'trace.context': 'sample.context',
+  'dataset.context': 'sample.context',
+  'trace.conversation_context': 'sample.context',
+  'dataset.conversation_context': 'sample.context',
+  'trace.trace_id': 'sample.trace.id',
+  'trace.observation_id': 'sample.observation.id',
+  'dataset.dataset_item_id': 'sample.datasetItem.id',
+}
 
 const autoEvaluationStepItems = autoEvaluationStepLabels.map(
   (label, index) => ({
@@ -385,9 +414,10 @@ export function AutoEvaluationTaskForm({
         name: form.name,
         description: form.description,
         scoreName: form.scoreName,
-        scoreMapping: form.scoreMapping,
+        scoreMapping: getBoundScoreMapping(form.scoreMapping),
         evaluatorId: form.evaluatorId,
         sampleRate: form.sampleRate,
+        badcase: { ...form.badcase, enabled: true },
         dataSource: form.dataSource,
         variableMapping: form.variableMapping,
         reportTemplateId: form.reportTemplateId,
@@ -491,15 +521,10 @@ export function AutoEvaluationTaskForm({
                     updateForm({
                       ...form,
                       evaluatorId: evaluator.id,
-                      variableMapping: Object.fromEntries(
-                        evaluator.variables.map((item) => [item, ''])
-                      ),
-                      scoreMapping: createDefaultScoreMapping(
-                        evaluator,
-                        scoreConfigs
-                      ),
+                      variableMapping: createDefaultVariableMapping(evaluator),
+                      scoreMapping: createDefaultScoreMapping(evaluator),
                       scoreName: getPrimaryScoreName(
-                        createDefaultScoreMapping(evaluator, scoreConfigs)
+                        createDefaultScoreMapping(evaluator)
                       ),
                     })
                   }
@@ -550,9 +575,9 @@ export function AutoEvaluationTaskForm({
                 </div>
                 <div className='flex flex-col gap-3'>
                   <div className='flex flex-col gap-1'>
-                    <h4 className='text-sm font-medium'>变量映射</h4>
+                    <h4 className='text-sm font-medium'>输入变量绑定</h4>
                     <p className='text-muted-foreground text-sm'>
-                      将评估器输入变量映射到评测样本字段。
+                      将评估器输入变量绑定到评测样本字段。
                     </p>
                   </div>
                   {selectedEvaluator.variables.map((variable) => (
@@ -610,7 +635,8 @@ export function AutoEvaluationTaskForm({
                           </Label>
                           <Select
                             value={
-                              form.scoreMapping[variable]?.scoreConfigId ?? ''
+                              form.scoreMapping[variable]?.scoreConfigId ||
+                              undefined
                             }
                             onValueChange={(value) => {
                               const scoreConfig = scoreConfigs.find(
@@ -662,7 +688,7 @@ export function AutoEvaluationTaskForm({
               <div className='flex min-h-72 flex-col items-center justify-center gap-2 rounded-lg border border-dashed p-6 text-center'>
                 <h3 className='text-sm font-semibold'>请选择评估器</h3>
                 <p className='text-muted-foreground max-w-sm text-sm leading-6'>
-                  选择后将在这里配置评估器变量映射。
+                  选择后将在这里配置评估器输入变量绑定。
                 </p>
               </div>
             )}
@@ -961,10 +987,10 @@ export function AutoEvaluationTaskForm({
             <div className='mb-4 flex flex-col gap-1'>
               <h3 className='text-sm font-semibold'>执行配置</h3>
               <p className='text-muted-foreground text-sm'>
-                配置报告模板、采样比例和 Badcase 规则。
+                配置报告模板、采样比例和 Badcase 阈值。
               </p>
             </div>
-            <div className='grid gap-4 lg:grid-cols-4'>
+            <div className='grid gap-4 lg:grid-cols-3'>
               <Field label='报告模板'>
                 <Select
                   value={form.reportTemplateId}
@@ -1001,25 +1027,10 @@ export function AutoEvaluationTaskForm({
                   }
                 />
               </Field>
-              <Field label='Badcase' tooltip='关闭后不再生成 Badcase。'>
-                <div className='flex h-9 items-center gap-2 rounded-md border px-3'>
-                  <Switch
-                    checked={form.badcase.enabled}
-                    onCheckedChange={(checked) =>
-                      updateForm({
-                        ...form,
-                        badcase: { ...form.badcase, enabled: checked },
-                      })
-                    }
-                  />
-                  <span className='text-sm'>启用</span>
-                </div>
-              </Field>
               <Field label='Badcase 阈值'>
                 <Input
                   type='number'
                   step='0.01'
-                  disabled={!form.badcase.enabled}
                   value={form.badcase.threshold ?? ''}
                   onChange={(event) =>
                     updateForm({
@@ -1260,17 +1271,12 @@ function getStepError(
       ) ??
       true
     ) {
-      return '请完成评估器变量映射'
+      return '请完成评估器输入变量绑定'
     }
-    const outputVariables = evaluator ? getEvaluatorOutputVariables(evaluator) : []
+    const outputVariables = evaluator
+      ? getEvaluatorOutputVariables(evaluator)
+      : []
     if (!outputVariables.length) return '请先为评估器定义输出变量'
-    if (
-      outputVariables.some(
-        (variable) => !form.scoreMapping[variable]?.scoreConfigId
-      )
-    ) {
-      return '请完成评估器输出变量与评分指标绑定'
-    }
   }
   if (step === 2) {
     if (form.dataSource.type === 'DATASET' && !form.dataSource.datasetId) {
@@ -1286,7 +1292,6 @@ function getStepError(
       return '采样率必须在 1% 到 100% 之间'
     }
     if (
-      form.badcase.enabled &&
       (form.badcase.threshold === null || Number.isNaN(form.badcase.threshold))
     ) {
       return 'Badcase 阈值必须为数字'
@@ -1306,21 +1311,64 @@ function getEvaluatorOutputVariables(evaluator: MockAutoEvaluationEvaluator) {
 }
 
 function createDefaultScoreMapping(
-  evaluator: MockAutoEvaluationEvaluator,
-  scoreConfigs: ScoreConfigRecord[]
+  evaluator: MockAutoEvaluationEvaluator
 ) {
   const outputVariables = getEvaluatorOutputVariables(evaluator)
   return Object.fromEntries(
-    outputVariables.map((variable, index) => {
-      const scoreConfig = scoreConfigs[index] ?? scoreConfigs[0]
-      return [
-        variable,
-        {
-          scoreConfigId: scoreConfig?.id ?? '',
-          scoreConfigName: scoreConfig?.name ?? '',
-        },
-      ]
-    })
+    outputVariables.map((variable) => [
+      variable,
+      {
+        scoreConfigId: '',
+        scoreConfigName: '',
+      },
+    ])
+  )
+}
+
+function createDefaultVariableMapping(evaluator: MockAutoEvaluationEvaluator) {
+  return Object.fromEntries(
+    evaluator.variables.map((variable) => [
+      variable,
+      toMappingTemplate(findDefaultMappingField(variable)),
+    ])
+  )
+}
+
+function findDefaultMappingField(variable: string) {
+  const normalizedVariable = variable.toLowerCase()
+  const defaultField = defaultSampleMappingByVariable[normalizedVariable]
+  const matchedDefaultField = defaultField
+    ? findMappingFieldValue(defaultField)
+    : null
+
+  if (matchedDefaultField) {
+    return matchedDefaultField
+  }
+
+  return (
+    sampleFieldOptions.find(
+      (field) =>
+        field.toLowerCase() === `sample.${normalizedVariable}` ||
+        field.toLowerCase().endsWith(`.${normalizedVariable}`)
+    ) ??
+    sampleFieldOptions[0] ??
+    ''
+  )
+}
+
+function findMappingFieldValue(value: string) {
+  return sampleFieldOptions.find(
+    (field) => field.toLowerCase() === value.toLowerCase()
+  )
+}
+
+function getBoundScoreMapping(
+  scoreMapping: AutoEvaluationTaskFormInput['scoreMapping']
+) {
+  return Object.fromEntries(
+    Object.entries(scoreMapping).filter(
+      ([, mapping]) => mapping.scoreConfigId.trim() !== ''
+    )
   )
 }
 
@@ -1434,9 +1482,10 @@ function getSubmitErrorMessage(error: unknown) {
 }
 
 function toMappingTemplate(value: string) {
-  return `{{ ${value} }}`
+  return value ? `{{ ${value} }}` : ''
 }
 
 function getMappingSelectValue(value?: string) {
-  return value?.replace(/^{{\s*/, '').replace(/\s*}}$/, '') ?? ''
+  const rawValue = value?.replace(/^{{\s*/, '').replace(/\s*}}$/, '') ?? ''
+  return legacyMappingAliases[rawValue.toLowerCase()] ?? rawValue
 }

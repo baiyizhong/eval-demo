@@ -1,5 +1,5 @@
 import json
-from datetime import datetime, timedelta
+from datetime import UTC, datetime, timedelta
 from typing import Any
 
 import httpx
@@ -579,6 +579,7 @@ class LangfuseClickHouseReader:
                 id,
                 trace_id AS traceId,
                 observation_id AS observationId,
+                session_id AS sessionId,
                 name,
                 value,
                 source,
@@ -638,6 +639,7 @@ class LangfuseClickHouseReader:
                     id,
                     trace_id AS traceId,
                     observation_id AS observationId,
+                    session_id AS sessionId,
                     name,
                     value,
                     source,
@@ -774,11 +776,77 @@ class LangfuseClickHouseReader:
         return trace_row
 
 
+class LangfuseClickHouseScoreWriter:
+    def __init__(self, settings: Settings) -> None:
+        self._url = settings.langfuse_clickhouse_url
+        self._user = settings.langfuse_clickhouse_user
+        self._password = settings.langfuse_clickhouse_password
+        self._timeout = settings.pa_eval_api_timeout
+
+    async def upsert_annotation_score(
+        self,
+        project_id: str,
+        user_id: str,
+        score_request: dict[str, Any],
+    ) -> None:
+        now = _clickhouse_datetime_ms(datetime.now(UTC))
+        record = {
+            "id": score_request["id"],
+            "timestamp": now,
+            "project_id": project_id,
+            "environment": score_request.get("environment") or "default",
+            "trace_id": score_request.get("traceId") or None,
+            "observation_id": score_request.get("observationId") or None,
+            "session_id": score_request.get("sessionId") or None,
+            "dataset_run_id": None,
+            "name": score_request["name"],
+            "value": float(score_request.get("value") or 0),
+            "source": "ANNOTATION",
+            "comment": score_request.get("comment") or None,
+            "metadata": _clickhouse_string_map(score_request.get("metadata")),
+            "author_user_id": user_id,
+            "config_id": score_request.get("configId") or None,
+            "data_type": score_request.get("dataType") or "NUMERIC",
+            "string_value": score_request.get("stringValue") or None,
+            "long_string_value": score_request.get("longStringValue") or "",
+            "queue_id": score_request.get("queueId") or None,
+            "execution_trace_id": score_request.get("executionTraceId") or None,
+            "created_at": now,
+            "updated_at": now,
+            "event_ts": now,
+            "is_deleted": 0,
+        }
+        await self._insert_json_each_row(
+            "INSERT INTO scores FORMAT JSONEachRow\n"
+            + json.dumps(record, ensure_ascii=False)
+        )
+
+    async def _insert_json_each_row(self, query: str) -> None:
+        request_params = {
+            "user": self._user,
+            "password": self._password,
+        }
+        try:
+            async with httpx.AsyncClient(
+                timeout=self._timeout,
+                trust_env=False,
+            ) as client:
+                response = await client.post(
+                    self._url,
+                    params=request_params,
+                    content=query,
+                )
+                response.raise_for_status()
+        except httpx.HTTPError as exc:
+            raise LangfuseUpstreamError("Langfuse ClickHouse 写入失败") from exc
+
+
 def _format_score(row: dict[str, Any]) -> dict[str, Any]:
     return {
         "id": row.get("id") or "",
         "traceId": row.get("traceId") or "",
         "observationId": row.get("observationId") or "",
+        "sessionId": row.get("sessionId") or "",
         "name": row.get("name") or "",
         "value": _numeric_or_none(row.get("value")),
         "source": row.get("source") or "",
@@ -1233,6 +1301,16 @@ def _format_clickhouse_datetime(value: Any) -> str:
     return f"{parsed.isoformat(timespec='milliseconds')}Z"
 
 
+def _clickhouse_datetime_ms(value: datetime) -> str:
+    return value.astimezone(UTC).strftime("%Y-%m-%d %H:%M:%S.%f")[:-3]
+
+
+def _clickhouse_string_map(value: Any) -> dict[str, str]:
+    if not isinstance(value, dict):
+        return {}
+    return {str(key): str(item) for key, item in value.items() if item is not None}
+
+
 def _parse_clickhouse_datetime(value: Any) -> datetime | None:
     if isinstance(value, datetime):
         return value
@@ -1249,3 +1327,9 @@ async def get_langfuse_clickhouse_reader(
     settings: Settings = Depends(get_settings),
 ) -> LangfuseClickHouseReader:
     return LangfuseClickHouseReader(settings)
+
+
+async def get_langfuse_clickhouse_score_writer(
+    settings: Settings = Depends(get_settings),
+) -> LangfuseClickHouseScoreWriter:
+    return LangfuseClickHouseScoreWriter(settings)

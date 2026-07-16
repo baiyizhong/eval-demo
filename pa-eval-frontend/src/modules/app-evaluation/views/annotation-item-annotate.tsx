@@ -120,6 +120,9 @@ export function ProjectAnnotationItemAnnotate() {
   const navigation = navigationQuery.data
   const item = itemQuery.data ?? navigation?.current
   const queue = queueQuery.data
+  const isInitialLoading =
+    !(item && queue) &&
+    (itemQuery.isLoading || navigationQuery.isLoading || queueQuery.isLoading)
 
   const goToItem = (nextItemId: string) => {
     navigate({
@@ -240,7 +243,7 @@ export function ProjectAnnotationItemAnnotate() {
           ) : null}
         </PageAction>
 
-        {itemQuery.isLoading || navigationQuery.isLoading || queueQuery.isLoading ? (
+        {isInitialLoading ? (
           <Loading text='加载标注详情中...' className='flex-1' />
         ) : null}
 

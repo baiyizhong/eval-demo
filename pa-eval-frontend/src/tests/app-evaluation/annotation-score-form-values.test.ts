@@ -118,7 +118,14 @@ const item = {
   },
 } satisfies AnnotationQueueItemRecord
 
-test('boolean score options are always concise yes or no regardless of stored categories', () => {
+test('boolean score options use backend category labels when available', () => {
+  assert.deepEqual(getBooleanScoreOptions(scoreConfigs[1]), [
+    { value: '1', label: 'True' },
+    { value: '0', label: 'False' },
+  ])
+})
+
+test('boolean score options fall back to default labels without categories', () => {
   assert.deepEqual(getBooleanScoreOptions(), [
     { value: '1', label: '通过' },
     { value: '0', label: '不通过' },
@@ -154,6 +161,47 @@ test('annotation score defaults map each score type into the field it actually e
       comment: '',
     },
   ])
+})
+
+test('annotation score defaults recover completed scores without a frontend config id', () => {
+  const completedItem = {
+    ...item,
+    status: 'COMPLETED',
+    scores: [
+      {
+        id: 'score_numeric_without_config_id',
+        configId: '',
+        scoreConfigId: 'numeric_config',
+        name: '准确性',
+        dataType: 'NUMERIC',
+        value: 5,
+        stringValue: '',
+        comment: '通过 scoreConfigId 回显',
+        authorUserId: 'user_a',
+        createdAt: '',
+        updatedAt: '',
+      },
+      {
+        id: 'score_boolean_without_config_id',
+        configId: '',
+        name: '是否合格',
+        dataType: 'BOOLEAN',
+        value: 1,
+        stringValue: 'true',
+        comment: '通过名称回显',
+        authorUserId: 'user_a',
+        createdAt: '',
+        updatedAt: '',
+      },
+    ],
+  } as AnnotationQueueItemRecord
+
+  const defaults = buildAnnotationScoreDefaultValues(completedItem, scoreConfigs)
+
+  assert.equal(defaults.scores[0].value, 5)
+  assert.equal(defaults.scores[0].comment, '通过 scoreConfigId 回显')
+  assert.equal(defaults.scores[1].value, true)
+  assert.equal(defaults.scores[1].comment, '通过名称回显')
 })
 
 test('annotation score submit payload clears stale fields by score type', () => {
