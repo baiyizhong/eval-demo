@@ -21,6 +21,13 @@ EXPORT_COLUMNS = [
     ("updatedAt", "updatedAt"),
 ]
 
+DATASET_TYPE_LABELS = {
+    "evaluation": "评测集",
+    "badcase": "badcase集",
+    "golden": "黄金集",
+    "anomaly": "异常集",
+}
+
 
 async def generate_dataset_export_file(
     *,
@@ -41,7 +48,13 @@ async def generate_dataset_export_file(
 
         exported_at = datetime.now().strftime("%Y%m%d")
         dataset_name = str(dataset.get("name") or dataset_id or "dataset")
-        file_name = _safe_file_name(f"{dataset_name}{exported_at}.{export_format}")
+        dataset_type = DATASET_TYPE_LABELS.get(
+            str(dataset.get("type") or ""),
+            str(dataset.get("type") or "数据集"),
+        )
+        file_name = _safe_file_name(
+            f"【{dataset_type}】{dataset_name}{exported_at}.{export_format}"
+        )
         file_path = output_dir / file_name
 
         if export_format == "csv":

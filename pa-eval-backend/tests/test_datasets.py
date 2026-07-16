@@ -638,7 +638,7 @@ def test_creates_and_gets_dataset_export_job() -> None:
     assert get_response.json()["data"]["projectId"] == "project-1"
 
 
-def test_dataset_export_file_name_uses_dataset_name_and_export_date(
+def test_dataset_export_file_name_uses_dataset_type_name_and_export_date(
     tmp_path: Path,
     monkeypatch,
 ) -> None:
@@ -672,9 +672,9 @@ def test_dataset_export_file_name_uses_dataset_name_and_export_date(
     )
 
     assert fake_reader.export_job is not None
-    assert fake_reader.export_job["fileName"] == "客服黄金集20260719.csv"
-    assert Path(fake_reader.export_job["filePath"]).name == "客服黄金集20260719.csv"
-    assert (tmp_path / "project-1" / "dataset-1" / "客服黄金集20260719.csv").is_file()
+    assert fake_reader.export_job["fileName"] == "【黄金集】客服黄金集20260719.csv"
+    assert Path(fake_reader.export_job["filePath"]).name == "【黄金集】客服黄金集20260719.csv"
+    assert (tmp_path / "project-1" / "dataset-1" / "【黄金集】客服黄金集20260719.csv").is_file()
 
 
 def test_rejects_unsupported_dataset_export_format() -> None:

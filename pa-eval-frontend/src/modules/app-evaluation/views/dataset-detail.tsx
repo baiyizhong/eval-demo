@@ -374,12 +374,11 @@ export function ProjectDatasetDetail() {
               },
             }}
             bulkActions={
-              canEditDataset
+              canEditDataset && dataset
                 ? (table) => (
                     <DatasetItemBulkActions
                       table={table}
-                      projectId={projectId}
-                      datasetId={datasetId}
+                      dataset={dataset}
                     />
                   )
                 : undefined

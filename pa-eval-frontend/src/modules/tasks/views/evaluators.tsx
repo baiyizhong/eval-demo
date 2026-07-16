@@ -1,7 +1,7 @@
 import { useCallback, useMemo, useState } from 'react'
 import { z } from 'zod'
 import type { Control } from 'react-hook-form'
-import { useQuery, useQueryClient } from '@tanstack/react-query'
+import { useQueryClient } from '@tanstack/react-query'
 import type { ColumnDef } from '@tanstack/react-table'
 import { EvaluationPageNav } from '@/modules/app-evaluation/components/evaluation-page-nav'
 import { Eye, MoreHorizontal, Plus, RefreshCw, Trash2 } from 'lucide-react'
@@ -182,18 +182,6 @@ const createEvaluatorSchema = z
   })
 
 const evaluatorQueryKey = ['tasks-evaluators'] as const
-const projectsQueryKey = ['evaluator-project-options'] as const
-
-type ProjectOption = {
-  id: string
-  name: string
-  organizationName: string
-}
-
-type PaginatedResult<T> = {
-  total: number
-  datas: T[]
-}
 
 type TaskEvaluatorsProps = {
   navigation?: 'tasks' | 'project-evaluation'
@@ -213,16 +201,6 @@ export function TaskEvaluators({ navigation = 'tasks' }: TaskEvaluatorsProps) {
   const [deletingEvaluator, setDeletingEvaluator] =
     useState<TaskEvaluatorRecord | null>(null)
   const [deleteLoading, setDeleteLoading] = useState(false)
-  const projectsQuery = useQuery({
-    queryKey: [...projectsQueryKey, $api],
-    queryFn: () =>
-      $api.getProjects<PaginatedResult<ProjectOption>>({
-        query: {
-          page: 1,
-          pageSize: 200,
-        },
-      }),
-  })
 
   const handleViewDetail = useCallback(
     async (evaluator: TaskEvaluatorRecord) => {
@@ -272,7 +250,7 @@ export function TaskEvaluators({ navigation = 'tasks' }: TaskEvaluatorsProps) {
     if (!canEditEvaluators) return
 
     try {
-      await createTaskEvaluator($api, values)
+      await createTaskEvaluator($api, { ...values, projectId })
       await queryClient.invalidateQueries({ queryKey: evaluatorQueryKey })
       setCreateOpen(false)
       toast.success(`已创建评估器：${values.name}`)
@@ -377,7 +355,7 @@ export function TaskEvaluators({ navigation = 'tasks' }: TaskEvaluatorsProps) {
             name: '',
             type: 'LLM_AS_JUDGE' as const,
             provider: 'LANGFUSE' as const,
-            projectId: '',
+            projectId: projectId,
             description: '',
             variables: 'input, output',
             inputVariables: 'input, output',
@@ -481,37 +459,6 @@ export function TaskEvaluators({ navigation = 'tasks' }: TaskEvaluatorsProps) {
                               (option) => (
                                 <SelectItem key={option} value={option}>
                                   {evaluatorProviderLabels[option]}
-                                </SelectItem>
-                              )
-                            )}
-                          </SelectGroup>
-                        </SelectContent>
-                      </Select>
-                      <FormMessage />
-                    </FormItem>
-                  )}
-                />
-                <FormField
-                  control={form.control}
-                  name='projectId'
-                  render={({ field }) => (
-                    <FormItem>
-                      <FormLabel>所属项目</FormLabel>
-                      <Select
-                        value={field.value}
-                        onValueChange={field.onChange}
-                      >
-                        <FormControl>
-                          <SelectTrigger className='w-full'>
-                            <SelectValue placeholder='选择项目' />
-                          </SelectTrigger>
-                        </FormControl>
-                        <SelectContent>
-                          <SelectGroup>
-                            {(projectsQuery.data?.datas ?? []).map(
-                              (project) => (
-                                <SelectItem key={project.id} value={project.id}>
-                                  {project.name}
                                 </SelectItem>
                               )
                             )}

@@ -25,3 +25,14 @@ test('新建评估器抽屉在内容区右下角展示操作按钮', () => {
   assert.match(evaluatorsSource, /form=\{createEvaluatorFormId\}/)
   assert.match(evaluatorsSource, /setCreateOpen\(false\)/)
 })
+
+test('新建评估器默认使用当前项目且隐藏所属项目选择', () => {
+  assert.match(evaluatorsSource, /projectId:\s*projectId/)
+  assert.match(
+    evaluatorsSource,
+    /createTaskEvaluator\(\$api,\s*\{\s*\.\.\.values,\s*projectId\s*,?\s*\}\)/
+  )
+  assert.doesNotMatch(evaluatorsSource, /name='projectId'/)
+  assert.doesNotMatch(evaluatorsSource, /<FormLabel>所属项目<\/FormLabel>/)
+  assert.doesNotMatch(evaluatorsSource, /getProjects<PaginatedResult/)
+})

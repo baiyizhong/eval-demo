@@ -104,7 +104,7 @@ test('dataset item import template uses dataset schemas and safe file name', asy
       'lhx 默认项目',
       new Date('2027-07-11T00:00:00.000Z')
     ),
-    /^回流-评测集-导入模板\.xlsx$/
+    /^数据集导入模板v1\.0\.xlsx$/
   )
 
   const workbook = XLSX.read(await blob.arrayBuffer(), { type: 'array' })

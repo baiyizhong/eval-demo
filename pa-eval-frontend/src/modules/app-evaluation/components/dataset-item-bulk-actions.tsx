@@ -3,34 +3,31 @@ import { Download } from 'lucide-react'
 import { toast } from 'sonner'
 import { Button } from '@/components/ui/button'
 import { DataTableBulkActions } from '@/components/common/data-table'
-import type { DatasetItemRecord } from '../types'
-import { downloadJson } from './format'
+import type { DatasetItemRecord, DatasetRecord } from '../types'
+import {
+  buildDatasetItemExportWorkbookBlob,
+  getDatasetExportFileName,
+} from '../lib/dataset-item-export'
+import { downloadBlob } from './format'
 
 type DatasetItemBulkActionsProps = {
   table: Table<DatasetItemRecord>
-  projectId: string
-  datasetId: string
+  dataset: DatasetRecord
 }
 
 export function DatasetItemBulkActions({
   table,
-  projectId,
-  datasetId,
+  dataset,
 }: DatasetItemBulkActionsProps) {
   const selectedRows = table.getFilteredSelectedRowModel().rows
   const selectedItems = selectedRows.map((row) => row.original)
 
   const handlePartialExport = async () => {
-    const payload = {
-      projectId,
-      datasetId,
-      items: selectedItems,
-    }
-    downloadJson(
-      `dataset-items-${datasetId}-${payload.items.length}-${Date.now()}.json`,
-      payload
+    downloadBlob(
+      buildDatasetItemExportWorkbookBlob(selectedItems),
+      getDatasetExportFileName(dataset, 'xlsx')
     )
-    toast.success(`已部分导出 ${payload.items.length} 条数据项`)
+    toast.success(`已部分导出 ${selectedItems.length} 条数据项`)
   }
 
   return (

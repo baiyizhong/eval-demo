@@ -266,14 +266,11 @@ export function getDatasetItemImportTemplateFileName(
   projectName?: string | null,
   date = new Date()
 ) {
+  void dataset
   void projectName
   void date
 
-  const safeDatasetName = sanitizeFileName(
-    dataset?.name || dataset?.id || '数据集'
-  )
-
-  return `${safeDatasetName}-导入模板.xlsx`
+  return '数据集导入模板v1.0.xlsx'
 }
 
 export function formatDatasetItemImportResultMessage(
@@ -577,10 +574,6 @@ function ensureJsonObject(value: unknown): JsonObject {
 
 function stringifyTemplateValue(value: unknown) {
   return JSON.stringify(value)
-}
-
-function sanitizeFileName(value: string) {
-  return value.replace(/[\\/:*?"<>|]+/g, '-').trim() || '未命名'
 }
 
 function sampleValueFromSchema(schema: unknown): unknown {

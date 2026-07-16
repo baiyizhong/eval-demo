@@ -30,6 +30,9 @@ import { createDatasetColumns } from '../components/dataset-columns'
 import { DatasetFormDrawer } from '../components/dataset-form-drawer'
 import { EvaluationPageNav } from '../components/evaluation-page-nav'
 import {
+  getDatasetExportFileName,
+} from '../lib/dataset-item-export'
+import {
   buildDatasetItemImportTemplateBlob,
   DATASET_ITEM_IMPORT_FILE_TYPES,
   formatDatasetItemImportResultMessage,
@@ -281,7 +284,7 @@ export function ProjectDatasets() {
         downloadBlob(
           blob,
           completedJob.fileName ||
-            `dataset-${dataset.id}-${completedJob.id}.${format}`
+            getDatasetExportFileName(dataset, format)
         )
         toast.success('数据集导出完成')
       } catch (error) {
