@@ -40,10 +40,9 @@ test('auto evaluation trace filter is the default data source tab before dataset
 test('auto evaluation trace filter estimates automatically and exposes preview table', () => {
   assert.match(source, /useEffect\(\(\) => \{/)
   assert.match(source, /查看数据/)
+  assert.match(source, /countProjectAutoEvaluationTraces/)
   assert.match(source, /listProjectAutoEvaluationTracePreview/)
   assert.match(source, /TracePreviewDialog/)
-  assert.match(source, /pageSize:\s*1/)
-  assert.doesNotMatch(source, /countProjectAutoEvaluationTraces/)
   assert.doesNotMatch(source, /开始预估/)
   assert.doesNotMatch(source, /environments:\s*\['production'\]/)
 })

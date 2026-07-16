@@ -434,18 +434,31 @@ function createRoundedRollingTraceWindowRange(frequency: FrequencyForm) {
   ]
 }
 
-function getTracePreviewRange(frequency: FrequencyForm) {
+function getTracePreviewRange(
+  frequency: FrequencyForm,
+  traceWindow?: ScheduledJobTraceWindow
+) {
   if (frequency.mode === 'ONCE') {
     return null
   }
 
-  if (frequency.kind === 'EVERY_MINUTES' || frequency.kind === 'EVERY_HOURS') {
-    return createRoundedRollingTraceWindowRange(frequency)
+  if (traceWindow?.mode === 'ROLLING') {
+    if (traceWindow.unit === 'minutes' || traceWindow.unit === 'hours') {
+      return createRoundedRollingTraceWindowRange(frequency)
+    }
+
+    const end = new Date()
+    const start = new Date(end)
+    start.setDate(end.getDate() - (traceWindow.amount ?? 1))
+    return [
+      toDateTimeLocalValue(start.toISOString()),
+      toDateTimeLocalValue(end.toISOString()),
+    ]
   }
 
   const end = new Date()
 
-  if (frequency.kind === 'DAILY') {
+  if (traceWindow?.mode === 'PREVIOUS_DAY') {
     end.setHours(0, 0, 0, 0)
     const start = new Date(end)
     start.setDate(end.getDate() - 1)
@@ -455,12 +468,7 @@ function getTracePreviewRange(frequency: FrequencyForm) {
     ]
   }
 
-  const start = new Date(end)
-  start.setDate(end.getDate() - (frequency.kind === 'WEEKLY' ? 7 : 1))
-  return [
-    toDateTimeLocalValue(start.toISOString()),
-    toDateTimeLocalValue(end.toISOString()),
-  ]
+  return null
 }
 
 function getDefaultForm(
@@ -573,25 +581,21 @@ function buildDataSource(
 function buildTraceCountPayload(
   frequencyForm: FrequencyForm,
   frequency: ScheduledJobFrequency,
-  values: Pick<
-    ScheduledJobForm,
-    | 'traceCreatedAtRange'
-    | 'traceEnvironments'
-    | 'traceSessionId'
-    | 'traceTags'
-    | 'traceUserId'
-  >
+  form: ScheduledJobForm
 ) {
-  const previewRange = getTracePreviewRange(frequencyForm)
+  const traceWindow = buildTraceWindowFromFrequency(frequency, form)
+  const previewRange = getTracePreviewRange(frequencyForm, traceWindow)
   const createdAtRange =
-    frequency.kind === 'ONCE' ? values.traceCreatedAtRange : previewRange
+    frequency.kind === 'ONCE' ? form.traceCreatedAtRange : previewRange
 
   return {
+    type: 'TRACE_FILTER',
     traceName: '',
-    environments: values.traceEnvironments,
-    userId: values.traceUserId,
-    sessionId: values.traceSessionId,
-    tags: parseCommaSeparatedValues(values.traceTags),
+    traceWindow,
+    environments: form.traceEnvironments,
+    userId: form.traceUserId,
+    sessionId: form.traceSessionId,
+    tags: parseCommaSeparatedValues(form.traceTags),
     createdAtRange: [
       toIsoFromDateTimeLocal(createdAtRange?.[0] ?? ''),
       toIsoFromDateTimeLocal(createdAtRange?.[1] ?? ''),
@@ -732,13 +736,7 @@ export function ScheduledJobDrawer({
   const traceCountPayload = useMemo(
     () =>
       form.dataSourceType === 'TRACE_FILTER'
-        ? buildTraceCountPayload(form.frequency, currentFrequency, {
-            traceCreatedAtRange: form.traceCreatedAtRange,
-            traceEnvironments: form.traceEnvironments,
-            traceSessionId: form.traceSessionId,
-            traceTags: form.traceTags,
-            traceUserId: form.traceUserId,
-          })
+        ? buildTraceCountPayload(form.frequency, currentFrequency, form)
         : null,
     [
       currentFrequency,
@@ -1305,7 +1303,11 @@ function ConfigStep({
       (value) => value.toLowerCase().includes(normalizedEvaluatorKeyword)
     )
   })
-  const tracePreviewRange = getTracePreviewRange(form.frequency)
+  const tracePreviewFrequency = formToFrequency(form.frequency)
+  const tracePreviewRange = getTracePreviewRange(
+    form.frequency,
+    buildTraceWindowFromFrequency(tracePreviewFrequency, form)
+  )
   const traceCountHelperText =
     traceCountState === 'loading'
       ? '正在按当前筛选条件统计 Trace 样本...'

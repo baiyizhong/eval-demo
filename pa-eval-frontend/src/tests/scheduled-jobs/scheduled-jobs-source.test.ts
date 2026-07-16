@@ -211,8 +211,7 @@ test('scheduled job drawer uses environments for trace estimate and guards zero 
   assert.match(drawerSource, /traceEnvironments/)
   assert.match(drawerSource, /traceEnvironments:[\s\S]*\['default'\]/)
   assert.match(drawerSource, /form\.traceEnvironments\[0\] \?\? 'default'/)
-  assert.match(drawerSource, /environments:\s*values\.traceEnvironments/)
-  assert.match(drawerSource, /traceEnvironments:\s*form\.traceEnvironments/)
+  assert.match(drawerSource, /environments:\s*form\.traceEnvironments/)
   assert.match(drawerSource, /form\.traceEnvironments/)
   assert.match(drawerSource, /当前筛选无样本/)
   assert.match(drawerSource, /继续保存/)
@@ -284,6 +283,21 @@ test('scheduled job drawer supports trace filter fields and schedule-aligned win
   assert.match(drawerSource, /countProjectTraces/)
   assert.match(drawerSource, /traceCountState/)
   assert.match(drawerSource, /buildTraceCountPayload/)
+})
+
+test('scheduled job trace count uses the same trace window as saved jobs', () => {
+  assert.match(
+    drawerSource,
+    /buildTraceCountPayload\(\s*form\.frequency,\s*currentFrequency,\s*form\s*\)/
+  )
+  assert.match(
+    drawerSource,
+    /traceWindow:\s*buildTraceWindowFromFrequency\(frequency,\s*form\)/
+  )
+  assert.match(
+    drawerSource,
+    /const traceWindow = buildTraceWindowFromFrequency\(frequency,\s*form\)/
+  )
 })
 
 test('scheduled job drawer moves sampling controls into execution config card', () => {

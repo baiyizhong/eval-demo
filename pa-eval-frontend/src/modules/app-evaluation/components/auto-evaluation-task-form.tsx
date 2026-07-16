@@ -41,6 +41,7 @@ import {
 import { ToggleGroup, ToggleGroupItem } from '@/components/ui/toggle-group'
 import { Stepper } from '@/components/common/stepper'
 import {
+  countProjectAutoEvaluationTraces,
   createProjectAutoEvaluationTask,
   listProjectAutoEvaluationTracePreview,
   type TraceLogRow,
@@ -245,11 +246,10 @@ export function AutoEvaluationTaskForm({
     void Promise.resolve()
       .then(() => {
         if (!canceled) setTraceCountState('loading')
-        return listProjectAutoEvaluationTracePreview(
+        return countProjectAutoEvaluationTraces(
           $api,
           projectId,
-          traceFilter,
-          { page: 1, pageSize: 1 }
+          traceFilter
         )
       })
       .then((result) => {
@@ -266,7 +266,7 @@ export function AutoEvaluationTaskForm({
             ...current,
             dataSource: {
               ...current.dataSource,
-              estimatedCount: result.total,
+              estimatedCount: result.count,
             },
           }
         })
