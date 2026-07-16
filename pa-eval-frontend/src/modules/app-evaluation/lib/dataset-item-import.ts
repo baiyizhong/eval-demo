@@ -266,15 +266,14 @@ export function getDatasetItemImportTemplateFileName(
   projectName?: string | null,
   date = new Date()
 ) {
-  const safeProjectName = sanitizeFileName(
-    projectName || dataset?.projectId || '项目'
-  )
+  void projectName
+  void date
+
   const safeDatasetName = sanitizeFileName(
     dataset?.name || dataset?.id || '数据集'
   )
-  const stamp = formatDateStamp(date)
 
-  return `${safeProjectName}-${safeDatasetName}-导入模板${stamp}.xlsx`
+  return `${safeDatasetName}-导入模板.xlsx`
 }
 
 export function formatDatasetItemImportResultMessage(
@@ -582,14 +581,6 @@ function stringifyTemplateValue(value: unknown) {
 
 function sanitizeFileName(value: string) {
   return value.replace(/[\\/:*?"<>|]+/g, '-').trim() || '未命名'
-}
-
-function formatDateStamp(date: Date) {
-  const year = String(date.getFullYear())
-  const month = String(date.getMonth() + 1).padStart(2, '0')
-  const day = String(date.getDate()).padStart(2, '0')
-
-  return `${year}${month}${day}`
 }
 
 function sampleValueFromSchema(schema: unknown): unknown {

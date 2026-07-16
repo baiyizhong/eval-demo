@@ -1,5 +1,10 @@
+import asyncio
+from datetime import datetime, timezone
+from pathlib import Path
+
 from fastapi.testclient import TestClient
 
+from app import dataset_exports
 from app.auth_context import CurrentUserContext, get_current_user_context
 from app.langfuse_db import LangfuseDatabaseReader, get_langfuse_db_reader
 from app.main import app
@@ -631,6 +636,45 @@ def test_creates_and_gets_dataset_export_job() -> None:
     assert fake_reader.export_job is not None
     assert get_response.status_code == 200
     assert get_response.json()["data"]["projectId"] == "project-1"
+
+
+def test_dataset_export_file_name_uses_dataset_name_and_export_date(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    class FixedDatetime:
+        @classmethod
+        def now(cls, tz=None):
+            return datetime(2026, 7, 19, tzinfo=tz or timezone.utc)
+
+    monkeypatch.setattr(dataset_exports, "datetime", FixedDatetime, raising=False)
+
+    fake_reader = FakeDatabaseReader()
+    asyncio.run(
+        fake_reader.create_dataset_export_job_for_user(
+            "project-1",
+            "dataset-1",
+            "user-1",
+            "csv",
+        )
+    )
+
+    asyncio.run(
+        dataset_exports.generate_dataset_export_file(
+            reader=fake_reader,  # type: ignore[arg-type]
+            project_id="project-1",
+            dataset_id="dataset-1",
+            job_id="export-job-1",
+            user_id="user-1",
+            export_format="csv",
+            storage_dir=str(tmp_path),
+        )
+    )
+
+    assert fake_reader.export_job is not None
+    assert fake_reader.export_job["fileName"] == "客服黄金集20260719.csv"
+    assert Path(fake_reader.export_job["filePath"]).name == "客服黄金集20260719.csv"
+    assert (tmp_path / "project-1" / "dataset-1" / "客服黄金集20260719.csv").is_file()
 
 
 def test_rejects_unsupported_dataset_export_format() -> None:

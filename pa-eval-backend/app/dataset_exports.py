@@ -2,6 +2,7 @@ import csv
 import json
 import re
 import zipfile
+from datetime import datetime
 from pathlib import Path
 from typing import Any
 from xml.sax.saxutils import escape
@@ -33,11 +34,14 @@ async def generate_dataset_export_file(
 ) -> None:
     try:
         await reader.mark_dataset_export_job_running(project_id, dataset_id, job_id)
+        dataset = await reader.get_dataset_for_user(project_id, dataset_id, user_id)
         items = await reader.list_dataset_items_for_user(project_id, dataset_id, user_id)
         output_dir = Path(storage_dir).expanduser().resolve() / project_id / dataset_id
         output_dir.mkdir(parents=True, exist_ok=True)
 
-        file_name = _safe_file_name(f"dataset-{dataset_id}-{job_id}.{export_format}")
+        exported_at = datetime.now().strftime("%Y%m%d")
+        dataset_name = str(dataset.get("name") or dataset_id or "dataset")
+        file_name = _safe_file_name(f"{dataset_name}{exported_at}.{export_format}")
         file_path = output_dir / file_name
 
         if export_format == "csv":
@@ -111,7 +115,9 @@ def _stringify(value: Any) -> str:
 
 
 def _safe_file_name(file_name: str) -> str:
-    return re.sub(r"[^A-Za-z0-9_.-]+", "-", file_name).strip(".-") or "dataset-export"
+    sanitized = re.sub(r"[\x00-\x1f\x7f/\\:*?\"<>|]+", "-", file_name)
+    sanitized = re.sub(r"\s+", " ", sanitized).strip(".- ")
+    return sanitized or "dataset-export"
 
 
 def _build_sheet_xml(rows: list[list[str]]) -> str:

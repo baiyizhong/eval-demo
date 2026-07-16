@@ -27,3 +27,9 @@ test('人工标注任务抽屉使用一致的评分指标类型展示', () => {
   assert.match(annotationQueueDrawerSource, /<span className='truncate'>/)
   assert.doesNotMatch(annotationQueueDrawerSource, /\{config\.name\} ·/)
 })
+
+test('人工标注任务抽屉评分指标列表超过边界后内部滚动', () => {
+  assert.match(annotationQueueDrawerSource, /annotation-score-config-list/)
+  assert.match(annotationQueueDrawerSource, /max-h-\[min\(22rem,40svh\)\]/)
+  assert.match(annotationQueueDrawerSource, /overflow-y-auto/)
+})

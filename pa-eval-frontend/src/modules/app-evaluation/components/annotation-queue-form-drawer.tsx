@@ -129,7 +129,7 @@ export function AnnotationQueueFormDrawer({
                   <FormDescription>
                     标注详情页会按所选指标生成评分表单。
                   </FormDescription>
-                  <div className='flex flex-col gap-2'>
+                  <div className='annotation-score-config-list flex max-h-[min(22rem,40svh)] flex-col gap-2 overflow-y-auto pr-1'>
                     {scoreConfigs.map((config) => (
                       <FormField
                         key={config.id}
