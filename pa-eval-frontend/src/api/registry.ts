@@ -106,6 +106,10 @@ export const apiRegistry = {
     method: 'POST',
     url: '/evaluators',
   },
+  patchEvaluator: {
+    method: 'PATCH',
+    url: '/evaluators/:evaluatorId',
+  },
   deleteEvaluator: {
     method: 'DELETE',
     url: '/evaluators/:evaluatorId',

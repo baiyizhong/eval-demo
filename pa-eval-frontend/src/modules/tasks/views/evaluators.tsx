@@ -9,7 +9,7 @@ import { useQuery, useQueryClient } from '@tanstack/react-query'
 import type { ColumnDef } from '@tanstack/react-table'
 import { listProjectScoreConfigs } from '@/modules/app-evaluation/api/annotation-api'
 import { EvaluationPageNav } from '@/modules/app-evaluation/components/evaluation-page-nav'
-import { Eye, MoreHorizontal, Plus, RefreshCw, Trash2 } from 'lucide-react'
+import { Eye, MoreHorizontal, Pencil, Plus, RefreshCw, Trash2 } from 'lucide-react'
 import { useParams } from 'react-router'
 import { toast } from 'sonner'
 import { useAPI } from '@/hooks/use-api'
@@ -64,10 +64,12 @@ import { Loading } from '@/components/common/loading'
 import { LongText } from '@/components/common/long-text'
 import { Page } from '@/components/common/page'
 import {
+  buildEvaluatorFormValuesFromDetail,
   createTaskEvaluator,
   deleteTaskEvaluator,
   getTaskEvaluator,
   listTaskEvaluators,
+  updateTaskEvaluator,
   type CreateTaskEvaluatorFormValues,
   type TaskEvaluatorDetail,
   type TaskEvaluatorRecord,
@@ -75,6 +77,7 @@ import {
 import { TasksPageHeader } from '../components/tasks-page-header'
 
 const createEvaluatorFormId = 'create-evaluator-form'
+const editEvaluatorFormId = 'edit-evaluator-form'
 
 const evaluatorTypeLabels: Record<TaskEvaluatorRecord['type'], string> = {
   LLM_AS_JUDGE: 'LLM-as-Judge',
@@ -207,6 +210,10 @@ export function TaskEvaluators({ navigation = 'tasks' }: TaskEvaluatorsProps) {
   const canEditEvaluators = can('project:evaluator:edit')
   const queryClient = useQueryClient()
   const [createOpen, setCreateOpen] = useState(false)
+  const [editOpen, setEditOpen] = useState(false)
+  const [editLoading, setEditLoading] = useState(false)
+  const [editingEvaluator, setEditingEvaluator] =
+    useState<TaskEvaluatorDetail | null>(null)
   const [detailOpen, setDetailOpen] = useState(false)
   const [detailLoading, setDetailLoading] = useState(false)
   const [selectedEvaluator, setSelectedEvaluator] =
@@ -216,7 +223,7 @@ export function TaskEvaluators({ navigation = 'tasks' }: TaskEvaluatorsProps) {
   const [deleteLoading, setDeleteLoading] = useState(false)
   const scoreConfigsQuery = useQuery({
     queryKey: ['project-score-config-names', $api, projectId],
-    enabled: canEditEvaluators && createOpen && Boolean(projectId),
+    enabled: canEditEvaluators && (createOpen || editOpen) && Boolean(projectId),
     queryFn: () => listProjectScoreConfigs($api, projectId),
   })
   const scoreConfigNames =
@@ -243,6 +250,30 @@ export function TaskEvaluators({ navigation = 'tasks' }: TaskEvaluatorsProps) {
     [$api]
   )
 
+  const handleEdit = useCallback(
+    async (evaluator: TaskEvaluatorRecord) => {
+      if (evaluator.provider === 'LANGFUSE') {
+        toast.error('Langfuse 原生评估器请在 Langfuse 中编辑')
+        return
+      }
+
+      setEditOpen(true)
+      setEditLoading(true)
+      try {
+        const detail = await getTaskEvaluator($api, evaluator.id)
+        setEditingEvaluator(detail)
+      } catch (error) {
+        setEditOpen(false)
+        toast.error(
+          error instanceof Error ? error.message : '加载评估器详情失败'
+        )
+      } finally {
+        setEditLoading(false)
+      }
+    },
+    [$api]
+  )
+
   const handleConfirmDelete = async () => {
     if (!deletingEvaluator) return
 
@@ -263,9 +294,10 @@ export function TaskEvaluators({ navigation = 'tasks' }: TaskEvaluatorsProps) {
     () =>
       createEvaluatorColumns({
         onViewDetail: handleViewDetail,
+        onEdit: canEditEvaluators ? handleEdit : undefined,
         onDelete: canEditEvaluators ? setDeletingEvaluator : undefined,
       }),
-    [canEditEvaluators, handleViewDetail]
+    [canEditEvaluators, handleEdit, handleViewDetail]
   )
 
   const handleCreate = async (values: CreateTaskEvaluatorFormValues) => {
@@ -282,6 +314,27 @@ export function TaskEvaluators({ navigation = 'tasks' }: TaskEvaluatorsProps) {
       toast.success(`已创建评估器：${values.name}`)
     } catch (error) {
       toast.error(error instanceof Error ? error.message : '创建评估器失败')
+    }
+  }
+
+  const handleUpdate = async (values: CreateTaskEvaluatorFormValues) => {
+    if (!canEditEvaluators || !editingEvaluator) return
+
+    const outputVariables = getOutputVariableNames(
+      values.outputVariableMappings
+    ).join(', ')
+
+    try {
+      await updateTaskEvaluator($api, editingEvaluator.id, {
+        ...values,
+        outputVariables,
+      })
+      await queryClient.invalidateQueries({ queryKey: evaluatorQueryKey })
+      setEditOpen(false)
+      setEditingEvaluator(null)
+      toast.success(`已保存评估器：${values.name}`)
+    } catch (error) {
+      toast.error(error instanceof Error ? error.message : '保存评估器失败')
     }
   }
 
@@ -408,304 +461,59 @@ export function TaskEvaluators({ navigation = 'tasks' }: TaskEvaluatorsProps) {
           className='min-h-full gap-4 overflow-visible p-6 pb-0'
         >
           {(form) => (
-            <>
-              <FormField
-                control={form.control}
-                name='name'
-                render={({ field }) => (
-                  <FormItem>
-                    <FormLabel>评估器名称</FormLabel>
-                    <FormControl>
-                      <Input
-                        placeholder='例如：客服回答质量评估器'
-                        {...field}
-                      />
-                    </FormControl>
-                    <FormMessage />
-                  </FormItem>
-                )}
-              />
-              <div className='grid gap-4 sm:grid-cols-3'>
-                <FormField
-                  control={form.control}
-                  name='type'
-                  render={({ field }) => (
-                    <FormItem>
-                      <FormLabel>类型</FormLabel>
-                      <Select
-                        value={field.value}
-                        onValueChange={(nextType) => {
-                          field.onChange(nextType)
-                          if (
-                            nextType === 'LLM_AS_JUDGE' ||
-                            nextType === 'CODE'
-                          ) {
-                            form.setValue('provider', 'LANGFUSE')
-                          }
-                          if (nextType === 'WORKFLOW') {
-                            form.setValue('provider', 'DIFY')
-                          }
-                          if (nextType === 'SDK') {
-                            form.setValue('provider', 'OPENJUDGE')
-                          }
-                        }}
-                      >
-                        <FormControl>
-                          <SelectTrigger className='w-full'>
-                            <SelectValue placeholder='选择类型' />
-                          </SelectTrigger>
-                        </FormControl>
-                        <SelectContent>
-                          <SelectGroup>
-                            <SelectItem value='LLM_AS_JUDGE'>
-                              LLM-as-Judge
-                            </SelectItem>
-                            <SelectItem value='CODE'>Code</SelectItem>
-                            <SelectItem value='WORKFLOW'>工作流</SelectItem>
-                            <SelectItem value='SDK'>SDK</SelectItem>
-                          </SelectGroup>
-                        </SelectContent>
-                      </Select>
-                      <FormMessage />
-                    </FormItem>
-                  )}
-                />
-                <FormField
-                  control={form.control}
-                  name='provider'
-                  render={({ field }) => (
-                    <FormItem>
-                      <FormLabel>提供方</FormLabel>
-                      <Select
-                        value={field.value}
-                        onValueChange={field.onChange}
-                      >
-                        <FormControl>
-                          <SelectTrigger className='w-full'>
-                            <SelectValue placeholder='选择提供方' />
-                          </SelectTrigger>
-                        </FormControl>
-                        <SelectContent>
-                          <SelectGroup>
-                            {getProviderOptions(form.watch('type')).map(
-                              (option) => (
-                                <SelectItem key={option} value={option}>
-                                  {evaluatorProviderLabels[option]}
-                                </SelectItem>
-                              )
-                            )}
-                          </SelectGroup>
-                        </SelectContent>
-                      </Select>
-                      <FormMessage />
-                    </FormItem>
-                  )}
-                />
-              </div>
-              <FormField
-                control={form.control}
-                name='description'
-                render={({ field }) => (
-                  <FormItem>
-                    <FormLabel>描述</FormLabel>
-                    <FormControl>
-                      <Textarea
-                        placeholder='说明评估维度、适用场景和输出含义'
-                        className='min-h-24 resize-none'
-                        {...field}
-                      />
-                    </FormControl>
-                    <FormMessage />
-                  </FormItem>
-                )}
-              />
-              {form.watch('type') === 'LLM_AS_JUDGE' ? (
-                <>
-                  <div className='grid gap-4 sm:grid-cols-2'>
-                    <FormField
-                      control={form.control}
-                      name='modelProvider'
-                      render={({ field }) => (
-                        <FormItem>
-                          <FormLabel>模型提供方</FormLabel>
-                          <FormControl>
-                            <Input placeholder='openai' {...field} />
-                          </FormControl>
-                          <FormMessage />
-                        </FormItem>
-                      )}
-                    />
-                    <FormField
-                      control={form.control}
-                      name='model'
-                      render={({ field }) => (
-                        <FormItem>
-                          <FormLabel>模型名称</FormLabel>
-                          <FormControl>
-                            <Input placeholder='gpt-4.1' {...field} />
-                          </FormControl>
-                          <FormMessage />
-                        </FormItem>
-                      )}
-                    />
-                  </div>
-                  <FormField
-                    control={form.control}
-                    name='prompt'
-                    render={({ field }) => (
-                      <FormItem>
-                        <div className='flex flex-wrap items-baseline gap-2'>
-                          <FormLabel>Prompt</FormLabel>
-                          <span className='text-muted-foreground text-xs'>
-                            使用 {'{{input}}'}、{'{{output}}'}{' '}
-                            等变量编写评估提示词
-                          </span>
-                        </div>
-                        <FormControl>
-                          <MixEditor
-                            title='Prompt'
-                            value={field.value}
-                            onValueChange={(nextValue) =>
-                              field.onChange(String(nextValue ?? ''))
-                            }
-                            forceTextMode
-                            defaultEditing
-                            showEditActions={false}
-                          />
-                        </FormControl>
-                        <FormMessage />
-                      </FormItem>
-                    )}
-                  />
-                  <FormField
-                    control={form.control}
-                    name='outputMapping'
-                    render={({ field }) => (
-                      <FormItem>
-                        <FormLabel>输出定义 JSON</FormLabel>
-                        <FormControl>
-                          <MixEditor
-                            title='请输入JSON'
-                            value={field.value}
-                            onValueChange={(nextValue) =>
-                              field.onChange(stringifyEditorValue(nextValue))
-                            }
-                            defaultEditing
-                            showEditActions={false}
-                          />
-                        </FormControl>
-                        <FormMessage />
-                      </FormItem>
-                    )}
-                  />
-                </>
-              ) : null}
-              {form.watch('type') === 'CODE' ? (
-                <>
-                  <FormField
-                    control={form.control}
-                    name='sourceCodeLanguage'
-                    render={({ field }) => (
-                      <FormItem>
-                        <FormLabel>源码语言</FormLabel>
-                        <Select
-                          value={field.value}
-                          onValueChange={field.onChange}
-                        >
-                          <FormControl>
-                            <SelectTrigger className='w-full'>
-                              <SelectValue placeholder='选择语言' />
-                            </SelectTrigger>
-                          </FormControl>
-                          <SelectContent>
-                            <SelectGroup>
-                              <SelectItem value='PYTHON'>Python</SelectItem>
-                              <SelectItem value='TYPESCRIPT'>
-                                TypeScript
-                              </SelectItem>
-                            </SelectGroup>
-                          </SelectContent>
-                        </Select>
-                        <FormMessage />
-                      </FormItem>
-                    )}
-                  />
-                  <FormField
-                    control={form.control}
-                    name='sourceCode'
-                    render={({ field }) => (
-                      <FormItem>
-                        <FormLabel>源码</FormLabel>
-                        <FormControl>
-                          <Textarea className='min-h-48 font-mono' {...field} />
-                        </FormControl>
-                        <FormMessage />
-                      </FormItem>
-                    )}
-                  />
-                </>
-              ) : null}
-              {form.watch('type') === 'WORKFLOW' ? (
-                <WorkflowFields control={form.control} />
-              ) : null}
-              {form.watch('type') === 'SDK' ? (
-                <>
-                  <FormField
-                    control={form.control}
-                    name='sdkPackage'
-                    render={({ field }) => (
-                      <FormItem>
-                        <FormLabel>SDK 标识</FormLabel>
-                        <FormControl>
-                          <Input placeholder='openjudge' {...field} />
-                        </FormControl>
-                        <FormMessage />
-                      </FormItem>
-                    )}
-                  />
-                  <MappingFields control={form.control} />
-                </>
-              ) : null}
-              <FormField
-                control={form.control}
-                name='inputVariables'
-                render={({ field }) => (
-                  <FormItem>
-                    <FormLabel>输入变量</FormLabel>
-                    <FormControl>
-                      <Input
-                        placeholder='input, output, expected_output'
-                        {...field}
-                        onChange={(event) => {
-                          field.onChange(event)
-                          form.setValue('variables', event.target.value)
-                        }}
-                      />
-                    </FormControl>
-                    <FormMessage />
-                  </FormItem>
-                )}
-              />
-              <OutputVariableMappingsField
-                form={form}
-                scoreConfigNames={scoreConfigNames}
-                loading={scoreConfigsQuery.isLoading}
-              />
-              <div className='bg-background sticky bottom-0 -mx-6 mt-2 flex justify-end gap-2 border-t px-6 py-4'>
-                <Button
-                  type='button'
-                  variant='outline'
-                  onClick={() => setCreateOpen(false)}
-                >
-                  取消
-                </Button>
-                <Button form={createEvaluatorFormId} type='submit'>
-                  创建
-                </Button>
-              </div>
-            </>
+            <EvaluatorFormFields
+              form={form}
+              formId={createEvaluatorFormId}
+              submitLabel='创建'
+              scoreConfigNames={scoreConfigNames}
+              scoreConfigsLoading={scoreConfigsQuery.isLoading}
+              onCancel={() => setCreateOpen(false)}
+            />
           )}
         </BaseForm>
+      </Drawer>
+      <Drawer
+        open={canEditEvaluators && editOpen}
+        onOpenChange={(open) => {
+          setEditOpen(open)
+          if (!open) {
+            setEditingEvaluator(null)
+          }
+        }}
+        title='编辑评估器'
+        mode='enhanced'
+        width={860}
+        actions={null}
+      >
+        {editLoading ? (
+          <Loading
+            text='加载评估器详情中...'
+            className='min-h-40 border-0 bg-transparent'
+          />
+        ) : editingEvaluator ? (
+          <BaseForm
+            key={editingEvaluator.id}
+            id={editEvaluatorFormId}
+            schema={createEvaluatorSchema}
+            defaultValues={buildEvaluatorFormValuesFromDetail(
+              editingEvaluator,
+              projectId
+            )}
+            onSubmit={handleUpdate}
+            className='min-h-full gap-4 overflow-visible p-6 pb-0'
+          >
+            {(form) => (
+              <EvaluatorFormFields
+                form={form}
+                formId={editEvaluatorFormId}
+                submitLabel='保存'
+                scoreConfigNames={scoreConfigNames}
+                scoreConfigsLoading={scoreConfigsQuery.isLoading}
+                onCancel={() => setEditOpen(false)}
+              />
+            )}
+          </BaseForm>
+        ) : null}
       </Drawer>
       <Drawer
         open={detailOpen}
@@ -765,9 +573,11 @@ export function TaskEvaluators({ navigation = 'tasks' }: TaskEvaluatorsProps) {
 
 function createEvaluatorColumns({
   onViewDetail,
+  onEdit,
   onDelete,
 }: {
   onViewDetail: (evaluator: TaskEvaluatorRecord) => void
+  onEdit?: (evaluator: TaskEvaluatorRecord) => void
   onDelete?: (evaluator: TaskEvaluatorRecord) => void
 }): ColumnDef<TaskEvaluatorRecord>[] {
   return [
@@ -847,7 +657,7 @@ function createEvaluatorColumns({
       header: '',
       cell: ({ row }) => {
         const evaluator = row.original
-        const canDelete = evaluator.provider !== 'LANGFUSE'
+        const canManage = evaluator.provider !== 'LANGFUSE'
 
         return (
           <DropdownMenu modal={false}>
@@ -866,9 +676,18 @@ function createEvaluatorColumns({
                   <Eye data-icon='inline-start' />
                   查看详情
                 </DropdownMenuItem>
+                {onEdit ? (
+                  <DropdownMenuItem
+                    disabled={!canManage}
+                    onSelect={() => onEdit(evaluator)}
+                  >
+                    <Pencil data-icon='inline-start' />
+                    编辑评估器
+                  </DropdownMenuItem>
+                ) : null}
                 {onDelete ? (
                   <DropdownMenuItem
-                    disabled={!canDelete}
+                    disabled={!canManage}
                     variant='destructive'
                     onSelect={() => onDelete(evaluator)}
                   >
@@ -967,6 +786,298 @@ function DetailTextBlock({ title, value }: { title: string; value: string }) {
         {value}
       </pre>
     </section>
+  )
+}
+
+function EvaluatorFormFields({
+  form,
+  formId,
+  submitLabel,
+  scoreConfigNames,
+  scoreConfigsLoading,
+  onCancel,
+}: {
+  form: UseFormReturn<CreateTaskEvaluatorFormValues>
+  formId: string
+  submitLabel: string
+  scoreConfigNames: string[]
+  scoreConfigsLoading: boolean
+  onCancel: () => void
+}) {
+  return (
+    <>
+      <FormField
+        control={form.control}
+        name='name'
+        render={({ field }) => (
+          <FormItem>
+            <FormLabel>评估器名称</FormLabel>
+            <FormControl>
+              <Input placeholder='例如：客服回答质量评估器' {...field} />
+            </FormControl>
+            <FormMessage />
+          </FormItem>
+        )}
+      />
+      <div className='grid gap-4 sm:grid-cols-3'>
+        <FormField
+          control={form.control}
+          name='type'
+          render={({ field }) => (
+            <FormItem>
+              <FormLabel>类型</FormLabel>
+              <Select
+                value={field.value}
+                onValueChange={(nextType) => {
+                  field.onChange(nextType)
+                  if (nextType === 'LLM_AS_JUDGE' || nextType === 'CODE') {
+                    form.setValue('provider', 'LANGFUSE')
+                  }
+                  if (nextType === 'WORKFLOW') {
+                    form.setValue('provider', 'DIFY')
+                  }
+                  if (nextType === 'SDK') {
+                    form.setValue('provider', 'OPENJUDGE')
+                  }
+                }}
+              >
+                <FormControl>
+                  <SelectTrigger className='w-full'>
+                    <SelectValue placeholder='选择类型' />
+                  </SelectTrigger>
+                </FormControl>
+                <SelectContent>
+                  <SelectGroup>
+                    <SelectItem value='LLM_AS_JUDGE'>LLM-as-Judge</SelectItem>
+                    <SelectItem value='CODE'>Code</SelectItem>
+                    <SelectItem value='WORKFLOW'>工作流</SelectItem>
+                    <SelectItem value='SDK'>SDK</SelectItem>
+                  </SelectGroup>
+                </SelectContent>
+              </Select>
+              <FormMessage />
+            </FormItem>
+          )}
+        />
+        <FormField
+          control={form.control}
+          name='provider'
+          render={({ field }) => (
+            <FormItem>
+              <FormLabel>提供方</FormLabel>
+              <Select value={field.value} onValueChange={field.onChange}>
+                <FormControl>
+                  <SelectTrigger className='w-full'>
+                    <SelectValue placeholder='选择提供方' />
+                  </SelectTrigger>
+                </FormControl>
+                <SelectContent>
+                  <SelectGroup>
+                    {getProviderOptions(form.watch('type')).map((option) => (
+                      <SelectItem key={option} value={option}>
+                        {evaluatorProviderLabels[option]}
+                      </SelectItem>
+                    ))}
+                  </SelectGroup>
+                </SelectContent>
+              </Select>
+              <FormMessage />
+            </FormItem>
+          )}
+        />
+      </div>
+      <FormField
+        control={form.control}
+        name='description'
+        render={({ field }) => (
+          <FormItem>
+            <FormLabel>描述</FormLabel>
+            <FormControl>
+              <Textarea
+                placeholder='说明评估维度、适用场景和输出含义'
+                className='min-h-24 resize-none'
+                {...field}
+              />
+            </FormControl>
+            <FormMessage />
+          </FormItem>
+        )}
+      />
+      {form.watch('type') === 'LLM_AS_JUDGE' ? (
+        <>
+          <div className='grid gap-4 sm:grid-cols-2'>
+            <FormField
+              control={form.control}
+              name='modelProvider'
+              render={({ field }) => (
+                <FormItem>
+                  <FormLabel>模型提供方</FormLabel>
+                  <FormControl>
+                    <Input placeholder='openai' {...field} />
+                  </FormControl>
+                  <FormMessage />
+                </FormItem>
+              )}
+            />
+            <FormField
+              control={form.control}
+              name='model'
+              render={({ field }) => (
+                <FormItem>
+                  <FormLabel>模型名称</FormLabel>
+                  <FormControl>
+                    <Input placeholder='gpt-4.1' {...field} />
+                  </FormControl>
+                  <FormMessage />
+                </FormItem>
+              )}
+            />
+          </div>
+          <FormField
+            control={form.control}
+            name='prompt'
+            render={({ field }) => (
+              <FormItem>
+                <div className='flex flex-wrap items-baseline gap-2'>
+                  <FormLabel>Prompt</FormLabel>
+                  <span className='text-muted-foreground text-xs'>
+                    使用 {'{{input}}'}、{'{{output}}'} 等变量编写评估提示词
+                  </span>
+                </div>
+                <FormControl>
+                  <MixEditor
+                    title='Prompt'
+                    value={field.value}
+                    onValueChange={(nextValue) =>
+                      field.onChange(String(nextValue ?? ''))
+                    }
+                    forceTextMode
+                    defaultEditing
+                    showEditActions={false}
+                  />
+                </FormControl>
+                <FormMessage />
+              </FormItem>
+            )}
+          />
+          <FormField
+            control={form.control}
+            name='outputMapping'
+            render={({ field }) => (
+              <FormItem>
+                <FormLabel>输出定义 JSON</FormLabel>
+                <FormControl>
+                  <MixEditor
+                    title='请输入JSON'
+                    value={field.value}
+                    onValueChange={(nextValue) =>
+                      field.onChange(stringifyEditorValue(nextValue))
+                    }
+                    defaultEditing
+                    showEditActions={false}
+                  />
+                </FormControl>
+                <FormMessage />
+              </FormItem>
+            )}
+          />
+        </>
+      ) : null}
+      {form.watch('type') === 'CODE' ? (
+        <>
+          <FormField
+            control={form.control}
+            name='sourceCodeLanguage'
+            render={({ field }) => (
+              <FormItem>
+                <FormLabel>源码语言</FormLabel>
+                <Select value={field.value} onValueChange={field.onChange}>
+                  <FormControl>
+                    <SelectTrigger className='w-full'>
+                      <SelectValue placeholder='选择语言' />
+                    </SelectTrigger>
+                  </FormControl>
+                  <SelectContent>
+                    <SelectGroup>
+                      <SelectItem value='PYTHON'>Python</SelectItem>
+                      <SelectItem value='TYPESCRIPT'>TypeScript</SelectItem>
+                    </SelectGroup>
+                  </SelectContent>
+                </Select>
+                <FormMessage />
+              </FormItem>
+            )}
+          />
+          <FormField
+            control={form.control}
+            name='sourceCode'
+            render={({ field }) => (
+              <FormItem>
+                <FormLabel>源码</FormLabel>
+                <FormControl>
+                  <Textarea className='min-h-48 font-mono' {...field} />
+                </FormControl>
+                <FormMessage />
+              </FormItem>
+            )}
+          />
+        </>
+      ) : null}
+      {form.watch('type') === 'WORKFLOW' ? (
+        <WorkflowFields control={form.control} />
+      ) : null}
+      {form.watch('type') === 'SDK' ? (
+        <>
+          <FormField
+            control={form.control}
+            name='sdkPackage'
+            render={({ field }) => (
+              <FormItem>
+                <FormLabel>SDK 标识</FormLabel>
+                <FormControl>
+                  <Input placeholder='openjudge' {...field} />
+                </FormControl>
+                <FormMessage />
+              </FormItem>
+            )}
+          />
+          <MappingFields control={form.control} />
+        </>
+      ) : null}
+      <FormField
+        control={form.control}
+        name='inputVariables'
+        render={({ field }) => (
+          <FormItem>
+            <FormLabel>输入变量</FormLabel>
+            <FormControl>
+              <Input
+                placeholder='input, output, expected_output'
+                {...field}
+                onChange={(event) => {
+                  field.onChange(event)
+                  form.setValue('variables', event.target.value)
+                }}
+              />
+            </FormControl>
+            <FormMessage />
+          </FormItem>
+        )}
+      />
+      <OutputVariableMappingsField
+        form={form}
+        scoreConfigNames={scoreConfigNames}
+        loading={scoreConfigsLoading}
+      />
+      <div className='bg-background sticky bottom-0 -mx-6 mt-2 flex justify-end gap-2 border-t px-6 py-4'>
+        <Button type='button' variant='outline' onClick={onCancel}>
+          取消
+        </Button>
+        <Button form={formId} type='submit'>
+          {submitLabel}
+        </Button>
+      </div>
+    </>
   )
 }
 
@@ -1118,7 +1229,7 @@ function OutputVariableMappingsField({
             onClick={() =>
               append({
                 variableName: '',
-                scoreConfigName: scoreConfigNames[0] ?? '',
+                scoreConfigName: '',
               })
             }
           >

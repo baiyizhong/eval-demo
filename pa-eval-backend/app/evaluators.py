@@ -260,6 +260,33 @@ async def get_evaluator(
     return success(evaluator)
 
 
+@router.patch("/{evaluator_id}")
+async def update_evaluator(
+    evaluator_id: str,
+    payload: CreateEvaluatorPayload,
+    current_user: CurrentUserContext = Depends(get_current_user_context),
+    reader: LangfuseDatabaseReader = Depends(get_langfuse_db_reader),
+) -> dict[str, Any]:
+    evaluator = await reader.get_evaluator_for_user(
+        evaluator_id,
+        current_user.user_id,
+    )
+    if evaluator["provider"] == "LANGFUSE":
+        raise BusinessError(
+            4019,
+            "Langfuse 原生评估器由 Langfuse 管理，请在 Langfuse 中编辑",
+            409,
+        )
+
+    updated = await reader.update_pa_evaluator_for_user(
+        evaluator_id,
+        payload.to_storage_payload(),
+        current_user.user_id,
+        current_user.email,
+    )
+    return success(updated)
+
+
 @router.delete("/{evaluator_id}")
 async def delete_evaluator(
     evaluator_id: str,

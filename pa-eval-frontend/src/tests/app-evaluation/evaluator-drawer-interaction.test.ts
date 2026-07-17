@@ -13,7 +13,7 @@ test('评估器新建和详情统一使用抽屉组件', () => {
     /import \{ Drawer \} from '@\/components\/common\/drawer'/
   )
   assert.equal(evaluatorsSource.includes('FormDialog'), false)
-  assert.equal((evaluatorsSource.match(/<Drawer\b/g) ?? []).length, 2)
+  assert.equal((evaluatorsSource.match(/<Drawer\b/g) ?? []).length, 3)
 })
 
 test('新建评估器抽屉在内容区右下角展示操作按钮', () => {
@@ -22,7 +22,7 @@ test('新建评估器抽屉在内容区右下角展示操作按钮', () => {
     evaluatorsSource,
     /className='[^']*sticky[^']*bottom-0[^']*justify-end[^']*'/
   )
-  assert.match(evaluatorsSource, /form=\{createEvaluatorFormId\}/)
+  assert.match(evaluatorsSource, /formId=\{createEvaluatorFormId\}/)
   assert.match(evaluatorsSource, /setCreateOpen\(false\)/)
 })
 
@@ -35,6 +35,17 @@ test('新建评估器默认使用当前项目且隐藏所属项目选择', () =>
   assert.doesNotMatch(evaluatorsSource, /name='projectId'/)
   assert.doesNotMatch(evaluatorsSource, /<FormLabel>所属项目<\/FormLabel>/)
   assert.doesNotMatch(evaluatorsSource, /getProjects<PaginatedResult/)
+})
+
+test('评估器操作列提供编辑入口并复用新建表单抽屉', () => {
+  assert.match(evaluatorsSource, /编辑评估器/)
+  assert.match(evaluatorsSource, /onEdit/)
+  assert.match(evaluatorsSource, /handleEdit/)
+  assert.match(evaluatorsSource, /updateTaskEvaluator/)
+  assert.match(evaluatorsSource, /buildEvaluatorFormValuesFromDetail/)
+  assert.match(evaluatorsSource, /title='编辑评估器'/)
+  assert.match(evaluatorsSource, /formId=\{editEvaluatorFormId\}/)
+  assert.match(evaluatorsSource, /保存/)
 })
 
 test('新建评估器输出变量使用独立卡片并绑定评分指标', () => {

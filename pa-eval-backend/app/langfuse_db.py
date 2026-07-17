@@ -4627,6 +4627,91 @@ class LangfuseDatabaseReader:
             }
         )
 
+    async def update_pa_evaluator_for_user(
+        self,
+        evaluator_id: str,
+        payload: dict[str, Any],
+        user_id: str,
+        user_email: str,
+    ) -> dict[str, Any]:
+        if not self._database_url:
+            raise LangfuseDatabaseConfigError()
+
+        async with await psycopg.AsyncConnection.connect(
+            self._database_url,
+            row_factory=dict_row,
+        ) as connection:
+            async with connection.cursor() as cursor:
+                project = await self._get_project_for_user(
+                    cursor,
+                    payload["project_id"],
+                    user_id,
+                )
+                await cursor.execute(
+                    f"""
+                    UPDATE pa_evaluators pe
+                    SET
+                        project_id = %(project_id)s,
+                        name = %(name)s,
+                        type = %(type)s,
+                        provider = %(provider)s,
+                        version = pe.version + 1,
+                        description = %(description)s,
+                        variables = %(variables)s,
+                        output_variables = %(output_variables)s,
+                        config = %(config)s,
+                        update_by = %(update_by)s,
+                        update_date = NOW()
+                    FROM projects p
+                    WHERE pe.project_id = p.id
+                      AND pe.id = %(evaluator_id)s
+                      AND pe.status = 'ACTIVE'
+                      AND {PROJECT_ACCESS_EXISTS_SQL}
+                    RETURNING
+                        pe.id,
+                        pe.name,
+                        pe.type,
+                        pe.provider,
+                        pe.version,
+                        pe.description,
+                        pe.variables,
+                        pe.output_variables,
+                        pe.config,
+                        pe.project_id,
+                        pe.update_date AS updated_at
+                    """,
+                    {
+                        "evaluator_id": evaluator_id,
+                        "project_id": payload["project_id"],
+                        "name": payload["name"],
+                        "type": payload["type"],
+                        "provider": payload["provider"],
+                        "description": payload.get("description") or "",
+                        "variables": Jsonb(payload.get("variables") or []),
+                        "output_variables": Jsonb(
+                            payload.get("output_variables") or []
+                        ),
+                        "config": Jsonb(payload.get("config") or {}),
+                        "update_by": user_email,
+                        "user_id": user_id,
+                    },
+                )
+                evaluator = await cursor.fetchone()
+
+        if evaluator is None:
+            raise BusinessError(
+                code=1006,
+                message="评估器不存在或无访问权限",
+                status_code=404,
+            )
+
+        return self._to_pa_evaluator_payload(
+            {
+                **evaluator,
+                "project_name": project["name"],
+            }
+        )
+
     async def delete_pa_evaluator_for_user(
         self,
         evaluator_id: str,

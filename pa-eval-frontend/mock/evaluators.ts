@@ -13,6 +13,60 @@ export default [
   },
   {
     url: '/api/evaluators/:evaluatorId',
+    method: 'patch',
+    response: (req: any) => {
+      const evaluatorId = pathParam(req, 'evaluatorId')
+      const input = body(req)
+      const evaluatorIndex = db.evaluators.findIndex(
+        (item) => item.id === evaluatorId
+      )
+      const current = db.evaluators[evaluatorIndex]
+      if (!current) return success({ id: evaluatorId })
+
+      const nextEvaluator = {
+        ...current,
+        name: input.name ?? current.name,
+        type: input.type ?? current.type,
+        version: input.version ?? current.version,
+        variables: Array.isArray(input.variables)
+          ? input.variables
+          : current.variables,
+        inputVariables: Array.isArray(input.inputVariables)
+          ? input.inputVariables
+          : Array.isArray(input.variables)
+            ? input.variables
+            : current.inputVariables,
+        outputVariables: Array.isArray(input.outputVariables)
+          ? input.outputVariables
+          : current.outputVariables,
+        outputVariableMappings: Array.isArray(input.outputVariableMappings)
+          ? input.outputVariableMappings
+          : current.outputVariableMappings,
+        description: input.description ?? current.description,
+        provider: input.provider ?? current.provider,
+        projectId: input.projectId ?? current.projectId,
+        config: input.config ?? {
+          endpointUrl: input.endpointUrl,
+          authType: input.authType,
+          inputMapping: input.inputMapping,
+          outputMapping: input.outputMapping,
+          sdkPackage: input.sdkPackage,
+          outputVariableMappings: input.outputVariableMappings,
+        },
+        prompt: input.prompt ?? current.prompt,
+        modelConfig: input.modelConfig ?? current.modelConfig,
+        outputDefinition: input.outputDefinition ?? current.outputDefinition,
+        sourceCode: input.sourceCode ?? current.sourceCode,
+        sourceCodeLanguage:
+          input.sourceCodeLanguage ?? current.sourceCodeLanguage,
+        updatedAt: nowIso(),
+      }
+      db.evaluators[evaluatorIndex] = nextEvaluator
+      return success(nextEvaluator)
+    },
+  },
+  {
+    url: '/api/evaluators/:evaluatorId',
     method: 'delete',
     response: (req: any) => {
       const evaluatorId = pathParam(req, 'evaluatorId')

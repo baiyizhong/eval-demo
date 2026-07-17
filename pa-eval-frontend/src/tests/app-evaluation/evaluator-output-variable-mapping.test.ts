@@ -21,8 +21,10 @@ test('evaluator create drawer uses a compact output variable score mapping', () 
 test('evaluator output variable names do not use score examples as defaults', () => {
   assert.match(evaluatorsSource, /outputVariables:\s*''/)
   assert.match(evaluatorsSource, /variableName:\s*''/)
+  assert.match(evaluatorsSource, /scoreConfigName:\s*''/)
   assert.doesNotMatch(evaluatorsSource, /placeholder='quality_score'/)
   assert.doesNotMatch(evaluatorsSource, /variableName:\s*'score'/)
+  assert.doesNotMatch(evaluatorsSource, /scoreConfigNames\[0\]/)
 })
 
 test('evaluator output variable score mapping loads project score config names only', () => {

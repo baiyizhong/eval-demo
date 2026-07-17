@@ -69,6 +69,7 @@ type EvaluatorApiClient = {
   getEvaluators: ApiMethod
   getEvaluator: ApiMethod
   createEvaluator: ApiMethod
+  patchEvaluator: ApiMethod
   deleteEvaluator: ApiMethod
 }
 
@@ -102,6 +103,17 @@ export function createTaskEvaluator(
   })
 }
 
+export function updateTaskEvaluator(
+  api: Pick<EvaluatorApiClient, 'patchEvaluator'>,
+  evaluatorId: string,
+  values: CreateTaskEvaluatorFormValues
+) {
+  return api.patchEvaluator<TaskEvaluatorRecord>({
+    path: { evaluatorId },
+    body: buildCreateEvaluatorPayload(values),
+  })
+}
+
 export function getTaskEvaluator(api: EvaluatorApiClient, evaluatorId: string) {
   return api.getEvaluator<TaskEvaluatorDetail>({
     path: { evaluatorId },
@@ -123,13 +135,18 @@ export function buildCreateEvaluatorPayload(
   const inputVariables = splitVariables(
     values.inputVariables ?? values.variables
   )
-  const outputVariables = splitVariables(values.outputVariables ?? '')
   const outputVariableMappings = values.outputVariableMappings
     .map((item) => ({
       variableName: item.variableName.trim(),
       scoreConfigName: item.scoreConfigName.trim(),
     }))
     .filter((item) => item.variableName && item.scoreConfigName)
+  const outputVariables = splitVariables(values.outputVariables ?? '')
+  if (outputVariables.length === 0) {
+    outputVariables.push(
+      ...outputVariableMappings.map((item) => item.variableName)
+    )
+  }
   const base = {
     name: values.name.trim(),
     type: values.type,
@@ -183,6 +200,59 @@ export function buildCreateEvaluatorPayload(
   }
 }
 
+export function buildEvaluatorFormValuesFromDetail(
+  evaluator: TaskEvaluatorDetail,
+  fallbackProjectId: string
+): CreateTaskEvaluatorFormValues {
+  const config = evaluator.config ?? {}
+  const modelConfig = evaluator.modelConfig ?? {}
+  const inputVariables = evaluator.inputVariables?.length
+    ? evaluator.inputVariables
+    : evaluator.variables
+  const outputVariables = evaluator.outputVariables ?? []
+  const outputVariableMappings = evaluator.outputVariableMappings?.length
+    ? evaluator.outputVariableMappings
+    : outputVariables.map((variableName) => ({
+        variableName,
+        scoreConfigName: '',
+      }))
+
+  return {
+    name: evaluator.name,
+    type: evaluator.type,
+    provider: evaluator.provider,
+    projectId: evaluator.projectId ?? fallbackProjectId,
+    description: evaluator.description,
+    variables: inputVariables.join(', '),
+    inputVariables: inputVariables.join(', '),
+    outputVariables: outputVariables.join(', '),
+    outputVariableMappings: outputVariableMappings.length
+      ? outputVariableMappings
+      : [
+          {
+            variableName: '',
+            scoreConfigName: '',
+          },
+        ],
+    prompt: evaluator.prompt ?? '',
+    modelProvider: readString(modelConfig.provider),
+    model: readString(modelConfig.model),
+    sourceCodeLanguage: isSourceCodeLanguage(evaluator.sourceCodeLanguage)
+      ? evaluator.sourceCodeLanguage
+      : 'PYTHON',
+    sourceCode: evaluator.sourceCode ?? '',
+    endpointUrl: readString(config.endpointUrl),
+    authType: isAuthType(config.authType) ? config.authType : 'NONE',
+    authToken: '',
+    inputMapping: stringifyJsonObject(config.inputMapping),
+    outputMapping:
+      evaluator.type === 'LLM_AS_JUDGE'
+        ? stringifyJsonObject(evaluator.outputDefinition)
+        : stringifyJsonObject(config.outputMapping),
+    sdkPackage: readString(config.sdkPackage),
+  }
+}
+
 function splitVariables(value: string) {
   return value
     .split(',')
@@ -208,6 +278,34 @@ function parseJsonObject(value: string, label: string) {
     }
     throw error
   }
+}
+
+function stringifyJsonObject(value: unknown) {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) {
+    return '{}'
+  }
+  return JSON.stringify(value, null, 2)
+}
+
+function readString(value: unknown) {
+  return typeof value === 'string' ? value : ''
+}
+
+function isAuthType(
+  value: unknown
+): value is CreateTaskEvaluatorFormValues['authType'] {
+  return (
+    value === 'NONE' ||
+    value === 'BEARER' ||
+    value === 'BASIC' ||
+    value === 'API_KEY'
+  )
+}
+
+function isSourceCodeLanguage(
+  value: unknown
+): value is CreateTaskEvaluatorFormValues['sourceCodeLanguage'] {
+  return value === 'PYTHON' || value === 'TYPESCRIPT'
 }
 
 function getEvaluatorTypeFilter(value: unknown) {

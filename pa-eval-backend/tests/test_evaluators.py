@@ -13,6 +13,7 @@ class FakeDatabaseReader:
         self.user_id = None
         self.created_langfuse_payload = None
         self.created_pa_payload = None
+        self.updated_pa_payload = None
         self.detail_user_id = None
         self.deleted_pa_evaluator = None
 
@@ -159,6 +160,34 @@ class FakeDatabaseReader:
         self.deleted_pa_evaluator = {
             "evaluator_id": evaluator_id,
             "user_id": user_id,
+        }
+
+    async def update_pa_evaluator_for_user(
+        self,
+        evaluator_id: str,
+        payload: dict,
+        user_id: str,
+        user_email: str,
+    ) -> dict:
+        self.updated_pa_payload = {
+            "evaluator_id": evaluator_id,
+            "payload": payload,
+            "user_id": user_id,
+            "user_email": user_email,
+        }
+        return {
+            "id": evaluator_id,
+            "name": payload["name"],
+            "type": payload["type"],
+            "version": "v2",
+            "variables": payload["variables"],
+            "outputVariables": payload["output_variables"],
+            "description": payload["description"],
+            "provider": payload["provider"],
+            "projectId": payload["project_id"],
+            "projectName": "默认项目",
+            "usageCount": 0,
+            "updatedAt": "2026-07-05T09:00:00.000Z",
         }
 
 
@@ -479,6 +508,97 @@ def test_gets_workflow_evaluator_detail() -> None:
     assert body["data"]["config"]["hasAuthToken"] is True
     assert "authToken" not in body["data"]["config"]
     assert fake_reader.detail_user_id == "user-1"
+
+
+def test_updates_pa_workflow_evaluator() -> None:
+    fake_reader = FakeDatabaseReader()
+    override_reader(fake_reader)
+
+    try:
+        response = TestClient(app).patch(
+            "/api/evaluators/pa-evaluator-1",
+            json={
+                "name": "Dify 客诉判断 v2",
+                "type": "WORKFLOW",
+                "provider": "DIFY",
+                "projectId": "project-1",
+                "description": "更新工作流配置",
+                "variables": ["input", "output"],
+                "inputVariables": ["input", "output"],
+                "outputVariables": ["quality_score"],
+                "outputVariableMappings": [
+                    {
+                        "variableName": "quality_score",
+                        "scoreConfigName": "回答质量",
+                    }
+                ],
+                "endpointUrl": "https://dify.example.com/v1/workflows/run",
+                "authType": "NONE",
+                "inputMapping": {"query": "{{input}}"},
+                "outputMapping": {"score": "$.data.score"},
+            },
+        )
+    finally:
+        clear_overrides()
+
+    assert response.status_code == 200
+    assert response.json()["data"]["version"] == "v2"
+    assert fake_reader.updated_pa_payload == {
+        "evaluator_id": "pa-evaluator-1",
+        "user_id": "user-1",
+        "user_email": "admin@163.com",
+        "payload": {
+            "name": "Dify 客诉判断 v2",
+            "type": "WORKFLOW",
+            "provider": "DIFY",
+            "project_id": "project-1",
+            "description": "更新工作流配置",
+            "variables": ["input", "output"],
+            "input_variables": ["input", "output"],
+            "output_variables": ["quality_score"],
+            "config": {
+                "endpointUrl": "https://dify.example.com/v1/workflows/run",
+                "authType": "NONE",
+                "authToken": None,
+                "inputMapping": {"query": "{{input}}"},
+                "outputMapping": {"score": "$.data.score"},
+                "outputVariableMappings": [
+                    {
+                        "variableName": "quality_score",
+                        "scoreConfigName": "回答质量",
+                    }
+                ],
+            },
+        },
+    }
+
+
+def test_rejects_updating_langfuse_evaluator() -> None:
+    fake_reader = FakeDatabaseReader()
+    override_reader(fake_reader)
+
+    try:
+        response = TestClient(app).patch(
+            "/api/evaluators/eval-template-1",
+            json={
+                "name": "客服回答质量",
+                "type": "LLM_AS_JUDGE",
+                "provider": "LANGFUSE",
+                "projectId": "project-1",
+                "description": "检查客服回复",
+                "variables": ["input", "output"],
+                "inputVariables": ["input", "output"],
+                "prompt": "请评分",
+                "modelConfig": {"provider": "openai", "model": "gpt-4.1"},
+            },
+        )
+    finally:
+        clear_overrides()
+
+    assert response.status_code == 409
+    assert response.json()["code"] == 4019
+    assert response.json()["message"] == "Langfuse 原生评估器由 Langfuse 管理，请在 Langfuse 中编辑"
+    assert fake_reader.updated_pa_payload is None
 
 
 def test_deletes_pa_workflow_evaluator() -> None:
