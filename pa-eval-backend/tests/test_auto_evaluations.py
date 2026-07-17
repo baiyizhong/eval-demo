@@ -30,12 +30,14 @@ from app.auto_evaluations import (
     _delete_auto_evaluation_task,
     _to_report_badcase,
     _auto_evaluation_score_api_payload,
+    _sync_auto_evaluation_scores_to_langfuse,
     AutoEvaluationBadcaseConfig,
     CreateAutoEvaluationPayload,
     EvaluationReportFlowbackPayload,
 )
 from app.auth_context import get_current_user_context
 from app.langfuse_clickhouse import LangfuseClickHouseReader
+from app.langfuse_clickhouse import _score_numeric_value
 from app.main import app
 import app.auto_evaluations as auto_evaluations
 from app.errors import BusinessError
@@ -878,6 +880,171 @@ def test_auto_evaluation_score_payload_includes_score_config_id() -> None:
 
     assert payload is not None
     assert payload["configId"] == "score-config-quality"
+
+
+def test_auto_evaluation_score_payload_uses_bound_categorical_config() -> None:
+    payload = _auto_evaluation_score_api_payload(
+        project_id="project-1",
+        task_id="task-1",
+        run_id="run-1",
+        score_name="问题类型",
+        evaluator_id="evaluator-1",
+        result={
+            "sample": {"id": "sample-1", "source_trace_id": "trace-1"},
+            "score": 0.0,
+            "passed": True,
+            "reason": "分类命中",
+        },
+        score_value="答案事实错误",
+        score_passed=True,
+        score_config={
+            "id": "score-config-category",
+            "name": "问题类型",
+            "dataType": "CATEGORICAL",
+            "categories": [
+                {"label": "工具调用错误", "value": 1},
+                {"label": "答案事实错误", "value": 2},
+            ],
+        },
+    )
+
+    assert payload is not None
+    assert payload["configId"] == "score-config-category"
+    assert payload["dataType"] == "CATEGORICAL"
+    assert payload["value"] == "答案事实错误"
+    assert payload["stringValue"] == "答案事实错误"
+
+
+def test_auto_evaluation_score_payload_uses_bound_boolean_and_text_configs() -> None:
+    boolean_payload = _auto_evaluation_score_api_payload(
+        project_id="project-1",
+        task_id="task-1",
+        run_id="run-1",
+        score_name="是否通过",
+        evaluator_id="evaluator-1",
+        result={"sample": {"id": "sample-1", "source_trace_id": "trace-1"}},
+        score_value="false",
+        score_passed=False,
+        score_config={
+            "id": "score-config-bool",
+            "name": "是否通过",
+            "dataType": "BOOLEAN",
+            "categories": [
+                {"label": "通过", "value": 1},
+                {"label": "不通过", "value": 0},
+            ],
+        },
+    )
+    text_payload = _auto_evaluation_score_api_payload(
+        project_id="project-1",
+        task_id="task-1",
+        run_id="run-1",
+        score_name="评审说明",
+        evaluator_id="evaluator-1",
+        result={"sample": {"id": "sample-1", "source_trace_id": "trace-1"}},
+        score_value="回答引用来源不足",
+        score_passed=True,
+        score_config={
+            "id": "score-config-text",
+            "name": "评审说明",
+            "dataType": "TEXT",
+        },
+    )
+
+    assert boolean_payload is not None
+    assert boolean_payload["dataType"] == "BOOLEAN"
+    assert boolean_payload["value"] == 0
+    assert boolean_payload["stringValue"] == "不通过"
+    assert text_payload is not None
+    assert text_payload["dataType"] == "TEXT"
+    assert text_payload["value"] == "回答引用来源不足"
+    assert text_payload["stringValue"] == "回答引用来源不足"
+
+
+def test_clickhouse_score_numeric_value_handles_non_numeric_score_values() -> None:
+    assert _score_numeric_value({"dataType": "CATEGORICAL", "value": "答案事实错误"}) == 0
+    assert _score_numeric_value({"dataType": "TEXT", "value": "人工备注"}) == 0
+    assert _score_numeric_value({"dataType": "BOOLEAN", "value": 1}) == 1
+
+
+@pytest.mark.anyio
+async def test_sync_auto_evaluation_scores_uses_bound_score_config_data_types() -> None:
+    cursor = SequentialCursor(
+        rows_by_fetchall=[
+            [
+                {
+                    "id": "score-config-category",
+                    "name": "问题类型",
+                    "data_type": "CATEGORICAL",
+                    "min_value": None,
+                    "max_value": None,
+                    "categories": [
+                        {"label": "工具调用错误", "value": 1},
+                        {"label": "答案事实错误", "value": 2},
+                    ],
+                },
+                {
+                    "id": "score-config-text",
+                    "name": "评审说明",
+                    "data_type": "TEXT",
+                    "min_value": None,
+                    "max_value": None,
+                    "categories": None,
+                },
+            ]
+        ],
+        rows_by_fetchone=[
+            {"public_key": "pk-lf-project", "secret_key": "sk-lf-project"},
+        ],
+    )
+    langfuse_client = FakeLangfuseScoreClient()
+    score_writer = FakeClickHouseScoreWriter()
+
+    await _sync_auto_evaluation_scores_to_langfuse(
+        cursor,  # type: ignore[arg-type]
+        project_id="project-1",
+        task_id="task-1",
+        run_id="run-1",
+        score_name="quality",
+        evaluator_id="evaluator-1",
+        results=[
+            {
+                "sample": {"id": "sample-1", "source_trace_id": "trace-1"},
+                "score": 0.0,
+                "passed": True,
+                "reason": "完成",
+                "scores": [
+                    {
+                        "name": "问题类型",
+                        "scoreConfigId": "score-config-category",
+                        "stringValue": "答案事实错误",
+                        "passed": True,
+                    },
+                    {
+                        "name": "评审说明",
+                        "scoreConfigId": "score-config-text",
+                        "stringValue": "回答引用来源不足",
+                        "passed": True,
+                    },
+                ],
+            }
+        ],
+        langfuse_client=langfuse_client,  # type: ignore[arg-type]
+        score_writer=score_writer,  # type: ignore[arg-type]
+        score_author_user_id="creator@163.com",
+    )
+
+    payloads = [item[2] for item in langfuse_client.created_scores]
+    assert [(item["dataType"], item["value"]) for item in payloads] == [
+        ("CATEGORICAL", "答案事实错误"),
+        ("TEXT", "回答引用来源不足"),
+    ]
+    assert [item["stringValue"] for item in payloads] == [
+        "答案事实错误",
+        "回答引用来源不足",
+    ]
+    assert score_writer.upserted_scores[0][2] == payloads[0]
+    assert score_writer.upserted_scores[1][2] == payloads[1]
 
 
 def test_trace_time_range_condition_supports_auto_evaluation_quick_ranges() -> None:

@@ -20,7 +20,11 @@ from app.langfuse_clickhouse import (
     LangfuseClickHouseReader,
     LangfuseClickHouseScoreWriter,
 )
-from app.langfuse_db import LangfuseDatabaseConfigError, PROJECT_ACCESS_EXISTS_SQL
+from app.langfuse_db import (
+    LangfuseDatabaseConfigError,
+    LangfuseDatabaseReader,
+    PROJECT_ACCESS_EXISTS_SQL,
+)
 from app.langfuse_client import LangfuseAdminClient
 from app.response import success
 
@@ -2416,13 +2420,20 @@ async def _sync_auto_evaluation_scores_to_langfuse(
     score_writer: LangfuseClickHouseScoreWriter | None = None,
     score_author_user_id: str = "",
 ) -> None:
+    score_config_ids = _auto_evaluation_score_config_ids(results)
+    score_configs_by_id = (
+        await _get_score_configs_by_ids(cursor, project_id, score_config_ids)
+        if score_config_ids
+        else {}
+    )
     score_payloads = []
     for result in results:
         result_scores = result.get("scores")
         if isinstance(result_scores, list) and result_scores:
             for score in result_scores:
-                if "value" not in score:
+                if "value" not in score and "stringValue" not in score:
                     continue
+                score_config_id = str(score.get("scoreConfigId") or "")
                 score_payloads.append(
                     _auto_evaluation_score_api_payload(
                         project_id=project_id,
@@ -2431,9 +2442,12 @@ async def _sync_auto_evaluation_scores_to_langfuse(
                         score_name=str(score.get("name") or score_name),
                         evaluator_id=evaluator_id,
                         result=result,
-                        score_value=float(score.get("value") or 0),
-                        score_passed=bool(score.get("passed")),
-                        score_config_id=str(score.get("scoreConfigId") or ""),
+                        score_value=score.get("value", score.get("stringValue")),
+                        score_passed=(
+                            bool(score.get("passed")) if "passed" in score else None
+                        ),
+                        score_config_id=score_config_id,
+                        score_config=score_configs_by_id.get(score_config_id),
                     )
                 )
         else:
@@ -2494,6 +2508,45 @@ async def _get_project_api_key_credentials(
     }
 
 
+def _auto_evaluation_score_config_ids(results: list[dict[str, Any]]) -> list[str]:
+    config_ids: list[str] = []
+    for result in results:
+        result_scores = result.get("scores")
+        if not isinstance(result_scores, list):
+            continue
+        for score in result_scores:
+            if not isinstance(score, dict):
+                continue
+            config_id = str(score.get("scoreConfigId") or "").strip()
+            if config_id and config_id not in config_ids:
+                config_ids.append(config_id)
+    return config_ids
+
+
+async def _get_score_configs_by_ids(
+    cursor: psycopg.AsyncCursor[dict[str, Any]],
+    project_id: str,
+    score_config_ids: list[str],
+) -> dict[str, dict[str, Any]]:
+    await cursor.execute(
+        """
+        SELECT
+            id,
+            name,
+            data_type::text AS data_type,
+            min_value,
+            max_value,
+            categories
+        FROM score_configs
+        WHERE project_id = %(project_id)s
+          AND id = ANY(%(score_config_ids)s)
+        """,
+        {"project_id": project_id, "score_config_ids": score_config_ids},
+    )
+    rows = await cursor.fetchall()
+    return {str(row["id"]): row for row in rows}
+
+
 def _auto_evaluation_score_api_payload(
     *,
     project_id: str,
@@ -2502,9 +2555,10 @@ def _auto_evaluation_score_api_payload(
     score_name: str,
     evaluator_id: str,
     result: dict[str, Any],
-    score_value: float | None = None,
+    score_value: Any = None,
     score_passed: bool | None = None,
     score_config_id: str = "",
+    score_config: dict[str, Any] | None = None,
 ) -> dict[str, Any] | None:
     sample = result.get("sample") or {}
     trace_id = sample.get("source_trace_id") or ""
@@ -2513,6 +2567,19 @@ def _auto_evaluation_score_api_payload(
 
     observation_id = sample.get("source_observation_id") or ""
     sample_id = sample.get("id") or ""
+    data_type = "NUMERIC"
+    payload_value: float | int | str | None = (
+        result["score"] if score_value is None else score_value
+    )
+    string_value: str | None = None
+    resolved_config_id = score_config_id
+    if score_config is not None:
+        resolved_config_id = str(score_config.get("id") or score_config_id)
+        data_type, payload_value, string_value = _normalize_auto_evaluation_score_value(
+            score_config,
+            payload_value,
+        )
+
     payload = {
         "id": _auto_evaluation_score_id(
             project_id=project_id,
@@ -2524,8 +2591,8 @@ def _auto_evaluation_score_api_payload(
             observation_id=observation_id,
         ),
         "name": score_name,
-        "value": result["score"] if score_value is None else score_value,
-        "dataType": "NUMERIC",
+        "value": payload_value,
+        "dataType": data_type,
         "traceId": trace_id,
         "queueId": task_id,
         "comment": result.get("reason") or "",
@@ -2537,11 +2604,34 @@ def _auto_evaluation_score_api_payload(
             "passed": result.get("passed") if score_passed is None else score_passed,
         },
     }
+    if string_value is not None:
+        payload["stringValue"] = string_value
     if observation_id:
         payload["observationId"] = observation_id
-    if score_config_id:
-        payload["configId"] = score_config_id
+    if resolved_config_id:
+        payload["configId"] = resolved_config_id
     return payload
+
+
+def _normalize_auto_evaluation_score_value(
+    score_config: dict[str, Any],
+    raw_value: Any,
+) -> tuple[str, float | int | str | None, str | None]:
+    data_type = (
+        score_config.get("data_type") or score_config.get("dataType") or "NUMERIC"
+    )
+    value, string_value = LangfuseDatabaseReader._normalize_score_value(
+        score_config,
+        raw_value,
+        str(raw_value) if raw_value is not None else "",
+    )
+    if data_type == "BOOLEAN":
+        score_value = 1 if value == 1 else 0
+        return data_type, score_value, string_value
+    if data_type in {"CATEGORICAL", "TEXT"}:
+        text_value = string_value or ""
+        return data_type, text_value, text_value
+    return data_type, value, None
 
 
 def _auto_evaluation_score_id(

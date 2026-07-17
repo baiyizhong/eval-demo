@@ -819,7 +819,7 @@ class LangfuseClickHouseScoreWriter:
             "session_id": score_request.get("sessionId") or None,
             "dataset_run_id": None,
             "name": score_request["name"],
-            "value": float(score_request.get("value") or 0),
+            "value": _score_numeric_value(score_request),
             "source": source,
             "comment": score_request.get("comment") or None,
             "metadata": _clickhouse_string_map(score_request.get("metadata")),
@@ -858,6 +858,16 @@ class LangfuseClickHouseScoreWriter:
                 response.raise_for_status()
         except httpx.HTTPError as exc:
             raise LangfuseUpstreamError("Langfuse ClickHouse 写入失败") from exc
+
+
+def _score_numeric_value(score_request: dict[str, Any]) -> float:
+    value = score_request.get("value")
+    if value in (None, ""):
+        return 0.0
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        return 0.0
 
 
 def _format_score(row: dict[str, Any]) -> dict[str, Any]:
