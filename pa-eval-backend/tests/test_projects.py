@@ -19,12 +19,23 @@ class FakeDatabaseReader:
         self.created_project_member_payload = None
         self.updated_project_member_payload = None
         self.deleted_project_member_payload = None
+        self.list_projects_calls = 0
+        self.list_projects_for_user_calls: list[str] = []
+        self.super_admin = False
 
     async def list_projects(self) -> list[dict]:
-        return await self.list_projects_for_user("user-1")
+        self.list_projects_calls += 1
+        return await self._project_rows()
 
     async def list_projects_for_user(self, user_id: str) -> list[dict]:
         self.user_id = user_id
+        self.list_projects_for_user_calls.append(user_id)
+        return await self._project_rows()
+
+    async def is_super_admin(self, user_id: str) -> bool:
+        return self.super_admin
+
+    async def _project_rows(self) -> list[dict]:
         return [
             {
                 "id": "project-1",
@@ -440,6 +451,29 @@ def test_lists_projects_for_current_user_id() -> None:
 
     assert response.status_code == 200
     assert fake_reader.user_id == "user-octocat"
+    assert fake_reader.list_projects_calls == 0
+    assert fake_reader.list_projects_for_user_calls == ["user-octocat"]
+
+
+def test_lists_all_projects_for_super_admin() -> None:
+    fake_reader = FakeDatabaseReader()
+    fake_reader.super_admin = True
+    override_reader(fake_reader)
+
+    try:
+        response = TestClient(app).get("/api/projects")
+    finally:
+        clear_overrides()
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["data"]["total"] == 2
+    assert [item["id"] for item in body["data"]["datas"]] == [
+        "project-1",
+        "project-2",
+    ]
+    assert fake_reader.list_projects_calls == 1
+    assert fake_reader.list_projects_for_user_calls == []
 
 
 def test_creates_project_for_current_user_organization() -> None:
@@ -670,6 +704,17 @@ async def test_project_visibility_uses_langfuse_effective_membership() -> None:
     assert "project_memberships pm" in sql
     assert "om.role::text <> 'NONE'" in sql
     assert "pm.role::text <> 'NONE'" in sql
+
+
+@pytest.mark.anyio
+async def test_project_visibility_allows_super_admin_without_membership() -> None:
+    reader = RecordingLangfuseReader()
+
+    await reader.ensure_project_visible("project-1", "user-1")
+
+    sql, _params = reader.queries[0]
+    assert "FROM users" in sql
+    assert "admin IS TRUE" in sql
 
 
 @pytest.mark.anyio

@@ -51,10 +51,13 @@ export type PaginatedResult<T> = {
 }
 
 export const normalizeOrganizationOwnerAccount = (value: string) =>
-  value.toLowerCase().replace(/[^a-z0-9]/g, '')
+  value.trim().toLowerCase().replace(/[^a-z0-9]/g, '')
+
+export const normalizeMemberNameInput = (value: string) =>
+  value.trim().toLowerCase()
 
 export const buildOrganizationMemberEmail = (name: string, domain: string) => {
-  const account = normalizeOrganizationOwnerAccount(name.trim())
+  const account = normalizeOrganizationOwnerAccount(name)
   const normalizedDomain = domain.trim().toLowerCase().replace(/^@/, '')
   return account && normalizedDomain ? `${account}@${normalizedDomain}` : ''
 }

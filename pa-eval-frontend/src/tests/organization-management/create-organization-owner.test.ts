@@ -4,11 +4,13 @@ import { resolve } from 'node:path'
 import { test } from 'node:test'
 import {
   createOrganizationPayloadSchema,
+  normalizeMemberNameInput,
   normalizeOrganizationOwnerAccount,
 } from '../../modules/organization-management/data/schema.ts'
 
 test('create organization payload requires a normalized default owner account', () => {
   assert.equal(normalizeOrganizationOwnerAccount('Owner123'), 'owner123')
+  assert.equal(normalizeOrganizationOwnerAccount('  Owner123  '), 'owner123')
   assert.equal(normalizeOrganizationOwnerAccount('Owner-中文_123'), 'owner123')
 
   assert.equal(
@@ -29,6 +31,11 @@ test('create organization payload requires a normalized default owner account', 
     }).success,
     false
   )
+})
+
+test('member name input is lowercased and trimmed without dropping display text', () => {
+  assert.equal(normalizeMemberNameInput('  WangJing  '), 'wangjing')
+  assert.equal(normalizeMemberNameInput('  中文用户  '), '中文用户')
 })
 
 test('create organization drawer exposes default owner account field', () => {

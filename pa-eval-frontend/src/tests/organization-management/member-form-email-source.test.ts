@@ -20,6 +20,7 @@ test('member form loads backend email domain and links name changes to email', (
   assert.match(apiSource, /\/organizations\/member-email-settings/)
   assert.match(drawerSource, /getOrganizationMemberEmailSettings/)
   assert.match(drawerSource, /buildOrganizationMemberEmail/)
+  assert.match(drawerSource, /normalizeMemberNameInput/)
   assert.match(drawerSource, /form\.setValue\(\s*'email'/)
 })
 

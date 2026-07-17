@@ -96,7 +96,10 @@ async def list_projects(
     current_user: CurrentUserContext = Depends(get_current_user_context),
     reader: LangfuseDatabaseReader = Depends(get_langfuse_db_reader),
 ) -> dict[str, Any]:
-    projects = await reader.list_projects_for_user(current_user.user_id)
+    if await reader.is_super_admin(current_user.user_id):
+        projects = await reader.list_projects()
+    else:
+        projects = await reader.list_projects_for_user(current_user.user_id)
     filtered = [item for item in projects if _matches_keyword(item, keyword)]
 
     if organization_id:

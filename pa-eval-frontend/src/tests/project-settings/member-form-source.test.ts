@@ -16,6 +16,7 @@ test('project member create form uses drawer and links name changes to email', (
   assert.doesNotMatch(source, /<Dialog\b/)
   assert.match(source, /getOrganizationMemberEmailSettings/)
   assert.match(source, /buildOrganizationMemberEmail/)
+  assert.match(source, /normalizeMemberNameInput/)
   assert.match(source, /name='name'/)
   assert.match(source, /form\.setValue\(\s*'email'/)
   assert.match(source, /createMutation\.mutate\(input\)/)

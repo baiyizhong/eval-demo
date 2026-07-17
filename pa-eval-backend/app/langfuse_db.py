@@ -20,18 +20,26 @@ from app.errors import BusinessError
 
 
 PROJECT_ACCESS_EXISTS_SQL = """
-EXISTS (
-    SELECT 1
-    FROM organization_memberships om
-    LEFT JOIN project_memberships pm
-      ON pm.org_membership_id = om.id
-     AND pm.project_id = p.id
-    WHERE om.org_id = p.org_id
-      AND om.user_id = %(user_id)s
-      AND (
-        om.role::text <> 'NONE'
-        OR pm.role::text <> 'NONE'
-      )
+(
+    EXISTS (
+        SELECT 1
+        FROM users u
+        WHERE u.id = %(user_id)s
+          AND u.admin IS TRUE
+    )
+    OR EXISTS (
+        SELECT 1
+        FROM organization_memberships om
+        LEFT JOIN project_memberships pm
+          ON pm.org_membership_id = om.id
+         AND pm.project_id = p.id
+        WHERE om.org_id = p.org_id
+          AND om.user_id = %(user_id)s
+          AND (
+            om.role::text <> 'NONE'
+            OR pm.role::text <> 'NONE'
+          )
+    )
 )
 """
 

@@ -3,7 +3,10 @@ import { z } from 'zod'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { type ColumnDef } from '@tanstack/react-table'
 import type { ProjectUserRecord } from '@/modules/app-evaluation/types'
-import { buildOrganizationMemberEmail } from '@/modules/organization-management/data/schema'
+import {
+  buildOrganizationMemberEmail,
+  normalizeMemberNameInput,
+} from '@/modules/organization-management/data/schema'
 import { MoreHorizontal, Plus } from 'lucide-react'
 import { useParams } from 'react-router'
 import { toast } from 'sonner'
@@ -702,13 +705,17 @@ function ProjectMemberDrawer({
                       value={field.value}
                       onBlur={field.onBlur}
                       onChange={(event) => {
-                        field.onChange(event)
+                        const normalizedName = normalizeMemberNameInput(
+                          event.target.value
+                        )
+
+                        field.onChange(normalizedName)
                         onInputChange?.()
                         if (!isEditMode && defaultEmailDomain) {
                           form.setValue(
                             'email',
                             buildOrganizationMemberEmail(
-                              event.target.value,
+                              normalizedName,
                               defaultEmailDomain
                             ),
                             {

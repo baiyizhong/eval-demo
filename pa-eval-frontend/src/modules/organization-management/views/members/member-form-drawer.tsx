@@ -4,6 +4,7 @@ import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { canAssignRole } from '@/modules/organization-management/data/permissions'
 import {
   buildOrganizationMemberEmail,
+  normalizeMemberNameInput,
   organizationRoleSchema,
   type CreateOrganizationMemberPayload,
   type OrganizationMember,
@@ -228,12 +229,16 @@ export function MemberFormDrawer({
                         value={field.value}
                         onBlur={field.onBlur}
                         onChange={(event) => {
-                          field.onChange(event)
+                          const normalizedName = normalizeMemberNameInput(
+                            event.target.value
+                          )
+
+                          field.onChange(normalizedName)
                           if (!isEditMode && defaultEmailDomain) {
                             form.setValue(
                               'email',
                               buildOrganizationMemberEmail(
-                                event.target.value,
+                                normalizedName,
                                 defaultEmailDomain
                               ),
                               {
