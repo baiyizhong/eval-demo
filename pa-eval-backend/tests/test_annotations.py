@@ -4,11 +4,13 @@ from fastapi.testclient import TestClient
 from app.auth_context import CurrentUserContext, get_current_user_context
 from app.errors import BusinessError
 from app.langfuse_clickhouse import get_langfuse_clickhouse_reader
+from app.langfuse_clickhouse import get_langfuse_clickhouse_score_writer
 from app.langfuse_client import get_langfuse_client
 from app.annotations import _save_annotation_scores_with_langfuse_api
 from app.langfuse_db import (
     LangfuseDatabaseReader,
     _annotation_score_api_payload,
+    _copy_existing_annotation_scores_for_item,
     get_langfuse_db_reader,
 )
 from app.main import app
@@ -426,12 +428,25 @@ class FakeAnnotationDatabaseReader:
         }
 
 
+class RecordingCursor:
+    def __init__(self, rows: list[dict] | None = None) -> None:
+        self.rows = rows or []
+        self.executions: list[tuple[str, dict]] = []
+
+    async def execute(self, sql: str, params: dict) -> None:
+        self.executions.append((sql, params))
+
+    async def fetchall(self) -> list[dict]:
+        return self.rows
+
+
 class FakeAnnotationTraceReader:
     def __init__(self) -> None:
         self.calls: list[tuple[str, str]] = []
         self.source_calls: list[tuple[str, list[str]]] = []
         self.score_calls: list[tuple[str, str, str | None]] = []
         self.scores_by_queue: dict[str, list[dict]] = {}
+        self.scores_by_trace: dict[str, list[dict]] = {}
 
     async def get_trace(self, project_id: str, trace_id: str) -> dict:
         self.calls.append((project_id, trace_id))
@@ -452,6 +467,7 @@ class FakeAnnotationTraceReader:
             "output": '{"answer":"通常 1-3 个工作日到账"}',
             "metadata": {"app_id": "app-1"},
             "callChain": [],
+            "scores": self.scores_by_trace.get(trace_id, []),
         }
 
     async def list_trace_sources(
@@ -535,12 +551,16 @@ def override_reader(fake_reader: FakeAnnotationDatabaseReader) -> None:
         login="octocat",
     )
     app.dependency_overrides[get_langfuse_client] = lambda: FakeLangfuseClient()
+    app.dependency_overrides[get_langfuse_clickhouse_score_writer] = (
+        lambda: FakeClickHouseScoreWriter()
+    )
 
 
 def override_reader_and_trace_reader(
     fake_reader: FakeAnnotationDatabaseReader,
     fake_trace_reader: FakeAnnotationTraceReader,
     fake_langfuse_client: FakeLangfuseClient | None = None,
+    fake_score_writer: FakeClickHouseScoreWriter | None = None,
 ) -> None:
     async def _override() -> LangfuseDatabaseReader:
         return fake_reader  # type: ignore[return-value]
@@ -554,6 +574,9 @@ def override_reader_and_trace_reader(
     )
     app.dependency_overrides[get_langfuse_client] = lambda: (
         fake_langfuse_client or FakeLangfuseClient()
+    )
+    app.dependency_overrides[get_langfuse_clickhouse_score_writer] = lambda: (
+        fake_score_writer or FakeClickHouseScoreWriter()
     )
 
 
@@ -654,6 +677,147 @@ def test_creates_trace_annotation_task_in_existing_queue() -> None:
         "create_trace_task",
         ("project-1", "user-1", payload),
     )
+
+
+def test_creates_trace_annotation_task_prefills_scores_from_trace_detail() -> None:
+    class PrefillAnnotationReader(FakeAnnotationDatabaseReader):
+        async def create_trace_annotation_task_for_user(
+            self,
+            project_id: str,
+            user_id: str,
+            payload: dict,
+        ) -> dict:
+            self.calls.append(("create_trace_task", (project_id, user_id, payload)))
+            return {
+                "queueId": "queue-new",
+                "createdCount": 1,
+                "skippedCount": 0,
+                "createdItems": [{"itemId": "item-new", "traceId": "trace-1"}],
+                "scoreConfigIds": ["score-1"],
+            }
+
+    fake_reader = PrefillAnnotationReader()
+    fake_trace_reader = FakeAnnotationTraceReader()
+    fake_trace_reader.scores_by_trace["trace-1"] = [
+        {
+            "id": "trace-score-1",
+            "traceId": "trace-1",
+            "name": "准确性",
+            "value": 5,
+            "source": "ANNOTATION",
+            "comment": "Trace 页面当前评分",
+            "configId": "score-1",
+            "dataType": "NUMERIC",
+            "stringValue": "",
+            "queueId": "queue-old",
+        }
+    ]
+    fake_langfuse_client = FakeLangfuseClient()
+    fake_score_writer = FakeClickHouseScoreWriter()
+    override_reader_and_trace_reader(
+        fake_reader,
+        fake_trace_reader,
+        fake_langfuse_client,
+        fake_score_writer,
+    )
+
+    payload = {"traceIds": ["trace-1"], "queueId": "queue-new"}
+    try:
+        response = TestClient(app).post(
+            "/api/projects/project-1/traces/annotation-task",
+            json=payload,
+        )
+    finally:
+        clear_overrides()
+
+    assert response.status_code == 200
+    assert response.json()["data"] == {
+        "queueId": "queue-new",
+        "createdCount": 1,
+        "skippedCount": 0,
+        "traceCount": 1,
+    }
+    assert fake_reader.calls[1] == (
+        "prepare_scores",
+        (
+            "project-1",
+            "queue-new",
+            "item-new",
+            "user-1",
+            {
+                "scores": [
+                    {
+                        "configId": "score-1",
+                        "value": 5,
+                        "stringValue": "",
+                        "comment": "Trace 页面当前评分",
+                    }
+                ]
+            },
+        ),
+    )
+    assert [call[0] for call in fake_reader.calls] == [
+        "create_trace_task",
+        "prepare_scores",
+        "get_project_api_key",
+    ]
+    assert fake_langfuse_client.created_scores
+    assert fake_score_writer.upserted_scores[0][2]["queueId"] == "queue-new"
+
+
+def test_copies_existing_annotation_scores_for_new_queue_item() -> None:
+    cursor = RecordingCursor(
+        rows=[
+            {
+                "config_id": "score-1",
+                "name": "准确性",
+                "value": 4.0,
+                "data_type": "NUMERIC",
+                "string_value": None,
+                "comment": "上一轮标注",
+                "author_user_id": "annotator-1",
+                "trace_id": "trace-1",
+                "observation_id": None,
+            },
+            {
+                "config_id": "score-2",
+                "name": "结论",
+                "value": 1.0,
+                "data_type": "BOOLEAN",
+                "string_value": "通过",
+                "comment": "",
+                "author_user_id": "annotator-2",
+                "trace_id": "trace-1",
+                "observation_id": None,
+            },
+        ]
+    )
+
+    async def _run_copy() -> int:
+        return await _copy_existing_annotation_scores_for_item(
+            cursor,  # type: ignore[arg-type]
+            project_id="project-1",
+            queue_id="queue-new",
+            item_id="item-new",
+            object_id="trace-1",
+            object_type="TRACE",
+            score_config_ids=["score-1", "score-2"],
+        )
+
+    copied_count = anyio.run(_run_copy)
+
+    assert copied_count == 2
+    assert len(cursor.executions) == 3
+    _select_sql, select_params = cursor.executions[0]
+    first_insert_sql, first_insert_params = cursor.executions[1]
+    assert "SELECT DISTINCT ON (s.config_id)" in _select_sql
+    assert "INSERT INTO scores" in first_insert_sql
+    assert select_params["score_config_ids"] == ["score-1", "score-2"]
+    assert first_insert_params["queue_id"] == "queue-new"
+    assert first_insert_params["config_id"] == "score-1"
+    assert first_insert_params["id"] != "score-1"
+    assert first_insert_params["trace_id"] == "trace-1"
+    assert first_insert_params["comment"] == "上一轮标注"
 
 
 def test_ensures_default_score_config_for_manual_annotation_queue() -> None:

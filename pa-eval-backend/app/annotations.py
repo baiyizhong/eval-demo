@@ -754,6 +754,94 @@ async def _save_annotation_scores_with_langfuse_api(
     )
 
 
+async def _prefill_annotation_scores_from_trace_scores(
+    *,
+    project_id: str,
+    queue_id: str,
+    created_items: list[dict[str, Any]],
+    score_config_ids: list[str],
+    user_id: str,
+    reader: LangfuseDatabaseReader,
+    trace_reader: LangfuseClickHouseReader,
+    langfuse_client: LangfuseAdminClient,
+    score_writer: LangfuseClickHouseScoreWriter | None = None,
+) -> None:
+    if not created_items or not score_config_ids:
+        return
+
+    api_key: dict[str, str] | None = None
+    for item in created_items:
+        item_id = str(item.get("itemId") or "")
+        trace_id = str(item.get("traceId") or "")
+        if not item_id or not trace_id:
+            continue
+        trace = await trace_reader.get_trace(project_id, trace_id)
+        score_payload = _trace_scores_to_annotation_score_payload(
+            trace.get("scores") or [],
+            score_config_ids,
+        )
+        if not score_payload["scores"]:
+            continue
+        score_requests = await reader.prepare_annotation_score_payloads_for_user(
+            project_id,
+            queue_id,
+            item_id,
+            user_id,
+            score_payload,
+        )
+        if not score_requests:
+            continue
+        if api_key is None:
+            api_key = await reader.get_project_api_key_credentials_for_user(
+                project_id,
+                user_id,
+            )
+        for score_request in score_requests:
+            await langfuse_client.create_score(
+                api_key["publicKey"],
+                api_key["secretKey"],
+                score_request,
+            )
+            if score_writer is not None:
+                await score_writer.upsert_annotation_score(
+                    project_id,
+                    user_id,
+                    score_request,
+                )
+
+
+def _trace_scores_to_annotation_score_payload(
+    scores: list[dict[str, Any]],
+    score_config_ids: list[str],
+) -> dict[str, Any]:
+    allowed_config_ids = set(score_config_ids)
+    seen_config_ids: set[str] = set()
+    payload_scores: list[dict[str, Any]] = []
+    for score in scores:
+        config_id = str(score.get("configId") or score.get("config_id") or "").strip()
+        if not config_id or config_id not in allowed_config_ids:
+            continue
+        if config_id in seen_config_ids:
+            continue
+        seen_config_ids.add(config_id)
+        string_value = str(
+            score.get("stringValue")
+            or score.get("string_value")
+            or score.get("longStringValue")
+            or score.get("long_string_value")
+            or ""
+        )
+        payload_scores.append(
+            {
+                "configId": config_id,
+                "value": score.get("value"),
+                "stringValue": string_value,
+                "comment": score.get("comment") or "",
+            }
+        )
+    return {"scores": payload_scores}
+
+
 def _requires_annotation_score_clickhouse_upsert(score_request: dict[str, Any]) -> bool:
     return (
         score_request.get("source") == "ANNOTATION"
@@ -1987,6 +2075,11 @@ async def create_trace_annotation_task(
     payload: AnnotationTraceTaskPayload,
     current_user: CurrentUserContext = Depends(get_current_user_context),
     reader: LangfuseDatabaseReader = Depends(get_langfuse_db_reader),
+    trace_reader: LangfuseClickHouseReader = Depends(get_langfuse_clickhouse_reader),
+    langfuse_client: LangfuseAdminClient = Depends(get_langfuse_client),
+    score_writer: LangfuseClickHouseScoreWriter = Depends(
+        get_langfuse_clickhouse_score_writer
+    ),
 ) -> dict[str, Any]:
     task_payload: dict[str, Any] = {"traceIds": payload.trace_ids}
     if payload.queue_id:
@@ -2003,7 +2096,23 @@ async def create_trace_annotation_task(
         current_user.user_id,
         task_payload,
     )
-    return success({**result, "traceCount": len(payload.trace_ids)})
+    await _prefill_annotation_scores_from_trace_scores(
+        project_id=project_id,
+        queue_id=str(result.get("queueId") or ""),
+        created_items=result.get("createdItems") or [],
+        score_config_ids=result.get("scoreConfigIds") or [],
+        user_id=current_user.user_id,
+        reader=reader,
+        trace_reader=trace_reader,
+        langfuse_client=langfuse_client,
+        score_writer=score_writer,
+    )
+    public_result = {
+        key: value
+        for key, value in result.items()
+        if key not in {"createdItems", "scoreConfigIds"}
+    }
+    return success({**public_result, "traceCount": len(payload.trace_ids)})
 
 
 @router.post("/traces/dataset-items")

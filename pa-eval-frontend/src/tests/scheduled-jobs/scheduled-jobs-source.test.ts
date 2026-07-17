@@ -207,7 +207,11 @@ test('scheduled job evaluator score mapping defaults from evaluator output bindi
   assert.match(typesSource, /outputVariableMappings\?:/)
   assert.match(pageSource, /outputVariableMappings:/)
   assert.match(drawerSource, /evaluator\.outputVariableMappings/)
-  assert.match(drawerSource, /findScoreConfigForOutputMapping/)
+  assert.match(drawerSource, /评分指标绑定已在评估器配置中完成/)
+  assert.match(drawerSource, /未绑定评分指标/)
+  assert.match(drawerSource, /getBoundScoreMapping\(form\.scoreMapping\)/)
+  assert.doesNotMatch(drawerSource, /findScoreConfigForOutputMapping/)
+  assert.doesNotMatch(drawerSource, /选择评分指标/)
 })
 
 test('scheduled job drawer omits trace environment filtering and guards zero samples', () => {

@@ -3424,7 +3424,9 @@ class LangfuseDatabaseReader:
         ) as connection:
             async with connection.cursor() as cursor:
                 await self._get_project_for_user(cursor, project_id, user_id)
-                await self._get_annotation_queue_row(cursor, project_id, queue_id)
+                queue = await self._get_annotation_queue_row(
+                    cursor, project_id, queue_id
+                )
                 await cursor.execute(
                     """
                     SELECT id
@@ -3483,6 +3485,15 @@ class LangfuseDatabaseReader:
                         queue_id,
                         user_id,
                         [item_id],
+                    )
+                    await _copy_existing_annotation_scores_for_item(
+                        cursor,
+                        project_id=project_id,
+                        queue_id=queue_id,
+                        item_id=item_id,
+                        object_id=payload["objectId"],
+                        object_type=payload["objectType"],
+                        score_config_ids=queue.get("score_config_ids") or [],
                     )
 
         return await self.get_annotation_queue_item_for_user(
@@ -3677,7 +3688,10 @@ class LangfuseDatabaseReader:
                 )
                 queue_id = payload.get("queueId")
                 if queue_id:
-                    await self._get_annotation_queue_row(cursor, project_id, queue_id)
+                    queue = await self._get_annotation_queue_row(
+                        cursor, project_id, queue_id
+                    )
+                    score_config_ids = queue.get("score_config_ids") or []
                 else:
                     queue_name = payload.get("queueName") or "Trace 人工标注"
                     queue_id = await self._get_or_create_annotation_queue(
@@ -3687,6 +3701,10 @@ class LangfuseDatabaseReader:
                         score_config_ids,
                         user_id,
                     )
+                    queue = await self._get_annotation_queue_row(
+                        cursor, project_id, queue_id
+                    )
+                    score_config_ids = queue.get("score_config_ids") or []
                 if payload.get("assigneeIds"):
                     await self._replace_annotation_assignments(
                         cursor,
@@ -3705,6 +3723,7 @@ class LangfuseDatabaseReader:
                 created_count = 0
                 skipped_count = 0
                 created_item_ids: list[str] = []
+                created_items: list[dict[str, str]] = []
                 for trace_id in trace_ids:
                     await cursor.execute(
                         """
@@ -3758,7 +3777,17 @@ class LangfuseDatabaseReader:
                         },
                     )
                     created_item_ids.append(item_id)
+                    created_items.append({"itemId": item_id, "traceId": trace_id})
                     created_count += 1
+                    await _copy_existing_annotation_scores_for_item(
+                        cursor,
+                        project_id=project_id,
+                        queue_id=queue_id,
+                        item_id=item_id,
+                        object_id=trace_id,
+                        object_type="TRACE",
+                        score_config_ids=score_config_ids,
+                    )
 
                 await self._assign_annotation_queue_items(
                     cursor,
@@ -3778,11 +3807,13 @@ class LangfuseDatabaseReader:
                     {"project_id": project_id, "queue_id": queue_id},
                 )
 
-        return {
-            "queueId": queue_id,
-            "createdCount": created_count,
-            "skippedCount": skipped_count,
-        }
+                return {
+                    "queueId": queue_id,
+                    "createdCount": created_count,
+                    "skippedCount": skipped_count,
+                    "createdItems": created_items,
+                    "scoreConfigIds": score_config_ids,
+                }
 
     async def save_annotation_scores_for_user(
         self,
@@ -7255,6 +7286,138 @@ def _annotation_score_api_payload(
         if observation_id:
             payload["observationId"] = observation_id
     return payload
+
+
+async def _copy_existing_annotation_scores_for_item(
+    cursor: psycopg.AsyncCursor[dict[str, Any]],
+    *,
+    project_id: str,
+    queue_id: str,
+    item_id: str,
+    object_id: str,
+    object_type: str,
+    score_config_ids: list[str],
+) -> int:
+    if not score_config_ids:
+        return 0
+
+    await cursor.execute(
+        """
+        SELECT DISTINCT ON (s.config_id)
+            s.config_id,
+            s.name,
+            s.value,
+            s.data_type::text AS data_type,
+            s.string_value,
+            s.comment,
+            s.author_user_id,
+            s.trace_id,
+            s.observation_id
+        FROM scores s
+        WHERE s.project_id = %(project_id)s
+          AND s.source::text = 'ANNOTATION'
+          AND s.config_id = ANY(%(score_config_ids)s)
+          AND COALESCE(s.queue_id, '') <> %(queue_id)s
+          AND (
+            (
+              %(object_type)s = 'TRACE'
+              AND s.trace_id = %(object_id)s
+              AND s.observation_id IS NULL
+            )
+            OR (
+              %(object_type)s = 'OBSERVATION'
+              AND s.observation_id = %(object_id)s
+            )
+            OR (
+              %(object_type)s = 'SESSION'
+              AND s.trace_id = %(object_id)s
+            )
+          )
+        ORDER BY s.config_id, s.updated_at DESC, s.created_at DESC, s.id DESC
+        """,
+        {
+            "project_id": project_id,
+            "queue_id": queue_id,
+            "object_id": object_id,
+            "object_type": object_type,
+            "score_config_ids": score_config_ids,
+        },
+    )
+    rows = await cursor.fetchall()
+    copied_count = 0
+    for row in rows:
+        config_id = str(row.get("config_id") or "").strip()
+        if not config_id:
+            continue
+        trace_id = str(row.get("trace_id") or object_id)
+        observation_id = str(row.get("observation_id") or "")
+        session_id = object_id if object_type == "SESSION" else ""
+        score_id = _annotation_score_id(
+            project_id=project_id,
+            queue_id=queue_id,
+            item_id=item_id,
+            config_id=config_id,
+            trace_id=trace_id,
+            observation_id=observation_id,
+            session_id=session_id,
+        )
+        await cursor.execute(
+            """
+            INSERT INTO scores (
+                id,
+                timestamp,
+                project_id,
+                name,
+                value,
+                source,
+                author_user_id,
+                comment,
+                trace_id,
+                observation_id,
+                config_id,
+                string_value,
+                queue_id,
+                created_at,
+                updated_at,
+                data_type
+            )
+            VALUES (
+                %(id)s,
+                NOW(),
+                %(project_id)s,
+                %(name)s,
+                %(value)s,
+                'ANNOTATION'::"ScoreSource",
+                %(author_user_id)s,
+                %(comment)s,
+                %(trace_id)s,
+                %(observation_id)s,
+                %(config_id)s,
+                %(string_value)s,
+                %(queue_id)s,
+                NOW(),
+                NOW(),
+                %(data_type)s::"ScoreConfigDataType"
+            )
+            ON CONFLICT (id) DO NOTHING
+            """,
+            {
+                "id": score_id,
+                "project_id": project_id,
+                "name": row.get("name") or "",
+                "value": row.get("value"),
+                "author_user_id": row.get("author_user_id"),
+                "comment": row.get("comment"),
+                "trace_id": trace_id,
+                "observation_id": observation_id or None,
+                "config_id": config_id,
+                "string_value": row.get("string_value"),
+                "queue_id": queue_id,
+                "data_type": row.get("data_type") or "NUMERIC",
+            },
+        )
+        copied_count += 1
+    return copied_count
 
 
 def _annotation_score_id(
