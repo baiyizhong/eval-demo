@@ -133,7 +133,6 @@ export const scheduledJobMockTasks: ScheduledJobTask[] = [
       },
       traceFilter: {
         name: '前一日客服会话 Trace',
-        environments: ['production'],
         userId: '',
         sessionId: '',
         tags: ['customer-service'],
@@ -180,7 +179,6 @@ export const scheduledJobMockTasks: ScheduledJobTask[] = [
       },
       traceFilter: {
         name: '近 7 天投诉风险 Trace',
-        environments: ['production'],
         userId: '',
         sessionId: '',
         tags: ['complaint', 'risk'],

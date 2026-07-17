@@ -60,6 +60,8 @@ async def list_traces(
         alias="environments[]",
     ),
     statuses_bracket: list[str] | None = Query(default=None, alias="statuses[]"),
+    tags: list[str] | None = Query(default=None),
+    tags_bracket: list[str] | None = Query(default=None, alias="tags[]"),
     session_id: str | None = Query(default=None, alias="sessionId"),
     user_id: str | None = Query(default=None, alias="userId"),
     business_id: str | None = Query(default=None, alias="businessId"),
@@ -92,6 +94,7 @@ async def list_traces(
     project = await db_reader.get_project_for_user(project_id, current_user.user_id)
     resolved_statuses = _first_non_empty_list(statuses, statuses_bracket)
     resolved_environments = _first_non_empty_list(environments, environments_bracket)
+    resolved_tags = _first_non_empty_list(tags, tags_bracket)
     resolved_created_at_range = _first_non_empty_list(
         created_at_range,
         created_at_range_bracket,
@@ -127,6 +130,7 @@ async def list_traces(
             keyword=keyword,
             statuses=resolved_statuses,
             environments=resolved_environments,
+            tags=resolved_tags,
             session_id=session_id,
             user_id=user_id,
             business_id=business_id,

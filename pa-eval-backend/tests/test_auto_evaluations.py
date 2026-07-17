@@ -29,6 +29,7 @@ from app.auto_evaluations import (
     _sample_dataset_items,
     _delete_auto_evaluation_task,
     _to_report_badcase,
+    _auto_evaluation_score_api_payload,
     AutoEvaluationBadcaseConfig,
     CreateAutoEvaluationPayload,
     EvaluationReportFlowbackPayload,
@@ -117,6 +118,21 @@ class FakeLangfuseScoreClient:
     async def create_score(self, public_key: str, secret_key: str, payload: dict):
         self.created_scores.append((public_key, secret_key, payload))
         return {"id": payload["id"]}
+
+
+class FakeClickHouseScoreWriter:
+    def __init__(self) -> None:
+        self.upserted_scores = []
+
+    async def upsert_score(
+        self,
+        project_id: str,
+        user_id: str,
+        score_request: dict,
+        *,
+        source: str = "API",
+    ):
+        self.upserted_scores.append((project_id, user_id, score_request, source))
 
 
 @pytest.mark.anyio
@@ -838,6 +854,32 @@ def test_parse_workflow_result_keeps_text_outputs_as_string_scores() -> None:
     ]
 
 
+def test_auto_evaluation_score_payload_includes_score_config_id() -> None:
+    payload = _auto_evaluation_score_api_payload(
+        project_id="project-1",
+        task_id="task-1",
+        run_id="run-1",
+        score_name="回答质量",
+        evaluator_id="evaluator-1",
+        result={
+            "sample": {
+                "id": "sample-1",
+                "source_trace_id": "trace-1",
+                "source_observation_id": "obs-1",
+            },
+            "score": 0.82,
+            "passed": True,
+            "reason": "回答完整",
+        },
+        score_value=0.82,
+        score_passed=True,
+        score_config_id="score-config-quality",
+    )
+
+    assert payload is not None
+    assert payload["configId"] == "score-config-quality"
+
+
 def test_trace_time_range_condition_supports_auto_evaluation_quick_ranges() -> None:
     assert (
         _trace_time_range_condition("1d") == "AND t.timestamp >= now() - INTERVAL 1 DAY"
@@ -1188,6 +1230,62 @@ async def test_complete_auto_evaluation_success_syncs_scores_to_langfuse_api() -
         )
     ]
     assert langfuse_client.created_scores[0][2]["id"].startswith("pa-auto-score-")
+
+
+@pytest.mark.anyio
+async def test_complete_auto_evaluation_success_upserts_scores_to_clickhouse() -> None:
+    cursor = SequentialCursor(
+        rows_by_fetchone=[
+            {"create_date": None, "create_by": "creator@163.com"},
+            {"public_key": "pk-lf-project", "secret_key": "sk-lf-project"},
+        ]
+    )
+    langfuse_client = FakeLangfuseScoreClient()
+    score_writer = FakeClickHouseScoreWriter()
+    payload = CreateAutoEvaluationPayload.model_validate(
+        {
+            "name": "客服质检",
+            "scoreName": "quality",
+            "evaluatorId": "evaluator-1",
+        }
+    )
+
+    await _complete_auto_evaluation_success(
+        cursor,  # type: ignore[arg-type]
+        project_id="project-1",
+        task_id="paautoeval-1",
+        run_id="run-1",
+        payload=payload,
+        evaluator={"id": "evaluator-1", "variables": [], "config": {}},
+        data_source={"name": "trace-filter"},
+        results=[
+            {
+                "sample": {
+                    "id": "sample-1",
+                    "source_trace_id": "trace-1",
+                    "source_observation_id": "obs-1",
+                },
+                "score": 0.86,
+                "passed": True,
+                "reason": "回答完整",
+                "raw": {"data": {"workflow_run_id": "workflow-run-1"}},
+            }
+        ],
+        updated_by="admin@163.com",
+        langfuse_client=langfuse_client,  # type: ignore[arg-type]
+        score_writer=score_writer,  # type: ignore[arg-type]
+    )
+
+    assert score_writer.upserted_scores == [
+        (
+            "project-1",
+            "creator@163.com",
+            langfuse_client.created_scores[0][2],
+            "API",
+        )
+    ]
+    assert score_writer.upserted_scores[0][2]["traceId"] == "trace-1"
+    assert score_writer.upserted_scores[0][2]["observationId"] == "obs-1"
 
 
 @pytest.mark.anyio

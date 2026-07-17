@@ -131,7 +131,6 @@ def test_normalize_auto_evaluation_data_source_applies_dynamic_trace_window() ->
         "traceName": "客服 Trace",
         "userId": "user-1",
         "sessionId": "session-1",
-        "environments": ["production"],
         "tags": ["customer"],
         "createdAtRange": [
             "2026-07-08T00:00:00+08:00",

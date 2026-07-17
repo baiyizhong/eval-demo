@@ -203,16 +203,17 @@ test('scheduled job drawer implements required creation flow rules', () => {
   assert.match(drawerSource, /buildTraceWindowFromFrequency/)
 })
 
-test('scheduled job drawer uses environments for trace estimate and guards zero samples', () => {
-  assert.match(
-    drawerSource,
-    /const environmentOptions = \['default', 'production', 'staging', 'development'\]/
-  )
-  assert.match(drawerSource, /traceEnvironments/)
-  assert.match(drawerSource, /traceEnvironments:[\s\S]*\['default'\]/)
-  assert.match(drawerSource, /form\.traceEnvironments\[0\] \?\? 'default'/)
-  assert.match(drawerSource, /environments:\s*form\.traceEnvironments/)
-  assert.match(drawerSource, /form\.traceEnvironments/)
+test('scheduled job evaluator score mapping defaults from evaluator output bindings', () => {
+  assert.match(typesSource, /outputVariableMappings\?:/)
+  assert.match(pageSource, /outputVariableMappings:/)
+  assert.match(drawerSource, /evaluator\.outputVariableMappings/)
+  assert.match(drawerSource, /findScoreConfigForOutputMapping/)
+})
+
+test('scheduled job drawer omits trace environment filtering and guards zero samples', () => {
+  assert.doesNotMatch(drawerSource, /environmentOptions/)
+  assert.doesNotMatch(drawerSource, /traceEnvironments/)
+  assert.doesNotMatch(drawerSource, /environments:\s*form\./)
   assert.match(drawerSource, /当前筛选无样本/)
   assert.match(drawerSource, /继续保存/)
   assert.match(drawerSource, /await confirm\(/)
@@ -256,7 +257,7 @@ test('scheduled job drawer uses grouped basic cards and stacked auto evaluation 
 test('scheduled job drawer supports trace filter fields and schedule-aligned windows', () => {
   assert.match(drawerSource, /固定时间范围/)
   assert.match(drawerSource, /快捷时间范围/)
-  assert.match(drawerSource, /环境/)
+  assert.doesNotMatch(drawerSource, /<Field label='环境'>/)
   assert.match(drawerSource, /User ID/)
   assert.match(drawerSource, /Session ID/)
   assert.match(drawerSource, /Tags/)

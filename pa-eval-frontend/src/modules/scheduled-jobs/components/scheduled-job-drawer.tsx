@@ -89,7 +89,6 @@ type ScheduledJobForm = {
   datasetId: string
   traceTimeRange: string
   traceCreatedAtRange: [string, string]
-  traceEnvironments: string[]
   traceUserId: string
   traceSessionId: string
   traceTags: string
@@ -116,7 +115,6 @@ const traceQuickTimeRangeOptions = [
   { value: '3d', label: '近 3 天' },
   { value: '7d', label: '近 7 天' },
 ]
-const environmentOptions = ['default', 'production', 'staging', 'development']
 const defaultSampleMappingByVariable: Record<string, string> = {
   input: 'sample.input',
   output: 'sample.output',
@@ -172,7 +170,13 @@ function createDefaultScoreMapping(
 ) {
   return Object.fromEntries(
     getEvaluatorOutputVariables(evaluator).map((variable, index) => {
-      const scoreConfig = scoreConfigs[index] ?? scoreConfigs[0]
+      const outputMapping = evaluator.outputVariableMappings?.find(
+        (mapping) => mapping.variableName === variable
+      )
+      const scoreConfig =
+        findScoreConfigForOutputMapping(outputMapping, scoreConfigs) ??
+        scoreConfigs[index] ??
+        scoreConfigs[0]
       return [
         variable,
         {
@@ -181,6 +185,26 @@ function createDefaultScoreMapping(
         },
       ]
     })
+  )
+}
+
+function findScoreConfigForOutputMapping(
+  outputMapping:
+    | NonNullable<ScheduledJobEvaluator['outputVariableMappings']>[number]
+    | undefined,
+  scoreConfigs: ScoreConfigRecord[]
+) {
+  if (!outputMapping) {
+    return null
+  }
+
+  const scoreConfigId = outputMapping.scoreConfigId?.trim()
+  const scoreConfigName = outputMapping.scoreConfigName.trim()
+
+  return (
+    scoreConfigs.find((scoreConfig) => scoreConfig.id === scoreConfigId) ??
+    scoreConfigs.find((scoreConfig) => scoreConfig.name === scoreConfigName) ??
+    null
   )
 }
 
@@ -509,10 +533,6 @@ function getDefaultForm(
       task.dataSource.traceFilter.createdAtRange
         ? task.dataSource.traceFilter.createdAtRange
         : createTraceDateTimeRange('1d'),
-    traceEnvironments:
-      task?.dataSource.type === 'TRACE_FILTER'
-        ? task.dataSource.traceFilter.environments
-        : ['default'],
     traceUserId:
       task?.dataSource.type === 'TRACE_FILTER'
         ? task.dataSource.traceFilter.userId
@@ -567,7 +587,6 @@ function buildDataSource(
     traceWindow: buildTraceWindowFromFrequency(frequency, form),
     traceFilter: {
       name: '',
-      environments: form.traceEnvironments,
       userId: form.traceUserId,
       sessionId: form.traceSessionId,
       tags: parseCommaSeparatedValues(form.traceTags),
@@ -592,7 +611,6 @@ function buildTraceCountPayload(
     type: 'TRACE_FILTER',
     traceName: '',
     traceWindow,
-    environments: form.traceEnvironments,
     userId: form.traceUserId,
     sessionId: form.traceSessionId,
     tags: parseCommaSeparatedValues(form.traceTags),
@@ -743,7 +761,6 @@ export function ScheduledJobDrawer({
       form.dataSourceType,
       form.frequency,
       form.traceCreatedAtRange,
-      form.traceEnvironments,
       form.traceSessionId,
       form.traceTags,
       form.traceUserId,
@@ -1673,27 +1690,6 @@ function ConfigStep({
               )}
 
               <div className='grid gap-4 md:grid-cols-2'>
-                <Field label='环境'>
-                  <Select
-                    value={form.traceEnvironments[0] ?? 'default'}
-                    onValueChange={(value) =>
-                      updateForm({ traceEnvironments: [value] })
-                    }
-                  >
-                    <SelectTrigger className='w-full'>
-                      <SelectValue placeholder='选择环境' />
-                    </SelectTrigger>
-                    <SelectContent>
-                      <SelectGroup>
-                        {environmentOptions.map((environment) => (
-                          <SelectItem key={environment} value={environment}>
-                            {environment}
-                          </SelectItem>
-                        ))}
-                      </SelectGroup>
-                    </SelectContent>
-                  </Select>
-                </Field>
                 <Field label='User ID'>
                   <Input
                     value={form.traceUserId}

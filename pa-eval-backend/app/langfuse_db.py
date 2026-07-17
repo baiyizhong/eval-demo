@@ -6568,6 +6568,14 @@ class LangfuseDatabaseReader:
             boolean_value = _parse_boolean_score_value(value, string_value)
             if boolean_value is None:
                 return None, None
+            if config_payload.get("categories"):
+                categories = _normalize_boolean_score_categories(
+                    config_payload.get("categories")
+                )
+                category_value = 1.0 if boolean_value else 0.0
+                category = _find_score_category(categories, category_value, "")
+                if category is not None:
+                    return (float(category["value"]), str(category["label"]))
             return (1.0 if boolean_value else 0.0, str(boolean_value).lower())
         if data_type == "CATEGORICAL":
             categories = _normalize_score_categories(config_payload.get("categories"))

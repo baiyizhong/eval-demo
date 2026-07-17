@@ -1118,7 +1118,6 @@ def _normalize_auto_evaluation_data_source(
         ),
         "userId": filter_payload.get("userId") or "",
         "sessionId": filter_payload.get("sessionId") or "",
-        "environments": filter_payload.get("environments") or [],
         "tags": filter_payload.get("tags") or [],
         "createdAtRange": created_at_range,
     }

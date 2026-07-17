@@ -25,6 +25,7 @@ class LangfuseClickHouseReader:
         keyword: str | None = None,
         statuses: list[str] | None = None,
         environments: list[str] | None = None,
+        tags: list[str] | None = None,
         session_id: str | None = None,
         user_id: str | None = None,
         business_id: str | None = None,
@@ -61,6 +62,7 @@ class LangfuseClickHouseReader:
                 keyword=keyword,
                 statuses=statuses,
                 environments=environments,
+                tags=tags,
                 session_id=session_id,
                 user_id=user_id,
                 business_id=business_id,
@@ -108,6 +110,7 @@ class LangfuseClickHouseReader:
         keyword: str | None = None,
         statuses: list[str] | None = None,
         environments: list[str] | None = None,
+        tags: list[str] | None = None,
         session_id: str | None = None,
         user_id: str | None = None,
         business_id: str | None = None,
@@ -141,6 +144,7 @@ class LangfuseClickHouseReader:
                 keyword=keyword,
                 statuses=statuses,
                 environments=environments,
+                tags=tags,
                 session_id=session_id,
                 user_id=user_id,
                 business_id=business_id,
@@ -789,6 +793,21 @@ class LangfuseClickHouseScoreWriter:
         user_id: str,
         score_request: dict[str, Any],
     ) -> None:
+        await self.upsert_score(
+            project_id,
+            user_id,
+            score_request,
+            source="ANNOTATION",
+        )
+
+    async def upsert_score(
+        self,
+        project_id: str,
+        user_id: str,
+        score_request: dict[str, Any],
+        *,
+        source: str = "API",
+    ) -> None:
         now = _clickhouse_datetime_ms(datetime.now(UTC))
         record = {
             "id": score_request["id"],
@@ -801,7 +820,7 @@ class LangfuseClickHouseScoreWriter:
             "dataset_run_id": None,
             "name": score_request["name"],
             "value": float(score_request.get("value") or 0),
-            "source": "ANNOTATION",
+            "source": source,
             "comment": score_request.get("comment") or None,
             "metadata": _clickhouse_string_map(score_request.get("metadata")),
             "author_user_id": user_id,
@@ -969,6 +988,7 @@ def _matches_trace(
     keyword: str | None,
     statuses: list[str] | None,
     environments: list[str] | None,
+    tags: list[str] | None = None,
     session_id: str | None,
     user_id: str | None,
     business_id: str | None,
@@ -989,6 +1009,11 @@ def _matches_trace(
         return False
     if environments and row.get("environment") not in environments:
         return False
+    normalized_tags = _normalize_tags(tags)
+    if normalized_tags:
+        row_tags = set(_normalize_tags(row.get("tags")))
+        if not all(tag in row_tags for tag in normalized_tags):
+            return False
     if session_id and session_id not in (row.get("sessionId") or ""):
         return False
     if user_id and user_id not in (row.get("userId") or ""):
@@ -1042,6 +1067,12 @@ def _trace_business_id(row: dict[str, Any]) -> str:
 def _matches_score_queue_id(scores: list[dict[str, Any]], queue_id: str) -> bool:
     expected = queue_id.strip()
     return any(str(score.get("queueId") or "") == expected for score in scores)
+
+
+def _normalize_tags(tags: Any) -> list[str]:
+    if not isinstance(tags, list):
+        return []
+    return [str(tag).strip() for tag in tags if str(tag).strip()]
 
 
 def _matches_categorical_score(

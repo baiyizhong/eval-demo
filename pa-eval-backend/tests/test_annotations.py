@@ -1903,6 +1903,25 @@ def test_normalizes_boolean_annotation_score_values() -> None:
     assert normalize("BOOLEAN", None, "") == (None, None)
 
 
+def test_normalizes_boolean_annotation_score_with_configured_categories() -> None:
+    config = {
+        "data_type": "BOOLEAN",
+        "categories": [
+            {"label": "通过", "value": 1},
+            {"label": "不通过", "value": 0},
+        ],
+    }
+
+    assert LangfuseDatabaseReader._normalize_score_value(config, True, "") == (
+        1.0,
+        "通过",
+    )
+    assert LangfuseDatabaseReader._normalize_score_value(config, False, "") == (
+        0.0,
+        "不通过",
+    )
+
+
 def test_annotation_score_api_payload_keeps_boolean_string_value() -> None:
     payload = _annotation_score_api_payload(
         project_id="project-1",

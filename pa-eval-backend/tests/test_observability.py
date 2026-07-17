@@ -244,6 +244,23 @@ def test_lists_project_traces_accepts_quick_time_range() -> None:
     assert fake_trace.list_kwargs["time_range"] == "14d"
 
 
+def test_lists_project_traces_accepts_tags_from_frontend() -> None:
+    fake_db = FakeDatabaseReader()
+    fake_trace = FakeTraceReader()
+    override_readers(fake_db, fake_trace)
+
+    try:
+        response = TestClient(app).get(
+            "/api/projects/project-1/traces",
+            params={"tags": ["refund", "vip"]},
+        )
+    finally:
+        clear_overrides()
+
+    assert response.status_code == 200
+    assert fake_trace.list_kwargs["tags"] == ["refund", "vip"]
+
+
 def test_lists_project_traces_accepts_bracket_created_at_range_from_frontend() -> None:
     fake_db = FakeDatabaseReader()
     fake_trace = FakeTraceReader()
@@ -724,6 +741,52 @@ async def test_list_traces_includes_input_and_output_when_io_fields_requested(mo
     assert captured["payload_trace_ids"] == ["trace-1"]
     assert result["datas"][0]["input"] == '{\n  "question": "如何重置密码？"\n}'
     assert result["datas"][0]["output"] == '{\n  "answer": "请在账户设置中重置密码"\n}'
+
+
+@pytest.mark.anyio
+async def test_list_traces_filters_by_tags(monkeypatch) -> None:
+    reader = LangfuseClickHouseReader(Settings())
+
+    async def fake_fetch_trace_rows(*args, **kwargs):
+        return [
+            {
+                "traceId": "trace-1",
+                "projectId": "project-1",
+                "environment": "default",
+                "status": "success",
+                "latency": 120,
+                "createdAt": "2026-07-05 01:36:59.275",
+                "userId": "user-1",
+                "metadata": {},
+                "tags": ["refund", "vip"],
+                "scores": [],
+            },
+            {
+                "traceId": "trace-2",
+                "projectId": "project-1",
+                "environment": "default",
+                "status": "success",
+                "latency": 120,
+                "createdAt": "2026-07-05 01:37:59.275",
+                "userId": "user-2",
+                "metadata": {},
+                "tags": ["refund"],
+                "scores": [],
+            },
+        ]
+
+    monkeypatch.setattr(reader, "_fetch_trace_rows", fake_fetch_trace_rows)
+
+    result = await reader.list_traces(
+        "project-1",
+        page=1,
+        page_size=10,
+        tags=["refund", "vip"],
+        time_range=None,
+    )
+
+    assert result["total"] == 1
+    assert [row["traceId"] for row in result["datas"]] == ["trace-1"]
 
 
 @pytest.mark.anyio

@@ -320,7 +320,26 @@ function toScheduledJobEvaluator(
     outputVariables: Array.isArray(item.outputVariables)
       ? item.outputVariables.map((variable) => String(variable))
       : [],
+    outputVariableMappings: Array.isArray(item.outputVariableMappings)
+      ? item.outputVariableMappings
+          .map((mapping) => toScheduledJobOutputVariableMapping(mapping))
+          .filter((mapping) => mapping.variableName && mapping.scoreConfigName)
+      : [],
     updatedAt: String(item.updatedAt ?? ''),
+  }
+}
+
+function toScheduledJobOutputVariableMapping(item: unknown) {
+  const mapping =
+    item && typeof item === 'object' ? (item as Record<string, unknown>) : {}
+
+  return {
+    variableName: String(mapping.variableName ?? ''),
+    scoreConfigId:
+      mapping.scoreConfigId === undefined
+        ? undefined
+        : String(mapping.scoreConfigId),
+    scoreConfigName: String(mapping.scoreConfigName ?? ''),
   }
 }
 

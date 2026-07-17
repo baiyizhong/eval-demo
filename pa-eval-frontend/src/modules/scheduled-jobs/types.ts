@@ -61,7 +61,6 @@ export type ScheduledJobTraceWindow =
 
 export type ScheduledJobTraceFilter = {
   name: string
-  environments: string[]
   userId: string
   sessionId: string
   tags: string[]
@@ -90,6 +89,11 @@ export type ScheduledJobEvaluator = {
   description: string
   variables: string[]
   outputVariables?: string[]
+  outputVariableMappings?: {
+    variableName: string
+    scoreConfigId?: string
+    scoreConfigName: string
+  }[]
   updatedAt: string
 }
 

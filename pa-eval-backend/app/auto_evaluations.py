@@ -16,7 +16,10 @@ from pydantic import BaseModel, Field
 from app.auth_context import CurrentUserContext, get_current_user_context
 from app.config import Settings, get_settings
 from app.errors import BusinessError
-from app.langfuse_clickhouse import LangfuseClickHouseReader
+from app.langfuse_clickhouse import (
+    LangfuseClickHouseReader,
+    LangfuseClickHouseScoreWriter,
+)
 from app.langfuse_db import LangfuseDatabaseConfigError, PROJECT_ACCESS_EXISTS_SQL
 from app.langfuse_client import LangfuseAdminClient
 from app.response import success
@@ -2095,6 +2098,7 @@ async def _run_auto_evaluation_background(
                     results=results,
                     updated_by=updated_by,
                     langfuse_client=LangfuseAdminClient(settings),
+                    score_writer=LangfuseClickHouseScoreWriter(settings),
                     failed_count=failed_count,
                     error_message=error_message,
                 )
@@ -2126,6 +2130,7 @@ async def _complete_auto_evaluation_success(
     results: list[dict[str, Any]],
     updated_by: str,
     langfuse_client: LangfuseAdminClient | None = None,
+    score_writer: LangfuseClickHouseScoreWriter | None = None,
     failed_count: int = 0,
     error_message: str | None = None,
 ) -> None:
@@ -2338,6 +2343,8 @@ async def _complete_auto_evaluation_success(
             evaluator_id=str(evaluator.get("id") or ""),
             results=results,
             langfuse_client=langfuse_client,
+            score_writer=score_writer,
+            score_author_user_id=create_by,
         )
 
     await cursor.execute(
@@ -2406,6 +2413,8 @@ async def _sync_auto_evaluation_scores_to_langfuse(
     evaluator_id: str,
     results: list[dict[str, Any]],
     langfuse_client: LangfuseAdminClient,
+    score_writer: LangfuseClickHouseScoreWriter | None = None,
+    score_author_user_id: str = "",
 ) -> None:
     score_payloads = []
     for result in results:
@@ -2424,6 +2433,7 @@ async def _sync_auto_evaluation_scores_to_langfuse(
                         result=result,
                         score_value=float(score.get("value") or 0),
                         score_passed=bool(score.get("passed")),
+                        score_config_id=str(score.get("scoreConfigId") or ""),
                     )
                 )
         else:
@@ -2448,6 +2458,13 @@ async def _sync_auto_evaluation_scores_to_langfuse(
             api_key["secretKey"],
             score_payload,
         )
+        if score_writer is not None:
+            await score_writer.upsert_score(
+                project_id,
+                score_author_user_id,
+                score_payload,
+                source="API",
+            )
 
 
 async def _get_project_api_key_credentials(
@@ -2487,6 +2504,7 @@ def _auto_evaluation_score_api_payload(
     result: dict[str, Any],
     score_value: float | None = None,
     score_passed: bool | None = None,
+    score_config_id: str = "",
 ) -> dict[str, Any] | None:
     sample = result.get("sample") or {}
     trace_id = sample.get("source_trace_id") or ""
@@ -2521,6 +2539,8 @@ def _auto_evaluation_score_api_payload(
     }
     if observation_id:
         payload["observationId"] = observation_id
+    if score_config_id:
+        payload["configId"] = score_config_id
     return payload
 
 
