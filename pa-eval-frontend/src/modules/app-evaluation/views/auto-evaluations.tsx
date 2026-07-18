@@ -40,6 +40,11 @@ export function ProjectAutoEvaluations() {
     })
     await queryClient.invalidateQueries({
       predicate: (query) =>
+        query.queryKey[0] === 'project-auto-evaluation-summary' &&
+        query.queryKey.includes(projectId),
+    })
+    await queryClient.invalidateQueries({
+      predicate: (query) =>
         query.queryKey[0] === 'project-evaluation-reports' &&
         query.queryKey.includes(projectId),
     })
@@ -210,7 +215,7 @@ async function handleRerun(
   if (!confirmed) return
   await rerunProjectAutoEvaluationTask(api, projectId, task.id)
   await onCompleted()
-  toast.success('自动评测任务已重新运行')
+  toast.success('已创建新的自动评测任务并开始运行')
 }
 
 async function handleDelete(

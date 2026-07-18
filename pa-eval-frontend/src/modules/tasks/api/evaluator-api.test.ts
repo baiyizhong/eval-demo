@@ -109,10 +109,12 @@ test('buildCreateEvaluatorPayload maps workflow evaluator config', () => {
       outputVariableMappings: [
         {
           variableName: 'quality_score',
+          scoreConfigId: 'score-config-quality',
           scoreConfigName: '回答质量',
         },
         {
           variableName: 'risk_score',
+          scoreConfigId: 'score-config-risk',
           scoreConfigName: '风险评分',
         },
       ],
@@ -140,10 +142,12 @@ test('buildCreateEvaluatorPayload maps workflow evaluator config', () => {
       outputVariableMappings: [
         {
           variableName: 'quality_score',
+          scoreConfigId: 'score-config-quality',
           scoreConfigName: '回答质量',
         },
         {
           variableName: 'risk_score',
+          scoreConfigId: 'score-config-risk',
           scoreConfigName: '风险评分',
         },
       ],

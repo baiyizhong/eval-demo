@@ -53,6 +53,9 @@ class LangfuseClickHouseReader:
             end_time=end_time,
             environments=_normalize_environments(environments),
             session_id=session_id,
+            metadata_key=metadata_key,
+            metadata_value=metadata_value,
+            metadata_filters=metadata_filters,
         )
         filtered = [
             row
@@ -135,6 +138,9 @@ class LangfuseClickHouseReader:
             end_time=end_time,
             environments=_normalize_environments(environments),
             session_id=session_id,
+            metadata_key=metadata_key,
+            metadata_value=metadata_value,
+            metadata_filters=metadata_filters,
         )
         return sum(
             1
@@ -158,6 +164,41 @@ class LangfuseClickHouseReader:
                 numeric_score_filters=numeric_score_filters,
             )
         )
+
+    async def list_traces_by_ids(
+        self,
+        project_id: str,
+        trace_ids: list[str],
+        *,
+        fields: str | None = None,
+    ) -> list[dict[str, Any]]:
+        unique_trace_ids = list(
+            dict.fromkeys(str(trace_id) for trace_id in trace_ids if trace_id)
+        )
+        if not unique_trace_ids:
+            return []
+        include_io = _trace_fields_include(fields, "io")
+        include_metadata = _trace_fields_include(fields, "metadata")
+        rows = await self._fetch_trace_rows(project_id, trace_ids=unique_trace_ids)
+        if include_io:
+            payloads_by_trace = await self._fetch_trace_payloads(
+                project_id,
+                unique_trace_ids,
+            )
+            for row in rows:
+                payload = payloads_by_trace.get(str(row.get("traceId") or ""))
+                if payload:
+                    row.update(payload)
+        rows_by_trace_id = {str(row.get("traceId") or ""): row for row in rows}
+        return [
+            self._to_trace_row(
+                rows_by_trace_id[trace_id],
+                include_io=include_io,
+                include_metadata=include_metadata,
+            )
+            for trace_id in unique_trace_ids
+            if trace_id in rows_by_trace_id
+        ]
 
     async def get_trace_metrics(
         self,
@@ -421,14 +462,25 @@ class LangfuseClickHouseReader:
         self,
         project_id: str,
         *,
+        trace_ids: list[str] | None = None,
         start_time: datetime | None = None,
         end_time: datetime | None = None,
         environments: list[str] | None = None,
         session_id: str | None = None,
+        metadata_key: str | None = None,
+        metadata_value: str | None = None,
+        metadata_filters: list[dict[str, Any]] | None = None,
         include_io: bool = False,
     ) -> list[dict[str, Any]]:
         filters = ["t.project_id = {project_id:String}", "t.is_deleted = 0"]
         params: dict[str, Any] = {"project_id": project_id}
+        if trace_ids:
+            trace_id_placeholders = []
+            for index, trace_id in enumerate(trace_ids):
+                param_key = f"trace_id_{index}"
+                trace_id_placeholders.append(f"{{{param_key}:String}}")
+                params[param_key] = trace_id
+            filters.append(f"t.id IN ({', '.join(trace_id_placeholders)})")
         if start_time is not None:
             filters.append("t.timestamp >= {start_time:DateTime64(3)}")
             params["start_time"] = start_time
@@ -446,6 +498,13 @@ class LangfuseClickHouseReader:
         if session_id:
             filters.append("position(ifNull(t.session_id, ''), {session_id:String}) > 0")
             params["session_id"] = session_id
+        _append_metadata_where_filters(
+            filters,
+            params,
+            metadata_key=metadata_key,
+            metadata_value=metadata_value,
+            metadata_filters=metadata_filters,
+        )
 
         where_clause = "\n              AND ".join(filters)
         io_select = (
@@ -945,6 +1004,45 @@ def _score_summary(scores: list[dict[str, Any]]) -> str:
     return " / ".join(labels)
 
 
+def _append_metadata_where_filters(
+    filters: list[str],
+    params: dict[str, Any],
+    *,
+    metadata_key: str | None,
+    metadata_value: str | None,
+    metadata_filters: list[dict[str, Any]] | None = None,
+) -> None:
+    if metadata_key:
+        params["metadata_key"] = metadata_key
+        filters.append("mapContains(t.metadata, {metadata_key:String})")
+        if metadata_value:
+            params["metadata_value"] = metadata_value
+            filters.append(
+                "position(t.metadata[{metadata_key:String}], {metadata_value:String}) > 0"
+            )
+    for index, metadata_filter in enumerate(metadata_filters or []):
+        key = str(metadata_filter.get("key") or "").strip()
+        if not key:
+            continue
+        operator = str(metadata_filter.get("operator") or "contains")
+        value = str(metadata_filter.get("value") or "")
+        key_param = f"metadata_filter_key_{index}"
+        value_param = f"metadata_filter_value_{index}"
+        params[key_param] = key
+        filters.append(f"mapContains(t.metadata, {{{key_param}:String}})")
+        if operator == "exists":
+            continue
+        params[value_param] = value
+        if operator == "equals":
+            filters.append(
+                f"t.metadata[{{{key_param}:String}}] = {{{value_param}:String}}"
+            )
+        else:
+            filters.append(
+                f"position(t.metadata[{{{key_param}:String}}], {{{value_param}:String}}) > 0"
+            )
+
+
 def _format_score_value(value: Any) -> str:
     number = _numeric_or_none(value)
     if number is None:
@@ -1048,6 +1146,8 @@ def _matches_trace(
         value = str(metadata_filter.get("value") or "")
         if not isinstance(metadata, dict) or key not in metadata:
             return False
+        if operator == "exists":
+            continue
         actual = str(metadata.get(key) or "")
         if operator == "equals" and actual != value:
             return False

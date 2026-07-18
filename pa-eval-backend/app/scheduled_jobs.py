@@ -23,6 +23,7 @@ from app.auto_evaluations import (
     _resolve_auto_evaluation_samples,
     _resolve_report_template_snapshot,
     _run_auto_evaluation_background,
+    _validate_workflow_evaluator_ready,
 )
 from app.config import Settings, get_settings
 from app.errors import BusinessError
@@ -708,6 +709,7 @@ async def _trigger_scheduled_job(
                     job["evaluator_id"],
                     job["created_user_id"],
                 )
+                _validate_workflow_evaluator_ready(evaluator)
                 payload = _build_auto_evaluation_payload_from_job(
                     job,
                     auto_task_name,

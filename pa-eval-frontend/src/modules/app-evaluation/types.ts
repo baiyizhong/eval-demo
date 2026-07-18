@@ -1,3 +1,5 @@
+import type { TraceLogRow } from '@/modules/app-observability/types'
+
 export type DatasetType = 'evaluation' | 'badcase' | 'golden' | 'anomaly'
 
 export type DatasetTypeFilter = DatasetType | 'all'
@@ -497,6 +499,7 @@ export type MockAutoEvaluationEvaluator = AutoEvaluationEvaluatorSummary & {
   outputVariables?: string[]
   outputVariableMappings?: {
     variableName: string
+    scoreConfigId?: string
     scoreConfigName: string
   }[]
   description: string
@@ -579,20 +582,7 @@ export type EvaluationReportRecord = {
   errorMessage?: string
 }
 
-export type EvaluationReportBadcaseRecord = {
-  id: string
-  reportId: string
-  traceId: string
-  observationId: string
-  datasetItemId: string
-  scoreName: string
-  scoreValue: number
-  reason: string
-  scoreSummary: string
-  comment: string
-  sourceType: EvaluationReportSourceType
-  flowbackStatus: 'NONE' | 'FLOWED_BACK'
-}
+export type EvaluationReportBadcaseRecord = TraceLogRow
 
 export type EvaluationReportItemRecord = {
   id: string

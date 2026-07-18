@@ -1281,18 +1281,19 @@ function createDefaultScoreMapping(evaluator: MockAutoEvaluationEvaluator) {
 
 function getEvaluatorScoreMapping(evaluator: MockAutoEvaluationEvaluator) {
   const outputVariables = getEvaluatorOutputVariables(evaluator)
-  const scoreConfigNameByVariable = new Map(
+  const scoreMappingByVariable = new Map(
     (evaluator.outputVariableMappings ?? [])
       .filter((item) => item.variableName.trim())
-      .map((item) => [item.variableName, item.scoreConfigName.trim()])
+      .map((item) => [item.variableName, item])
   )
   return Object.fromEntries(
     outputVariables.map((variable) => {
-      const scoreConfigName = scoreConfigNameByVariable.get(variable) ?? ''
+      const mapping = scoreMappingByVariable.get(variable)
+      const scoreConfigName = mapping?.scoreConfigName.trim() ?? ''
       return [
         variable,
         {
-          scoreConfigId: scoreConfigName,
+          scoreConfigId: mapping?.scoreConfigId?.trim() || scoreConfigName,
           scoreConfigName,
         },
       ]

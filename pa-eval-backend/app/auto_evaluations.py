@@ -5,6 +5,7 @@ import math
 from datetime import datetime, timezone
 from typing import Any
 from uuid import uuid4
+from zoneinfo import ZoneInfo
 
 import httpx
 import psycopg
@@ -155,6 +156,32 @@ def _format_datetime(value: Any) -> str:
         formatted = value.isoformat(timespec="milliseconds")
         return formatted.replace("+00:00", "Z")
     return str(value)
+
+
+def _sample_trace_id(sample: dict[str, Any]) -> str:
+    trace = sample.get("trace") if isinstance(sample.get("trace"), dict) else {}
+    return _stringify_value(
+        sample.get("source_trace_id")
+        or sample.get("sourceTraceId")
+        or sample.get("trace_id")
+        or sample.get("traceId")
+        or trace.get("id")
+    )
+
+
+def _sample_observation_id(sample: dict[str, Any]) -> str:
+    observation = (
+        sample.get("observation")
+        if isinstance(sample.get("observation"), dict)
+        else {}
+    )
+    return _stringify_value(
+        sample.get("source_observation_id")
+        or sample.get("sourceObservationId")
+        or sample.get("observation_id")
+        or sample.get("observationId")
+        or observation.get("id")
+    )
 
 
 async def _connect(settings: Settings) -> psycopg.AsyncConnection:
@@ -573,7 +600,19 @@ def _created_at_range_value(value: Any, index: int) -> str:
     if not isinstance(value, list) or len(value) <= index:
         return ""
     item = value[index]
-    return item.strip() if isinstance(item, str) else ""
+    if not isinstance(item, str):
+        return ""
+    raw_value = item.strip()
+    if not raw_value:
+        return ""
+    try:
+        normalized = raw_value.replace("Z", "+00:00")
+        parsed = datetime.fromisoformat(normalized)
+    except ValueError:
+        return raw_value
+    if parsed.tzinfo is None:
+        parsed = parsed.replace(tzinfo=ZoneInfo("Asia/Shanghai"))
+    return parsed.astimezone(timezone.utc).isoformat().replace("+00:00", "Z")
 
 
 async def _query_clickhouse_json_each_row(
@@ -620,9 +659,9 @@ def _normalize_dataset_item_sample(item: dict[str, Any]) -> dict[str, Any]:
             input_payload.get("context", metadata.get("context", ""))
         ),
         "metadata": metadata,
-        "trace": {"id": _stringify_value(item.get("source_trace_id"))},
+        "trace": {"id": _sample_trace_id(item)},
         "observation": {
-            "id": _stringify_value(item.get("source_observation_id")),
+            "id": _sample_observation_id(item),
         },
         "datasetItem": item,
     }
@@ -806,11 +845,10 @@ async def _run_workflow_evaluator(
     settings: Settings,
     score_mapping: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
+    _validate_workflow_evaluator_ready(evaluator)
+
     config = evaluator.get("config") or {}
     endpoint_url = config.get("endpointUrl")
-    if not endpoint_url:
-        raise BusinessError(4002, "工作流评估器缺少工作流地址")
-
     provider = evaluator.get("provider")
     request_payload: dict[str, Any] = {"inputs": inputs}
     if provider == "DIFY":
@@ -821,20 +859,31 @@ async def _run_workflow_evaluator(
             }
         )
 
-    async with httpx.AsyncClient(timeout=settings.pa_eval_api_timeout) as client:
-        response = await client.post(
-            str(endpoint_url),
-            json=request_payload,
-            headers=_build_workflow_headers(evaluator),
-        )
+    try:
+        async with httpx.AsyncClient(timeout=settings.pa_eval_api_timeout) as client:
+            response = await client.post(
+                str(endpoint_url),
+                json=request_payload,
+                headers=_build_workflow_headers(evaluator),
+            )
+    except httpx.HTTPError as exc:
+        raise BusinessError(4003, "工作流调用失败：无法连接上游服务", 502) from exc
     if response.status_code >= 400:
-        raise BusinessError(4003, "工作流调用失败", 502)
+        raise BusinessError(4003, f"工作流调用失败：上游返回 {response.status_code}", 502)
 
     return _parse_workflow_result(
         evaluator,
         response.json(),
         score_mapping or evaluator.get("score_mapping"),
     )
+
+
+def _validate_workflow_evaluator_ready(evaluator: dict[str, Any]) -> None:
+    config = evaluator.get("config") if isinstance(evaluator.get("config"), dict) else {}
+    if not config.get("endpointUrl"):
+        raise BusinessError(4002, "工作流评估器缺少工作流地址")
+    if evaluator.get("provider") == "DIFY" and not config.get("authToken"):
+        raise BusinessError(4002, "Dify 评估器缺少工作流 API Key")
 
 
 def _build_workflow_headers(evaluator: dict[str, Any]) -> dict[str, str]:
@@ -866,7 +915,7 @@ def _parse_workflow_result(
     else:
         outputs = body
 
-    mapped_scores = _resolve_mapped_scores(evaluator, outputs, score_mapping)
+    mapped_scores = _resolve_mapped_scores(evaluator, outputs, score_mapping, body)
     primary_score = next(
         (score for score in mapped_scores if isinstance(score.get("value"), int | float)),
         None,
@@ -895,20 +944,19 @@ def _resolve_mapped_scores(
     evaluator: dict[str, Any],
     outputs: dict[str, Any],
     score_mapping: dict[str, Any] | None,
+    raw_body: dict[str, Any] | None = None,
 ) -> list[dict[str, Any]]:
     mapping = score_mapping if isinstance(score_mapping, dict) else {}
     if not mapping:
         return []
 
-    output_variables = evaluator.get("output_variables") or evaluator.get(
-        "outputVariables"
-    )
-    if not isinstance(output_variables, list) or not output_variables:
-        output_variables = list(mapping.keys())
+    output_variables = _workflow_output_variable_names(evaluator, mapping)
 
     scores: list[dict[str, Any]] = []
     for output_variable in output_variables:
-        key = str(output_variable)
+        key = str(output_variable).strip()
+        if not key:
+            continue
         if key not in mapping:
             continue
         raw_mapping = mapping.get(key)
@@ -920,7 +968,7 @@ def _resolve_mapped_scores(
             or key
         )
         score_config_id = mapping_item.get("scoreConfigId") or mapping_item.get("id")
-        raw_value = outputs.get(key)
+        raw_value = _workflow_output_value(evaluator, outputs, key, raw_body)
         numeric_value = _to_float_or_none(raw_value)
         score = {
             "outputVariable": key,
@@ -935,6 +983,93 @@ def _resolve_mapped_scores(
             score["passed"] = numeric_value >= 0.6
         scores.append(score)
     return scores
+
+
+def _workflow_output_variable_names(
+    evaluator: dict[str, Any],
+    score_mapping: dict[str, Any],
+) -> list[str]:
+    names: list[str] = []
+    for variable in _workflow_output_variable_candidates(evaluator):
+        name = _workflow_output_variable_name(variable)
+        if name and name not in names:
+            names.append(name)
+    for name in score_mapping.keys():
+        key = str(name).strip()
+        if key and key not in names:
+            names.append(key)
+    return names
+
+
+def _workflow_output_variable_candidates(evaluator: dict[str, Any]) -> list[Any]:
+    candidates = evaluator.get("output_variables") or evaluator.get("outputVariables")
+    if isinstance(candidates, list) and candidates:
+        return candidates
+
+    config = evaluator.get("config") if isinstance(evaluator.get("config"), dict) else {}
+    mappings = config.get("outputVariableMappings")
+    if isinstance(mappings, list):
+        return mappings
+    return []
+
+
+def _workflow_output_variable_name(variable: Any) -> str:
+    if isinstance(variable, dict):
+        return str(
+            variable.get("variableName")
+            or variable.get("name")
+            or variable.get("key")
+            or ""
+        ).strip()
+    return str(variable).strip()
+
+
+def _workflow_output_value(
+    evaluator: dict[str, Any],
+    outputs: dict[str, Any],
+    key: str,
+    raw_body: dict[str, Any] | None = None,
+) -> Any:
+    if not isinstance(outputs, dict):
+        return None
+    if key in outputs:
+        return outputs.get(key)
+
+    config = evaluator.get("config") if isinstance(evaluator.get("config"), dict) else {}
+    output_mapping = config.get("outputMapping")
+    if not isinstance(output_mapping, dict):
+        return None
+    mapped_path = output_mapping.get(key)
+    if not isinstance(mapped_path, str) or not mapped_path.strip():
+        return None
+    value = _value_from_simple_path(outputs, mapped_path)
+    if value is not None or raw_body is None:
+        return value
+    return _value_from_simple_path(raw_body, mapped_path)
+
+
+def _value_from_simple_path(source: Any, path: str) -> Any:
+    current = source
+    normalized_path = path.strip()
+    if normalized_path.startswith("$."):
+        normalized_path = normalized_path[2:]
+    elif normalized_path.startswith("$"):
+        normalized_path = normalized_path[1:]
+    normalized_path = normalized_path.strip(".")
+    if not normalized_path:
+        return current
+
+    for segment in normalized_path.split("."):
+        if isinstance(current, dict):
+            current = current.get(segment)
+        elif isinstance(current, list) and segment.isdigit():
+            index = int(segment)
+            current = current[index] if index < len(current) else None
+        else:
+            return None
+        if current is None:
+            return None
+    return current
 
 
 def _to_float_or_none(value: Any) -> float | None:
@@ -1468,6 +1603,7 @@ async def create_auto_evaluation(
                 payload.evaluator_id,
                 current_user.user_id,
             )
+            _validate_workflow_evaluator_ready(evaluator)
             data_source, samples = await _resolve_auto_evaluation_samples(
                 cursor,
                 project_id,
@@ -1611,6 +1747,7 @@ async def _resolve_auto_evaluation_samples(
             dataset_id,
         )
         samples = _sample_dataset_items(dataset_items, payload.sample_rate)
+        samples = _cap_samples_to_saved_count(samples, data_source_payload)
         if not samples:
             raise BusinessError(4006, "数据集没有可用样本")
 
@@ -1637,6 +1774,7 @@ async def _resolve_auto_evaluation_samples(
             )
             trace_samples = []
         samples = _sample_dataset_items(trace_samples, payload.sample_rate)
+        samples = _cap_samples_to_saved_count(samples, data_source_payload)
         if not samples:
             raise BusinessError(4007, "Trace 过滤没有可用样本")
 
@@ -1661,6 +1799,25 @@ async def _resolve_auto_evaluation_samples(
         }
 
     return data_source, samples
+
+
+def _cap_samples_to_saved_count(
+    samples: list[dict[str, Any]],
+    data_source_payload: dict[str, Any],
+) -> list[dict[str, Any]]:
+    if not _is_saved_auto_evaluation_data_source(data_source_payload):
+        return samples
+    sample_count = data_source_payload.get("sampleCount")
+    if not isinstance(sample_count, int) or sample_count < 1:
+        return samples
+    return samples[:sample_count]
+
+
+def _is_saved_auto_evaluation_data_source(data_source_payload: dict[str, Any]) -> bool:
+    return any(
+        key in data_source_payload
+        for key in ("matchedTraceCount", "totalItemCount", "datasetProjectId")
+    )
 
 
 async def _resolve_report_template_snapshot(
@@ -2162,6 +2319,10 @@ async def _complete_auto_evaluation_success(
     started_at = task_row.get("started_at") or now
     create_by = task_row.get("create_by") or updated_by
     report_id = _new_id("pareport")
+    results = [
+        _with_complete_workflow_output_scores(result, payload.score_mapping)
+        for result in results
+    ]
     input_mapping = _get_effective_input_mapping(
         evaluator,
         payload.variable_mapping,
@@ -2251,6 +2412,8 @@ async def _complete_auto_evaluation_success(
     )
     for index, result in enumerate(results):
         sample = result["sample"]
+        trace_id = _sample_trace_id(sample)
+        observation_id = _sample_observation_id(sample)
         result_type = report["itemResults"][index]
         result_scores = result.get("scores")
         if not isinstance(result_scores, list) or not result_scores:
@@ -2286,8 +2449,8 @@ async def _complete_auto_evaluation_success(
                     "project_id": project_id,
                     "report_id": report_id,
                     "source_item_id": sample["id"],
-                    "trace_id": sample.get("source_trace_id") or None,
-                    "observation_id": sample.get("source_observation_id") or None,
+                    "trace_id": trace_id or None,
+                    "observation_id": observation_id or None,
                     "input": Jsonb(sample.get("input") or {}),
                     "output": Jsonb(result["raw"]),
                     "expected_output": Jsonb(sample.get("expected_output") or {}),
@@ -2323,8 +2486,8 @@ async def _complete_auto_evaluation_success(
                     "id": _new_id("pabadcase"),
                     "project_id": project_id,
                     "report_id": report_id,
-                    "trace_id": sample.get("source_trace_id") or "",
-                    "observation_id": sample.get("source_observation_id") or "",
+                    "trace_id": trace_id,
+                    "observation_id": observation_id,
                     "dataset_item_id": sample["id"],
                     "score_name": payload.score_name,
                     "score_value": result["score"],
@@ -2404,7 +2567,108 @@ async def _complete_auto_evaluation_success(
             "update_by": updated_by,
             "update_date": now,
         },
+        )
+
+
+def _with_complete_workflow_output_scores(
+    result: dict[str, Any],
+    score_mapping: dict[str, Any] | None,
+) -> dict[str, Any]:
+    outputs = _workflow_outputs_from_raw(result.get("raw"))
+    if not outputs:
+        return result
+
+    existing_scores = result.get("scores")
+    mapping = score_mapping if isinstance(score_mapping, dict) else {}
+    scores = [
+        _mapped_workflow_score(score, mapping)
+        for score in existing_scores
+        if isinstance(score, dict)
+    ] if isinstance(existing_scores, list) else []
+    existing_output_variables = {
+        str(score.get("outputVariable") or score.get("name") or "").strip()
+        for score in scores
+        if isinstance(score, dict)
+    }
+    for key, raw_value in outputs.items():
+        output_variable = str(key).strip()
+        if not output_variable or output_variable in existing_output_variables:
+            continue
+        scores.append(
+            _workflow_output_score_from_value(
+                output_variable,
+                raw_value,
+                mapping.get(output_variable),
+            )
+        )
+        existing_output_variables.add(output_variable)
+
+    if not scores:
+        return result
+    return {**result, "scores": scores}
+
+
+def _mapped_workflow_score(
+    score: dict[str, Any],
+    score_mapping: dict[str, Any],
+) -> dict[str, Any]:
+    mapped_score = dict(score)
+    output_variable = str(
+        mapped_score.get("outputVariable") or mapped_score.get("name") or ""
+    ).strip()
+    raw_mapping = score_mapping.get(output_variable)
+    if not isinstance(raw_mapping, dict):
+        return mapped_score
+
+    mapped_name = raw_mapping.get("scoreConfigName") or raw_mapping.get("name")
+    if mapped_name:
+        mapped_score["name"] = str(mapped_name)
+    mapped_config_id = raw_mapping.get("scoreConfigId") or raw_mapping.get("id")
+    if mapped_config_id:
+        mapped_score["scoreConfigId"] = mapped_config_id
+    return mapped_score
+
+
+def _workflow_outputs_from_raw(raw: Any) -> dict[str, Any]:
+    if not isinstance(raw, dict):
+        return {}
+    data = raw.get("data")
+    if isinstance(data, dict) and isinstance(data.get("outputs"), dict):
+        return data["outputs"]
+    outputs = raw.get("outputs")
+    if isinstance(outputs, dict):
+        return outputs
+    if "data" in raw:
+        return {}
+    return raw
+
+
+def _workflow_output_score_from_value(
+    output_variable: str,
+    raw_value: Any,
+    raw_mapping: Any,
+) -> dict[str, Any]:
+    mapping_item = raw_mapping if isinstance(raw_mapping, dict) else {}
+    name = (
+        mapping_item.get("scoreConfigName")
+        or mapping_item.get("name")
+        or raw_mapping
+        or output_variable
     )
+    score_config_id = mapping_item.get("scoreConfigId") or mapping_item.get("id")
+    numeric_value = _to_float_or_none(raw_value)
+    score: dict[str, Any] = {
+        "outputVariable": output_variable,
+        "scoreConfigId": score_config_id,
+        "name": str(name),
+    }
+    if numeric_value is None:
+        score["stringValue"] = "" if raw_value is None else str(raw_value)
+        score["passed"] = True
+    else:
+        score["value"] = numeric_value
+        score["passed"] = numeric_value >= 0.6
+    return score
 
 
 async def _sync_auto_evaluation_scores_to_langfuse(
@@ -2434,12 +2698,13 @@ async def _sync_auto_evaluation_scores_to_langfuse(
                 if "value" not in score and "stringValue" not in score:
                     continue
                 score_config_id = str(score.get("scoreConfigId") or "")
+                output_score_name = str(score.get("name") or score_name)
                 score_payloads.append(
                     _auto_evaluation_score_api_payload(
                         project_id=project_id,
                         task_id=task_id,
                         run_id=run_id,
-                        score_name=str(score.get("name") or score_name),
+                        score_name=output_score_name,
                         evaluator_id=evaluator_id,
                         result=result,
                         score_value=score.get("value", score.get("stringValue")),
@@ -2447,7 +2712,8 @@ async def _sync_auto_evaluation_scores_to_langfuse(
                             bool(score.get("passed")) if "passed" in score else None
                         ),
                         score_config_id=score_config_id,
-                        score_config=score_configs_by_id.get(score_config_id),
+                        score_config=score_configs_by_id.get(score_config_id)
+                        or score_configs_by_id.get(output_score_name),
                     )
                 )
         else:
@@ -2520,6 +2786,9 @@ def _auto_evaluation_score_config_ids(results: list[dict[str, Any]]) -> list[str
             config_id = str(score.get("scoreConfigId") or "").strip()
             if config_id and config_id not in config_ids:
                 config_ids.append(config_id)
+            config_name = str(score.get("name") or "").strip()
+            if config_name and config_name not in config_ids:
+                config_ids.append(config_name)
     return config_ids
 
 
@@ -2539,12 +2808,19 @@ async def _get_score_configs_by_ids(
             categories
         FROM score_configs
         WHERE project_id = %(project_id)s
-          AND id = ANY(%(score_config_ids)s)
+          AND (
+            id = ANY(%(score_config_ids)s)
+            OR name = ANY(%(score_config_ids)s)
+          )
         """,
         {"project_id": project_id, "score_config_ids": score_config_ids},
     )
     rows = await cursor.fetchall()
-    return {str(row["id"]): row for row in rows}
+    configs: dict[str, dict[str, Any]] = {}
+    for row in rows:
+        configs[str(row["id"])] = row
+        configs[str(row["name"])] = row
+    return configs
 
 
 def _auto_evaluation_score_api_payload(
@@ -2561,11 +2837,11 @@ def _auto_evaluation_score_api_payload(
     score_config: dict[str, Any] | None = None,
 ) -> dict[str, Any] | None:
     sample = result.get("sample") or {}
-    trace_id = sample.get("source_trace_id") or ""
+    trace_id = _sample_trace_id(sample)
     if not trace_id:
         return None
 
-    observation_id = sample.get("source_observation_id") or ""
+    observation_id = _sample_observation_id(sample)
     sample_id = sample.get("id") or ""
     data_type = "NUMERIC"
     payload_value: float | int | str | None = (
@@ -2846,6 +3122,7 @@ async def rerun_auto_evaluation(
     settings: Settings = Depends(get_settings),
 ) -> dict[str, Any]:
     now = datetime.now(timezone.utc)
+    new_task_id = _new_id("paautoeval")
     run_id = _new_id("parun")
 
     async with await _connect(settings) as connection:
@@ -2872,10 +3149,12 @@ async def rerun_auto_evaluation(
                 task_row["evaluator_id"],
                 current_user.user_id,
             )
+            _validate_workflow_evaluator_ready(evaluator)
             payload = CreateAutoEvaluationPayload(
                 name=task_row["name"],
                 description=task_row["description"],
                 scoreName=task_row["score_name"],
+                scoreMapping=task_row.get("score_mapping") or {},
                 evaluatorId=task_row["evaluator_id"],
                 sampleRate=task_row["sample_rate"],
                 dataSource=task_row.get("data_source") or {"type": "TRACE_FILTER"},
@@ -2890,11 +3169,17 @@ async def rerun_auto_evaluation(
                 current_user.user_id,
                 settings,
             )
-            report_template_snapshot = await _resolve_report_template_snapshot(
-                cursor,
-                project_id=project_id,
-                template_id=payload.report_template_id,
+            report_template_snapshot = (
+                task_row.get("report_template_snapshot")
+                if isinstance(task_row.get("report_template_snapshot"), dict)
+                else None
             )
+            if report_template_snapshot is None:
+                report_template_snapshot = await _resolve_report_template_snapshot(
+                    cursor,
+                    project_id=project_id,
+                    template_id=payload.report_template_id,
+                )
             payload = payload.model_copy(
                 update={
                     "report_template_id": report_template_snapshot["id"],
@@ -2908,19 +3193,22 @@ async def rerun_auto_evaluation(
                 "failed": 0,
                 "cancelled": 0,
             }
-            await _insert_rerun_auto_evaluation(
+            await _insert_running_auto_evaluation(
                 cursor,
-                project_id=project_id,
-                task_id=task_id,
+                task_id=new_task_id,
                 run_id=run_id,
-                evaluator_id=task_row["evaluator_id"],
-                sample_rate=task_row["sample_rate"],
-                sample_count=len(samples),
-                execution_stats=execution_stats,
+                project_id=project_id,
+                name=payload.name,
+                description=payload.description,
+                score_name=payload.score_name,
+                score_mapping=payload.score_mapping,
+                evaluator=evaluator,
                 data_source=data_source,
+                sample_rate=payload.sample_rate,
+                sample_count=len(samples),
                 report_template_id=payload.report_template_id,
                 report_template_snapshot=report_template_snapshot,
-                updated_by=current_user.email,
+                create_by=current_user.email,
                 now=now,
             )
 
@@ -2928,7 +3216,7 @@ async def rerun_auto_evaluation(
         _run_auto_evaluation_background,
         settings,
         project_id,
-        task_id,
+        new_task_id,
         run_id,
         payload,
         evaluator,
@@ -2939,17 +3227,27 @@ async def rerun_auto_evaluation(
 
     return success(
         {
-            **_to_task(
-                {
-                    **task_row,
-                    "status": "RUNNING",
-                    "data_source": data_source,
-                    "execution_stats": execution_stats,
-                    "badcase_count": 0,
-                    "last_run_at": now,
-                    "update_date": now,
-                }
-            ),
+            "id": new_task_id,
+            "projectId": project_id,
+            "name": payload.name,
+            "description": payload.description,
+            "scoreName": payload.score_name,
+            "scoreMapping": payload.score_mapping,
+            "status": "RUNNING",
+            "evaluator": {
+                "id": evaluator["id"],
+                "name": evaluator["name"],
+                "type": evaluator["type"],
+                "version": f"v{evaluator['version']}",
+            },
+            "dataSource": data_source,
+            "sampleRate": payload.sample_rate,
+            "executionStats": execution_stats,
+            "badcaseCount": 0,
+            "createdBy": current_user.email,
+            "createdAt": _format_datetime(now),
+            "lastRunAt": _format_datetime(now),
+            "updatedAt": _format_datetime(now),
             "latestReport": None,
         }
     )
@@ -3190,60 +3488,80 @@ async def list_evaluation_report_badcases(
         async with connection.cursor() as cursor:
             await _ensure_project_access(cursor, project_id, current_user.user_id)
             await _ensure_report_exists(cursor, project_id, report_id)
-            like = f"%{keyword or ''}%"
-            await cursor.execute(
-                """
-                SELECT COUNT(*)::int AS total
-                FROM pa_evaluation_report_badcases
-                WHERE project_id = %(project_id)s
-                  AND report_id = %(report_id)s
-                  AND (
-                    %(keyword)s = ''
-                    OR trace_id ILIKE %(like)s
-                    OR observation_id ILIKE %(like)s
-                    OR comment ILIKE %(like)s
-                  )
-                """,
-                {
-                    "project_id": project_id,
-                    "report_id": report_id,
-                    "keyword": keyword or "",
-                    "like": like,
-                },
-            )
-            total = (await cursor.fetchone() or {}).get("total", 0)
             await cursor.execute(
                 """
                 SELECT
-                    b.*,
-                    ri.scores AS score_summary_scores
-                FROM pa_evaluation_report_badcases b
-                LEFT JOIN pa_evaluation_report_items ri
-                  ON ri.project_id = b.project_id
-                 AND ri.report_id = b.report_id
-                 AND ri.source_id = b.dataset_item_id
-                WHERE b.project_id = %(project_id)s
-                  AND b.report_id = %(report_id)s
-                  AND (
-                    %(keyword)s = ''
-                    OR b.trace_id ILIKE %(like)s
-                    OR b.observation_id ILIKE %(like)s
-                    OR b.comment ILIKE %(like)s
-                  )
-                ORDER BY b.id DESC
-                LIMIT %(limit)s OFFSET %(offset)s
+                    r.source_task_id,
+                    r.run_id,
+                    COALESCE(t.score_name, '') AS score_name,
+                    r.report_template_snapshot
+                FROM pa_evaluation_reports r
+                LEFT JOIN pa_auto_evaluation_tasks t
+                  ON t.project_id = r.project_id
+                 AND t.id = r.source_task_id
+                WHERE r.project_id = %(project_id)s
+                  AND r.id = %(report_id)s
+                LIMIT 1
                 """,
                 {
                     "project_id": project_id,
                     "report_id": report_id,
-                    "keyword": keyword or "",
-                    "like": like,
-                    "limit": page_size,
-                    "offset": (page - 1) * page_size,
                 },
             )
-            rows = await cursor.fetchall()
-    return success({"total": total, "datas": [_to_report_badcase(row) for row in rows]})
+            report_row = await cursor.fetchone()
+            source_task_id = (report_row or {}).get("source_task_id") or ""
+            run_id = (report_row or {}).get("run_id") or ""
+            score_name = (report_row or {}).get("score_name") or ""
+            report_template_snapshot = (
+                (report_row or {}).get("report_template_snapshot")
+                if isinstance((report_row or {}).get("report_template_snapshot"), dict)
+                else {}
+            )
+            await cursor.execute(
+                """
+                SELECT id, source_id, trace_id, observation_id, result_type,
+                       execution_status, dataset_flowback_status
+                FROM pa_evaluation_report_items
+                WHERE project_id = %(project_id)s
+                  AND report_id = %(report_id)s
+                """,
+                {
+                    "project_id": project_id,
+                    "report_id": report_id,
+                },
+            )
+            report_items = await cursor.fetchall()
+    if not source_task_id:
+        return success({"total": 0, "datas": []})
+
+    scores = await LangfuseClickHouseReader(settings).list_scores_by_queue(
+        project_id,
+        source_task_id,
+        run_id=run_id,
+    )
+    rows = _evaluation_report_items_from_scores(
+        report_id=report_id,
+        scores=scores,
+        report_items=report_items,
+    )
+    badcase_rows = [
+        row
+        for row in _filter_evaluation_report_score_items(rows, keyword or "")
+        if _evaluation_report_score_item_is_badcase(
+            row,
+            score_name=score_name,
+            report_template_snapshot=report_template_snapshot,
+        )
+    ]
+    trace_ids = _unique_report_trace_ids(badcase_rows)
+    start = (page - 1) * page_size
+    page_trace_ids = trace_ids[start : start + page_size]
+    traces = await LangfuseClickHouseReader(settings).list_traces_by_ids(
+        project_id,
+        page_trace_ids,
+        fields="io,metadata",
+    )
+    return success({"total": len(trace_ids), "datas": traces})
 
 
 @router.get("/evaluation-reports/{report_id}/flowbacks")
@@ -4147,6 +4465,40 @@ def _filter_evaluation_report_score_items(
             for score in row.get("scores") or []
         )
     ]
+
+
+def _evaluation_report_score_item_is_badcase(
+    row: dict[str, Any],
+    *,
+    score_name: str,
+    report_template_snapshot: dict[str, Any],
+) -> bool:
+    rule = report_template_snapshot.get("badcaseRule")
+    badcase_rule = rule if isinstance(rule, dict) else {}
+    mode = str(badcase_rule.get("mode") or "EVALUATOR_RESULT").upper()
+    if mode == "SCORE_THRESHOLD":
+        threshold = _to_float_or_none(badcase_rule.get("threshold"))
+        if threshold is None:
+            return False
+        operator = str(badcase_rule.get("operator") or "LTE")
+        for score in row.get("scores") or []:
+            if str(score.get("name") or "") != score_name:
+                continue
+            value = _to_float_or_none(score.get("value"))
+            if value is None:
+                continue
+            return _compare_score(value, operator, threshold)
+        return False
+    return row.get("resultType") == "badcase"
+
+
+def _unique_report_trace_ids(rows: list[dict[str, Any]]) -> list[str]:
+    trace_ids: list[str] = []
+    for row in rows:
+        trace_id = str(row.get("traceId") or "").strip()
+        if trace_id and trace_id not in trace_ids:
+            trace_ids.append(trace_id)
+    return trace_ids
 
 
 def _score_summary(scores: list[dict[str, Any]]) -> str:

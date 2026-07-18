@@ -11,6 +11,7 @@ from app.auto_evaluations import (
     _create_report_flowback,
     _apply_auto_evaluation_badcase_config,
     _count_trace_generation_samples,
+    _created_at_range_value,
     _ensure_report_exists,
     _get_path_value,
     _get_pa_evaluator,
@@ -22,6 +23,7 @@ from app.auto_evaluations import (
     _preview_report_flowback,
     _resolve_mapping_template,
     _resolve_auto_evaluation_samples,
+    _run_workflow_evaluator,
     _run_auto_evaluation_background,
     _trace_time_range_condition,
     _mark_auto_evaluation_failed,
@@ -29,7 +31,9 @@ from app.auto_evaluations import (
     _sample_dataset_items,
     _delete_auto_evaluation_task,
     _to_report_badcase,
+    _validate_workflow_evaluator_ready,
     _auto_evaluation_score_api_payload,
+    _evaluation_report_score_item_is_badcase,
     _sync_auto_evaluation_scores_to_langfuse,
     AutoEvaluationBadcaseConfig,
     CreateAutoEvaluationPayload,
@@ -113,6 +117,14 @@ class FakeConnection:
         return self._cursor
 
 
+class FakeBackgroundTasks:
+    def __init__(self) -> None:
+        self.tasks = []
+
+    def add_task(self, func, *args, **kwargs) -> None:
+        self.tasks.append((func, args, kwargs))
+
+
 class FakeLangfuseScoreClient:
     def __init__(self) -> None:
         self.created_scores = []
@@ -164,6 +176,65 @@ async def test_clickhouse_score_queue_query_filters_report_run(
         "queue_id": "task-1",
         "run_id": "run-2",
     }
+
+
+@pytest.mark.anyio
+async def test_clickhouse_trace_query_pushes_down_badcase_metadata_filter(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    reader = LangfuseClickHouseReader(auto_evaluations.Settings())
+    captured = {}
+
+    async def fake_query(query: str, params: dict):
+        captured["query"] = query
+        captured["params"] = params
+        return []
+
+    monkeypatch.setattr(reader, "_query_json_each_row", fake_query)
+
+    await reader.list_traces(
+        "project-1",
+        page=1,
+        page_size=10,
+        metadata_filters=[
+            {
+                "key": "businessId",
+                "operator": "equals",
+                "value": "biz-1",
+            }
+        ],
+    )
+
+    assert "t.metadata[{metadata_filter_key_0:String}]" in captured["query"]
+    assert "= {metadata_filter_value_0:String}" in captured["query"]
+    assert captured["params"]["metadata_filter_key_0"] == "businessId"
+    assert captured["params"]["metadata_filter_value_0"] == "biz-1"
+
+
+@pytest.mark.anyio
+async def test_clickhouse_trace_query_filters_by_trace_ids(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    reader = LangfuseClickHouseReader(auto_evaluations.Settings())
+    captured = {}
+
+    async def fake_query(query: str, params: dict):
+        captured.setdefault("queries", []).append(query)
+        captured.setdefault("params", []).append(params)
+        return []
+
+    monkeypatch.setattr(reader, "_query_json_each_row", fake_query)
+
+    rows = await reader.list_traces_by_ids(
+        "project-1",
+        ["trace-1", "trace-2", "trace-1"],
+        fields="io,metadata",
+    )
+
+    assert rows == []
+    assert "t.id IN ({trace_id_0:String}, {trace_id_1:String})" in captured["queries"][0]
+    assert captured["params"][0]["trace_id_0"] == "trace-1"
+    assert captured["params"][0]["trace_id_1"] == "trace-2"
 
 
 @pytest.mark.anyio
@@ -286,6 +357,128 @@ def test_list_auto_evaluations_accepts_status_filter(
     assert response.status_code == 200
     assert response.json()["code"] == 0
     assert cursor.executions[-1][1]["status"] == ["RUNNING", "FAILED"]
+
+
+@pytest.mark.anyio
+async def test_rerun_auto_evaluation_creates_new_task_id(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    old_task_id = "paautoeval_old"
+    new_task_id = "paautoeval_new"
+    new_run_id = "parun_new"
+    cursor = SequentialCursor(
+        rows_by_fetchone=[
+            {"id": "project-1", "name": "项目"},
+            {
+                "id": old_task_id,
+                "project_id": "project-1",
+                "name": "客服回复评测",
+                "description": "原任务配置",
+                "score_name": "quality",
+                "score_mapping": {"score": "quality"},
+                "status": "COMPLETED",
+                "evaluator_id": "evaluator-1",
+                "evaluator_name": "Dify 评估器",
+                "evaluator_type": "WORKFLOW",
+                "evaluator_version": "v3",
+                "data_source": {"type": "TRACE_FILTER", "sampleCount": 1},
+                "sample_rate": 100,
+                "execution_stats": {"completed": 1},
+                "badcase_count": 2,
+                "report_template_id": "template-1",
+                "report_template_snapshot": {
+                    "id": "template-1",
+                    "name": "模板",
+                    "badcaseRule": {
+                        "mode": "SCORE_THRESHOLD",
+                        "operator": "LTE",
+                        "threshold": 0.6,
+                    },
+                },
+                "create_by": "creator@example.com",
+                "create_date": None,
+                "last_run_at": None,
+                "update_date": None,
+            },
+            {
+                "id": "evaluator-1",
+                "name": "Dify 评估器",
+                "type": "WORKFLOW",
+                "provider": "DIFY",
+                "version": 3,
+                "variables": [],
+                "output_variables": [],
+                "config": {
+                    "endpointUrl": "https://example.com/workflow",
+                    "authToken": "secret",
+                },
+            },
+        ]
+    )
+    background_tasks = FakeBackgroundTasks()
+
+    async def fake_connect(settings):
+        return FakeConnection(cursor)
+
+    async def fake_resolve_samples(*args, **kwargs):
+        return {"type": "TRACE_FILTER", "sampleCount": 1}, [
+            {"source_trace_id": "trace-1", "input": {"input": "hello"}}
+        ]
+
+    async def fake_resolve_template_snapshot(*args, **kwargs):
+        return {
+            "id": "template-1",
+            "name": "模板",
+            "badcaseRule": {"mode": "SCORE_THRESHOLD"},
+        }
+
+    ids = iter([new_task_id, new_run_id])
+
+    monkeypatch.setattr(auto_evaluations, "_connect", fake_connect)
+    monkeypatch.setattr(
+        auto_evaluations,
+        "_resolve_auto_evaluation_samples",
+        fake_resolve_samples,
+    )
+    monkeypatch.setattr(
+        auto_evaluations,
+        "_resolve_report_template_snapshot",
+        fake_resolve_template_snapshot,
+    )
+    monkeypatch.setattr(auto_evaluations, "_new_id", lambda prefix: next(ids))
+
+    response = await auto_evaluations.rerun_auto_evaluation(
+        project_id="project-1",
+        task_id=old_task_id,
+        background_tasks=background_tasks,  # type: ignore[arg-type]
+        current_user=_override_current_user(),
+        settings=auto_evaluations.Settings(),
+    )
+
+    assert response["data"]["id"] == new_task_id
+    assert response["data"]["id"] != old_task_id
+    task_insert_sql, task_insert_params = next(
+        (sql, params)
+        for sql, params in cursor.executions
+        if "INSERT INTO pa_auto_evaluation_tasks" in sql
+    )
+    assert "UPDATE pa_auto_evaluation_tasks" not in task_insert_sql
+    assert task_insert_params["id"] == new_task_id
+    assert task_insert_params["create_by"] == "owner@example.com"
+    assert _jsonb_value(task_insert_params["score_mapping"]) == {"score": "quality"}
+    run_insert_params = next(
+        params
+        for sql, params in cursor.executions
+        if "INSERT INTO pa_auto_evaluation_runs" in sql
+    )
+    assert run_insert_params["task_id"] == new_task_id
+    background_task = background_tasks.tasks[0]
+    assert background_task[1][2] == new_task_id
+    assert background_task[1][3] == new_run_id
+    assert background_task[1][4].score_mapping == {"score": "quality"}
+    assert background_task[1][4].report_template_snapshot["badcaseRule"][
+        "threshold"
+    ] == 0.6
 
 
 @pytest.mark.anyio
@@ -524,6 +717,127 @@ async def test_resolve_auto_evaluation_samples_returns_business_error_when_trace
     assert exc.value.message == "Trace 过滤没有可用样本"
 
 
+@pytest.mark.anyio
+async def test_resolve_auto_evaluation_samples_caps_rerun_to_original_trace_sample_count(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    async def fake_list_trace_generation_samples(*args: object, **kwargs: object):
+        return [
+            {
+                "id": f"trace-sample-{index}",
+                "source_trace_id": f"trace-{index}",
+                "source_observation_id": f"obs-{index}",
+            }
+            for index in range(12)
+        ]
+
+    monkeypatch.setattr(
+        auto_evaluations,
+        "_list_trace_generation_samples",
+        fake_list_trace_generation_samples,
+    )
+    payload = CreateAutoEvaluationPayload.model_validate(
+        {
+            "name": "客服质检",
+            "scoreName": "quality",
+            "evaluatorId": "evaluator-1",
+            "sampleRate": 100,
+            "dataSource": {
+                "type": "TRACE_FILTER",
+                "sampleCount": 5,
+                "matchedTraceCount": 8,
+                "traceFilter": {
+                    "timeRange": "1d",
+                    "createdAtRange": [],
+                    "tags": [],
+                },
+            },
+        }
+    )
+
+    data_source, samples = await _resolve_auto_evaluation_samples(
+        FakeCursor(),  # type: ignore[arg-type]
+        "project-1",
+        payload,
+        "user-1",
+        object(),  # type: ignore[arg-type]
+    )
+
+    assert len(samples) == 5
+    assert [sample["id"] for sample in samples] == [
+        "trace-sample-0",
+        "trace-sample-1",
+        "trace-sample-2",
+        "trace-sample-3",
+        "trace-sample-4",
+    ]
+    assert data_source["sampleCount"] == 5
+    assert data_source["matchedTraceCount"] == 12
+
+
+@pytest.mark.anyio
+async def test_resolve_auto_evaluation_samples_caps_rerun_to_original_dataset_sample_count(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    async def fake_get_dataset_for_user(*args: object, **kwargs: object):
+        return {"id": "dataset-1", "name": "客服数据集", "project_id": "project-1"}
+
+    async def fake_list_active_dataset_items(*args: object, **kwargs: object):
+        return [
+            {
+                "id": f"dataset-item-{index}",
+                "input": {},
+                "expected_output": "",
+                "metadata": {},
+            }
+            for index in range(10)
+        ]
+
+    monkeypatch.setattr(
+        auto_evaluations,
+        "_get_dataset_for_user",
+        fake_get_dataset_for_user,
+    )
+    monkeypatch.setattr(
+        auto_evaluations,
+        "_list_active_dataset_items",
+        fake_list_active_dataset_items,
+    )
+    payload = CreateAutoEvaluationPayload.model_validate(
+        {
+            "name": "客服质检",
+            "scoreName": "quality",
+            "evaluatorId": "evaluator-1",
+            "sampleRate": 100,
+            "dataSource": {
+                "type": "DATASET",
+                "datasetId": "dataset-1",
+                "datasetProjectId": "project-1",
+                "sampleCount": 4,
+                "totalItemCount": 8,
+            },
+        }
+    )
+
+    data_source, samples = await _resolve_auto_evaluation_samples(
+        FakeCursor(),  # type: ignore[arg-type]
+        "project-1",
+        payload,
+        "user-1",
+        object(),  # type: ignore[arg-type]
+    )
+
+    assert len(samples) == 4
+    assert [sample["id"] for sample in samples] == [
+        "dataset-item-0",
+        "dataset-item-1",
+        "dataset-item-2",
+        "dataset-item-3",
+    ]
+    assert data_source["sampleCount"] == 4
+    assert data_source["totalItemCount"] == 10
+
+
 def test_normalize_dataset_item_sample_exposes_sample_fields() -> None:
     sample = _normalize_dataset_item_sample(
         {
@@ -726,8 +1040,23 @@ async def test_list_trace_generation_samples_queries_custom_created_at_range() -
 
     assert "t.timestamp >= %(created_at_from)s::timestamptz" in cursor.sql
     assert "t.timestamp <= %(created_at_to)s::timestamptz" in cursor.sql
-    assert cursor.params["created_at_from"] == "2026-07-05T00:00"
-    assert cursor.params["created_at_to"] == "2026-07-08T00:00"
+    assert cursor.params["created_at_from"] == "2026-07-04T16:00:00Z"
+    assert cursor.params["created_at_to"] == "2026-07-07T16:00:00Z"
+
+
+def test_created_at_range_value_treats_timezone_less_values_as_shanghai_time() -> None:
+    assert (
+        _created_at_range_value(["2026-07-17T19:00", "2026-07-17T20:00"], 0)
+        == "2026-07-17T11:00:00Z"
+    )
+    assert (
+        _created_at_range_value(["2026-07-17T19:00", "2026-07-17T20:00"], 1)
+        == "2026-07-17T12:00:00Z"
+    )
+    assert (
+        _created_at_range_value(["2026-07-17T11:00:00Z"], 0)
+        == "2026-07-17T11:00:00Z"
+    )
 
 
 def test_parse_workflow_result_supports_n8n_direct_response() -> None:
@@ -768,6 +1097,81 @@ def test_parse_workflow_result_derives_passed_when_dify_omits_passed() -> None:
     assert result["score"] == 0.7
     assert result["passed"] is True
     assert result["reason"] == "命中主要标准"
+
+
+def test_validate_workflow_evaluator_ready_requires_dify_api_key() -> None:
+    with pytest.raises(BusinessError) as exc:
+        _validate_workflow_evaluator_ready(
+            {
+                "provider": "DIFY",
+                "config": {
+                    "endpointUrl": "http://localhost/v1/workflows/run",
+                    "authType": "BEARER",
+                    "authToken": None,
+                },
+            }
+        )
+
+    assert exc.value.code == 4002
+    assert exc.value.message == "Dify 评估器缺少工作流 API Key"
+
+
+@pytest.mark.anyio
+async def test_run_workflow_evaluator_requires_dify_api_key() -> None:
+    with pytest.raises(BusinessError) as exc:
+        await _run_workflow_evaluator(
+            {
+                "provider": "DIFY",
+                "config": {
+                    "endpointUrl": "http://localhost/v1/workflows/run",
+                    "authType": "BEARER",
+                    "authToken": None,
+                },
+            },
+            {"input": "用户问题", "output": "模型回答"},
+            auto_evaluations.Settings(),
+        )
+
+    assert exc.value.code == 4002
+    assert exc.value.message == "Dify 评估器缺少工作流 API Key"
+
+
+@pytest.mark.anyio
+async def test_run_workflow_evaluator_reports_upstream_status(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    class FakeAsyncClient:
+        def __init__(self, *args: object, **kwargs: object) -> None:
+            pass
+
+        async def __aenter__(self) -> "FakeAsyncClient":
+            return self
+
+        async def __aexit__(self, *args: object) -> None:
+            return None
+
+        async def post(self, *args: object, **kwargs: object) -> httpx.Response:
+            request = httpx.Request("POST", "http://workflow.local/run")
+            return httpx.Response(401, request=request, text="unauthorized")
+
+    monkeypatch.setattr(auto_evaluations.httpx, "AsyncClient", FakeAsyncClient)
+
+    with pytest.raises(BusinessError) as exc:
+        await _run_workflow_evaluator(
+            {
+                "provider": "DIFY",
+                "config": {
+                    "endpointUrl": "http://workflow.local/run",
+                    "authType": "BEARER",
+                    "authToken": "token",
+                },
+            },
+            {"input": "用户问题", "output": "模型回答"},
+            auto_evaluations.Settings(),
+        )
+
+    assert exc.value.code == 4003
+    assert exc.value.message == "工作流调用失败：上游返回 401"
 
 
 def test_parse_workflow_result_maps_dify_output_variables_to_scores() -> None:
@@ -854,6 +1258,116 @@ def test_parse_workflow_result_keeps_text_outputs_as_string_scores() -> None:
             "passed": True,
         },
     ]
+
+
+def test_parse_workflow_result_uses_score_mapping_when_output_variables_missing() -> None:
+    result = _parse_workflow_result(
+        {"provider": "DIFY"},
+        {
+            "data": {
+                "outputs": {
+                    "quality_score": 0.91,
+                    "risk_reason": "无明显风险",
+                }
+            }
+        },
+        {
+            "quality_score": {
+                "scoreConfigId": "score-config-quality",
+                "scoreConfigName": "回答质量",
+            },
+            "risk_reason": {
+                "scoreConfigId": "score-config-risk-reason",
+                "scoreConfigName": "风险说明",
+            },
+        },
+    )
+
+    assert result["score"] == 0.91
+    assert result["scores"] == [
+        {
+            "outputVariable": "quality_score",
+            "scoreConfigId": "score-config-quality",
+            "name": "回答质量",
+            "value": 0.91,
+            "passed": True,
+        },
+        {
+            "outputVariable": "risk_reason",
+            "scoreConfigId": "score-config-risk-reason",
+            "name": "风险说明",
+            "stringValue": "无明显风险",
+            "passed": True,
+        },
+    ]
+
+
+def test_parse_workflow_result_accepts_object_output_variables() -> None:
+    result = _parse_workflow_result(
+        {
+            "provider": "DIFY",
+            "outputVariables": [
+                {"variableName": "quality_score"},
+                {"variableName": "risk_score"},
+            ],
+        },
+        {
+            "data": {
+                "outputs": {
+                    "quality_score": 0.87,
+                    "risk_score": 0.34,
+                }
+            }
+        },
+        {
+            "quality_score": {
+                "scoreConfigId": "score-config-quality",
+                "scoreConfigName": "回答质量",
+            },
+            "risk_score": {
+                "scoreConfigId": "score-config-risk",
+                "scoreConfigName": "风险分",
+            },
+        },
+    )
+
+    assert [score["outputVariable"] for score in result["scores"]] == [
+        "quality_score",
+        "risk_score",
+    ]
+    assert [score["value"] for score in result["scores"]] == [0.87, 0.34]
+
+
+def test_parse_workflow_result_reads_output_mapping_from_raw_body() -> None:
+    result = _parse_workflow_result(
+        {
+            "provider": "DIFY",
+            "output_variables": ["quality_score"],
+            "config": {
+                "outputMapping": {
+                    "quality_score": "$.data.outputs.nested.quality",
+                }
+            },
+        },
+        {
+            "data": {
+                "outputs": {
+                    "nested": {
+                        "quality": 0.93,
+                    },
+                }
+            }
+        },
+        {
+            "quality_score": {
+                "scoreConfigId": "score-config-quality",
+                "scoreConfigName": "回答质量",
+            },
+        },
+    )
+
+    assert result["score"] == 0.93
+    assert result["scores"][0]["value"] == 0.93
 
 
 def test_auto_evaluation_score_payload_includes_score_config_id() -> None:
@@ -1047,6 +1561,57 @@ async def test_sync_auto_evaluation_scores_uses_bound_score_config_data_types() 
     assert score_writer.upserted_scores[1][2] == payloads[1]
 
 
+@pytest.mark.anyio
+async def test_sync_auto_evaluation_scores_resolves_score_config_by_name() -> None:
+    cursor = SequentialCursor(
+        rows_by_fetchall=[
+            [
+                {
+                    "id": "score-config-text",
+                    "name": "评审说明",
+                    "data_type": "TEXT",
+                    "min_value": None,
+                    "max_value": None,
+                    "categories": None,
+                },
+            ]
+        ],
+        rows_by_fetchone=[
+            {"public_key": "pk-lf-project", "secret_key": "sk-lf-project"},
+        ],
+    )
+    langfuse_client = FakeLangfuseScoreClient()
+
+    await _sync_auto_evaluation_scores_to_langfuse(
+        cursor,  # type: ignore[arg-type]
+        project_id="project-1",
+        task_id="task-1",
+        run_id="run-1",
+        score_name="quality",
+        evaluator_id="evaluator-1",
+        results=[
+            {
+                "sample": {"id": "sample-1", "source_trace_id": "trace-1"},
+                "score": 0.0,
+                "scores": [
+                    {
+                        "name": "评审说明",
+                        "scoreConfigId": "评审说明",
+                        "stringValue": "回答引用来源不足",
+                        "passed": True,
+                    },
+                ],
+            }
+        ],
+        langfuse_client=langfuse_client,  # type: ignore[arg-type]
+    )
+
+    payload = langfuse_client.created_scores[0][2]
+    assert payload["configId"] == "score-config-text"
+    assert payload["dataType"] == "TEXT"
+    assert payload["stringValue"] == "回答引用来源不足"
+
+
 def test_trace_time_range_condition_supports_auto_evaluation_quick_ranges() -> None:
     assert (
         _trace_time_range_condition("1d") == "AND t.timestamp >= now() - INTERVAL 1 DAY"
@@ -1162,6 +1727,38 @@ def test_apply_auto_evaluation_badcase_config_overrides_template_threshold() -> 
     }
 
 
+def test_evaluation_report_score_item_is_badcase_uses_score_threshold_rule() -> None:
+    row = {
+        "resultType": "normal",
+        "scores": [
+            {
+                "name": "quality",
+                "value": 0.5,
+            },
+        ],
+    }
+
+    assert _evaluation_report_score_item_is_badcase(
+        row,
+        score_name="quality",
+        report_template_snapshot={
+            "badcaseRule": {
+                "mode": "SCORE_THRESHOLD",
+                "operator": "LTE",
+                "threshold": 0.6,
+            }
+        },
+    )
+
+
+def test_evaluation_report_score_item_is_badcase_falls_back_to_result_type() -> None:
+    assert _evaluation_report_score_item_is_badcase(
+        {"resultType": "badcase", "scores": []},
+        score_name="quality",
+        report_template_snapshot={"badcaseRule": {"mode": "EVALUATOR_RESULT"}},
+    )
+
+
 @pytest.mark.anyio
 async def test_complete_auto_evaluation_success_persists_report_template_snapshot() -> (
     None
@@ -1214,7 +1811,9 @@ async def test_complete_auto_evaluation_success_persists_report_template_snapsho
     )
 
     report_sql, report_params = cursor.executions[1]
-    badcase_sql, badcase_params = cursor.executions[3]
+    badcase_sql, badcase_params = next(
+        (execution for execution in cursor.executions if "pa_evaluation_report_badcases" in execution[0])
+    )
     assert "report_template_id" in report_sql
     assert "report_template_snapshot" in report_sql
     assert report_params["report_template_id"] == "template-1"
@@ -1223,6 +1822,121 @@ async def test_complete_auto_evaluation_success_persists_report_template_snapsho
     assert _jsonb_value(report_params["recommendations"]) == []
     assert "INSERT INTO pa_evaluation_report_badcases" in badcase_sql
     assert badcase_params["score_value"] == 0.5
+
+
+@pytest.mark.anyio
+async def test_complete_auto_evaluation_success_does_not_mark_trace_metadata() -> None:
+    cursor = FakeCursor(
+        {
+            "create_date": None,
+            "create_by": "creator@163.com",
+            "metadata": {"existing": "value"},
+        }
+    )
+    payload = CreateAutoEvaluationPayload.model_validate(
+        {
+            "name": "客服质检",
+            "scoreName": "quality",
+            "evaluatorId": "evaluator-1",
+            "dataSource": {"type": "DATASET", "datasetId": "dataset-1"},
+            "reportTemplateSnapshot": {
+                "badcaseRule": {
+                    "mode": "SCORE_THRESHOLD",
+                    "operator": "LTE",
+                    "threshold": 0.6,
+                },
+                "sections": {"badcases": True},
+            },
+        }
+    )
+
+    await _complete_auto_evaluation_success(
+        cursor,  # type: ignore[arg-type]
+        project_id="project-1",
+        task_id="task-1",
+        run_id="run-1",
+        payload=payload,
+        evaluator={"id": "evaluator-1", "variables": [], "config": {}},
+        data_source={"name": "baiyizhong-dataset"},
+        results=[
+            {
+                "sample": {
+                    "id": "item-1",
+                    "source_trace_id": "trace-1",
+                    "source_observation_id": "obs-1",
+                },
+                "score": 0.5,
+                "passed": True,
+                "reason": "低于模板阈值",
+                "raw": {"data": {"workflow_run_id": "run-1"}},
+            }
+        ],
+        updated_by="admin@163.com",
+    )
+
+    assert not any("UPDATE traces" in sql for sql, _ in cursor.executions)
+
+
+@pytest.mark.anyio
+async def test_complete_auto_evaluation_success_accepts_camelcase_trace_sample_fields() -> (
+    None
+):
+    cursor = FakeCursor(
+        {
+            "create_date": None,
+            "create_by": "creator@163.com",
+            "metadata": {"existing": "value"},
+        }
+    )
+    payload = CreateAutoEvaluationPayload.model_validate(
+        {
+            "name": "客服质检",
+            "scoreName": "quality",
+            "evaluatorId": "evaluator-1",
+            "dataSource": {"type": "TRACE_FILTER"},
+            "reportTemplateSnapshot": {
+                "badcaseRule": {
+                    "mode": "SCORE_THRESHOLD",
+                    "operator": "LTE",
+                    "threshold": 0.6,
+                },
+                "sections": {"badcases": True},
+            },
+        }
+    )
+
+    await _complete_auto_evaluation_success(
+        cursor,  # type: ignore[arg-type]
+        project_id="project-1",
+        task_id="task-1",
+        run_id="run-1",
+        payload=payload,
+        evaluator={"id": "evaluator-1", "variables": [], "config": {}},
+        data_source={"name": "trace-filter"},
+        results=[
+            {
+                "sample": {
+                    "id": "obs-1",
+                    "traceId": "trace-1",
+                    "observationId": "obs-1",
+                },
+                "score": 0.5,
+                "passed": True,
+                "reason": "低于模板阈值",
+                "raw": {"data": {"workflow_run_id": "run-1"}},
+            }
+        ],
+        updated_by="admin@163.com",
+    )
+
+    item_insert = next(
+        params
+        for sql, params in cursor.executions
+        if "INSERT INTO pa_evaluation_report_items" in sql
+    )
+    assert item_insert["trace_id"] == "trace-1"
+    assert item_insert["observation_id"] == "obs-1"
+    assert not any("UPDATE traces" in sql for sql, _ in cursor.executions)
 
 
 def test_report_badcase_exposes_score_summary_json_from_other_scores() -> None:
@@ -1453,6 +2167,196 @@ async def test_complete_auto_evaluation_success_upserts_scores_to_clickhouse() -
     ]
     assert score_writer.upserted_scores[0][2]["traceId"] == "trace-1"
     assert score_writer.upserted_scores[0][2]["observationId"] == "obs-1"
+
+
+@pytest.mark.anyio
+async def test_complete_auto_evaluation_success_expands_raw_outputs_to_item_scores_and_clickhouse() -> None:
+    cursor = SequentialCursor(
+        rows_by_fetchone=[
+            {"create_date": None, "create_by": "creator@163.com"},
+            {"public_key": "pk-lf-project", "secret_key": "sk-lf-project"},
+        ]
+    )
+    langfuse_client = FakeLangfuseScoreClient()
+    score_writer = FakeClickHouseScoreWriter()
+    payload = CreateAutoEvaluationPayload.model_validate(
+        {
+            "name": "客服质检",
+            "scoreName": "score",
+            "scoreMapping": {
+                "score": {
+                    "scoreConfigId": "score-config-score",
+                    "scoreConfigName": "score",
+                },
+                "passed": {
+                    "scoreConfigId": "score-config-passed",
+                    "scoreConfigName": "passed",
+                },
+                "reason": {
+                    "scoreConfigId": "score-config-reason",
+                    "scoreConfigName": "reason",
+                },
+                "risk_label": {
+                    "scoreConfigId": "score-config-risk",
+                    "scoreConfigName": "risk_label",
+                },
+            },
+            "evaluatorId": "evaluator-1",
+        }
+    )
+
+    await _complete_auto_evaluation_success(
+        cursor,  # type: ignore[arg-type]
+        project_id="project-1",
+        task_id="paautoeval-1",
+        run_id="run-1",
+        payload=payload,
+        evaluator={"id": "evaluator-1", "variables": [], "config": {}},
+        data_source={"name": "trace-filter"},
+        results=[
+            {
+                "sample": {
+                    "id": "sample-1",
+                    "source_trace_id": "trace-1",
+                    "source_observation_id": "obs-1",
+                },
+                "score": 0.86,
+                "passed": True,
+                "reason": "回答完整",
+                "scores": [
+                    {
+                        "outputVariable": "score",
+                        "scoreConfigId": "score-config-score",
+                        "name": "score",
+                        "value": 0.86,
+                        "passed": True,
+                    }
+                ],
+                "raw": {
+                    "data": {
+                        "outputs": {
+                            "score": 0.86,
+                            "passed": True,
+                            "reason": "回答完整",
+                            "risk_label": "low",
+                        }
+                    }
+                },
+            }
+        ],
+        updated_by="admin@163.com",
+        langfuse_client=langfuse_client,  # type: ignore[arg-type]
+        score_writer=score_writer,  # type: ignore[arg-type]
+    )
+
+    item_insert = next(
+        params
+        for sql, params in cursor.executions
+        if "INSERT INTO pa_evaluation_report_items" in sql
+    )
+    item_scores = _jsonb_value(item_insert["scores"])
+    assert [score["outputVariable"] for score in item_scores] == [
+        "score",
+        "passed",
+        "reason",
+        "risk_label",
+    ]
+    assert [score["name"] for score in item_scores] == [
+        "score",
+        "passed",
+        "reason",
+        "risk_label",
+    ]
+    assert len(score_writer.upserted_scores) == 4
+    assert [item[2]["name"] for item in score_writer.upserted_scores] == [
+        "score",
+        "passed",
+        "reason",
+        "risk_label",
+    ]
+
+
+@pytest.mark.anyio
+async def test_complete_auto_evaluation_success_maps_output_variables_to_bound_score_names() -> None:
+    cursor = SequentialCursor(
+        rows_by_fetchone=[
+            {"create_date": None, "create_by": "creator@163.com"},
+            {"public_key": "pk-lf-project", "secret_key": "sk-lf-project"},
+        ]
+    )
+    langfuse_client = FakeLangfuseScoreClient()
+    score_writer = FakeClickHouseScoreWriter()
+    payload = CreateAutoEvaluationPayload.model_validate(
+        {
+            "name": "客服质检",
+            "scoreName": "回答质量",
+            "scoreMapping": {
+                "quality_score": {
+                    "scoreConfigId": "score-config-quality",
+                    "scoreConfigName": "回答质量",
+                },
+                "risk_label": {
+                    "scoreConfigId": "score-config-risk",
+                    "scoreConfigName": "风险等级",
+                },
+            },
+            "evaluatorId": "evaluator-1",
+        }
+    )
+
+    await _complete_auto_evaluation_success(
+        cursor,  # type: ignore[arg-type]
+        project_id="project-1",
+        task_id="paautoeval-1",
+        run_id="run-1",
+        payload=payload,
+        evaluator={"id": "evaluator-1", "variables": [], "config": {}},
+        data_source={"name": "trace-filter"},
+        results=[
+            {
+                "sample": {
+                    "id": "sample-1",
+                    "source_trace_id": "trace-1",
+                    "source_observation_id": "obs-1",
+                },
+                "score": 0.91,
+                "passed": True,
+                "reason": "回答质量高，风险低",
+                "scores": [
+                    {
+                        "outputVariable": "quality_score",
+                        "scoreConfigId": "score-config-quality",
+                        "name": "quality_score",
+                        "value": 0.91,
+                        "passed": True,
+                    }
+                ],
+                "raw": {
+                    "data": {
+                        "outputs": {
+                            "quality_score": 0.91,
+                            "risk_label": "low",
+                        }
+                    }
+                },
+            }
+        ],
+        updated_by="admin@163.com",
+        langfuse_client=langfuse_client,  # type: ignore[arg-type]
+        score_writer=score_writer,  # type: ignore[arg-type]
+    )
+
+    item_insert = next(
+        params
+        for sql, params in cursor.executions
+        if "INSERT INTO pa_evaluation_report_items" in sql
+    )
+    item_scores = _jsonb_value(item_insert["scores"])
+    assert [score["name"] for score in item_scores] == ["回答质量", "风险等级"]
+    assert [item[2]["name"] for item in score_writer.upserted_scores] == [
+        "回答质量",
+        "风险等级",
+    ]
 
 
 @pytest.mark.anyio

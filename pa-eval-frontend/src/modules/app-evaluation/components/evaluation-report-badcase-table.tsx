@@ -1,6 +1,6 @@
-import { useState } from 'react'
+import { useCallback, useState } from 'react'
 import { useQueryClient } from '@tanstack/react-query'
-import type { ColumnDef, Table } from '@tanstack/react-table'
+import type { Table } from '@tanstack/react-table'
 import {
   createProjectAnnotationQueue,
   createTraceAnnotationTask,
@@ -14,110 +14,24 @@ import {
   TraceDatasetDialog,
   type TraceDatasetSubmitValues,
 } from '@/modules/app-observability/components/trace-dataset-dialog'
+import { TraceDetailDrawer } from '@/modules/app-observability/components/trace-detail-drawer'
+import { createTraceLogColumns } from '@/modules/app-observability/components/trace-log-columns'
 import { Database, Download, Tags } from 'lucide-react'
 import { toast } from 'sonner'
 import { useSessionStore } from '@/stores/session.store'
 import { useAPI } from '@/hooks/use-api'
-import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
-import { Checkbox } from '@/components/ui/checkbox'
 import {
   DataTable,
   DataTableBulkActions,
-  DataTableColumnHeader,
   type DataTableSelectionState,
 } from '@/components/common/data-table'
-import { HoverPreviewCell } from '@/components/common/hover-preview-cell'
 import { Loading } from '@/components/common/loading'
 import { listProjectEvaluationReportBadcases } from '../api/evaluation-report-api'
 import type {
   AnnotationQueueFormInput,
   EvaluationReportBadcaseRecord,
 } from '../types'
-
-const columns: ColumnDef<EvaluationReportBadcaseRecord>[] = [
-  {
-    id: 'select',
-    header: ({ table }) => (
-      <Checkbox
-        checked={
-          table.getIsAllPageRowsSelected() ||
-          (table.getIsSomePageRowsSelected() && 'indeterminate')
-        }
-        onCheckedChange={(value) => table.toggleAllPageRowsSelected(!!value)}
-        aria-label='全选 Badcase'
-      />
-    ),
-    cell: ({ row }) => (
-      <Checkbox
-        checked={row.getIsSelected()}
-        onCheckedChange={(value) => row.toggleSelected(!!value)}
-        aria-label='选择 Badcase'
-      />
-    ),
-    enableSorting: false,
-    enableHiding: false,
-  },
-  { accessorKey: 'traceId', header: 'Trace ID' },
-  { accessorKey: 'observationId', header: 'Observation ID' },
-  {
-    accessorKey: 'scoreValue',
-    header: ({ column }) => (
-      <DataTableColumnHeader column={column} title='score' />
-    ),
-  },
-  {
-    accessorKey: 'reason',
-    header: 'reason',
-    cell: ({ row }) => (
-      <HoverPreviewCell
-        label='reason'
-        value={row.original.reason?.trim()}
-        triggerClassName='max-w-[360px]'
-      />
-    ),
-  },
-  {
-    accessorKey: 'scoreSummary',
-    header: '评分摘要',
-    cell: ({ row }) => {
-      const summary = row.original.scoreSummary?.trim()
-
-      return (
-        <HoverPreviewCell
-          label='评分摘要'
-          value={summary || '{}'}
-          detailValue={formatScoreSummary(summary || '{}')}
-          triggerClassName='max-w-80 font-mono'
-        />
-      )
-    },
-  },
-  { accessorKey: 'comment', header: '备注' },
-  {
-    accessorKey: 'flowbackStatus',
-    header: '回流',
-    cell: ({ row }) => (
-      <Badge
-        variant={
-          row.original.flowbackStatus === 'FLOWED_BACK'
-            ? 'secondary'
-            : 'outline'
-        }
-      >
-        {row.original.flowbackStatus === 'FLOWED_BACK' ? '已回流' : '未回流'}
-      </Badge>
-    ),
-  },
-]
-
-function formatScoreSummary(value: string) {
-  try {
-    return JSON.stringify(JSON.parse(value), null, 2)
-  } catch {
-    return value
-  }
-}
 
 export function EvaluationReportBadcaseTable({
   projectId,
@@ -131,6 +45,15 @@ export function EvaluationReportBadcaseTable({
   canEdit?: boolean
 }) {
   const $api = useAPI()
+  const [selectedTraceId, setSelectedTraceId] = useState<string | null>(null)
+  const openTrace = useCallback((traceId: string) => {
+    setSelectedTraceId(traceId)
+  }, [])
+  const columns = useCallback(
+    (rows: EvaluationReportBadcaseRecord[]) =>
+      createTraceLogColumns({ onOpenTrace: openTrace, rows }),
+    [openTrace]
+  )
 
   return (
     <section className='bg-card text-card-foreground flex min-h-0 min-w-0 flex-1 flex-col gap-3 rounded-lg border p-4'>
@@ -150,6 +73,7 @@ export function EvaluationReportBadcaseTable({
         request={{
           queryKey: (state) => [
             'project-evaluation-report-badcases',
+            $api,
             projectId,
             reportId,
             state,
@@ -166,7 +90,20 @@ export function EvaluationReportBadcaseTable({
           defaultPageSize: 10,
           globalFilterKey: 'badcaseKeyword',
         }}
-        toolbar={{ searchPlaceholder: '搜索 Trace / 备注' }}
+        toolbar={{
+          searchPlaceholder: '搜索 traceId / score',
+          columnLabels: {
+            traceId: 'Trace ID',
+            sessionId: 'Session ID',
+            environment: '环境',
+            status: '状态',
+            input: 'Input',
+            output: 'Output',
+            metadata: 'Metadata',
+            latency: '延迟',
+            createdAt: '创建时间',
+          },
+        }}
         loadingText={
           <Loading
             text='加载 Badcase 中...'
@@ -174,7 +111,15 @@ export function EvaluationReportBadcaseTable({
           />
         }
         emptyText='暂无 Badcase'
-        minTableWidth={1100}
+        minTableWidth={1880}
+      />
+      <TraceDetailDrawer
+        projectId={projectId}
+        traceId={selectedTraceId}
+        open={Boolean(selectedTraceId)}
+        onOpenChange={(open) => {
+          if (!open) setSelectedTraceId(null)
+        }}
       />
     </section>
   )

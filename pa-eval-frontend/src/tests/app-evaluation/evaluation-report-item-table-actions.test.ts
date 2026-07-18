@@ -60,9 +60,7 @@ test('evaluation report badcase table does not show the all-badcase flowback but
 })
 
 test('evaluation report badcase table supports trace-like bulk actions', () => {
-  assert.match(badcaseSource, /id:\s*'select'/)
-  assert.match(badcaseSource, /aria-label='全选 Badcase'/)
-  assert.match(badcaseSource, /aria-label='选择 Badcase'/)
+  assert.match(badcaseSource, /createTraceLogColumns/)
   assert.match(badcaseSource, /DataTableBulkActions/)
   assert.match(badcaseSource, /selection=\{selection\}/)
   assert.match(badcaseSource, /entityName='Badcase'/)
@@ -98,20 +96,19 @@ test('evaluation report detail keeps top actions report-scoped', () => {
   assert.doesNotMatch(detailSource, /label:\s*'回流评测数据'/)
 })
 
-test('evaluation report badcase table shows reason and score summary with batch hover card preview', () => {
-  assert.match(badcaseSource, /title='score'/)
-  assert.match(badcaseSource, /header:\s*'reason'/)
-  assert.match(badcaseSource, /header:\s*'评分摘要'/)
-  assert.match(badcaseSource, /HoverPreviewCell/)
-  assert.match(badcaseSource, /@\/components\/common\/hover-preview-cell/)
-  assert.doesNotMatch(badcaseSource, /@\/components\/ui\/hover-card/)
-  assert.doesNotMatch(badcaseSource, /function ReasonCell/)
-  assert.doesNotMatch(badcaseSource, /function ScoreSummaryCell/)
-  assert.doesNotMatch(badcaseSource, /function SummaryHoverCell/)
-  assert.doesNotMatch(
-    badcaseSource,
-    /accessorKey:\s*'scoreName',\s*header:\s*'Score'/
-  )
+test('evaluation report detail hides item and flowback tabs', () => {
+  assert.doesNotMatch(detailSource, /TabsTrigger value='items'/)
+  assert.doesNotMatch(detailSource, /TabsTrigger value='flowbacks'/)
+  assert.doesNotMatch(detailSource, /EvaluationReportItemTable/)
+  assert.doesNotMatch(detailSource, /EvaluationReportFlowbackHistory/)
+  assert.doesNotMatch(detailSource, /listProjectEvaluationReportFlowbacks/)
+})
+
+test('evaluation report badcase table reuses trace log columns', () => {
+  assert.match(badcaseSource, /createTraceLogColumns/)
+  assert.match(badcaseSource, /TraceDetailDrawer/)
+  assert.match(badcaseSource, /searchPlaceholder:\s*'搜索 traceId \/ score'/)
+  assert.match(badcaseSource, /minTableWidth=\{1880\}/)
 })
 
 test('evaluation report tables use stable query keys that can be invalidated by detail page', () => {
@@ -123,18 +120,15 @@ test('evaluation report tables use stable query keys that can be invalidated by 
     badcaseSource.includes(
       "'project-evaluation-report-badcases',\n            $api,"
     ),
-    false
+    true
   )
   assert.equal(
     detailSource.includes(
       "['project-evaluation-report', $api, projectId, reportId]"
     ),
-    false
+    true
   )
-  assert.match(
-    detailSource,
-    /queryKey:\s*\['project-evaluation-report-items', projectId, reportId\]/
-  )
+  assert.doesNotMatch(detailSource, /project-evaluation-report-items/)
 })
 
 test('evaluation report item table shows trace ids and score created_at columns', () => {

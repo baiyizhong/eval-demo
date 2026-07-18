@@ -26,6 +26,7 @@ test('updateTaskEvaluator patches evaluator with create-form payload shape', asy
     outputVariableMappings: [
       {
         variableName: 'quality_score',
+        scoreConfigId: 'score-config-quality',
         scoreConfigName: '回答质量',
       },
     ],
@@ -59,6 +60,7 @@ test('updateTaskEvaluator patches evaluator with create-form payload shape', asy
         outputVariableMappings: [
           {
             variableName: 'quality_score',
+            scoreConfigId: 'score-config-quality',
             scoreConfigName: '回答质量',
           },
         ],
@@ -85,6 +87,7 @@ test('buildEvaluatorFormValuesFromDetail maps workflow detail into editable defa
         outputVariableMappings: [
           {
             variableName: 'quality_score',
+            scoreConfigId: 'score-config-quality',
             scoreConfigName: '回答质量',
           },
         ],
@@ -116,6 +119,7 @@ test('buildEvaluatorFormValuesFromDetail maps workflow detail into editable defa
       outputVariableMappings: [
         {
           variableName: 'quality_score',
+          scoreConfigId: 'score-config-quality',
           scoreConfigName: '回答质量',
         },
       ],

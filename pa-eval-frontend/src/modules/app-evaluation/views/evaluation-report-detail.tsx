@@ -12,12 +12,9 @@ import { PageAction } from '@/components/common/page-action'
 import {
   exportProjectEvaluationReport,
   getProjectEvaluationReport,
-  listProjectEvaluationReportFlowbacks,
 } from '../api/evaluation-report-api'
 import { EvaluationReportAnalysis } from '../components/evaluation-report-analysis'
 import { EvaluationReportBadcaseTable } from '../components/evaluation-report-badcase-table'
-import { EvaluationReportFlowbackHistory } from '../components/evaluation-report-flowback-history'
-import { EvaluationReportItemTable } from '../components/evaluation-report-item-table'
 import { EvaluationReportSourceBadge } from '../components/evaluation-report-source-badge'
 import { EvaluationReportStatusBadge } from '../components/evaluation-report-status-badge'
 import { EvaluationReportSummary } from '../components/evaluation-report-summary'
@@ -32,14 +29,8 @@ export function ProjectEvaluationReportDetail() {
   const queryClient = useQueryClient()
 
   const reportQuery = useQuery({
-    queryKey: ['project-evaluation-report', projectId, reportId],
+    queryKey: ['project-evaluation-report', $api, projectId, reportId],
     queryFn: () => getProjectEvaluationReport($api, projectId, reportId),
-    enabled: Boolean(reportId),
-  })
-  const flowbacksQuery = useQuery({
-    queryKey: ['project-evaluation-report-flowbacks', projectId, reportId],
-    queryFn: () =>
-      listProjectEvaluationReportFlowbacks($api, projectId, reportId),
     enabled: Boolean(reportId),
   })
 
@@ -48,16 +39,10 @@ export function ProjectEvaluationReportDetail() {
       queryKey: ['project-evaluation-report', projectId, reportId],
     })
     await queryClient.invalidateQueries({
-      queryKey: ['project-evaluation-report-flowbacks', projectId, reportId],
-    })
-    await queryClient.invalidateQueries({
       queryKey: ['project-evaluation-reports', projectId],
     })
     await queryClient.invalidateQueries({
       queryKey: ['project-evaluation-report-badcases', projectId, reportId],
-    })
-    await queryClient.invalidateQueries({
-      queryKey: ['project-evaluation-report-items', projectId, reportId],
     })
   }
 
@@ -65,7 +50,6 @@ export function ProjectEvaluationReportDetail() {
   const activeTab = searchParams.get('tab') ?? 'overview'
   const sections = report?.reportTemplateSnapshot?.sections
   const showBadcases = sections?.badcases ?? true
-  const showItems = sections?.items ?? true
 
   const handleExport = async () => {
     if (!report) return
@@ -159,10 +143,6 @@ export function ProjectEvaluationReportDetail() {
                 {showBadcases ? (
                   <TabsTrigger value='badcases'>Badcase</TabsTrigger>
                 ) : null}
-                {showItems ? (
-                  <TabsTrigger value='items'>评测数据</TabsTrigger>
-                ) : null}
-                <TabsTrigger value='flowbacks'>回流历史</TabsTrigger>
               </TabsList>
               <TabsContent value='overview'>
                 <EvaluationReportSummary report={report} />
@@ -176,19 +156,6 @@ export function ProjectEvaluationReportDetail() {
                   reportId={reportId}
                   reportTitle={report.title}
                   canEdit={canEditReport}
-                />
-              </TabsContent>
-              <TabsContent value='items' className='min-h-0'>
-                <EvaluationReportItemTable
-                  projectId={projectId}
-                  reportId={reportId}
-                  reportTitle={report.title}
-                  canEdit={canEditReport}
-                />
-              </TabsContent>
-              <TabsContent value='flowbacks'>
-                <EvaluationReportFlowbackHistory
-                  records={flowbacksQuery.data ?? []}
                 />
               </TabsContent>
             </Tabs>

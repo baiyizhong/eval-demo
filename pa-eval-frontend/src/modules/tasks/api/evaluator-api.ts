@@ -21,6 +21,7 @@ export type TaskEvaluatorRecord = {
   outputVariableMappings?: {
     variableName: string
     scoreConfigName: string
+    scoreConfigId?: string
   }[]
   description: string
   provider: TaskEvaluatorProvider
@@ -51,6 +52,7 @@ export type CreateTaskEvaluatorFormValues = {
   outputVariableMappings: {
     variableName: string
     scoreConfigName: string
+    scoreConfigId: string
   }[]
   prompt: string
   modelProvider: string
@@ -136,10 +138,21 @@ export function buildCreateEvaluatorPayload(
     values.inputVariables ?? values.variables
   )
   const outputVariableMappings = values.outputVariableMappings
-    .map((item) => ({
-      variableName: item.variableName.trim(),
-      scoreConfigName: item.scoreConfigName.trim(),
-    }))
+    .map((item) => {
+      const mapping: {
+        variableName: string
+        scoreConfigName: string
+        scoreConfigId?: string
+      } = {
+        variableName: item.variableName.trim(),
+        scoreConfigName: item.scoreConfigName.trim(),
+      }
+      const scoreConfigId = item.scoreConfigId?.trim()
+      if (scoreConfigId) {
+        mapping.scoreConfigId = scoreConfigId
+      }
+      return mapping
+    })
     .filter((item) => item.variableName && item.scoreConfigName)
   const outputVariables = splitVariables(values.outputVariables ?? '')
   if (outputVariables.length === 0) {
@@ -211,9 +224,14 @@ export function buildEvaluatorFormValuesFromDetail(
     : evaluator.variables
   const outputVariables = evaluator.outputVariables ?? []
   const outputVariableMappings = evaluator.outputVariableMappings?.length
-    ? evaluator.outputVariableMappings
+    ? evaluator.outputVariableMappings.map((mapping) => ({
+        variableName: mapping.variableName,
+        scoreConfigId: mapping.scoreConfigId ?? '',
+        scoreConfigName: mapping.scoreConfigName,
+      }))
     : outputVariables.map((variableName) => ({
         variableName,
+        scoreConfigId: '',
         scoreConfigName: '',
       }))
 
@@ -231,6 +249,7 @@ export function buildEvaluatorFormValuesFromDetail(
       : [
           {
             variableName: '',
+            scoreConfigId: '',
             scoreConfigName: '',
           },
         ],
