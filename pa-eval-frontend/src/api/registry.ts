@@ -308,9 +308,25 @@ export const apiRegistry = {
     method: 'POST',
     url: '/projects/:projectId/traces/annotation-task',
   },
+  createProjectTraceAnnotationTaskJob: {
+    method: 'POST',
+    url: '/projects/:projectId/traces/annotation-task-jobs',
+  },
+  getProjectTraceAnnotationTaskJob: {
+    method: 'GET',
+    url: '/projects/:projectId/traces/annotation-task-jobs/:jobId',
+  },
   addProjectTracesToDataset: {
     method: 'POST',
     url: '/projects/:projectId/traces/dataset-items',
+  },
+  createProjectTraceDatasetImportJob: {
+    method: 'POST',
+    url: '/projects/:projectId/traces/dataset-import-jobs',
+  },
+  getProjectTraceDatasetImportJob: {
+    method: 'GET',
+    url: '/projects/:projectId/traces/dataset-import-jobs/:jobId',
   },
   getEvaluationReport: {
     method: 'GET',

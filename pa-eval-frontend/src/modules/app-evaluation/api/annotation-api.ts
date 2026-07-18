@@ -55,8 +55,12 @@ type AnnotationApiClient = {
   saveProjectAnnotationScores: ApiMethod
   addProjectAnnotationItemToDataset: ApiMethod
   createTraceAnnotationTask: ApiMethod
+  createProjectTraceAnnotationTaskJob?: ApiMethod
+  getProjectTraceAnnotationTaskJob?: ApiMethod
   addProjectTracesToDataset: ApiMethod
 }
+
+const TRACE_ANNOTATION_TASK_ASYNC_THRESHOLD = 1000
 
 export type ScoreConfigInput = {
   name: string
@@ -110,6 +114,45 @@ export type AnnotationExportJobPayload = {
   itemIds: string[]
   splitMetadata: boolean
   fileName?: string
+}
+
+export type TraceAnnotationTaskResult = {
+  queueId: string
+  createdCount: number
+  skippedCount: number
+  traceCount: number
+}
+
+export type TraceAnnotationTaskProgress = {
+  queueId: string
+  totalCount: number
+  completedCount: number
+  createdCount: number
+  skippedCount: number
+  percent: number
+  status: 'running' | 'succeeded' | 'failed'
+}
+
+export type TraceAnnotationTaskOptions = {
+  queueId?: string
+  queueName?: string
+  assigneeIds?: string[]
+  assignmentStrategy?: AnnotationAssignmentStrategy
+  assignmentWeights?: Record<string, number>
+  onProgress?: (progress: TraceAnnotationTaskProgress) => void
+  pollIntervalMs?: number
+}
+
+type TraceAnnotationTaskJob = {
+  id: string
+  queueId: string
+  status: 'PENDING' | 'RUNNING' | 'SUCCEEDED' | 'FAILED'
+  totalCount: number
+  completedCount: number
+  createdCount: number
+  skippedCount: number
+  percent: number
+  errorMessage?: string
 }
 
 export function listProjectScoreConfigs(
@@ -724,22 +767,104 @@ export function createTraceAnnotationTask(
   api: AnnotationApiClient,
   projectId: string,
   traceIds: string[],
-  options: {
-    queueId?: string
-    queueName?: string
-    assigneeIds?: string[]
-    assignmentStrategy?: AnnotationAssignmentStrategy
-    assignmentWeights?: Record<string, number>
-  } = {}
+  options: TraceAnnotationTaskOptions = {}
 ) {
-  return api.createTraceAnnotationTask<{
-    queueId: string
-    createdCount: number
-    skippedCount: number
-    traceCount: number
-  }>({
+  const { onProgress, pollIntervalMs, ...taskOptions } = options
+  if (traceIds.length >= TRACE_ANNOTATION_TASK_ASYNC_THRESHOLD) {
+    return createTraceAnnotationTaskByJob(api, projectId, traceIds, {
+      ...taskOptions,
+      onProgress,
+      pollIntervalMs,
+    })
+  }
+
+  return api.createTraceAnnotationTask<TraceAnnotationTaskResult>({
     path: { projectId },
-    body: { traceIds, ...options },
+    body: { traceIds, ...taskOptions },
+  })
+}
+
+export function buildInitialTraceAnnotationTaskProgress(
+  totalCount: number
+): TraceAnnotationTaskProgress {
+  return {
+    queueId: '',
+    totalCount,
+    completedCount: 0,
+    createdCount: 0,
+    skippedCount: 0,
+    percent: 0,
+    status: 'running',
+  }
+}
+
+async function createTraceAnnotationTaskByJob(
+  api: AnnotationApiClient,
+  projectId: string,
+  traceIds: string[],
+  options: TraceAnnotationTaskOptions
+): Promise<TraceAnnotationTaskResult> {
+  if (
+    !api.createProjectTraceAnnotationTaskJob ||
+    !api.getProjectTraceAnnotationTaskJob
+  ) {
+    throw new Error('当前环境不支持大批量异步创建人工标注任务')
+  }
+
+  const { onProgress, pollIntervalMs, ...taskOptions } = options
+  let job = await api.createProjectTraceAnnotationTaskJob<TraceAnnotationTaskJob>({
+    path: { projectId },
+    body: { traceIds, ...taskOptions },
+  })
+  onProgress?.(traceAnnotationTaskJobToProgress(job))
+
+  while (job.status === 'PENDING' || job.status === 'RUNNING') {
+    await waitForTraceAnnotationTaskPoll(pollIntervalMs ?? 1000)
+    job = await api.getProjectTraceAnnotationTaskJob<TraceAnnotationTaskJob>({
+      path: { projectId, jobId: job.id },
+    })
+    onProgress?.(traceAnnotationTaskJobToProgress(job))
+  }
+
+  if (job.status === 'FAILED') {
+    throw new Error(job.errorMessage || '创建人工标注任务失败，请稍后重试')
+  }
+
+  return {
+    queueId: job.queueId,
+    createdCount: job.createdCount,
+    skippedCount: job.skippedCount,
+    traceCount: job.totalCount,
+  }
+}
+
+function traceAnnotationTaskJobToProgress(
+  job: TraceAnnotationTaskJob
+): TraceAnnotationTaskProgress {
+  const status =
+    job.status === 'FAILED'
+      ? 'failed'
+      : job.status === 'SUCCEEDED'
+        ? 'succeeded'
+        : 'running'
+
+  return {
+    queueId: job.queueId,
+    totalCount: job.totalCount,
+    completedCount: job.completedCount,
+    createdCount: job.createdCount,
+    skippedCount: job.skippedCount,
+    percent: job.percent,
+    status,
+  }
+}
+
+async function waitForTraceAnnotationTaskPoll(intervalMs: number) {
+  if (intervalMs <= 0) {
+    return
+  }
+  await new Promise((resolve) => {
+    globalThis.setTimeout(resolve, intervalMs)
   })
 }
 

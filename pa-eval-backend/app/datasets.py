@@ -54,41 +54,6 @@ def _to_public_export_job(job: dict[str, Any]) -> dict[str, Any]:
     return {key: value for key, value in job.items() if key != "filePath"}
 
 
-def _paginate(items: list[dict[str, Any]], page: int, page_size: int) -> dict[str, Any]:
-    start = (page - 1) * page_size
-    return {"total": len(items), "datas": items[start : start + page_size]}
-
-
-def _matches_dataset_keyword(item: dict[str, Any], keyword: str | None) -> bool:
-    if not keyword:
-        return True
-
-    needle = keyword.lower()
-    fields = [
-        item.get("id"),
-        item.get("name"),
-        item.get("description"),
-        item.get("type"),
-    ]
-    return any(isinstance(field, str) and needle in field.lower() for field in fields)
-
-
-def _matches_item_keyword(item: dict[str, Any], keyword: str | None) -> bool:
-    if not keyword:
-        return True
-
-    needle = keyword.lower()
-    fields = [
-        item.get("id"),
-        item.get("sourceTraceId"),
-        item.get("sourceObservationId"),
-        str(item.get("input") or ""),
-        str(item.get("expectedOutput") or ""),
-        str(item.get("metadata") or ""),
-    ]
-    return any(needle in field.lower() for field in fields)
-
-
 def _to_dataset_payload(payload: DatasetPayload) -> dict[str, Any]:
     metadata = {**payload.metadata, "type": payload.type}
     return {
@@ -115,18 +80,6 @@ def _to_dataset_item_payload(payload: DatasetItemPayload) -> dict[str, Any]:
         result["sourceObservationId"] = payload.source_observation_id
 
     return result
-
-
-def _count_item_statuses(items: list[dict[str, Any]]) -> dict[DatasetItemStatus, int]:
-    counts: dict[DatasetItemStatus, int] = {"ACTIVE": 0, "ARCHIVED": 0}
-
-    for item in items:
-        if item.get("status") == "ARCHIVED":
-            counts["ARCHIVED"] += 1
-            continue
-        counts["ACTIVE"] += 1
-
-    return counts
 
 
 @router.post("/{dataset_id}/export-jobs")
@@ -213,13 +166,16 @@ async def list_datasets(
     current_user: CurrentUserContext = Depends(get_current_user_context),
     reader: LangfuseDatabaseReader = Depends(get_langfuse_db_reader),
 ) -> dict[str, Any]:
-    datasets = await reader.list_datasets_for_user(project_id, current_user.user_id)
-    filtered = [item for item in datasets if _matches_dataset_keyword(item, keyword)]
-
-    if dataset_type:
-        filtered = [item for item in filtered if item["type"] == dataset_type]
-
-    return success(_paginate(filtered, page, page_size))
+    return success(
+        await reader.list_datasets_for_user(
+            project_id,
+            current_user.user_id,
+            page=page,
+            page_size=page_size,
+            keyword=keyword,
+            dataset_type=dataset_type,
+        )
+    )
 
 
 @router.post("/{dataset_id}/items")
@@ -377,13 +333,14 @@ async def count_dataset_item_statuses(
     current_user: CurrentUserContext = Depends(get_current_user_context),
     reader: LangfuseDatabaseReader = Depends(get_langfuse_db_reader),
 ) -> dict[str, Any]:
-    items = await reader.list_dataset_items_for_user(
-        project_id,
-        dataset_id,
-        current_user.user_id,
+    return success(
+        await reader.count_dataset_item_statuses_for_user(
+            project_id,
+            dataset_id,
+            current_user.user_id,
+            keyword=keyword,
+        )
     )
-    filtered = [item for item in items if _matches_item_keyword(item, keyword)]
-    return success(_count_item_statuses(filtered))
 
 
 @router.get("/{dataset_id}/items")
@@ -397,15 +354,14 @@ async def list_dataset_items(
     current_user: CurrentUserContext = Depends(get_current_user_context),
     reader: LangfuseDatabaseReader = Depends(get_langfuse_db_reader),
 ) -> dict[str, Any]:
-    items = await reader.list_dataset_items_for_user(
-        project_id,
-        dataset_id,
-        current_user.user_id,
+    return success(
+        await reader.list_dataset_items_for_user(
+            project_id,
+            dataset_id,
+            current_user.user_id,
+            page=page,
+            page_size=page_size,
+            keyword=keyword,
+            status=status,
+        )
     )
-    filtered = [item for item in items if _matches_item_keyword(item, keyword)]
-
-    if status:
-        allowed_statuses = set(status)
-        filtered = [item for item in filtered if item["status"] in allowed_statuses]
-
-    return success(_paginate(filtered, page, page_size))

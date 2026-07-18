@@ -1,6 +1,8 @@
 import anyio
+import pytest
 from fastapi.testclient import TestClient
 
+from app import langfuse_db
 from app.auth_context import CurrentUserContext, get_current_user_context
 from app.errors import BusinessError
 from app.langfuse_clickhouse import get_langfuse_clickhouse_reader
@@ -470,6 +472,15 @@ class FakeAnnotationTraceReader:
             "scores": self.scores_by_trace.get(trace_id, []),
         }
 
+    async def list_traces_by_ids(
+        self,
+        project_id: str,
+        trace_ids: list[str],
+        *,
+        fields: str | None = None,
+    ) -> list[dict]:
+        return [await self.get_trace(project_id, trace_id) for trace_id in trace_ids]
+
     async def list_trace_sources(
         self,
         project_id: str,
@@ -677,6 +688,67 @@ def test_creates_trace_annotation_task_in_existing_queue() -> None:
         "create_trace_task",
         ("project-1", "user-1", payload),
     )
+
+
+def test_creates_trace_annotation_task_job_and_reports_completion() -> None:
+    class BatchAnnotationReader(FakeAnnotationDatabaseReader):
+        async def create_trace_annotation_task_for_user(
+            self,
+            project_id: str,
+            user_id: str,
+            payload: dict,
+        ) -> dict:
+            self.calls.append(("create_trace_task", (project_id, user_id, payload)))
+            return {
+                "queueId": payload.get("queueId") or "queue-created",
+                "createdCount": len(payload.get("traceIds") or []),
+                "skippedCount": 0,
+                "createdItems": [
+                    {"itemId": f"item-{trace_id}", "traceId": trace_id}
+                    for trace_id in payload.get("traceIds") or []
+                ],
+                "scoreConfigIds": [],
+            }
+
+    fake_reader = BatchAnnotationReader()
+    override_reader(fake_reader)
+
+    try:
+        response = TestClient(app).post(
+            "/api/projects/project-1/traces/annotation-task-jobs",
+            json={
+                "traceIds": ["trace-1", "trace-2"],
+                "queueId": "queue-1",
+            },
+        )
+        assert response.status_code == 200
+        job_id = response.json()["data"]["id"]
+
+        job_response = TestClient(app).get(
+            f"/api/projects/project-1/traces/annotation-task-jobs/{job_id}",
+        )
+    finally:
+        clear_overrides()
+
+    assert job_response.status_code == 200
+    job = job_response.json()["data"]
+    assert job["status"] == "SUCCEEDED"
+    assert job["queueId"] == "queue-1"
+    assert job["totalCount"] == 2
+    assert job["createdCount"] == 2
+    assert job["skippedCount"] == 0
+    assert job["completedCount"] == 2
+    assert job["percent"] == 100
+    assert fake_reader.calls == [
+        (
+            "create_trace_task",
+            (
+                "project-1",
+                "user-1",
+                {"traceIds": ["trace-1", "trace-2"], "queueId": "queue-1"},
+            ),
+        )
+    ]
 
 
 def test_creates_trace_annotation_task_prefills_scores_from_trace_detail() -> None:
@@ -996,6 +1068,223 @@ def test_adds_selected_traces_to_dataset_with_trace_details() -> None:
     assert fake_reader.calls[0][1][2]["traces"][0]["input"] == (
         '{"question":"退款多久到账"}'
     )
+
+
+def test_adds_selected_traces_to_dataset_with_batch_trace_lookup() -> None:
+    class BatchTraceReader:
+        def __init__(self) -> None:
+            self.calls: list[tuple[str, object]] = []
+
+        async def get_trace(self, project_id: str, trace_id: str) -> dict:
+            raise AssertionError("trace dataset import should not call get_trace")
+
+        async def list_traces_by_ids(
+            self,
+            project_id: str,
+            trace_ids: list[str],
+            *,
+            fields: str | None = None,
+        ) -> list[dict]:
+            self.calls.append(("list_traces_by_ids", (project_id, trace_ids, fields)))
+            return [
+                {
+                    "traceId": trace_id,
+                    "input": f'{{"question":"{trace_id}"}}',
+                    "output": "{}",
+                    "metadata": {},
+                }
+                for trace_id in trace_ids
+                if trace_id != "missing-trace"
+            ]
+
+    fake_reader = FakeAnnotationDatabaseReader()
+    trace_reader = BatchTraceReader()
+    override_reader_and_trace_reader(fake_reader, trace_reader)
+
+    payload = {
+        "datasetId": "dataset-1",
+        "traceIds": ["trace-1", "trace-2", "trace-1", "missing-trace"],
+    }
+    try:
+        response = TestClient(app).post(
+            "/api/projects/project-1/traces/dataset-items",
+            json=payload,
+        )
+    finally:
+        clear_overrides()
+
+    assert response.status_code == 200
+    assert trace_reader.calls == [
+        (
+            "list_traces_by_ids",
+            ("project-1", ["trace-1", "trace-2", "missing-trace"], "io,metadata"),
+        )
+    ]
+    assert fake_reader.calls[0][1][2]["traces"] == [
+        {
+            "traceId": "trace-1",
+            "input": '{"question":"trace-1"}',
+            "output": "{}",
+            "metadata": {},
+        },
+        {
+            "traceId": "trace-2",
+            "input": '{"question":"trace-2"}',
+            "output": "{}",
+            "metadata": {},
+        },
+    ]
+    assert response.json()["data"]["successCount"] == 2
+    assert response.json()["data"]["failureCount"] == 1
+    assert response.json()["data"]["failures"] == [
+        {"traceId": "missing-trace", "reason": "Trace 不存在或无访问权限"}
+    ]
+    assert response.json()["data"]["traceCount"] == 4
+
+
+def test_creates_trace_dataset_import_job_and_reports_completion() -> None:
+    class BatchTraceReader:
+        async def list_traces_by_ids(
+            self,
+            project_id: str,
+            trace_ids: list[str],
+            *,
+            fields: str | None = None,
+        ) -> list[dict]:
+            return [
+                {
+                    "traceId": trace_id,
+                    "input": f'{{"question":"{trace_id}"}}',
+                    "output": "{}",
+                    "metadata": {},
+                }
+                for trace_id in trace_ids
+                if trace_id != "missing-trace"
+            ]
+
+    fake_reader = FakeAnnotationDatabaseReader()
+    override_reader_and_trace_reader(fake_reader, BatchTraceReader())
+
+    try:
+        response = TestClient(app).post(
+            "/api/projects/project-1/traces/dataset-import-jobs",
+            json={
+                "datasetId": "dataset-1",
+                "traceIds": ["trace-1", "missing-trace"],
+            },
+        )
+        assert response.status_code == 200
+        job_id = response.json()["data"]["id"]
+
+        job_response = TestClient(app).get(
+            f"/api/projects/project-1/traces/dataset-import-jobs/{job_id}",
+        )
+    finally:
+        clear_overrides()
+
+    assert job_response.status_code == 200
+    job = job_response.json()["data"]
+    assert job["status"] == "SUCCEEDED"
+    assert job["datasetId"] == "dataset-1"
+    assert job["totalCount"] == 2
+    assert job["successCount"] == 1
+    assert job["failureCount"] == 1
+    assert job["completedCount"] == 2
+    assert job["percent"] == 100
+    assert job["failures"] == [
+        {"traceId": "missing-trace", "reason": "Trace 不存在或无访问权限"}
+    ]
+
+
+def test_add_traces_to_dataset_skips_existing_dataset_trace_items(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    class Cursor:
+        def __init__(self) -> None:
+            self.queries: list[tuple[str, dict]] = []
+            self._fetchone_row: dict | None = None
+            self._fetchall_rows: list[dict] = []
+
+        async def __aenter__(self) -> "Cursor":
+            return self
+
+        async def __aexit__(self, *args) -> None:
+            return None
+
+        async def execute(self, sql: str, params: dict | None = None) -> None:
+            params = params or {}
+            self.queries.append((sql, params))
+            if "FROM datasets" in sql:
+                self._fetchone_row = {"id": params["dataset_id"]}
+            elif "FROM dataset_items" in sql and "source_trace_id = ANY" in sql:
+                self._fetchall_rows = [{"source_trace_id": "trace-1"}]
+
+        async def fetchone(self) -> dict | None:
+            return self._fetchone_row
+
+        async def fetchall(self) -> list[dict]:
+            return self._fetchall_rows
+
+    class Connection:
+        def __init__(self, cursor: Cursor) -> None:
+            self._cursor = cursor
+
+        async def __aenter__(self) -> "Connection":
+            return self
+
+        async def __aexit__(self, *args) -> None:
+            return None
+
+        def cursor(self) -> Cursor:
+            return self._cursor
+
+    cursor = Cursor()
+
+    async def fake_connect(*args, **kwargs) -> Connection:
+        return Connection(cursor)
+
+    async def fake_get_project_for_user(self, cursor, project_id, user_id):
+        return {"id": project_id}
+
+    monkeypatch.setattr(
+        langfuse_db.psycopg.AsyncConnection,
+        "connect",
+        fake_connect,
+    )
+    monkeypatch.setattr(
+        LangfuseDatabaseReader,
+        "_get_project_for_user",
+        fake_get_project_for_user,
+    )
+    monkeypatch.setattr(
+        langfuse_db,
+        "_new_langfuse_id",
+        lambda prefix: f"{prefix}-new",
+    )
+
+    reader = LangfuseDatabaseReader(
+        langfuse_db.Settings(langfuse_database_url="postgres://test")
+    )
+    result = anyio.run(
+        reader.add_traces_to_dataset_for_user,
+        "project-1",
+        "user-1",
+        {
+            "datasetId": "dataset-1",
+            "traces": [
+                {"traceId": "trace-1", "input": "{}", "output": "{}", "metadata": {}},
+                {"traceId": "trace-2", "input": "{}", "output": "{}", "metadata": {}},
+            ],
+        },
+    )
+
+    insert_queries = [
+        (sql, params) for sql, params in cursor.queries if "INSERT INTO dataset_items" in sql
+    ]
+    assert len(insert_queries) == 1
+    assert insert_queries[0][1]["source_trace_id_0"] == "trace-2"
+    assert result["successCount"] == 1
+    assert result["itemIds"] == ["datasetitem-new"]
 
 
 def test_saves_annotation_scores_and_completes_queue_item() -> None:

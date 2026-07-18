@@ -3,8 +3,9 @@ import json
 import re
 import zipfile
 from datetime import datetime
+from io import StringIO
 from pathlib import Path
-from typing import Any
+from typing import Any, AsyncIterator
 from xml.sax.saxutils import escape
 
 from app.langfuse_db import LangfuseDatabaseReader
@@ -42,7 +43,6 @@ async def generate_dataset_export_file(
     try:
         await reader.mark_dataset_export_job_running(project_id, dataset_id, job_id)
         dataset = await reader.get_dataset_for_user(project_id, dataset_id, user_id)
-        items = await reader.list_dataset_items_for_user(project_id, dataset_id, user_id)
         output_dir = Path(storage_dir).expanduser().resolve() / project_id / dataset_id
         output_dir.mkdir(parents=True, exist_ok=True)
 
@@ -57,12 +57,18 @@ async def generate_dataset_export_file(
         )
         file_path = output_dir / file_name
 
+        batches = _iter_export_item_batches(
+            reader,
+            project_id,
+            dataset_id,
+            user_id,
+        )
         if export_format == "csv":
-            _write_csv(file_path, items)
+            total_count = await _write_csv(file_path, batches)
         elif export_format == "txt":
-            _write_txt(file_path, items)
+            total_count = await _write_txt(file_path, batches)
         elif export_format == "xlsx":
-            _write_xlsx(file_path, items)
+            total_count = await _write_xlsx(file_path, batches)
         else:
             raise ValueError(f"Unsupported export format: {export_format}")
 
@@ -70,7 +76,7 @@ async def generate_dataset_export_file(
             project_id,
             dataset_id,
             job_id,
-            total_count=len(items),
+            total_count=total_count,
             file_name=file_name,
             file_path=str(file_path),
             file_size=file_path.stat().st_size,
@@ -85,27 +91,76 @@ async def generate_dataset_export_file(
         raise exc
 
 
-def _write_csv(file_path: Path, items: list[dict[str, Any]]) -> None:
+async def _iter_export_item_batches(
+    reader: LangfuseDatabaseReader,
+    project_id: str,
+    dataset_id: str,
+    user_id: str,
+) -> AsyncIterator[list[dict[str, Any]]]:
+    async for batch in reader.iter_dataset_items_for_export(
+        project_id,
+        dataset_id,
+        user_id,
+    ):
+        yield batch
+
+
+async def _write_csv(
+    file_path: Path,
+    batches: AsyncIterator[list[dict[str, Any]]],
+) -> int:
+    total_count = 0
     with file_path.open("w", encoding="utf-8-sig", newline="") as output:
         writer = csv.DictWriter(output, fieldnames=[label for label, _ in EXPORT_COLUMNS])
         writer.writeheader()
-        for item in items:
-            writer.writerow(_to_export_row(item))
+        async for batch in batches:
+            for item in batch:
+                writer.writerow(_to_export_row(item))
+                total_count += 1
+    return total_count
 
 
-def _write_txt(file_path: Path, items: list[dict[str, Any]]) -> None:
+async def _write_txt(
+    file_path: Path,
+    batches: AsyncIterator[list[dict[str, Any]]],
+) -> int:
+    total_count = 0
     with file_path.open("w", encoding="utf-8") as output:
-        for item in items:
-            output.write(json.dumps(_to_export_row(item), ensure_ascii=False))
-            output.write("\n")
+        async for batch in batches:
+            for item in batch:
+                output.write(json.dumps(_to_export_row(item), ensure_ascii=False))
+                output.write("\n")
+                total_count += 1
+    return total_count
 
 
-def _write_xlsx(file_path: Path, items: list[dict[str, Any]]) -> None:
-    rows = [[label for label, _ in EXPORT_COLUMNS]]
-    rows.extend(
-        [[row[label] for label, _ in EXPORT_COLUMNS] for row in map(_to_export_row, items)]
+async def _write_xlsx(
+    file_path: Path,
+    batches: AsyncIterator[list[dict[str, Any]]],
+) -> int:
+    sheet_rows = StringIO()
+    row_index = 1
+    sheet_rows.write(_build_sheet_row_xml(row_index, [label for label, _ in EXPORT_COLUMNS]))
+    total_count = 0
+
+    async for batch in batches:
+        for item in batch:
+            row_index += 1
+            row = _to_export_row(item)
+            sheet_rows.write(
+                _build_sheet_row_xml(
+                    row_index,
+                    [row[label] for label, _ in EXPORT_COLUMNS],
+                )
+            )
+            total_count += 1
+
+    sheet = (
+        '<?xml version="1.0" encoding="UTF-8" standalone="yes"?>'
+        '<worksheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main">'
+        f"<sheetData>{sheet_rows.getvalue()}</sheetData>"
+        "</worksheet>"
     )
-    sheet = _build_sheet_xml(rows)
 
     with zipfile.ZipFile(file_path, "w", compression=zipfile.ZIP_DEFLATED) as archive:
         archive.writestr("[Content_Types].xml", _CONTENT_TYPES_XML)
@@ -113,6 +168,7 @@ def _write_xlsx(file_path: Path, items: list[dict[str, Any]]) -> None:
         archive.writestr("xl/workbook.xml", _WORKBOOK_XML)
         archive.writestr("xl/_rels/workbook.xml.rels", _WORKBOOK_RELS_XML)
         archive.writestr("xl/worksheets/sheet1.xml", sheet)
+    return total_count
 
 
 def _to_export_row(item: dict[str, Any]) -> dict[str, str]:
@@ -136,13 +192,7 @@ def _safe_file_name(file_name: str) -> str:
 def _build_sheet_xml(rows: list[list[str]]) -> str:
     xml_rows = []
     for row_index, row in enumerate(rows, start=1):
-        cells = []
-        for column_index, value in enumerate(row, start=1):
-            ref = f"{_excel_column_name(column_index)}{row_index}"
-            cells.append(
-                f'<c r="{ref}" t="inlineStr"><is><t>{escape(value)}</t></is></c>'
-            )
-        xml_rows.append(f'<row r="{row_index}">{"".join(cells)}</row>')
+        xml_rows.append(_build_sheet_row_xml(row_index, row))
 
     return (
         '<?xml version="1.0" encoding="UTF-8" standalone="yes"?>'
@@ -150,6 +200,16 @@ def _build_sheet_xml(rows: list[list[str]]) -> str:
         f'<sheetData>{"".join(xml_rows)}</sheetData>'
         "</worksheet>"
     )
+
+
+def _build_sheet_row_xml(row_index: int, row: list[str]) -> str:
+    cells = []
+    for column_index, value in enumerate(row, start=1):
+        ref = f"{_excel_column_name(column_index)}{row_index}"
+        cells.append(
+            f'<c r="{ref}" t="inlineStr"><is><t>{escape(value)}</t></is></c>'
+        )
+    return f'<row r="{row_index}">{"".join(cells)}</row>'
 
 
 def _excel_column_name(index: int) -> str:

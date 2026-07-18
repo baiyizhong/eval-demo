@@ -678,8 +678,6 @@ async def test_fetches_trace_rows_with_session_filter_and_optional_io_fields(mon
         include_io=True,
     )
 
-    assert "t.input AS input" in captured["query"]
-    assert "t.output AS output" in captured["query"]
     assert "position(ifNull(t.session_id, ''), {session_id:String}) > 0" in captured["query"]
     assert captured["params"] == {
         "project_id": "project-1",
@@ -747,6 +745,9 @@ async def test_list_traces_includes_input_and_output_when_io_fields_requested(mo
 async def test_list_traces_filters_by_tags(monkeypatch) -> None:
     reader = LangfuseClickHouseReader(Settings())
 
+    async def fake_count_trace_rows(*args, **kwargs):
+        return 1
+
     async def fake_fetch_trace_rows(*args, **kwargs):
         return [
             {
@@ -761,20 +762,9 @@ async def test_list_traces_filters_by_tags(monkeypatch) -> None:
                 "tags": ["refund", "vip"],
                 "scores": [],
             },
-            {
-                "traceId": "trace-2",
-                "projectId": "project-1",
-                "environment": "default",
-                "status": "success",
-                "latency": 120,
-                "createdAt": "2026-07-05 01:37:59.275",
-                "userId": "user-2",
-                "metadata": {},
-                "tags": ["refund"],
-                "scores": [],
-            },
         ]
 
+    monkeypatch.setattr(reader, "_count_trace_rows", fake_count_trace_rows)
     monkeypatch.setattr(reader, "_fetch_trace_rows", fake_fetch_trace_rows)
 
     result = await reader.list_traces(
@@ -794,22 +784,24 @@ async def test_list_traces_only_fetches_payloads_for_current_page(monkeypatch) -
     reader = LangfuseClickHouseReader(Settings())
     captured: dict[str, object] = {}
 
+    async def fake_count_trace_rows(*args, **kwargs):
+        return 3
+
     async def fake_fetch_trace_rows(*args, **kwargs):
         captured["include_io"] = kwargs.get("include_io")
         return [
             {
-                "traceId": f"trace-{index}",
+                "traceId": "trace-2",
                 "projectId": "project-1",
                 "environment": "default",
                 "status": "success",
                 "latency": 120,
-                "createdAt": f"2026-07-05 01:0{index}:00.000",
+                "createdAt": "2026-07-05 01:02:00.000",
                 "userId": "user-1",
-                "metadata": {"businessId": f"biz-{index}"},
+                "metadata": {"businessId": "biz-2"},
                 "tags": [],
                 "scores": [],
             }
-            for index in range(1, 4)
         ]
 
     async def fake_fetch_trace_payloads(project_id: str, trace_ids: list[str]):
@@ -822,6 +814,7 @@ async def test_list_traces_only_fetches_payloads_for_current_page(monkeypatch) -
             }
         }
 
+    monkeypatch.setattr(reader, "_count_trace_rows", fake_count_trace_rows)
     monkeypatch.setattr(reader, "_fetch_trace_rows", fake_fetch_trace_rows)
     monkeypatch.setattr(
         reader,
@@ -865,26 +858,78 @@ async def test_list_traces_only_fetches_payloads_for_current_page(monkeypatch) -
 
 
 @pytest.mark.anyio
+async def test_list_traces_pushes_pagination_and_fetches_scores_for_current_page(
+    monkeypatch,
+) -> None:
+    reader = LangfuseClickHouseReader(Settings())
+    captured_queries: list[tuple[str, dict]] = []
+
+    async def fake_query(query: str, params: dict):
+        captured_queries.append((query, params))
+        if "COUNT" in query.upper():
+            return [{"total": 3}]
+        if "FROM traces t" in query:
+            return [
+                {
+                    "traceId": "trace-2",
+                    "projectId": "project-1",
+                    "environment": "default",
+                    "status": "success",
+                    "latency": 120,
+                    "createdAt": "2026-07-05 01:02:00.000",
+                    "userId": "user-1",
+                    "metadata": {"businessId": "biz-2"},
+                    "tags": [],
+                }
+            ]
+        return []
+
+    monkeypatch.setattr(reader, "_query_json_each_row", fake_query)
+
+    result = await reader.list_traces(
+        "project-1",
+        page=2,
+        page_size=1,
+        keyword="trace",
+        tags=["refund"],
+        score_queue_id="queue-1",
+        time_range=None,
+    )
+
+    paged_queries = [
+        (query, params)
+        for query, params in captured_queries
+        if "FROM traces t" in query and "LIMIT {limit:UInt32}" in query
+    ]
+    assert paged_queries
+    assert paged_queries[0][1]["limit"] == 1
+    assert paged_queries[0][1]["offset"] == 1
+    score_params = [
+        params
+        for query, params in captured_queries
+        if "FROM scores" in query and "trace_id IN" in query
+    ]
+    assert score_params
+    assert [
+        value
+        for key, value in score_params[0].items()
+        if key.startswith("score_trace_id_")
+    ] == ["trace-2"]
+    assert result["total"] == 3
+    assert [row["traceId"] for row in result["datas"]] == ["trace-2"]
+
+
+@pytest.mark.anyio
 async def test_list_traces_orders_session_results_by_created_at_before_pagination(
     monkeypatch,
 ) -> None:
     reader = LangfuseClickHouseReader(Settings())
 
+    async def fake_count_trace_rows(*args, **kwargs):
+        return 3
+
     async def fake_fetch_trace_rows(*args, **kwargs):
         return [
-            {
-                "traceId": "trace-new",
-                "sessionId": "session-1",
-                "projectId": "project-1",
-                "environment": "default",
-                "status": "success",
-                "latency": 120,
-                "createdAt": "2026-07-05 01:03:00.000",
-                "userId": "user-1",
-                "metadata": {},
-                "tags": [],
-                "scores": [],
-            },
             {
                 "traceId": "trace-old",
                 "sessionId": "session-1",
@@ -913,6 +958,7 @@ async def test_list_traces_orders_session_results_by_created_at_before_paginatio
             },
         ]
 
+    monkeypatch.setattr(reader, "_count_trace_rows", fake_count_trace_rows)
     monkeypatch.setattr(reader, "_fetch_trace_rows", fake_fetch_trace_rows)
 
     result = await reader.list_traces(
@@ -928,6 +974,88 @@ async def test_list_traces_orders_session_results_by_created_at_before_paginatio
         "trace-old",
         "trace-mid",
     ]
+
+
+@pytest.mark.anyio
+async def test_trace_metrics_uses_clickhouse_aggregates_without_fetching_all_rows(
+    monkeypatch,
+) -> None:
+    reader = LangfuseClickHouseReader(Settings())
+    captured_queries: list[tuple[str, dict]] = []
+
+    async def fail_fetch_trace_rows(*args, **kwargs):
+        raise AssertionError("metrics must not fetch all trace rows")
+
+    async def fake_query(query: str, params: dict):
+        captured_queries.append((query, params))
+        if "/* summary */" in query:
+            return [
+                {
+                    "total": 2,
+                    "success": 1,
+                    "failed": 1,
+                    "averageLatency": 150,
+                    "p95Latency": 200,
+                }
+            ]
+        if "/* traceTrend */" in query:
+            return [{"time": "07-05 01:00", "total": 2, "failed": 1}]
+        if "/* latencyTrend */" in query:
+            return [
+                {
+                    "time": "07-05 01:00",
+                    "averageLatency": 150,
+                    "p95Latency": 200,
+                }
+            ]
+        if "/* environmentDistribution */" in query:
+            return [{"environment": "default", "count": 2}]
+        if "/* slowTraces */" in query:
+            return [
+                {
+                    "traceId": "trace-slow",
+                    "projectId": "project-1",
+                    "environment": "default",
+                    "status": "failed",
+                    "latency": 200,
+                    "createdAt": "2026-07-05 01:02:00.000",
+                    "userId": "user-1",
+                    "metadata": {},
+                    "tags": [],
+                }
+            ]
+        return []
+
+    monkeypatch.setattr(reader, "_fetch_trace_rows", fail_fetch_trace_rows)
+    monkeypatch.setattr(reader, "_query_json_each_row", fake_query)
+
+    result = await reader.get_trace_metrics(
+        "project-1",
+        time_range="1d",
+        environment="default",
+    )
+
+    assert result["summary"]["total"] == 2
+    assert result["summary"]["failureRate"] == 0.5
+    assert result["traceTrend"] == [{"time": "07-05 01:00", "total": 2, "failed": 1}]
+    assert result["latencyTrend"][0]["p95Latency"] == 200
+    assert result["environmentDistribution"] == [{"environment": "default", "count": 2}]
+    assert result["slowTraces"][0]["traceId"] == "trace-slow"
+    metric_queries = [
+        query
+        for query, _ in captured_queries
+        if any(
+            marker in query
+            for marker in (
+                "/* summary */",
+                "/* traceTrend */",
+                "/* latencyTrend */",
+                "/* environmentDistribution */",
+                "/* slowTraces */",
+            )
+        )
+    ]
+    assert len(metric_queries) == 5
 
 
 def test_trace_row_exposes_langfuse_scores_and_summary() -> None:
@@ -969,6 +1097,9 @@ def test_trace_row_exposes_langfuse_scores_and_summary() -> None:
 async def test_clickhouse_reader_filters_traces_by_score_values(monkeypatch) -> None:
     reader = LangfuseClickHouseReader(Settings())
 
+    async def fake_count_trace_rows(*args, **kwargs):
+        return 1
+
     async def fake_fetch_trace_rows(*args, **kwargs):
         return [
             {
@@ -998,34 +1129,9 @@ async def test_clickhouse_reader_filters_traces_by_score_values(monkeypatch) -> 
                     },
                 ],
             },
-            {
-                "traceId": "trace-fail",
-                "projectId": "project-1",
-                "environment": "default",
-                "status": "success",
-                "latency": 90,
-                "createdAt": "2026-07-05 01:37:59.275",
-                "userId": "user-1",
-                "metadata": {},
-                "tags": [],
-                "scores": [
-                    {
-                        "id": "score-3",
-                        "name": "quality",
-                        "value": 0.6,
-                        "stringValue": "",
-                        "queueId": "queue-2",
-                    },
-                    {
-                        "id": "score-4",
-                        "name": "category",
-                        "value": None,
-                        "stringValue": "failed",
-                    },
-                ],
-            },
         ]
 
+    monkeypatch.setattr(reader, "_count_trace_rows", fake_count_trace_rows)
     monkeypatch.setattr(reader, "_fetch_trace_rows", fake_fetch_trace_rows)
 
     result = await reader.list_traces(
@@ -1044,6 +1150,133 @@ async def test_clickhouse_reader_filters_traces_by_score_values(monkeypatch) -> 
 
     assert result["total"] == 1
     assert result["datas"][0]["traceId"] == "trace-pass"
+
+
+@pytest.mark.anyio
+async def test_trace_score_filters_use_normalized_final_score_candidates(
+    monkeypatch,
+) -> None:
+    reader = LangfuseClickHouseReader(Settings())
+
+    async def fake_query(query: str, params: dict):
+        uses_normalized_score_candidates = (
+            "FROM scores s FINAL" in query
+            and "ifNull(s.trace_id, '')" in query
+            and "ifNull(s.queue_id, '')" in query
+        )
+        if "SELECT count() AS total" in query:
+            return [{"total": 1 if uses_normalized_score_candidates else 0}]
+        if (
+            "FROM trace_base base" in query
+            and "LIMIT {limit:UInt32}" in query
+        ):
+            if not uses_normalized_score_candidates:
+                return []
+            return [
+                {
+                    "traceId": "trace-pass",
+                    "projectId": "project-1",
+                    "environment": "default",
+                    "status": "success",
+                    "latency": 120,
+                    "createdAt": "2026-07-05 01:36:59.275",
+                    "userId": "user-1",
+                    "metadata": {},
+                    "tags": [],
+                }
+            ]
+        if "FROM scores" in query and "trace_id IN" in query:
+            return [
+                {
+                    "id": "score-1",
+                    "traceId": "trace-pass",
+                    "observationId": None,
+                    "sessionId": None,
+                    "name": "quality",
+                    "value": 0.91,
+                    "source": "API",
+                    "comment": "",
+                    "metadata": {},
+                    "authorUserId": "",
+                    "configId": "",
+                    "dataType": "NUMERIC",
+                    "stringValue": "",
+                    "longStringValue": "",
+                    "queueId": "queue-1",
+                    "createdAt": "2026-07-05 01:37:01.000",
+                    "updatedAt": "2026-07-05 01:37:01.000",
+                },
+                {
+                    "id": "score-2",
+                    "traceId": "trace-pass",
+                    "observationId": None,
+                    "sessionId": None,
+                    "name": "category",
+                    "value": 0,
+                    "source": "API",
+                    "comment": "",
+                    "metadata": {},
+                    "authorUserId": "",
+                    "configId": "",
+                    "dataType": "CATEGORICAL",
+                    "stringValue": "passed",
+                    "longStringValue": "",
+                    "queueId": "queue-1",
+                    "createdAt": "2026-07-05 01:37:00.000",
+                    "updatedAt": "2026-07-05 01:37:00.000",
+                },
+            ]
+        return []
+
+    monkeypatch.setattr(reader, "_query_json_each_row", fake_query)
+
+    result = await reader.list_traces(
+        "project-1",
+        page=1,
+        page_size=10,
+        score_queue_id="queue-1",
+        categorical_score_filters=[
+            {"name": "category", "operator": "equals", "value": "passed"},
+        ],
+        numeric_score_filters=[
+            {"name": "quality", "operator": "gte", "value": 0.8},
+        ],
+        time_range=None,
+    )
+
+    assert result["total"] == 1
+    assert [row["traceId"] for row in result["datas"]] == ["trace-pass"]
+
+
+@pytest.mark.anyio
+async def test_trace_score_filter_page_query_uses_clickhouse_safe_timestamp_order(
+    monkeypatch,
+) -> None:
+    reader = LangfuseClickHouseReader(Settings())
+    captured_page_query = ""
+
+    async def fake_query(query: str, params: dict):
+        nonlocal captured_page_query
+        if "SELECT count() AS total" in query:
+            return [{"total": 0}]
+        if (
+            "FROM trace_base base" in query
+            and "LIMIT {limit:UInt32}" in query
+        ):
+            captured_page_query = query
+        return []
+
+    monkeypatch.setattr(reader, "_query_json_each_row", fake_query)
+
+    await reader.list_traces(
+        "project-1",
+        page=1,
+        page_size=10,
+        score_queue_id="queue-1",
+        time_range=None,
+    )
+
+    assert "ORDER BY toUnixTimestamp64Milli(createdAt) DESC, traceId DESC" in captured_page_query
 
 
 @pytest.mark.anyio

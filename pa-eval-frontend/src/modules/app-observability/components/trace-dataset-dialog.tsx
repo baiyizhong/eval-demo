@@ -30,6 +30,7 @@ import { Textarea } from '@/components/ui/textarea'
 import { BaseForm } from '@/components/common/base-form'
 import type { DataTableQueryState } from '@/components/common/data-table'
 import { FormDialog } from '@/components/common/form-dialog'
+import type { TraceDatasetAddProgress } from '../api/trace-dataset-api'
 import type { TraceLogRow } from '../types'
 
 type TraceDatasetMode = 'existing' | 'create'
@@ -80,6 +81,7 @@ type TraceDatasetDialogProps = {
   description?: string
   dataRange?: TraceDatasetDataRange
   dataRangeOptions?: TraceDatasetDataRangeOption[]
+  importProgress?: TraceDatasetAddProgress | null
   onDataRangeChange?: (range: TraceDatasetDataRange) => void
   onOpenChange: (open: boolean) => void
   onSubmit: (values: TraceDatasetSubmitValues) => Promise<void> | void
@@ -103,12 +105,14 @@ export function TraceDatasetDialog({
   description: descriptionProp,
   dataRange,
   dataRangeOptions = DEFAULT_TRACE_DATASET_DATA_RANGE_OPTIONS,
+  importProgress,
   onDataRangeChange,
   onOpenChange,
   onSubmit,
 }: TraceDatasetDialogProps) {
   const $api = useAPI()
   const [mode, setMode] = useState<TraceDatasetMode>('existing')
+  const [isSubmitting, setIsSubmitting] = useState(false)
   const datasetsQuery = useQuery({
     queryKey: ['project-datasets', $api, projectId, 'trace-dialog'],
     queryFn: () => listProjectDatasets($api, projectId, datasetQuery, 'all'),
@@ -128,18 +132,42 @@ export function TraceDatasetDialog({
       ? `将符合当前筛选条件的 ${selectedCount ?? traces.length} 条 Trace 写入目标数据集。`
       : `将 ${selectedCount ?? traces.length} 条 Trace 写入目标数据集。`
   }, [descriptionProp, isCrossPageSelection, selectedCount, traces.length])
+  const submitValues = async (values: TraceDatasetSubmitValues) => {
+    setIsSubmitting(true)
+    try {
+      await onSubmit(values)
+      onOpenChange(false)
+    } finally {
+      setIsSubmitting(false)
+    }
+  }
+  const handleOpenChange = (nextOpen: boolean) => {
+    if (isSubmitting && !nextOpen) {
+      return
+    }
+    onOpenChange(nextOpen)
+  }
 
   return (
     <FormDialog
       open={open}
-      onOpenChange={onOpenChange}
+      onOpenChange={handleOpenChange}
       title='加入数据集'
       description={description}
       confirmText={mode === 'existing' ? '确认加入' : '创建并加入'}
-      confirmProps={{ type: 'submit', form: confirmFormId }}
+      cancelProps={{ disabled: isSubmitting }}
+      confirmProps={{
+        type: 'submit',
+        form: confirmFormId,
+        disabled: isSubmitting,
+      }}
       bodyProps={{ className: 'max-h-[70vh] overflow-auto' }}
     >
       <div className='flex flex-col gap-4'>
+        {importProgress ? (
+          <TraceDatasetImportProgress progress={importProgress} />
+        ) : null}
+
         {dataRange ? (
           <div className='grid gap-2'>
             <Label htmlFor={dataRangeSelectId}>数据范围</Label>
@@ -182,8 +210,7 @@ export function TraceDatasetDialog({
             schema={existingDatasetSchema}
             defaultValues={{ datasetId: '' }}
             onSubmit={async (values) => {
-              await onSubmit({ mode: 'existing', ...values, dataRange })
-              onOpenChange(false)
+              await submitValues({ mode: 'existing', ...values, dataRange })
             }}
             className='flex flex-col gap-4 p-0'
           >
@@ -233,12 +260,11 @@ export function TraceDatasetDialog({
               datasetType: 'evaluation',
             }}
             onSubmit={async (values: CreateDatasetFormValues) => {
-              await onSubmit({
+              await submitValues({
                 mode: 'create',
                 ...values,
                 dataRange,
               })
-              onOpenChange(false)
             }}
             className='flex flex-col gap-4 p-0'
           >
@@ -321,6 +347,49 @@ export function TraceDatasetDialog({
         )}
       </div>
     </FormDialog>
+  )
+}
+
+function TraceDatasetImportProgress({
+  progress,
+}: {
+  progress: TraceDatasetAddProgress
+}) {
+  const isPreparing =
+    progress.status === 'running' &&
+    progress.percent === 0 &&
+    progress.completedCount === 0
+  const statusText =
+    progress.status === 'failed'
+      ? '导入失败'
+      : progress.status === 'succeeded'
+        ? '导入完成'
+        : isPreparing
+          ? '准备导入数据'
+          : '正在加入数据集'
+
+  return (
+    <div className='grid gap-2 rounded-md border bg-muted/30 p-3'>
+      <div className='flex items-center justify-between gap-3 text-sm'>
+        <span className='font-medium'>{statusText}</span>
+        <span className='text-muted-foreground'>{progress.percent}%</span>
+      </div>
+      <div
+        className='h-2 overflow-hidden rounded-full bg-muted'
+        role='progressbar'
+        aria-valuemin={0}
+        aria-valuemax={100}
+        aria-valuenow={progress.percent}
+      >
+        <div
+          className='h-full rounded-full bg-primary transition-all'
+          style={{ width: `${progress.percent}%` }}
+        />
+      </div>
+      <div className='text-xs text-muted-foreground'>
+        已处理 {progress.completedCount} / {progress.totalCount} 条
+      </div>
+    </div>
   )
 }
 

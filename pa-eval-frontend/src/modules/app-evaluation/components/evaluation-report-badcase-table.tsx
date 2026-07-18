@@ -2,11 +2,15 @@ import { useCallback, useState } from 'react'
 import { useQueryClient } from '@tanstack/react-query'
 import type { Table } from '@tanstack/react-table'
 import {
+  buildInitialTraceAnnotationTaskProgress,
   createProjectAnnotationQueue,
   createTraceAnnotationTask,
+  type TraceAnnotationTaskProgress,
 } from '@/modules/app-evaluation/api/annotation-api'
 import {
   addProjectTracesToDatasetTarget,
+  buildInitialTraceDatasetAddProgress,
+  type TraceDatasetAddProgress,
   type TraceDatasetTargetInput,
 } from '@/modules/app-observability/api/trace-dataset-api'
 import { TraceAnnotationDialog } from '@/modules/app-observability/components/trace-annotation-dialog'
@@ -145,7 +149,11 @@ function EvaluationReportBadcaseBulkActions({
   const $api = useAPI()
   const queryClient = useQueryClient()
   const [datasetDialogOpen, setDatasetDialogOpen] = useState(false)
+  const [datasetImportProgress, setDatasetImportProgress] =
+    useState<TraceDatasetAddProgress | null>(null)
   const [annotationDialogOpen, setAnnotationDialogOpen] = useState(false)
+  const [annotationTaskProgress, setAnnotationTaskProgress] =
+    useState<TraceAnnotationTaskProgress | null>(null)
   const currentUserEmail = useSessionStore((state) => state.user?.email ?? '')
   const selectedRows = table.getFilteredSelectedRowModel().rows
   const selectedBadcases = selectedRows.map((row) => row.original)
@@ -189,6 +197,18 @@ function EvaluationReportBadcaseBulkActions({
   const clearBulkSelection = () => {
     selection.clearSelection()
   }
+  const handleDatasetDialogOpenChange = (open: boolean) => {
+    if (!open) {
+      setDatasetImportProgress(null)
+    }
+    setDatasetDialogOpen(open)
+  }
+  const handleAnnotationDialogOpenChange = (open: boolean) => {
+    if (!open) {
+      setAnnotationTaskProgress(null)
+    }
+    setAnnotationDialogOpen(open)
+  }
 
   const resolveSelectedTraceIds = async () => {
     const badcases = await fetchAllMatchingBadcases()
@@ -213,6 +233,12 @@ function EvaluationReportBadcaseBulkActions({
 
   const handleAddToDataset = async (values: TraceDatasetSubmitValues) => {
     try {
+      setDatasetImportProgress(null)
+      if (selectedCount >= 1000) {
+        setDatasetImportProgress(
+          buildInitialTraceDatasetAddProgress(selectedCount)
+        )
+      }
       const traceIds = await resolveSelectedTraceIds()
       const input: TraceDatasetTargetInput =
         values.mode === 'existing'
@@ -231,7 +257,10 @@ function EvaluationReportBadcaseBulkActions({
       const result = await addProjectTracesToDatasetTarget(
         $api,
         projectId,
-        input
+        input,
+        {
+          onProgress: setDatasetImportProgress,
+        }
       )
       await queryClient.invalidateQueries({
         queryKey: ['project-datasets', projectId],
@@ -249,6 +278,7 @@ function EvaluationReportBadcaseBulkActions({
           : successMessage
       )
       clearBulkSelection()
+      setDatasetImportProgress(null)
     } catch (error) {
       toast.error(error instanceof Error ? error.message : '加入数据集失败')
       throw error
@@ -257,12 +287,18 @@ function EvaluationReportBadcaseBulkActions({
 
   const handleSubmitExistingAnnotation = async (queueId: string) => {
     try {
+      setAnnotationTaskProgress(null)
+      if (selectedCount >= 1000) {
+        setAnnotationTaskProgress(
+          buildInitialTraceAnnotationTaskProgress(selectedCount)
+        )
+      }
       const traceIds = await resolveSelectedTraceIds()
       const result = await createTraceAnnotationTask(
         $api,
         projectId,
         traceIds,
-        { queueId }
+        { queueId, onProgress: setAnnotationTaskProgress }
       )
       await queryClient.invalidateQueries({
         queryKey: ['project-annotation-queues', projectId],
@@ -271,6 +307,7 @@ function EvaluationReportBadcaseBulkActions({
         `已加入人工标注队列：新增 ${result.createdCount} 条，跳过 ${result.skippedCount} 条`
       )
       clearBulkSelection()
+      setAnnotationTaskProgress(null)
     } catch (error) {
       toast.error(
         error instanceof Error ? error.message : '加入人工标注队列失败'
@@ -281,13 +318,19 @@ function EvaluationReportBadcaseBulkActions({
 
   const handleSubmitNewAnnotation = async (input: AnnotationQueueFormInput) => {
     try {
+      setAnnotationTaskProgress(null)
+      if (selectedCount >= 1000) {
+        setAnnotationTaskProgress(
+          buildInitialTraceAnnotationTaskProgress(selectedCount)
+        )
+      }
       const queue = await createProjectAnnotationQueue($api, projectId, input)
       const traceIds = await resolveSelectedTraceIds()
       const result = await createTraceAnnotationTask(
         $api,
         projectId,
         traceIds,
-        { queueId: queue.id }
+        { queueId: queue.id, onProgress: setAnnotationTaskProgress }
       )
       await queryClient.invalidateQueries({
         queryKey: ['project-annotation-queues', projectId],
@@ -296,6 +339,7 @@ function EvaluationReportBadcaseBulkActions({
         `已创建人工标注任务：新增 ${result.createdCount} 条，跳过 ${result.skippedCount} 条`
       )
       clearBulkSelection()
+      setAnnotationTaskProgress(null)
     } catch (error) {
       toast.error(
         error instanceof Error ? error.message : '创建人工标注任务失败'
@@ -328,7 +372,7 @@ function EvaluationReportBadcaseBulkActions({
               type='button'
               size='sm'
               variant='outline'
-              onClick={() => setDatasetDialogOpen(true)}
+              onClick={() => handleDatasetDialogOpenChange(true)}
             >
               <Database data-icon='inline-start' />
               加入数据集
@@ -336,7 +380,7 @@ function EvaluationReportBadcaseBulkActions({
             <Button
               type='button'
               size='sm'
-              onClick={() => setAnnotationDialogOpen(true)}
+              onClick={() => handleAnnotationDialogOpenChange(true)}
             >
               <Tags data-icon='inline-start' />
               人工标注
@@ -351,7 +395,8 @@ function EvaluationReportBadcaseBulkActions({
         traces={[]}
         selectedCount={selectedCount}
         isCrossPageSelection={shouldUseAllMatchingRows}
-        onOpenChange={setDatasetDialogOpen}
+        importProgress={datasetImportProgress}
+        onOpenChange={handleDatasetDialogOpenChange}
         onSubmit={handleAddToDataset}
       />
       <TraceAnnotationDialog
@@ -362,7 +407,8 @@ function EvaluationReportBadcaseBulkActions({
         traces={[]}
         selectedCount={selectedCount}
         isCrossPageSelection={shouldUseAllMatchingRows}
-        onOpenChange={setAnnotationDialogOpen}
+        taskProgress={annotationTaskProgress}
+        onOpenChange={handleAnnotationDialogOpenChange}
         onSubmitExisting={handleSubmitExistingAnnotation}
         onSubmitNew={handleSubmitNewAnnotation}
       />

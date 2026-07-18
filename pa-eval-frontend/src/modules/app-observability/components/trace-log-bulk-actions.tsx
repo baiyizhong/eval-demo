@@ -2,8 +2,10 @@ import { useState } from 'react'
 import { useQueryClient } from '@tanstack/react-query'
 import type { Table } from '@tanstack/react-table'
 import {
+  buildInitialTraceAnnotationTaskProgress,
   createProjectAnnotationQueue,
   createTraceAnnotationTask,
+  type TraceAnnotationTaskProgress,
 } from '@/modules/app-evaluation/api/annotation-api'
 import type { AnnotationQueueFormInput } from '@/modules/app-evaluation/types'
 import { Database, Download, Tags } from 'lucide-react'
@@ -17,6 +19,8 @@ import {
 } from '@/components/common/data-table'
 import {
   addProjectTracesToDatasetTarget,
+  buildInitialTraceDatasetAddProgress,
+  type TraceDatasetAddProgress,
   type TraceDatasetTargetInput,
 } from '../api/trace-dataset-api'
 import type { TraceListResponse, TraceLogRow } from '../types'
@@ -45,7 +49,11 @@ export function TraceLogBulkActions({
   const { can } = usePermission({ type: 'project', projectId })
   const canEditTrace = can('project:trace:edit')
   const [datasetDialogOpen, setDatasetDialogOpen] = useState(false)
+  const [datasetImportProgress, setDatasetImportProgress] =
+    useState<TraceDatasetAddProgress | null>(null)
   const [annotationDialogOpen, setAnnotationDialogOpen] = useState(false)
+  const [annotationTaskProgress, setAnnotationTaskProgress] =
+    useState<TraceAnnotationTaskProgress | null>(null)
   const selectedRows = table.getFilteredSelectedRowModel().rows
   const selectedTraces = selectedRows.map((row) => row.original)
   const shouldUseAllMatchingRows = Boolean(
@@ -100,6 +108,18 @@ export function TraceLogBulkActions({
 
     table.resetRowSelection()
   }
+  const handleDatasetDialogOpenChange = (open: boolean) => {
+    if (!open) {
+      setDatasetImportProgress(null)
+    }
+    setDatasetDialogOpen(open)
+  }
+  const handleAnnotationDialogOpenChange = (open: boolean) => {
+    if (!open) {
+      setAnnotationTaskProgress(null)
+    }
+    setAnnotationDialogOpen(open)
+  }
 
   const handleExport = async () => {
     const traces = await resolveSelectedTraces()
@@ -117,6 +137,12 @@ export function TraceLogBulkActions({
 
   const handleCreateAnnotationTask = async (queueId: string) => {
     try {
+      setAnnotationTaskProgress(null)
+      if (selectedCount >= 1000) {
+        setAnnotationTaskProgress(
+          buildInitialTraceAnnotationTaskProgress(selectedCount)
+        )
+      }
       const traceIds = await resolveSelectedTraceIds()
       const result = await createTraceAnnotationTask(
         $api,
@@ -124,6 +150,7 @@ export function TraceLogBulkActions({
         traceIds,
         {
           queueId,
+          onProgress: setAnnotationTaskProgress,
         }
       )
       await queryClient.invalidateQueries({
@@ -133,6 +160,7 @@ export function TraceLogBulkActions({
         `已加入人工标注队列：新增 ${result.createdCount} 条，跳过 ${result.skippedCount} 条`
       )
       clearBulkSelection()
+      setAnnotationTaskProgress(null)
     } catch (error) {
       toast.error(
         error instanceof Error ? error.message : '创建人工标注任务失败'
@@ -144,6 +172,12 @@ export function TraceLogBulkActions({
     input: AnnotationQueueFormInput
   ) => {
     try {
+      setAnnotationTaskProgress(null)
+      if (selectedCount >= 1000) {
+        setAnnotationTaskProgress(
+          buildInitialTraceAnnotationTaskProgress(selectedCount)
+        )
+      }
       const queue = await createProjectAnnotationQueue($api, projectId, input)
       const traceIds = await resolveSelectedTraceIds()
       const result = await createTraceAnnotationTask(
@@ -152,6 +186,7 @@ export function TraceLogBulkActions({
         traceIds,
         {
           queueId: queue.id,
+          onProgress: setAnnotationTaskProgress,
         }
       )
       await queryClient.invalidateQueries({
@@ -161,6 +196,7 @@ export function TraceLogBulkActions({
         `已创建人工标注任务：新增 ${result.createdCount} 条，跳过 ${result.skippedCount} 条`
       )
       clearBulkSelection()
+      setAnnotationTaskProgress(null)
     } catch (error) {
       toast.error(
         error instanceof Error ? error.message : '创建人工标注任务失败'
@@ -171,6 +207,12 @@ export function TraceLogBulkActions({
 
   const handleAddToDataset = async (values: TraceDatasetSubmitValues) => {
     try {
+      setDatasetImportProgress(null)
+      if (selectedCount >= 1000) {
+        setDatasetImportProgress(
+          buildInitialTraceDatasetAddProgress(selectedCount)
+        )
+      }
       const traceIds = await resolveSelectedTraceIds()
       const input: TraceDatasetTargetInput =
         values.mode === 'existing'
@@ -189,7 +231,10 @@ export function TraceLogBulkActions({
       const result = await addProjectTracesToDatasetTarget(
         $api,
         projectId,
-        input
+        input,
+        {
+          onProgress: setDatasetImportProgress,
+        }
       )
       await queryClient.invalidateQueries({
         queryKey: ['project-datasets', projectId],
@@ -207,6 +252,7 @@ export function TraceLogBulkActions({
           : successMessage
       )
       clearBulkSelection()
+      setDatasetImportProgress(null)
     } catch (error) {
       toast.error(error instanceof Error ? error.message : '加入数据集失败')
       throw error
@@ -237,7 +283,7 @@ export function TraceLogBulkActions({
               type='button'
               size='sm'
               variant='outline'
-              onClick={() => setDatasetDialogOpen(true)}
+              onClick={() => handleDatasetDialogOpenChange(true)}
             >
               <Database data-icon='inline-start' />
               加入数据集
@@ -245,7 +291,7 @@ export function TraceLogBulkActions({
             <Button
               type='button'
               size='sm'
-              onClick={() => setAnnotationDialogOpen(true)}
+              onClick={() => handleAnnotationDialogOpenChange(true)}
             >
               <Tags data-icon='inline-start' />
               人工标注
@@ -260,7 +306,8 @@ export function TraceLogBulkActions({
         traces={selectedTraces}
         selectedCount={selectedCount}
         isCrossPageSelection={isCrossPageSelection}
-        onOpenChange={setDatasetDialogOpen}
+        importProgress={datasetImportProgress}
+        onOpenChange={handleDatasetDialogOpenChange}
         onSubmit={handleAddToDataset}
       />
       <TraceAnnotationDialog
@@ -270,7 +317,8 @@ export function TraceLogBulkActions({
         traces={selectedTraces}
         selectedCount={selectedCount}
         isCrossPageSelection={isCrossPageSelection}
-        onOpenChange={setAnnotationDialogOpen}
+        taskProgress={annotationTaskProgress}
+        onOpenChange={handleAnnotationDialogOpenChange}
         onSubmitExisting={handleCreateAnnotationTask}
         onSubmitNew={handleCreateAnnotationQueueAndTask}
       />

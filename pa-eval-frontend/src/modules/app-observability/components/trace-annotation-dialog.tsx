@@ -6,6 +6,7 @@ import {
   listProjectAnnotationQueues,
   listProjectAnnotationUsers,
   listProjectScoreConfigsForAnnotation,
+  type TraceAnnotationTaskProgress,
 } from '@/modules/app-evaluation/api/annotation-api'
 import {
   AnnotationAssignmentFields,
@@ -66,6 +67,7 @@ type TraceAnnotationDialogProps = {
   isCrossPageSelection?: boolean
   projectName?: string
   defaultDescription?: string
+  taskProgress?: TraceAnnotationTaskProgress | null
   onOpenChange: (open: boolean) => void
   onSubmitExisting: (queueId: string) => Promise<void> | void
   onSubmitNew: (input: AnnotationQueueFormInput) => Promise<void> | void
@@ -87,12 +89,14 @@ export function TraceAnnotationDialog({
   isCrossPageSelection = false,
   projectName,
   defaultDescription = '',
+  taskProgress,
   onOpenChange,
   onSubmitExisting,
   onSubmitNew,
 }: TraceAnnotationDialogProps) {
   const $api = useAPI()
   const [mode, setMode] = useState<AnnotationMode>('existing')
+  const [isSubmitting, setIsSubmitting] = useState(false)
   const existingFormId = 'trace-existing-annotation-form'
   const newFormId = 'trace-new-annotation-form'
 
@@ -123,19 +127,52 @@ export function TraceAnnotationDialog({
         : `将 ${selectedCount ?? traces.length} 条 Trace 加入人工标注队列。`,
     [isCrossPageSelection, selectedCount, traces.length]
   )
+  const submitExisting = async (queueId: string) => {
+    setIsSubmitting(true)
+    try {
+      await onSubmitExisting(queueId)
+      onOpenChange(false)
+    } finally {
+      setIsSubmitting(false)
+    }
+  }
+  const submitNew = async (input: AnnotationQueueFormInput) => {
+    setIsSubmitting(true)
+    try {
+      await onSubmitNew(input)
+      onOpenChange(false)
+    } finally {
+      setIsSubmitting(false)
+    }
+  }
+  const handleOpenChange = (nextOpen: boolean) => {
+    if (isSubmitting && !nextOpen) {
+      return
+    }
+    onOpenChange(nextOpen)
+  }
 
   return (
     <FormDialog
       open={open}
-      onOpenChange={onOpenChange}
+      onOpenChange={handleOpenChange}
       title='发起人工标注'
       description={description}
       size='lg'
       confirmText={mode === 'existing' ? '加入队列' : '创建并加入'}
-      confirmProps={{ type: 'submit', form: confirmFormId }}
+      cancelProps={{ disabled: isSubmitting }}
+      confirmProps={{
+        type: 'submit',
+        form: confirmFormId,
+        disabled: isSubmitting,
+      }}
       bodyProps={{ className: 'max-h-[70vh] overflow-auto' }}
     >
       <div className='flex flex-col gap-4'>
+        {taskProgress ? (
+          <TraceAnnotationTaskProgressPanel progress={taskProgress} />
+        ) : null}
+
         <Tabs
           value={mode}
           onValueChange={(value) => setMode(value as AnnotationMode)}
@@ -153,8 +190,7 @@ export function TraceAnnotationDialog({
             schema={existingQueueSchema}
             defaultValues={{ queueId: '' }}
             onSubmit={async (values) => {
-              await onSubmitExisting(values.queueId)
-              onOpenChange(false)
+              await submitExisting(values.queueId)
             }}
             className='flex flex-col gap-4 p-0'
           >
@@ -206,8 +242,7 @@ export function TraceAnnotationDialog({
               assignmentWeights: {},
             }}
             onSubmit={async (values) => {
-              await onSubmitNew(normalizeAnnotationQueueFormValues(values))
-              onOpenChange(false)
+              await submitNew(normalizeAnnotationQueueFormValues(values))
             }}
             className='flex flex-col gap-4 p-0'
           >
@@ -374,6 +409,49 @@ function normalizeAnnotationQueueFormValues(
     assignmentStrategy,
     assignmentWeights,
   }
+}
+
+function TraceAnnotationTaskProgressPanel({
+  progress,
+}: {
+  progress: TraceAnnotationTaskProgress
+}) {
+  const isPreparing =
+    progress.status === 'running' &&
+    progress.percent === 0 &&
+    progress.completedCount === 0
+  const statusText =
+    progress.status === 'failed'
+      ? '创建失败'
+      : progress.status === 'succeeded'
+        ? '创建完成'
+        : isPreparing
+          ? '准备创建任务'
+          : '正在创建任务'
+
+  return (
+    <div className='grid gap-2 rounded-md border bg-muted/30 p-3'>
+      <div className='flex items-center justify-between gap-3 text-sm'>
+        <span className='font-medium'>{statusText}</span>
+        <span className='text-muted-foreground'>{progress.percent}%</span>
+      </div>
+      <div
+        className='h-2 overflow-hidden rounded-full bg-muted'
+        role='progressbar'
+        aria-valuemin={0}
+        aria-valuemax={100}
+        aria-valuenow={progress.percent}
+      >
+        <div
+          className='h-full rounded-full bg-primary transition-all'
+          style={{ width: `${progress.percent}%` }}
+        />
+      </div>
+      <div className='text-xs text-muted-foreground'>
+        已处理 {progress.completedCount} / {progress.totalCount} 条
+      </div>
+    </div>
+  )
 }
 
 function buildDefaultAnnotationTaskName(

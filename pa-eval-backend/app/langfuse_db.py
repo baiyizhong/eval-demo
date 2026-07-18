@@ -73,6 +73,8 @@ ORG_READ_PERMISSIONS = [
     "org:organization:view",
 ]
 
+TRACE_DATASET_INSERT_BATCH_SIZE = 500
+
 PROJECT_ADMIN_PERMISSIONS = [
     "project:trace:view",
     "project:trace:edit",
@@ -1356,10 +1358,31 @@ class LangfuseDatabaseReader:
         self,
         project_id: str,
         user_id: str,
-    ) -> list[dict[str, Any]]:
+        *,
+        page: int | None = None,
+        page_size: int | None = None,
+        keyword: str | None = None,
+        dataset_type: str | None = None,
+    ) -> dict[str, Any]:
         await self._ensure_project_visible(project_id, user_id)
+        where_sql, params = self._build_dataset_filters(
+            project_id,
+            keyword=keyword,
+            dataset_type=dataset_type,
+        )
+        count_rows = await self._fetch_all(
+            f"""
+            SELECT COUNT(*)::int AS total
+            FROM datasets d
+            WHERE {where_sql}
+            """,
+            params,
+        )
+        total = count_rows[0]["total"] if count_rows else 0
+        limit = page_size or 1000
+        offset = ((page or 1) - 1) * limit
         rows = await self._fetch_all(
-            """
+            f"""
             SELECT
                 d.id,
                 d.project_id,
@@ -1387,12 +1410,14 @@ class LangfuseDatabaseReader:
                 WHERE dr.dataset_id = d.id
                   AND dr.project_id = d.project_id
             ) run_counts ON TRUE
-            WHERE d.project_id = %(project_id)s
+            WHERE {where_sql}
             ORDER BY d.updated_at DESC, d.created_at DESC, d.id DESC
+            LIMIT %(limit)s
+            OFFSET %(offset)s
             """,
-            {"project_id": project_id},
+            {**params, "limit": limit, "offset": offset},
         )
-        return [self._to_dataset_payload(row) for row in rows]
+        return {"total": total, "datas": [self._to_dataset_payload(row) for row in rows]}
 
     async def get_dataset_for_user(
         self,
@@ -1689,10 +1714,33 @@ class LangfuseDatabaseReader:
         project_id: str,
         dataset_id: str,
         user_id: str,
-    ) -> list[dict[str, Any]]:
-        await self.get_dataset_for_user(project_id, dataset_id, user_id)
+        *,
+        page: int | None = None,
+        page_size: int | None = None,
+        keyword: str | None = None,
+        status: list[str] | None = None,
+    ) -> dict[str, Any]:
+        await self._ensure_project_visible(project_id, user_id)
+        await self._ensure_dataset_visible(project_id, dataset_id)
+        where_sql, params = self._build_dataset_item_filters(
+            project_id,
+            dataset_id,
+            keyword=keyword,
+            status=status,
+        )
+        count_rows = await self._fetch_all(
+            f"""
+            SELECT COUNT(*)::int AS total
+            FROM dataset_items di
+            WHERE {where_sql}
+            """,
+            params,
+        )
+        total = count_rows[0]["total"] if count_rows else 0
+        limit = page_size or 1000
+        offset = ((page or 1) - 1) * limit
         rows = await self._fetch_all(
-            """
+            f"""
             SELECT
                 di.id,
                 di.project_id,
@@ -1707,14 +1755,76 @@ class LangfuseDatabaseReader:
                 di.created_at,
                 di.updated_at
             FROM dataset_items di
-            WHERE di.project_id = %(project_id)s
-              AND di.dataset_id = %(dataset_id)s
-              AND di.valid_to IS NULL
+            WHERE {where_sql}
             ORDER BY di.updated_at DESC, di.created_at DESC, di.id DESC
+            LIMIT %(limit)s
+            OFFSET %(offset)s
             """,
-            {"project_id": project_id, "dataset_id": dataset_id},
+            {**params, "limit": limit, "offset": offset},
         )
-        return [self._to_dataset_item_payload(row) for row in rows]
+        return {
+            "total": total,
+            "datas": [self._to_dataset_item_payload(row) for row in rows],
+        }
+
+    async def count_dataset_item_statuses_for_user(
+        self,
+        project_id: str,
+        dataset_id: str,
+        user_id: str,
+        *,
+        keyword: str | None = None,
+    ) -> dict[str, int]:
+        await self._ensure_project_visible(project_id, user_id)
+        await self._ensure_dataset_visible(project_id, dataset_id)
+        where_sql, params = self._build_dataset_item_filters(
+            project_id,
+            dataset_id,
+            keyword=keyword,
+        )
+        rows = await self._fetch_all(
+            f"""
+            SELECT
+                COUNT(*) FILTER (
+                    WHERE di.is_deleted IS FALSE
+                      AND COALESCE(di.status::text, 'ACTIVE') != 'ARCHIVED'
+                )::int AS active,
+                COUNT(*) FILTER (
+                    WHERE di.is_deleted IS TRUE
+                       OR COALESCE(di.status::text, 'ACTIVE') = 'ARCHIVED'
+                )::int AS archived
+            FROM dataset_items di
+            WHERE {where_sql}
+            """,
+            params,
+        )
+        row = rows[0] if rows else {}
+        return {"ACTIVE": row.get("active") or 0, "ARCHIVED": row.get("archived") or 0}
+
+    async def iter_dataset_items_for_export(
+        self,
+        project_id: str,
+        dataset_id: str,
+        user_id: str,
+        *,
+        batch_size: int = 1000,
+    ):
+        page = 1
+        while True:
+            result = await self.list_dataset_items_for_user(
+                project_id,
+                dataset_id,
+                user_id,
+                page=page,
+                page_size=batch_size,
+            )
+            items = result["datas"]
+            if not items:
+                break
+            yield items
+            if len(items) < batch_size:
+                break
+            page += 1
 
     async def create_dataset_item_for_user(
         self,
@@ -3720,34 +3830,59 @@ class LangfuseDatabaseReader:
                         payload,
                     )
 
-                created_count = 0
-                skipped_count = 0
+                await cursor.execute(
+                    """
+                    SELECT object_id
+                    FROM annotation_queue_items
+                    WHERE project_id = %(project_id)s
+                      AND queue_id = %(queue_id)s
+                      AND object_id = ANY(%(trace_ids)s)
+                      AND object_type::text = 'TRACE'
+                    """,
+                    {
+                        "project_id": project_id,
+                        "queue_id": queue_id,
+                        "trace_ids": trace_ids,
+                    },
+                )
+                existing_trace_ids = {
+                    str(row.get("object_id") or "") for row in await cursor.fetchall()
+                }
+                trace_ids_to_create = [
+                    trace_id for trace_id in trace_ids if trace_id not in existing_trace_ids
+                ]
+
                 created_item_ids: list[str] = []
                 created_items: list[dict[str, str]] = []
-                for trace_id in trace_ids:
-                    await cursor.execute(
-                        """
-                        SELECT id
-                        FROM annotation_queue_items
-                        WHERE project_id = %(project_id)s
-                          AND queue_id = %(queue_id)s
-                          AND object_id = %(trace_id)s
-                          AND object_type::text = 'TRACE'
-                        LIMIT 1
-                        """,
-                        {
-                            "project_id": project_id,
-                            "queue_id": queue_id,
-                            "trace_id": trace_id,
-                        },
-                    )
-                    if await cursor.fetchone():
-                        skipped_count += 1
-                        continue
+                for batch in _chunk_items(trace_ids_to_create, 500):
+                    values_sql: list[str] = []
+                    params: dict[str, Any] = {
+                        "project_id": project_id,
+                        "queue_id": queue_id,
+                    }
+                    batch_items: list[dict[str, str]] = []
+                    for index, trace_id in enumerate(batch):
+                        item_id = _new_langfuse_id("annitem")
+                        params[f"id_{index}"] = item_id
+                        params[f"trace_id_{index}"] = trace_id
+                        values_sql.append(
+                            f"""
+                            (
+                                %(id_{index})s,
+                                %(project_id)s,
+                                %(queue_id)s,
+                                %(trace_id_{index})s,
+                                'TRACE'::"AnnotationQueueObjectType",
+                                'PENDING'::"AnnotationQueueStatus",
+                                NOW(),
+                                NOW()
+                            )
+                            """
+                        )
+                        batch_items.append({"itemId": item_id, "traceId": trace_id})
 
-                    item_id = _new_langfuse_id("annitem")
                     await cursor.execute(
-                        """
+                        f"""
                         INSERT INTO annotation_queue_items (
                             id,
                             project_id,
@@ -3758,33 +3893,20 @@ class LangfuseDatabaseReader:
                             created_at,
                             updated_at
                         )
-                        VALUES (
-                            %(id)s,
-                            %(project_id)s,
-                            %(queue_id)s,
-                            %(trace_id)s,
-                            'TRACE'::"AnnotationQueueObjectType",
-                            'PENDING'::"AnnotationQueueStatus",
-                            NOW(),
-                            NOW()
-                        )
+                        VALUES {", ".join(values_sql)}
                         """,
-                        {
-                            "id": item_id,
-                            "project_id": project_id,
-                            "queue_id": queue_id,
-                            "trace_id": trace_id,
-                        },
+                        params,
                     )
-                    created_item_ids.append(item_id)
-                    created_items.append({"itemId": item_id, "traceId": trace_id})
-                    created_count += 1
+                    created_item_ids.extend(item["itemId"] for item in batch_items)
+                    created_items.extend(batch_items)
+
+                for item in created_items:
                     await _copy_existing_annotation_scores_for_item(
                         cursor,
                         project_id=project_id,
                         queue_id=queue_id,
-                        item_id=item_id,
-                        object_id=trace_id,
+                        item_id=item["itemId"],
+                        object_id=item["traceId"],
                         object_type="TRACE",
                         score_config_ids=score_config_ids,
                     )
@@ -3809,8 +3931,8 @@ class LangfuseDatabaseReader:
 
                 return {
                     "queueId": queue_id,
-                    "createdCount": created_count,
-                    "skippedCount": skipped_count,
+                    "createdCount": len(created_items),
+                    "skippedCount": len(existing_trace_ids),
                     "createdItems": created_items,
                     "scoreConfigIds": score_config_ids,
                 }
@@ -4100,7 +4222,7 @@ class LangfuseDatabaseReader:
         if not self._database_url:
             raise LangfuseDatabaseConfigError()
 
-        traces = payload.get("traces") or []
+        traces = _unique_traces_by_trace_id(payload.get("traces") or [])
         item_ids: list[str] = []
         async with await psycopg.AsyncConnection.connect(
             self._database_url,
@@ -4128,10 +4250,84 @@ class LangfuseDatabaseReader:
                         status_code=404,
                     )
 
-                for trace in traces:
-                    item_id = _new_langfuse_id("datasetitem")
+                for batch in _chunk_items(traces, TRACE_DATASET_INSERT_BATCH_SIZE):
+                    source_trace_ids = [
+                        str(trace.get("traceId") or "")
+                        for trace in batch
+                        if trace.get("traceId")
+                    ]
                     await cursor.execute(
                         """
+                        SELECT source_trace_id
+                        FROM dataset_items
+                        WHERE project_id = %(project_id)s
+                          AND dataset_id = %(dataset_id)s
+                          AND is_deleted IS FALSE
+                          AND source_trace_id = ANY(%(source_trace_ids)s)
+                        """,
+                        {
+                            "project_id": project_id,
+                            "dataset_id": payload["datasetId"],
+                            "source_trace_ids": source_trace_ids,
+                        },
+                    )
+                    existing_source_trace_ids = {
+                        str(row.get("source_trace_id") or "")
+                        for row in await cursor.fetchall()
+                    }
+                    batch = [
+                        trace
+                        for trace in batch
+                        if str(trace.get("traceId") or "")
+                        not in existing_source_trace_ids
+                    ]
+                    if not batch:
+                        continue
+
+                    values_sql: list[str] = []
+                    params: dict[str, Any] = {
+                        "project_id": project_id,
+                        "dataset_id": payload["datasetId"],
+                    }
+                    batch_item_ids: list[str] = []
+
+                    for index, trace in enumerate(batch):
+                        item_id = _new_langfuse_id("datasetitem")
+                        batch_item_ids.append(item_id)
+                        params[f"id_{index}"] = item_id
+                        params[f"input_{index}"] = Jsonb(
+                            {
+                                "input": _decode_jsonish(trace.get("input")),
+                                "output": _decode_jsonish(trace.get("output")),
+                            }
+                        )
+                        params[f"expected_output_{index}"] = Jsonb({})
+                        params[f"metadata_{index}"] = Jsonb(
+                            _trace_dataset_metadata(trace)
+                        )
+                        params[f"source_trace_id_{index}"] = trace.get("traceId") or ""
+                        values_sql.append(
+                            f"""
+                            (
+                                %(id_{index})s,
+                                %(project_id)s,
+                                %(dataset_id)s,
+                                'ACTIVE'::"DatasetStatus",
+                                %(input_{index})s,
+                                %(expected_output_{index})s,
+                                %(metadata_{index})s,
+                                %(source_trace_id_{index})s,
+                                '',
+                                NOW(),
+                                NOW(),
+                                NOW(),
+                                FALSE
+                            )
+                            """
+                        )
+
+                    await cursor.execute(
+                        f"""
                         INSERT INTO dataset_items (
                             id,
                             project_id,
@@ -4147,41 +4343,11 @@ class LangfuseDatabaseReader:
                             valid_from,
                             is_deleted
                         )
-                        VALUES (
-                            %(id)s,
-                            %(project_id)s,
-                            %(dataset_id)s,
-                            'ACTIVE'::"DatasetStatus",
-                            %(input)s,
-                            %(expected_output)s,
-                            %(metadata)s,
-                            %(source_trace_id)s,
-                            '',
-                            NOW(),
-                            NOW(),
-                            NOW(),
-                            FALSE
-                        )
-                        RETURNING id
+                        VALUES {", ".join(values_sql)}
                         """,
-                        {
-                            "id": item_id,
-                            "project_id": project_id,
-                            "dataset_id": payload["datasetId"],
-                            "input": Jsonb(
-                                {
-                                    "input": _decode_jsonish(trace.get("input")),
-                                    "output": _decode_jsonish(trace.get("output")),
-                                }
-                            ),
-                            "expected_output": Jsonb({}),
-                            "metadata": Jsonb(_trace_dataset_metadata(trace)),
-                            "source_trace_id": trace.get("traceId") or "",
-                        },
+                        params,
                     )
-                    row = await cursor.fetchone()
-                    if row is not None:
-                        item_ids.append(row["id"])
+                    item_ids.extend(batch_item_ids)
 
         return {
             "datasetId": payload["datasetId"],
@@ -5670,6 +5836,117 @@ class LangfuseDatabaseReader:
                 message="项目不存在或无访问权限",
                 status_code=404,
             )
+
+    async def _ensure_dataset_visible(self, project_id: str, dataset_id: str) -> None:
+        rows = await self._fetch_all(
+            """
+            SELECT id
+            FROM datasets
+            WHERE project_id = %(project_id)s
+              AND id = %(dataset_id)s
+            LIMIT 1
+            """,
+            {"project_id": project_id, "dataset_id": dataset_id},
+        )
+        if not rows:
+            raise BusinessError(
+                code=1011,
+                message="数据集不存在或无访问权限",
+                status_code=404,
+            )
+
+    @staticmethod
+    def _dataset_type_sql() -> str:
+        return """
+            CASE
+                WHEN d.metadata->>'type' IN ('evaluation', 'badcase', 'golden', 'anomaly')
+                THEN d.metadata->>'type'
+                ELSE 'evaluation'
+            END
+        """
+
+    def _build_dataset_filters(
+        self,
+        project_id: str,
+        *,
+        keyword: str | None = None,
+        dataset_type: str | None = None,
+    ) -> tuple[str, dict[str, Any]]:
+        params: dict[str, Any] = {"project_id": project_id}
+        clauses = ["d.project_id = %(project_id)s"]
+        dataset_type_sql = self._dataset_type_sql()
+
+        if keyword:
+            params["keyword"] = keyword.lower()
+            clauses.append(
+                f"""
+                (
+                    POSITION(%(keyword)s IN lower(COALESCE(d.id, ''))) > 0
+                    OR POSITION(%(keyword)s IN lower(COALESCE(d.name, ''))) > 0
+                    OR POSITION(%(keyword)s IN lower(COALESCE(d.description, ''))) > 0
+                    OR POSITION(%(keyword)s IN lower({dataset_type_sql})) > 0
+                )
+                """
+            )
+
+        if dataset_type:
+            params["dataset_type"] = dataset_type
+            clauses.append(f"{dataset_type_sql} = %(dataset_type)s")
+
+        return "\n              AND ".join(clauses), params
+
+    @staticmethod
+    def _dataset_item_status_sql() -> str:
+        return """
+            CASE
+                WHEN di.is_deleted IS TRUE
+                  OR COALESCE(di.status::text, 'ACTIVE') = 'ARCHIVED'
+                THEN 'ARCHIVED'
+                ELSE 'ACTIVE'
+            END
+        """
+
+    def _build_dataset_item_filters(
+        self,
+        project_id: str,
+        dataset_id: str,
+        *,
+        keyword: str | None = None,
+        status: list[str] | None = None,
+    ) -> tuple[str, dict[str, Any]]:
+        params: dict[str, Any] = {
+            "project_id": project_id,
+            "dataset_id": dataset_id,
+        }
+        clauses = [
+            "di.project_id = %(project_id)s",
+            "di.dataset_id = %(dataset_id)s",
+            "di.valid_to IS NULL",
+        ]
+
+        if keyword:
+            params["keyword"] = keyword.lower()
+            clauses.append(
+                """
+                (
+                    POSITION(%(keyword)s IN lower(COALESCE(di.id, ''))) > 0
+                    OR POSITION(%(keyword)s IN lower(COALESCE(di.source_trace_id, ''))) > 0
+                    OR POSITION(%(keyword)s IN lower(COALESCE(di.source_observation_id, ''))) > 0
+                    OR POSITION(%(keyword)s IN lower(COALESCE(di.input::text, ''))) > 0
+                    OR POSITION(%(keyword)s IN lower(replace(COALESCE(di.input::text, ''), '"', ''''))) > 0
+                    OR POSITION(%(keyword)s IN lower(COALESCE(di.expected_output::text, ''))) > 0
+                    OR POSITION(%(keyword)s IN lower(replace(COALESCE(di.expected_output::text, ''), '"', ''''))) > 0
+                    OR POSITION(%(keyword)s IN lower(COALESCE(di.metadata::text, ''))) > 0
+                    OR POSITION(%(keyword)s IN lower(replace(COALESCE(di.metadata::text, ''), '"', ''''))) > 0
+                )
+                """
+            )
+
+        if status:
+            params["statuses"] = status
+            clauses.append(f"{self._dataset_item_status_sql()} = ANY(%(statuses)s)")
+
+        return "\n              AND ".join(clauses), params
 
     @staticmethod
     async def _get_organization_for_user(
@@ -7510,6 +7787,22 @@ def _trace_dataset_metadata(trace: dict[str, Any]) -> dict[str, Any]:
         "traceMetadata": trace.get("metadata") or {},
         "createdAt": trace.get("createdAt") or "",
     }
+
+
+def _chunk_items(items: list[Any], size: int) -> list[list[Any]]:
+    return [items[start : start + size] for start in range(0, len(items), size)]
+
+
+def _unique_traces_by_trace_id(traces: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    unique_traces: list[dict[str, Any]] = []
+    seen_trace_ids: set[str] = set()
+    for trace in traces:
+        trace_id = str(trace.get("traceId") or "")
+        if not trace_id or trace_id in seen_trace_ids:
+            continue
+        seen_trace_ids.add(trace_id)
+        unique_traces.append(trace)
+    return unique_traces
 
 
 def _merge_pa_eval_metadata(

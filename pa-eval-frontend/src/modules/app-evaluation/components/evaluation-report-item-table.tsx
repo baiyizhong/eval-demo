@@ -2,8 +2,10 @@ import { useState } from 'react'
 import { useQueryClient } from '@tanstack/react-query'
 import type { ColumnDef, Table } from '@tanstack/react-table'
 import {
+  buildInitialTraceAnnotationTaskProgress,
   createProjectAnnotationQueue,
   createTraceAnnotationTask,
+  type TraceAnnotationTaskProgress,
 } from '@/modules/app-evaluation/api/annotation-api'
 import { TraceAnnotationDialog } from '@/modules/app-observability/components/trace-annotation-dialog'
 import {
@@ -197,6 +199,7 @@ export function EvaluationReportItemTable({
         request={{
           queryKey: (state) => [
             'project-evaluation-report-items',
+            $api,
             projectId,
             reportId,
             state,
@@ -243,6 +246,8 @@ function EvaluationReportItemBulkActions({
   const queryClient = useQueryClient()
   const [datasetDialogOpen, setDatasetDialogOpen] = useState(false)
   const [annotationDialogOpen, setAnnotationDialogOpen] = useState(false)
+  const [annotationTaskProgress, setAnnotationTaskProgress] =
+    useState<TraceAnnotationTaskProgress | null>(null)
   const currentUserEmail = useSessionStore((state) => state.user?.email ?? '')
   const selectedRows = table.getFilteredSelectedRowModel().rows
   const selectedItems = selectedRows.map((row) => row.original)
@@ -285,6 +290,12 @@ function EvaluationReportItemBulkActions({
 
   const clearBulkSelection = () => {
     selection.clearSelection()
+  }
+  const handleAnnotationDialogOpenChange = (open: boolean) => {
+    if (!open) {
+      setAnnotationTaskProgress(null)
+    }
+    setAnnotationDialogOpen(open)
   }
 
   const resolveSelectedItemIds = async () => {
@@ -364,6 +375,12 @@ function EvaluationReportItemBulkActions({
 
   const handleSubmitExistingAnnotation = async (queueId: string) => {
     try {
+      setAnnotationTaskProgress(null)
+      if (selectedCount >= 1000) {
+        setAnnotationTaskProgress(
+          buildInitialTraceAnnotationTaskProgress(selectedCount)
+        )
+      }
       const traceIds = await resolveSelectedTraceIds()
       if (!traceIds.length) {
         throw new Error('所选评测数据没有可用于标注的 Trace ID')
@@ -372,7 +389,7 @@ function EvaluationReportItemBulkActions({
         $api,
         projectId,
         traceIds,
-        { queueId }
+        { queueId, onProgress: setAnnotationTaskProgress }
       )
       await queryClient.invalidateQueries({
         queryKey: ['project-annotation-queues', projectId],
@@ -381,6 +398,7 @@ function EvaluationReportItemBulkActions({
         `已加入人工标注队列：新增 ${result.createdCount} 条，跳过 ${result.skippedCount} 条`
       )
       clearBulkSelection()
+      setAnnotationTaskProgress(null)
     } catch (error) {
       toast.error(
         error instanceof Error ? error.message : '加入人工标注队列失败'
@@ -391,6 +409,12 @@ function EvaluationReportItemBulkActions({
 
   const handleSubmitNewAnnotation = async (input: AnnotationQueueFormInput) => {
     try {
+      setAnnotationTaskProgress(null)
+      if (selectedCount >= 1000) {
+        setAnnotationTaskProgress(
+          buildInitialTraceAnnotationTaskProgress(selectedCount)
+        )
+      }
       const traceIds = await resolveSelectedTraceIds()
       if (!traceIds.length) {
         throw new Error('所选评测数据没有可用于标注的 Trace ID')
@@ -400,7 +424,7 @@ function EvaluationReportItemBulkActions({
         $api,
         projectId,
         traceIds,
-        { queueId: queue.id }
+        { queueId: queue.id, onProgress: setAnnotationTaskProgress }
       )
       await queryClient.invalidateQueries({
         queryKey: ['project-annotation-queues', projectId],
@@ -409,6 +433,7 @@ function EvaluationReportItemBulkActions({
         `已创建人工标注任务：新增 ${result.createdCount} 条，跳过 ${result.skippedCount} 条`
       )
       clearBulkSelection()
+      setAnnotationTaskProgress(null)
     } catch (error) {
       toast.error(
         error instanceof Error ? error.message : '创建人工标注任务失败'
@@ -449,7 +474,7 @@ function EvaluationReportItemBulkActions({
             <Button
               type='button'
               size='sm'
-              onClick={() => setAnnotationDialogOpen(true)}
+              onClick={() => handleAnnotationDialogOpenChange(true)}
             >
               <Tags data-icon='inline-start' />
               人工标注
@@ -480,7 +505,8 @@ function EvaluationReportItemBulkActions({
         traces={[]}
         selectedCount={selectedCount}
         isCrossPageSelection={shouldUseAllMatchingRows}
-        onOpenChange={setAnnotationDialogOpen}
+        taskProgress={annotationTaskProgress}
+        onOpenChange={handleAnnotationDialogOpenChange}
         onSubmitExisting={handleSubmitExistingAnnotation}
         onSubmitNew={handleSubmitNewAnnotation}
       />

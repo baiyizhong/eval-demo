@@ -1,4 +1,5 @@
 import asyncio
+import zipfile
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -14,6 +15,10 @@ class FakeDatabaseReader:
     def __init__(self) -> None:
         self.user_id = None
         self.project_id = None
+        self.list_datasets_call = None
+        self.list_dataset_items_call = None
+        self.status_counts_call = None
+        self.export_item_batches = []
         self.created = None
         self.updated = None
         self.deleted = None
@@ -23,10 +28,25 @@ class FakeDatabaseReader:
         self.deleted_item = None
         self.export_job = None
 
-    async def list_datasets_for_user(self, project_id: str, user_id: str) -> list[dict]:
+    async def list_datasets_for_user(
+        self,
+        project_id: str,
+        user_id: str,
+        *,
+        page: int | None = None,
+        page_size: int | None = None,
+        keyword: str | None = None,
+        dataset_type: str | None = None,
+    ) -> dict:
         self.project_id = project_id
         self.user_id = user_id
-        return [
+        self.list_datasets_call = {
+            "page": page,
+            "page_size": page_size,
+            "keyword": keyword,
+            "dataset_type": dataset_type,
+        }
+        datasets = [
             {
                 "id": "dataset-1",
                 "projectId": project_id,
@@ -56,6 +76,14 @@ class FakeDatabaseReader:
                 "updatedAt": "2026-07-01T09:00:00.000Z",
             },
         ]
+        if keyword:
+            datasets = [item for item in datasets if keyword in item["name"]]
+        if dataset_type:
+            datasets = [item for item in datasets if item["type"] == dataset_type]
+        if page is None or page_size is None:
+            return {"total": len(datasets), "datas": datasets}
+        start = (page - 1) * page_size
+        return {"total": len(datasets), "datas": datasets[start : start + page_size]}
 
     async def get_dataset_for_user(
         self,
@@ -101,8 +129,22 @@ class FakeDatabaseReader:
         project_id: str,
         dataset_id: str,
         user_id: str,
-    ) -> list[dict]:
-        return [
+        *,
+        page: int | None = None,
+        page_size: int | None = None,
+        keyword: str | None = None,
+        status: list[str] | None = None,
+    ) -> dict:
+        self.project_id = project_id
+        self.user_id = user_id
+        self.list_dataset_items_call = {
+            "dataset_id": dataset_id,
+            "page": page,
+            "page_size": page_size,
+            "keyword": keyword,
+            "status": status,
+        }
+        items = [
             {
                 "id": "item-1",
                 "projectId": project_id,
@@ -117,6 +159,43 @@ class FakeDatabaseReader:
                 "updatedAt": "2026-07-02T08:10:00.000Z",
             }
         ]
+        if page is None or page_size is None:
+            return {"total": len(items), "datas": items}
+        start = (page - 1) * page_size
+        return {"total": len(items), "datas": items[start : start + page_size]}
+
+    async def count_dataset_item_statuses_for_user(
+        self,
+        project_id: str,
+        dataset_id: str,
+        user_id: str,
+        *,
+        keyword: str | None = None,
+    ) -> dict:
+        self.project_id = project_id
+        self.user_id = user_id
+        self.status_counts_call = {"dataset_id": dataset_id, "keyword": keyword}
+        return {"ACTIVE": 1, "ARCHIVED": 0}
+
+    async def iter_dataset_items_for_export(
+        self,
+        project_id: str,
+        dataset_id: str,
+        user_id: str,
+        *,
+        batch_size: int = 1000,
+    ):
+        self.project_id = project_id
+        self.user_id = user_id
+        self.export_item_batches.append(batch_size)
+        result = await self.list_dataset_items_for_user(
+            project_id,
+            dataset_id,
+            user_id,
+            page=1,
+            page_size=batch_size,
+        )
+        yield result["datas"]
 
     async def create_dataset_for_user(
         self,
@@ -401,6 +480,12 @@ def test_lists_langfuse_datasets_with_pa_pagination_keyword_and_type() -> None:
     assert body["code"] == 0
     assert fake_reader.project_id == "project-1"
     assert fake_reader.user_id == "user-1"
+    assert fake_reader.list_datasets_call == {
+        "page": 1,
+        "page_size": 10,
+        "keyword": "黄金",
+        "dataset_type": "golden",
+    }
     assert body["data"] == {
         "total": 1,
         "datas": [
@@ -447,57 +532,49 @@ def test_gets_langfuse_dataset_detail_and_items() -> None:
     assert item_response.json()["data"]["datas"][0]["id"] == "item-1"
 
 
+def test_lists_dataset_items_with_reader_pagination_keyword_and_status() -> None:
+    fake_reader = FakeDatabaseReader()
+    override_reader(fake_reader)
+
+    try:
+        response = TestClient(app).get(
+            "/api/projects/project-1/datasets/dataset-1/items",
+            params=[
+                ("page", "3"),
+                ("pageSize", "25"),
+                ("keyword", "refund"),
+                ("status", "ACTIVE"),
+                ("status", "ARCHIVED"),
+            ],
+        )
+    finally:
+        clear_overrides()
+
+    assert response.status_code == 200
+    assert fake_reader.list_dataset_items_call == {
+        "dataset_id": "dataset-1",
+        "page": 3,
+        "page_size": 25,
+        "keyword": "refund",
+        "status": ["ACTIVE", "ARCHIVED"],
+    }
+    assert response.json()["data"]["total"] == 1
+
+
 def test_counts_dataset_item_statuses_with_keyword_across_all_items() -> None:
     class StatusCountReader(FakeDatabaseReader):
-        async def list_dataset_items_for_user(
+        async def count_dataset_item_statuses_for_user(
             self,
             project_id: str,
             dataset_id: str,
             user_id: str,
-        ) -> list[dict]:
+            *,
+            keyword: str | None = None,
+        ) -> dict:
             self.project_id = project_id
             self.user_id = user_id
-            return [
-                {
-                    "id": "item-active",
-                    "projectId": project_id,
-                    "datasetId": dataset_id,
-                    "status": "ACTIVE",
-                    "input": {"question": "refund policy"},
-                    "expectedOutput": {},
-                    "metadata": {},
-                    "sourceTraceId": "",
-                    "sourceObservationId": "",
-                    "createdAt": "2026-07-02T08:10:00.000Z",
-                    "updatedAt": "2026-07-02T08:10:00.000Z",
-                },
-                {
-                    "id": "item-archived",
-                    "projectId": project_id,
-                    "datasetId": dataset_id,
-                    "status": "ARCHIVED",
-                    "input": {"question": "refund escalation"},
-                    "expectedOutput": {},
-                    "metadata": {},
-                    "sourceTraceId": "",
-                    "sourceObservationId": "",
-                    "createdAt": "2026-07-02T08:10:00.000Z",
-                    "updatedAt": "2026-07-02T08:10:00.000Z",
-                },
-                {
-                    "id": "item-hidden-by-keyword",
-                    "projectId": project_id,
-                    "datasetId": dataset_id,
-                    "status": "ARCHIVED",
-                    "input": {"question": "shipping"},
-                    "expectedOutput": {},
-                    "metadata": {},
-                    "sourceTraceId": "",
-                    "sourceObservationId": "",
-                    "createdAt": "2026-07-02T08:10:00.000Z",
-                    "updatedAt": "2026-07-02T08:10:00.000Z",
-                },
-            ]
+            self.status_counts_call = {"dataset_id": dataset_id, "keyword": keyword}
+            return {"ACTIVE": 1, "ARCHIVED": 1}
 
     fake_reader = StatusCountReader()
     override_reader(fake_reader)
@@ -513,6 +590,11 @@ def test_counts_dataset_item_statuses_with_keyword_across_all_items() -> None:
     assert response.status_code == 200
     assert fake_reader.project_id == "project-1"
     assert fake_reader.user_id == "user-1"
+    assert fake_reader.list_dataset_items_call is None
+    assert fake_reader.status_counts_call == {
+        "dataset_id": "dataset-1",
+        "keyword": "refund",
+    }
     assert response.json()["data"] == {"ACTIVE": 1, "ARCHIVED": 1}
 
 
@@ -675,6 +757,101 @@ def test_dataset_export_file_name_uses_dataset_type_name_and_export_date(
     assert fake_reader.export_job["fileName"] == "【黄金集】客服黄金集20260719.csv"
     assert Path(fake_reader.export_job["filePath"]).name == "【黄金集】客服黄金集20260719.csv"
     assert (tmp_path / "project-1" / "dataset-1" / "【黄金集】客服黄金集20260719.csv").is_file()
+    assert fake_reader.export_item_batches == [1000]
+
+
+def test_dataset_export_streams_items_in_batches(tmp_path: Path) -> None:
+    class BatchExportReader(FakeDatabaseReader):
+        async def list_dataset_items_for_user(self, *args, **kwargs) -> dict:
+            raise AssertionError("export should use iter_dataset_items_for_export")
+
+        async def iter_dataset_items_for_export(
+            self,
+            project_id: str,
+            dataset_id: str,
+            user_id: str,
+            *,
+            batch_size: int = 1000,
+        ):
+            self.project_id = project_id
+            self.user_id = user_id
+            self.export_item_batches.append(batch_size)
+            for batch_start in (1, 3):
+                yield [
+                    {
+                        "id": f"item-{index}",
+                        "projectId": project_id,
+                        "datasetId": dataset_id,
+                        "status": "ACTIVE",
+                        "input": {"question": f"question-{index}"},
+                        "expectedOutput": {"answer": f"answer-{index}"},
+                        "metadata": {"batch": batch_start},
+                        "sourceTraceId": "",
+                        "sourceObservationId": "",
+                        "createdAt": "2026-07-02T08:10:00.000Z",
+                        "updatedAt": "2026-07-02T08:10:00.000Z",
+                    }
+                    for index in range(batch_start, batch_start + 2)
+                ]
+
+    fake_reader = BatchExportReader()
+    asyncio.run(
+        fake_reader.create_dataset_export_job_for_user(
+            "project-1",
+            "dataset-1",
+            "user-1",
+            "txt",
+        )
+    )
+
+    asyncio.run(
+        dataset_exports.generate_dataset_export_file(
+            reader=fake_reader,  # type: ignore[arg-type]
+            project_id="project-1",
+            dataset_id="dataset-1",
+            job_id="export-job-1",
+            user_id="user-1",
+            export_format="txt",
+            storage_dir=str(tmp_path),
+        )
+    )
+
+    assert fake_reader.export_job is not None
+    assert fake_reader.export_job["exportedCount"] == 4
+    assert fake_reader.export_item_batches == [1000]
+    file_path = Path(fake_reader.export_job["filePath"])
+    assert file_path.read_text(encoding="utf-8").count("\n") == 4
+
+
+def test_dataset_xlsx_export_streams_items_into_workbook(tmp_path: Path) -> None:
+    fake_reader = FakeDatabaseReader()
+    asyncio.run(
+        fake_reader.create_dataset_export_job_for_user(
+            "project-1",
+            "dataset-1",
+            "user-1",
+            "xlsx",
+        )
+    )
+
+    asyncio.run(
+        dataset_exports.generate_dataset_export_file(
+            reader=fake_reader,  # type: ignore[arg-type]
+            project_id="project-1",
+            dataset_id="dataset-1",
+            job_id="export-job-1",
+            user_id="user-1",
+            export_format="xlsx",
+            storage_dir=str(tmp_path),
+        )
+    )
+
+    assert fake_reader.export_job is not None
+    assert fake_reader.export_job["exportedCount"] == 1
+    with zipfile.ZipFile(fake_reader.export_job["filePath"]) as workbook:
+        sheet = workbook.read("xl/worksheets/sheet1.xml").decode("utf-8")
+    assert "item-1" in sheet
+    assert "expectedOutput" in sheet
 
 
 def test_rejects_unsupported_dataset_export_format() -> None:
