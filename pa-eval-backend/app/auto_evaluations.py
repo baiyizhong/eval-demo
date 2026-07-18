@@ -324,33 +324,15 @@ async def _list_trace_generation_samples(
     )
 
     if settings is not None:
-        conditions = [
-            f"t.project_id = {_clickhouse_quote(project_id)}",
-            "t.is_deleted = 0",
-            "o.is_deleted = 0",
-            "o.type = 'GENERATION'",
-        ]
+        conditions = _trace_generation_clickhouse_conditions(
+            project_id,
+            trace_name=trace_name,
+            user_id=user_id,
+            session_id=session_id,
+            tag_values=tag_values,
+            environments=environments,
+        )
         time_condition = _trace_time_condition(data_source_payload)
-        if trace_name:
-            conditions.append(
-                f"positionCaseInsensitive(t.name, {_clickhouse_quote(trace_name)}) > 0"
-            )
-        if user_id:
-            conditions.append(
-                f"positionCaseInsensitive(ifNull(t.user_id, ''), {_clickhouse_quote(user_id)}) > 0"
-            )
-        if session_id:
-            conditions.append(
-                f"positionCaseInsensitive(ifNull(t.session_id, ''), {_clickhouse_quote(session_id)}) > 0"
-            )
-        if environments:
-            quoted_environments = ", ".join(
-                _clickhouse_quote(environment) for environment in environments
-            )
-            conditions.append(f"t.environment IN ({quoted_environments})")
-        for tag in tag_values:
-            conditions.append(f"has(t.tags, {_clickhouse_quote(tag)})")
-
         where_clause = " AND ".join(conditions)
         query = f"""
         SELECT
@@ -476,16 +458,134 @@ async def _count_trace_generation_samples(
     settings: Settings | None = None,
 ) -> int:
     try:
-        samples = await _list_trace_generation_samples(
-            cursor,
-            project_id,
-            data_source_payload,
-            settings,
-        )
+        if settings is not None:
+            count = await _count_trace_generation_samples_clickhouse(
+                project_id,
+                data_source_payload,
+                settings,
+            )
+        else:
+            count = await _count_trace_generation_samples_postgres(
+                cursor,
+                project_id,
+                data_source_payload,
+            )
     except httpx.HTTPError:
         logger.warning("Trace count unavailable; returning zero", exc_info=True)
         return 0
-    return len(samples)
+    return count
+
+
+async def _count_trace_generation_samples_clickhouse(
+    project_id: str,
+    data_source_payload: dict[str, Any],
+    settings: Settings,
+) -> int:
+    trace_name = _stringify_value(data_source_payload.get("traceName")).strip()
+    user_id = _stringify_value(data_source_payload.get("userId")).strip()
+    session_id = _stringify_value(data_source_payload.get("sessionId")).strip()
+    tags = data_source_payload.get("tags")
+    tag_values = [str(tag) for tag in tags] if isinstance(tags, list) else []
+    environments = _normalize_trace_environments(
+        data_source_payload.get("environments")
+    )
+    conditions = _trace_generation_clickhouse_conditions(
+        project_id,
+        trace_name=trace_name,
+        user_id=user_id,
+        session_id=session_id,
+        tag_values=tag_values,
+        environments=environments,
+    )
+    where_clause = " AND ".join(conditions)
+    time_condition = _trace_time_condition(data_source_payload)
+    rows = await _query_clickhouse_json_each_row(
+        settings,
+        f"""
+        SELECT countDistinct(t.id) AS count
+        FROM traces t
+        INNER JOIN observations o
+            ON o.trace_id = t.id
+           AND o.project_id = t.project_id
+        WHERE {where_clause}
+          {time_condition}
+        FORMAT JSONEachRow
+        """,
+    )
+    if not rows:
+        return 0
+    return int(rows[0].get("count") or 0)
+
+
+async def _count_trace_generation_samples_postgres(
+    cursor: psycopg.AsyncCursor[dict[str, Any]],
+    project_id: str,
+    data_source_payload: dict[str, Any],
+) -> int:
+    trace_name = _stringify_value(data_source_payload.get("traceName")).strip()
+    user_id = _stringify_value(data_source_payload.get("userId")).strip()
+    session_id = _stringify_value(data_source_payload.get("sessionId")).strip()
+    tags = data_source_payload.get("tags")
+    tag_values = [str(tag) for tag in tags] if isinstance(tags, list) else []
+    environments = _normalize_trace_environments(
+        data_source_payload.get("environments")
+    )
+    await cursor.execute(
+        """
+        SELECT COUNT(*) AS count
+        FROM (
+            SELECT DISTINCT t.id
+            FROM traces t
+            JOIN observations o
+              ON o.trace_id = t.id
+             AND o.project_id = t.project_id
+            WHERE t.project_id = %(project_id)s
+              AND o.type = 'GENERATION'
+              AND (%(trace_name)s = '' OR t.name ILIKE %(trace_name_like)s)
+              AND (%(user_id)s = '' OR t.user_id ILIKE %(user_id_like)s)
+              AND (%(session_id)s = '' OR t.session_id ILIKE %(session_id_like)s)
+              AND (
+                %(created_at_from)s = ''
+                OR t.timestamp >= %(created_at_from)s::timestamptz
+              )
+              AND (
+                %(created_at_to)s = ''
+                OR t.timestamp <= %(created_at_to)s::timestamptz
+              )
+              AND (
+                cardinality(%(tags)s::text[]) = 0
+                OR COALESCE(t.tags, ARRAY[]::text[]) @> %(tags)s::text[]
+              )
+              AND (
+                cardinality(%(environments)s::text[]) = 0
+                OR COALESCE(t.environment, 'default') = ANY(%(environments)s::text[])
+              )
+        ) matched_traces
+        """,
+        {
+            "project_id": project_id,
+            "trace_name": trace_name,
+            "trace_name_like": f"%{trace_name}%",
+            "user_id": user_id,
+            "user_id_like": f"%{user_id}%",
+            "session_id": session_id,
+            "session_id_like": f"%{session_id}%",
+            "tags": tag_values,
+            "environments": environments,
+            "created_at_from": _created_at_range_value(
+                data_source_payload.get("createdAtRange"),
+                0,
+            ),
+            "created_at_to": _created_at_range_value(
+                data_source_payload.get("createdAtRange"),
+                1,
+            ),
+        },
+    )
+    row = await cursor.fetchone()
+    if row is None:
+        return 0
+    return int(row.get("count") or 0)
 
 
 def _sample_dataset_items(
@@ -561,6 +661,43 @@ def _parse_json_object(value: Any) -> dict[str, Any]:
 
 def _clickhouse_quote(value: str) -> str:
     return "'" + value.replace("\\", "\\\\").replace("'", "\\'") + "'"
+
+
+def _trace_generation_clickhouse_conditions(
+    project_id: str,
+    *,
+    trace_name: str,
+    user_id: str,
+    session_id: str,
+    tag_values: list[str],
+    environments: list[str],
+) -> list[str]:
+    conditions = [
+        f"t.project_id = {_clickhouse_quote(project_id)}",
+        "t.is_deleted = 0",
+        "o.is_deleted = 0",
+        "o.type = 'GENERATION'",
+    ]
+    if trace_name:
+        conditions.append(
+            f"positionCaseInsensitive(t.name, {_clickhouse_quote(trace_name)}) > 0"
+        )
+    if user_id:
+        conditions.append(
+            f"positionCaseInsensitive(ifNull(t.user_id, ''), {_clickhouse_quote(user_id)}) > 0"
+        )
+    if session_id:
+        conditions.append(
+            f"positionCaseInsensitive(ifNull(t.session_id, ''), {_clickhouse_quote(session_id)}) > 0"
+        )
+    if environments:
+        quoted_environments = ", ".join(
+            _clickhouse_quote(environment) for environment in environments
+        )
+        conditions.append(f"t.environment IN ({quoted_environments})")
+    for tag in tag_values:
+        conditions.append(f"has(t.tags, {_clickhouse_quote(tag)})")
+    return conditions
 
 
 def _trace_time_range_condition(time_range: Any) -> str:

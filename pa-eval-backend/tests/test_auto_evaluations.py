@@ -678,6 +678,73 @@ async def test_count_trace_generation_samples_returns_zero_when_clickhouse_unava
 
 
 @pytest.mark.anyio
+async def test_count_trace_generation_samples_uses_clickhouse_count_without_sample_limit(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    captured: dict[str, str] = {}
+
+    async def fake_query_clickhouse(settings, query):
+        captured["query"] = query
+        return [{"count": 1250}]
+
+    monkeypatch.setattr(
+        auto_evaluations,
+        "_query_clickhouse_json_each_row",
+        fake_query_clickhouse,
+    )
+
+    count = await _count_trace_generation_samples(
+        FakeCursor(),  # type: ignore[arg-type]
+        project_id="project-1",
+        data_source_payload={
+            "timeRange": "7d",
+            "userId": "user-1",
+            "sessionId": "session-1",
+            "tags": ["refund"],
+        },
+        settings=auto_evaluations.Settings(
+            langfuse_clickhouse_url="http://clickhouse.local:8123",
+        ),
+    )
+
+    assert count == 1250
+    assert "countDistinct(t.id) AS count" in captured["query"]
+    assert "LIMIT 500" not in captured["query"]
+    assert "positionCaseInsensitive(ifNull(t.user_id, ''), 'user-1') > 0" in captured["query"]
+    assert "positionCaseInsensitive(ifNull(t.session_id, ''), 'session-1') > 0" in captured["query"]
+    assert "has(t.tags, 'refund')" in captured["query"]
+    assert "INTERVAL 7 DAY" in captured["query"]
+
+
+@pytest.mark.anyio
+async def test_count_trace_generation_samples_uses_postgres_count_without_sample_limit() -> (
+    None
+):
+    cursor = FakeCursor(row={"count": 1200})
+
+    count = await _count_trace_generation_samples(
+        cursor,  # type: ignore[arg-type]
+        project_id="project-1",
+        data_source_payload={
+            "timeRange": "",
+            "createdAtRange": ["2026-07-05T00:00", "2026-07-08T00:00"],
+            "userId": "user-1",
+            "sessionId": "session-1",
+            "tags": ["refund"],
+        },
+    )
+
+    assert count == 1200
+    assert "COUNT(*) AS count" in cursor.sql
+    assert "LIMIT 500" not in cursor.sql
+    assert cursor.params["user_id_like"] == "%user-1%"
+    assert cursor.params["session_id_like"] == "%session-1%"
+    assert cursor.params["tags"] == ["refund"]
+    assert cursor.params["created_at_from"] == "2026-07-04T16:00:00Z"
+    assert cursor.params["created_at_to"] == "2026-07-07T16:00:00Z"
+
+
+@pytest.mark.anyio
 async def test_resolve_auto_evaluation_samples_returns_business_error_when_trace_query_unavailable(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:

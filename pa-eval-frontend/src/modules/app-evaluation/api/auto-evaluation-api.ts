@@ -99,10 +99,10 @@ function buildAutoEvaluationTraceListQuery(
 
   return {
     page: options.page ?? 1,
-    pageSize: options.pageSize ?? 100,
+    pageSize: options.pageSize ?? 10,
     ...(createdAtRange.length === 2
       ? { createdAtRange }
-      : { timeRange: traceFilter.timeRange || '3d' }),
+      : { timeRange: traceFilter.timeRange || '1d' }),
     ...(traceFilter.environments.length
       ? { environments: traceFilter.environments }
       : {}),

@@ -47,6 +47,21 @@ test('auto evaluation trace filter estimates automatically and exposes preview t
   assert.doesNotMatch(source, /environments:\s*\['production'\]/)
 })
 
+test('trace preview dialog loads only the current page and exposes pagination controls', () => {
+  assert.match(source, /TRACE_PREVIEW_PAGE_SIZE\s*=\s*10/)
+  assert.match(source, /TRACE_PREVIEW_PAGE_SIZE_OPTIONS\s*=\s*\[10,\s*20,\s*30,\s*40,\s*50\]/)
+  assert.match(source, /tracePreviewPage/)
+  assert.match(source, /tracePreviewPageSize/)
+  assert.match(source, /setTracePreviewPage/)
+  assert.match(source, /setTracePreviewPageSize/)
+  assert.match(source, /每页行数/)
+  assert.match(source, /getPageNumbers\(currentPage,\s*totalPages\)/)
+  assert.match(source, /跳到第一页/)
+  assert.match(source, /跳到最后一页/)
+  assert.match(source, /Math\.ceil\(total \/ pageSize\)/)
+  assert.doesNotMatch(source, /for \(let page = 2; page <= totalPages; page \+= 1\)/)
+})
+
 test('trace preview dialog has 50 percent width, 600px min width, and scrolls', () => {
   assert.match(source, /w-\[50vw\]/)
   assert.match(source, /sm:max-w-\[50vw\]/)

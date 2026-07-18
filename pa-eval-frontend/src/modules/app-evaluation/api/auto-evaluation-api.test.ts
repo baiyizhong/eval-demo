@@ -152,11 +152,46 @@ test('listProjectAutoEvaluationTracePreview maps trace filter to trace list quer
     path: { projectId: 'project-1' },
     query: {
       page: 1,
-      pageSize: 100,
+      pageSize: 10,
       createdAtRange: ['2026-07-05T00:00', '2026-07-08T00:00'],
       userId: 'user-1',
       sessionId: 'session-1',
       tags: ['vip'],
+    },
+  })
+})
+
+test('listProjectAutoEvaluationTracePreview keeps quick time range when custom range is incomplete', async () => {
+  const captured: { request?: Record<string, unknown> } = {}
+  const api = {
+    async listProjectTraces(input: Record<string, unknown>) {
+      captured.request = input
+      return { total: 2, datas: [] }
+    },
+  }
+
+  await listProjectAutoEvaluationTracePreview(
+    api as never,
+    'project-1',
+    {
+      type: 'TRACE_FILTER',
+      timeRange: '',
+      createdAtRange: ['2026-07-05T00:00', ''],
+      environments: [],
+      userId: '',
+      sessionId: '',
+      tags: [],
+      estimatedCount: 9,
+    },
+    { page: 3, pageSize: 20 }
+  )
+
+  assert.deepEqual(captured.request, {
+    path: { projectId: 'project-1' },
+    query: {
+      page: 3,
+      pageSize: 20,
+      timeRange: '1d',
     },
   })
 })

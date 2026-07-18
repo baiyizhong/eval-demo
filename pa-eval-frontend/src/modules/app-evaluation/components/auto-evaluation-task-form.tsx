@@ -1,9 +1,15 @@
 import { useEffect, useState } from 'react'
+import {
+  ChevronLeftIcon,
+  ChevronRightIcon,
+  DoubleArrowLeftIcon,
+  DoubleArrowRightIcon,
+} from '@radix-ui/react-icons'
 import { listTaskEvaluators } from '@/modules/tasks/api/evaluator-api'
 import { Info } from 'lucide-react'
 import { useNavigate } from 'react-router'
 import { toast } from 'sonner'
-import { cn } from '@/lib/utils'
+import { cn, getPageNumbers } from '@/lib/utils'
 import { useAPI } from '@/hooks/use-api'
 import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
@@ -63,7 +69,8 @@ const AUTO_EVALUATION_TRACE_QUICK_TIME_RANGE_OPTIONS = [
   { label: '3d', value: '3d' },
   { label: '7d', value: '7d' },
 ] as const
-const TRACE_PREVIEW_PAGE_SIZE = 100
+const TRACE_PREVIEW_PAGE_SIZE = 10
+const TRACE_PREVIEW_PAGE_SIZE_OPTIONS = [10, 20, 30, 40, 50] as const
 const AUTO_EVALUATION_SUPPORTED_WORKFLOW_PROVIDERS: readonly string[] = [
   'DIFY',
   'N8N',
@@ -171,6 +178,10 @@ export function AutoEvaluationTaskForm({
   const [tracePreviewError, setTracePreviewError] = useState('')
   const [tracePreviewRows, setTracePreviewRows] = useState<TraceLogRow[]>([])
   const [tracePreviewTotal, setTracePreviewTotal] = useState(0)
+  const [tracePreviewPage, setTracePreviewPage] = useState(1)
+  const [tracePreviewPageSize, setTracePreviewPageSize] = useState(
+    TRACE_PREVIEW_PAGE_SIZE
+  )
   const [submittingMode, setSubmittingMode] = useState<'create' | 'run' | null>(
     null
   )
@@ -293,30 +304,18 @@ export function AutoEvaluationTaskForm({
       if (canceled) return
       setTracePreviewLoading(true)
       setTracePreviewError('')
+      setTracePreviewRows([])
 
-      const firstPage = await listProjectAutoEvaluationTracePreview(
+      const pageResult = await listProjectAutoEvaluationTracePreview(
         $api,
         projectId,
         traceFilter,
-        { page: 1, pageSize: TRACE_PREVIEW_PAGE_SIZE }
+        { page: tracePreviewPage, pageSize: tracePreviewPageSize }
       )
-      let rows = firstPage.datas
-      const total = firstPage.total
-      const totalPages = Math.ceil(total / TRACE_PREVIEW_PAGE_SIZE)
-
-      for (let page = 2; page <= totalPages; page += 1) {
-        const nextPage = await listProjectAutoEvaluationTracePreview(
-          $api,
-          projectId,
-          traceFilter,
-          { page, pageSize: TRACE_PREVIEW_PAGE_SIZE }
-        )
-        rows = [...rows, ...nextPage.datas]
-      }
 
       if (canceled) return
-      setTracePreviewRows(rows)
-      setTracePreviewTotal(total)
+      setTracePreviewRows(pageResult.datas)
+      setTracePreviewTotal(pageResult.total)
     }
 
     void loadTracePreview()
@@ -333,7 +332,14 @@ export function AutoEvaluationTaskForm({
     return () => {
       canceled = true
     }
-  }, [$api, projectId, traceFilterKey, tracePreviewOpen])
+  }, [
+    $api,
+    projectId,
+    traceFilterKey,
+    tracePreviewOpen,
+    tracePreviewPage,
+    tracePreviewPageSize,
+  ])
 
   const selectedEvaluator = evaluators.find(
     (item) => item.id === form.evaluatorId
@@ -875,7 +881,10 @@ export function AutoEvaluationTaskForm({
                       variant='outline'
                       size='sm'
                       disabled={form.dataSource.type !== 'TRACE_FILTER'}
-                      onClick={() => setTracePreviewOpen(true)}
+                      onClick={() => {
+                        setTracePreviewPage(1)
+                        setTracePreviewOpen(true)
+                      }}
                     >
                       查看数据
                     </Button>
@@ -1060,8 +1069,15 @@ export function AutoEvaluationTaskForm({
         onOpenChange={setTracePreviewOpen}
         rows={tracePreviewRows}
         total={tracePreviewTotal}
+        page={tracePreviewPage}
+        pageSize={tracePreviewPageSize}
         loading={tracePreviewLoading}
         error={tracePreviewError}
+        onPageChange={setTracePreviewPage}
+        onPageSizeChange={(pageSize) => {
+          setTracePreviewPageSize(pageSize)
+          setTracePreviewPage(1)
+        }}
       />
     </div>
   )
@@ -1147,16 +1163,28 @@ function TracePreviewDialog({
   onOpenChange,
   rows,
   total,
+  page,
+  pageSize,
   loading,
   error,
+  onPageChange,
+  onPageSizeChange,
 }: {
   open: boolean
   onOpenChange: (open: boolean) => void
   rows: TraceLogRow[]
   total: number
+  page: number
+  pageSize: number
   loading: boolean
   error: string
+  onPageChange: (page: number) => void
+  onPageSizeChange: (pageSize: number) => void
 }) {
+  const totalPages = Math.max(1, Math.ceil(total / pageSize))
+  const currentPage = Math.min(page, totalPages)
+  const pageNumbers = getPageNumbers(currentPage, totalPages)
+
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
       <DialogContent className='flex h-[50svh] max-h-[calc(100svh-2rem)] w-[50vw] max-w-[calc(100vw-2rem)] min-w-[600px] flex-col gap-0 overflow-hidden p-0 sm:max-w-[50vw]'>
@@ -1213,6 +1241,105 @@ function TracePreviewDialog({
               当前过滤条件下暂无 Trace 数据。
             </div>
           )}
+        </div>
+        <div className='flex flex-wrap items-center justify-between gap-3 border-t px-6 py-4'>
+          <div className='flex items-center gap-2'>
+            <Select
+              value={`${pageSize}`}
+              onValueChange={(value) => onPageSizeChange(Number(value))}
+              disabled={loading}
+            >
+              <SelectTrigger className='h-8 w-[70px]'>
+                <SelectValue placeholder={pageSize} />
+              </SelectTrigger>
+              <SelectContent side='top'>
+                <SelectGroup>
+                  {TRACE_PREVIEW_PAGE_SIZE_OPTIONS.map((option) => (
+                    <SelectItem key={option} value={`${option}`}>
+                      {option}
+                    </SelectItem>
+                  ))}
+                </SelectGroup>
+              </SelectContent>
+            </Select>
+            <span className='text-sm font-medium'>每页行数</span>
+          </div>
+
+          <div className='flex flex-wrap items-center gap-3'>
+            <span className='text-muted-foreground text-sm'>
+              共 {total.toLocaleString()} 条，第 {currentPage} / {totalPages}{' '}
+              页
+            </span>
+            <div className='flex items-center gap-2'>
+              <Button
+                type='button'
+                variant='outline'
+                className='size-8 p-0'
+                disabled={loading || currentPage <= 1}
+                onClick={() => onPageChange(1)}
+              >
+                <span className='sr-only'>跳到第一页</span>
+                <DoubleArrowLeftIcon />
+              </Button>
+              <Button
+                type='button'
+                variant='outline'
+                className='size-8 p-0'
+                disabled={loading || currentPage <= 1}
+                onClick={() => onPageChange(Math.max(1, currentPage - 1))}
+              >
+                <span className='sr-only'>跳到上一页</span>
+                <ChevronLeftIcon />
+              </Button>
+              {pageNumbers.map((pageNumber, index) => (
+                <div
+                  key={`${pageNumber}-${index}`}
+                  className='flex items-center'
+                >
+                  {pageNumber === '...' ? (
+                    <span className='text-muted-foreground px-1 text-sm'>
+                      ...
+                    </span>
+                  ) : (
+                    <Button
+                      type='button'
+                      variant={
+                        currentPage === pageNumber ? 'default' : 'outline'
+                      }
+                      className='h-8 min-w-8 px-2'
+                      disabled={loading}
+                      onClick={() => onPageChange(pageNumber as number)}
+                    >
+                      <span className='sr-only'>跳到第 {pageNumber} 页</span>
+                      {pageNumber}
+                    </Button>
+                  )}
+                </div>
+              ))}
+              <Button
+                type='button'
+                variant='outline'
+                className='size-8 p-0'
+                disabled={loading || currentPage >= totalPages}
+                onClick={() =>
+                  onPageChange(Math.min(totalPages, currentPage + 1))
+                }
+              >
+                <span className='sr-only'>跳到下一页</span>
+                <ChevronRightIcon />
+              </Button>
+              <Button
+                type='button'
+                variant='outline'
+                className='size-8 p-0'
+                disabled={loading || currentPage >= totalPages}
+                onClick={() => onPageChange(totalPages)}
+              >
+                <span className='sr-only'>跳到最后一页</span>
+                <DoubleArrowRightIcon />
+              </Button>
+            </div>
+          </div>
         </div>
       </DialogContent>
     </Dialog>
