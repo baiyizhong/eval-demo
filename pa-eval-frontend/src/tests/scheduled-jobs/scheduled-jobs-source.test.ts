@@ -135,13 +135,22 @@ test('scheduled job tables use backend pagination and filters', () => {
   assert.doesNotMatch(pageSource, /pageSize:\s*200/)
   assert.doesNotMatch(taskColumnsSource, /function queryTasks/)
   assert.doesNotMatch(logColumnsSource, /function queryLogs/)
-  assert.match(taskColumnsSource, /DataTableProps<ScheduledJobTask>\['request'\]/)
+  assert.match(
+    taskColumnsSource,
+    /DataTableProps<ScheduledJobTask>\['request'\]/
+  )
   assert.match(
     logColumnsSource,
     /DataTableProps<ScheduledJobExecutionLog>\['request'\]/
   )
-  assert.match(pageSource, /listProjectScheduledJobs\(\$api, projectId, state\)/)
-  assert.match(pageSource, /listProjectScheduledJobLogs\(\$api, projectId, state\)/)
+  assert.match(
+    pageSource,
+    /listProjectScheduledJobs\(\$api, projectId, state\)/
+  )
+  assert.match(
+    pageSource,
+    /listProjectScheduledJobLogs\(\$api, projectId, state\)/
+  )
   assert.match(apiSource, /filters\.status/)
   assert.match(apiSource, /filters\.triggerType/)
 })
@@ -302,6 +311,30 @@ test('scheduled job trace count uses the same trace window as saved jobs', () =>
   assert.match(
     drawerSource,
     /const traceWindow = buildTraceWindowFromFrequency\(frequency,\s*form\)/
+  )
+})
+
+test('daily trace preview explains its natural-day counting semantics', () => {
+  assert.match(drawerSource, /上一完整自然日/)
+  assert.match(drawerSource, /Asia\/Shanghai/)
+  assert.match(drawerSource, /不等同于自动评测的“最近 1d”滚动 24 小时/)
+  assert.match(drawerSource, /当前预览窗口命中/)
+})
+
+test('scheduled job trace count waits for complete filters and blocks stale saves', () => {
+  assert.match(
+    drawerSource,
+    /frequency\.kind === 'ONCE' && createdAtRange\.length !== 2/
+  )
+  assert.match(drawerSource, /useDebouncedValue\(traceCountPayload,\s*400\)/)
+  assert.match(drawerSource, /isTraceCountDebouncing/)
+  assert.match(
+    drawerSource,
+    /traceCountState === 'loading'[\s\S]*样本量统计中，请稍候再保存/
+  )
+  assert.match(
+    drawerSource,
+    /traceCountState === 'error'[\s\S]*样本量统计失败，请调整筛选条件或稍后重试/
   )
 })
 

@@ -27,6 +27,7 @@ class FakeDatabaseReader:
         self.archived_item = None
         self.deleted_item = None
         self.export_job = None
+        self.dataset_name_availability_call = None
 
     async def list_datasets_for_user(
         self,
@@ -220,6 +221,17 @@ class FakeDatabaseReader:
             "createdAt": "2026-07-02T08:00:00.000Z",
             "updatedAt": "2026-07-02T08:00:00.000Z",
         }
+
+    async def is_dataset_name_available_for_user(
+        self,
+        project_id: str,
+        user_id: str,
+        name: str,
+    ) -> bool:
+        self.project_id = project_id
+        self.user_id = user_id
+        self.dataset_name_availability_call = name
+        return name != "客服黄金集"
 
     async def update_dataset_for_user(
         self,
@@ -639,6 +651,25 @@ def test_creates_updates_and_deletes_langfuse_dataset() -> None:
     assert fake_reader.deleted == "dataset-created"
 
 
+def test_checks_dataset_name_availability_before_create() -> None:
+    fake_reader = FakeDatabaseReader()
+    override_reader(fake_reader)
+
+    try:
+        response = TestClient(app).get(
+            "/api/projects/project-1/datasets/name-availability",
+            params={"name": "  客服黄金集  "},
+        )
+    finally:
+        clear_overrides()
+
+    assert response.status_code == 200
+    assert response.json()["data"] == {"available": False}
+    assert fake_reader.dataset_name_availability_call == "客服黄金集"
+    assert fake_reader.project_id == "project-1"
+    assert fake_reader.user_id == "user-1"
+
+
 def test_creates_updates_archives_and_deletes_langfuse_dataset_items() -> None:
     fake_reader = FakeDatabaseReader()
     override_reader(fake_reader)
@@ -852,6 +883,85 @@ def test_dataset_xlsx_export_streams_items_into_workbook(tmp_path: Path) -> None
         sheet = workbook.read("xl/worksheets/sheet1.xml").decode("utf-8")
     assert "item-1" in sheet
     assert "expectedOutput" in sheet
+
+
+def test_dataset_xlsx_writes_worksheet_in_small_streamed_chunks(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    class RecordingWorksheet:
+        def __init__(self) -> None:
+            self.writes: list[bytes] = []
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *args) -> None:
+            return None
+
+        def write(self, value: bytes) -> int:
+            self.writes.append(value)
+            return len(value)
+
+    class RecordingArchive:
+        worksheet = RecordingWorksheet()
+        worksheet_opened = False
+
+        def __init__(self, *args, **kwargs) -> None:
+            pass
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *args) -> None:
+            return None
+
+        def writestr(self, name: str, value: str) -> None:
+            assert name != "xl/worksheets/sheet1.xml"
+
+        def open(
+            self,
+            name: str,
+            mode: str,
+            *,
+            force_zip64: bool = False,
+        ) -> RecordingWorksheet:
+            assert name == "xl/worksheets/sheet1.xml"
+            assert mode == "w"
+            assert force_zip64 is True
+            type(self).worksheet_opened = True
+            return type(self).worksheet
+
+    async def item_batches():
+        for batch_start in (1, 3):
+            yield [
+                {
+                    "id": f"item-{index}",
+                    "status": "ACTIVE",
+                    "input": {"question": f"question-{index}"},
+                    "expectedOutput": {"answer": f"answer-{index}"},
+                    "metadata": {"batch": batch_start},
+                    "sourceTraceId": "",
+                    "sourceObservationId": "",
+                    "createdAt": "2026-07-02T08:10:00.000Z",
+                    "updatedAt": "2026-07-02T08:10:00.000Z",
+                }
+                for index in range(batch_start, batch_start + 2)
+            ]
+
+    monkeypatch.setattr(dataset_exports.zipfile, "ZipFile", RecordingArchive)
+
+    total_count = asyncio.run(
+        dataset_exports._write_xlsx(tmp_path / "streamed.xlsx", item_batches())
+    )
+
+    worksheet_xml = b"".join(RecordingArchive.worksheet.writes).decode("utf-8")
+    assert total_count == 4
+    assert RecordingArchive.worksheet_opened is True
+    assert "expectedOutput" in worksheet_xml
+    assert "item-4" in worksheet_xml
+    assert len(RecordingArchive.worksheet.writes) >= 7
+    assert max(map(len, RecordingArchive.worksheet.writes)) < 4096
 
 
 def test_rejects_unsupported_dataset_export_format() -> None:

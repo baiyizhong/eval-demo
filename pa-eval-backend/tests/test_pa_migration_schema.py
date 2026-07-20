@@ -23,6 +23,7 @@ PA_TABLES = (
     "pa_annotation_queue_settings",
     "pa_annotation_queue_item_assignments",
     "pa_annotation_export_jobs",
+    "pa_trace_bulk_jobs",
 )
 
 
@@ -45,7 +46,53 @@ def test_pa_schema_migrations_are_defined_in_order() -> None:
         "20260709_0010_create_scheduled_jobs.py",
         "20260711_0011_create_annotation_assignment_tables.py",
         "20260711_0012_create_pa_annotation_export_jobs.py",
+        "20260714_0013_add_evaluator_outputs_and_score_mapping.py",
+        "20260719_0014_create_pa_trace_bulk_jobs.py",
     ]
+
+
+def test_trace_bulk_jobs_table_is_defined_with_comments_and_recovery_indexes() -> None:
+    migration = MIGRATIONS_DIR / "20260719_0014_create_pa_trace_bulk_jobs.py"
+    content = migration.read_text(encoding="utf-8")
+    business_columns = (
+        "id",
+        "project_id",
+        "user_id",
+        "job_type",
+        "status",
+        "selection_type",
+        "selection_payload",
+        "operation_payload",
+        "cursor_payload",
+        "result_payload",
+        "total_count",
+        "completed_count",
+        "success_count",
+        "failure_count",
+        "attempt_count",
+        "error_message",
+        "started_at",
+        "completed_at",
+        "expires_at",
+        "lock_owner",
+        "lock_until",
+    )
+
+    assert 'down_revision = "20260714_0013"' in content
+    assert "COMMENT ON TABLE pa_trace_bulk_jobs" in content
+    assert "pa_trace_bulk_jobs_job_type_check" in content
+    assert "pa_trace_bulk_jobs_status_check" in content
+    assert "pa_trace_bulk_jobs_selection_type_check" in content
+    assert "pa_trace_bulk_jobs_claim_idx" in content
+    assert "pa_trace_bulk_jobs_project_user_update_idx" in content
+    assert 'ondelete="CASCADE"' in content
+    assert '_drop_table_if_exists("pa_trace_bulk_jobs")' in content
+
+    for column in business_columns:
+        assert f'"{column}"' in content
+
+    for column in (*AUDIT_COLUMNS, *business_columns):
+        assert f"COMMENT ON COLUMN pa_trace_bulk_jobs.{column}" in content
 
 
 def test_annotation_export_jobs_table_is_defined_with_comments() -> None:

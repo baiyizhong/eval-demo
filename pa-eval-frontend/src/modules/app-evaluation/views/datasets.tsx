@@ -17,6 +17,7 @@ import { ImportDialog } from '@/components/common/import-dialog'
 import { Loading } from '@/components/common/loading'
 import { Page } from '@/components/common/page'
 import {
+  checkProjectDatasetNameAvailability,
   createProjectDataset,
   createProjectDatasetExportJob,
   createProjectDatasetItem,
@@ -29,9 +30,8 @@ import {
 import { createDatasetColumns } from '../components/dataset-columns'
 import { DatasetFormDrawer } from '../components/dataset-form-drawer'
 import { EvaluationPageNav } from '../components/evaluation-page-nav'
-import {
-  getDatasetExportFileName,
-} from '../lib/dataset-item-export'
+import { downloadBlob } from '../components/format'
+import { getDatasetExportFileName } from '../lib/dataset-item-export'
 import {
   buildDatasetItemImportTemplateBlob,
   DATASET_ITEM_IMPORT_FILE_TYPES,
@@ -47,7 +47,6 @@ import {
   type DatasetRecord,
   type DatasetTypeFilter,
 } from '../types'
-import { downloadBlob } from '../components/format'
 
 const datasetTabs: { label: string; value: DatasetTypeFilter }[] = [
   { label: '全部', value: 'all' },
@@ -94,6 +93,11 @@ export function ProjectDatasets() {
         queryKey: ['project-datasets'],
       }),
     [queryClient]
+  )
+  const checkDatasetNameAvailability = useCallback(
+    (name: string) =>
+      checkProjectDatasetNameAvailability($api, projectId, name),
+    [$api, projectId]
   )
 
   const invalidateDatasetDetail = useCallback(
@@ -179,9 +183,10 @@ export function ProjectDatasets() {
     await deleteMutation.mutateAsync(deletingDataset.id)
   }
 
-  const handleDownloadImportTemplate = useCallback(() => {
+  const handleDownloadImportTemplate = useCallback(async () => {
+    const blob = await buildDatasetItemImportTemplateBlob(importingDataset)
     downloadBlob(
-      buildDatasetItemImportTemplateBlob(importingDataset),
+      blob,
       getDatasetItemImportTemplateFileName(importingDataset, projectName)
     )
   }, [importingDataset, projectName])
@@ -283,8 +288,7 @@ export function ProjectDatasets() {
         )
         downloadBlob(
           blob,
-          completedJob.fileName ||
-            getDatasetExportFileName(dataset, format)
+          completedJob.fileName || getDatasetExportFileName(dataset, format)
         )
         toast.success('数据集导出完成')
       } catch (error) {
@@ -401,6 +405,7 @@ export function ProjectDatasets() {
         <DatasetFormDrawer
           open={createOpen || Boolean(editingDataset)}
           dataset={editingDataset}
+          checkNameAvailability={checkDatasetNameAvailability}
           onOpenChange={(open) => {
             if (!open) {
               setCreateOpen(false)

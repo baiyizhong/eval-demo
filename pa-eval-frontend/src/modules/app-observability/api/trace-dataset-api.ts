@@ -10,20 +10,37 @@ type TraceDatasetApiClient = {
 
 const TRACE_DATASET_ADD_BATCH_SIZE = 200
 const TRACE_DATASET_ASYNC_THRESHOLD = 1000
+const TRACE_DATASET_JOB_TIMEOUT_MS = 30 * 60 * 1000
 
-export type TraceDatasetTargetInput =
+export type TraceFilterSelection = {
+  type: 'FILTER'
+  filters: Record<string, unknown>
+  excludedTraceIds: string[]
+}
+
+type TraceDatasetSelectionInput =
   | {
-      mode: 'existing'
-      datasetId: string
       traceIds: string[]
+      selection?: never
+      totalCount?: never
     }
   | {
+      traceIds?: never
+      selection: TraceFilterSelection
+      totalCount: number
+    }
+
+export type TraceDatasetTargetInput =
+  | ({
+      mode: 'existing'
+      datasetId: string
+    } & TraceDatasetSelectionInput)
+  | ({
       mode: 'create'
       name: string
       description: string
       datasetType: DatasetType
-      traceIds: string[]
-    }
+    } & TraceDatasetSelectionInput)
 
 export type TraceDatasetAddResult = {
   datasetId: string
@@ -50,6 +67,7 @@ export type TraceDatasetAddProgress = {
 export type TraceDatasetAddOptions = {
   onProgress?: (progress: TraceDatasetAddProgress) => void
   pollIntervalMs?: number
+  timeoutMs?: number
 }
 
 type TraceDatasetImportJob = {
@@ -106,13 +124,14 @@ export async function addProjectTracesToDatasetTarget(
           })
         ).id
 
-  const batches = chunkTraceIds(input.traceIds, TRACE_DATASET_ADD_BATCH_SIZE)
+  const traceIds = input.traceIds ?? []
+  const totalCount = input.selection ? input.totalCount : traceIds.length
+  const batches = chunkTraceIds(traceIds, TRACE_DATASET_ADD_BATCH_SIZE)
   const results: TraceDatasetAddResult[] = []
   const shouldReportProgress =
-    input.traceIds.length >= TRACE_DATASET_ASYNC_THRESHOLD &&
-    Boolean(options.onProgress)
+    totalCount >= TRACE_DATASET_ASYNC_THRESHOLD && Boolean(options.onProgress)
 
-  if (input.traceIds.length >= TRACE_DATASET_ASYNC_THRESHOLD) {
+  if (input.selection || totalCount >= TRACE_DATASET_ASYNC_THRESHOLD) {
     return addProjectTracesToDatasetByImportJob(
       api,
       projectId,
@@ -124,7 +143,7 @@ export async function addProjectTracesToDatasetTarget(
 
   if (shouldReportProgress) {
     options.onProgress?.(
-      buildTraceDatasetAddProgress(datasetId, input.traceIds.length, batches, 0)
+      buildTraceDatasetAddProgress(datasetId, totalCount, batches, 0)
     )
   }
 
@@ -143,7 +162,7 @@ export async function addProjectTracesToDatasetTarget(
         options.onProgress?.(
           buildTraceDatasetAddProgress(
             datasetId,
-            input.traceIds.length,
+            totalCount,
             batches,
             index + 1
           )
@@ -155,7 +174,7 @@ export async function addProjectTracesToDatasetTarget(
       options.onProgress?.({
         ...buildTraceDatasetAddProgress(
           datasetId,
-          input.traceIds.length,
+          totalCount,
           batches,
           results.length
         ),
@@ -165,7 +184,7 @@ export async function addProjectTracesToDatasetTarget(
     throw error
   }
 
-  return mergeTraceDatasetAddResults(datasetId, input.traceIds.length, results)
+  return mergeTraceDatasetAddResults(datasetId, totalCount, results)
 }
 
 async function addProjectTracesToDatasetByImportJob(
@@ -182,16 +201,25 @@ async function addProjectTracesToDatasetByImportJob(
     throw new Error('当前环境不支持大批量异步加入数据集')
   }
 
-  let job = await api.createProjectTraceDatasetImportJob<TraceDatasetImportJob>({
-    path: { projectId },
-    body: {
-      datasetId,
-      traceIds: input.traceIds,
-    },
-  })
+  let job = await api.createProjectTraceDatasetImportJob<TraceDatasetImportJob>(
+    {
+      path: { projectId },
+      body: {
+        datasetId,
+        ...(input.selection
+          ? { selection: input.selection }
+          : { traceIds: input.traceIds }),
+      },
+    }
+  )
   options.onProgress?.(traceDatasetImportJobToProgress(job))
 
+  const startedAt = Date.now()
+  const timeoutMs = options.timeoutMs ?? TRACE_DATASET_JOB_TIMEOUT_MS
   while (job.status === 'PENDING' || job.status === 'RUNNING') {
+    if (Date.now() - startedAt >= timeoutMs) {
+      throw new Error('任务处理时间较长，仍在后台执行，请稍后重试查看结果')
+    }
     await waitForTraceDatasetImportPoll(options.pollIntervalMs ?? 1000)
     job = await api.getProjectTraceDatasetImportJob<TraceDatasetImportJob>({
       path: { projectId, jobId: job.id },

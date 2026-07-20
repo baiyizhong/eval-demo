@@ -1,4 +1,3 @@
-import * as XLSX from 'xlsx'
 import type {
   DatasetItemFormInput,
   DatasetItemStatus,
@@ -122,13 +121,20 @@ const IMPORT_HEADERS: HeaderDefinition[] = [
 
 const REQUIRED_FIELDS: ImportField[] = ['input', 'expectedOutput']
 
+type XlsxModule = typeof import('xlsx')
+
+function loadXlsx(): Promise<XlsxModule> {
+  return import('xlsx')
+}
+
 export async function parseDatasetItemImportFile(
   file: File
 ): Promise<ParsedDatasetItemImportResult> {
   const fileName = file.name.toLowerCase()
 
   if (fileName.endsWith('.xlsx') || fileName.endsWith('.xls')) {
-    return parseDatasetItemImportRows(await readWorkbookRows(file))
+    const XLSX = await loadXlsx()
+    return parseDatasetItemImportRows(await readWorkbookRows(file, XLSX))
   }
 
   const text = await file.text()
@@ -138,7 +144,8 @@ export async function parseDatasetItemImportFile(
     return parsedText
   }
 
-  return parseDatasetItemImportRows(readTextRows(text))
+  const XLSX = await loadXlsx()
+  return parseDatasetItemImportRows(readTextRows(text, XLSX))
 }
 
 export function parseDatasetItemImportRows(
@@ -243,9 +250,10 @@ export function parseDatasetItemImportRows(
   return { items, itemRows, failures }
 }
 
-export function buildDatasetItemImportTemplateBlob(
+export async function buildDatasetItemImportTemplateBlob(
   dataset?: DatasetRecord | null
 ) {
+  const XLSX = await loadXlsx()
   const workbook = XLSX.utils.book_new()
   const worksheet = XLSX.utils.aoa_to_sheet(buildTemplateRows(dataset))
 
@@ -315,26 +323,25 @@ function buildTemplateRows(dataset?: DatasetRecord | null) {
   ]
 }
 
-function readWorkbookRows(file: File) {
-  return file.arrayBuffer().then((buffer) => {
-    const workbook = XLSX.read(buffer, { type: 'array' })
-    const firstSheetName = workbook.SheetNames[0]
+async function readWorkbookRows(file: File, XLSX: XlsxModule) {
+  const buffer = await file.arrayBuffer()
+  const workbook = XLSX.read(buffer, { type: 'array' })
+  const firstSheetName = workbook.SheetNames[0]
 
-    if (!firstSheetName) {
-      return []
-    }
+  if (!firstSheetName) {
+    return []
+  }
 
-    const worksheet = workbook.Sheets[firstSheetName]
+  const worksheet = workbook.Sheets[firstSheetName]
 
-    return XLSX.utils.sheet_to_json<unknown[]>(worksheet, {
-      header: 1,
-      defval: '',
-      raw: false,
-    })
+  return XLSX.utils.sheet_to_json<unknown[]>(worksheet, {
+    header: 1,
+    defval: '',
+    raw: false,
   })
 }
 
-function readTextRows(text: string) {
+function readTextRows(text: string, XLSX: XlsxModule) {
   const workbook = XLSX.read(text.replace(/^\uFEFF/, ''), { type: 'string' })
   const firstSheetName = workbook.SheetNames[0]
 

@@ -1,4 +1,3 @@
-import * as XLSX from 'xlsx'
 import {
   datasetTypeLabels,
   type DatasetExportFormat,
@@ -18,6 +17,12 @@ const EXPORT_HEADERS: { label: string; key: keyof DatasetItemRecord }[] = [
   { label: 'updatedAt', key: 'updatedAt' },
 ]
 
+type XlsxModule = typeof import('xlsx')
+
+function loadXlsx(): Promise<XlsxModule> {
+  return import('xlsx')
+}
+
 export function getDatasetExportFileName(
   dataset: DatasetRecord,
   format: DatasetExportFormat,
@@ -30,7 +35,10 @@ export function getDatasetExportFileName(
   return `【${typeLabel}】${safeDatasetName}${stamp}.${format}`
 }
 
-export function buildDatasetItemExportWorkbookBlob(items: DatasetItemRecord[]) {
+export async function buildDatasetItemExportWorkbookBlob(
+  items: DatasetItemRecord[]
+) {
+  const XLSX = await loadXlsx()
   const workbook = XLSX.utils.book_new()
   const rows = [
     EXPORT_HEADERS.map((header) => header.label),

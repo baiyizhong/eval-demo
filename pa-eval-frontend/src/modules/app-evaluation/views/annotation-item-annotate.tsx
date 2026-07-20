@@ -136,7 +136,7 @@ export function ProjectAnnotationItemAnnotate() {
     mode: 'save' | 'saveNext'
   ) => {
     await saveProjectAnnotationScores($api, projectId, queueId, itemId, input)
-    await invalidateAnnotation()
+    void invalidateAnnotation()
 
     if (mode === 'saveNext') {
       const nextNavigation = await getProjectAnnotationNavigation(

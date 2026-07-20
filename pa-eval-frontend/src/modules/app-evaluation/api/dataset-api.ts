@@ -19,6 +19,7 @@ import type {
 type DatasetApiClient = {
   getProjects: ApiMethod
   getProjectDatasets: ApiMethod
+  getProjectDatasetNameAvailability: ApiMethod
   createProjectDataset: ApiMethod
   getProjectDataset: ApiMethod
   updateProjectDataset: ApiMethod
@@ -69,6 +70,20 @@ export function createProjectDataset(
     path: { projectId },
     body: input,
   })
+}
+
+export async function checkProjectDatasetNameAvailability(
+  api: DatasetApiClient,
+  projectId: string,
+  name: string
+) {
+  const result = await api.getProjectDatasetNameAvailability<{
+    available: boolean
+  }>({
+    path: { projectId },
+    query: { name: name.trim() },
+  })
+  return result.available
 }
 
 export function getProjectDataset(

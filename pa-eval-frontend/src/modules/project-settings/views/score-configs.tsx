@@ -85,13 +85,13 @@ function getConfigRange(config: ScoreConfig) {
     return config.categories?.map(formatScoreOption).join(', ') || '-'
   }
   if (config.dataType === 'BOOLEAN') {
-    return formatBooleanScoreOptions(config.categories)
+    return formatBooleanScoreOptions()
   }
   return '-'
 }
 
-function formatBooleanScoreOptions(categories?: ScoreConfigCategory[]) {
-  return getBooleanScoreCategories(categories)
+function formatBooleanScoreOptions() {
+  return getBooleanScoreCategories()
     .map((option) => option.label)
     .join(' / ')
 }
@@ -449,6 +449,7 @@ function ScoreConfigDialog({
               rows={categoryRows}
               onChange={setCategoryRows}
               readOnlyValue
+              readOnlyLabel
             />
           ) : null}
         </div>
@@ -556,7 +557,7 @@ function ScoreOptionRows({
         </Button>
       ) : (
         <p className='text-muted-foreground text-xs'>
-          布尔类型固定使用 1 / 0，标签可按业务含义修改。
+          布尔类型固定使用 True=1、False=0。
         </p>
       )}
     </div>
@@ -573,7 +574,7 @@ function getInitialScoreOptionRows(
     | null
 ): ScoreOptionRow[] {
   if (config?.dataType === 'BOOLEAN') {
-    return getBooleanScoreCategories(config.categories).map((option) => ({
+    return getBooleanScoreCategories().map((option) => ({
       value: String(option.value),
       label: option.label,
     }))
@@ -599,26 +600,8 @@ function formatScoreOption(option: ScoreConfigCategory) {
   return `${option.label}（${option.value}）`
 }
 
-function getBooleanScoreCategories(
-  categories?: ScoreConfigCategory[]
-): ScoreConfigCategory[] {
-  const trueOption =
-    categories?.find((category) => Number(category.value) === 1) ??
-    categories?.[0]
-  const falseOption =
-    categories?.find((category) => Number(category.value) === 0) ??
-    categories?.[1]
-
-  return [
-    {
-      value: 1,
-      label: trueOption?.label?.trim() || BOOLEAN_SCORE_OPTIONS[0].label,
-    },
-    {
-      value: 0,
-      label: falseOption?.label?.trim() || BOOLEAN_SCORE_OPTIONS[1].label,
-    },
-  ]
+function getBooleanScoreCategories(): ScoreConfigCategory[] {
+  return BOOLEAN_SCORE_OPTIONS.map((option) => ({ ...option }))
 }
 
 function Field({ label, children }: { label: string; children: ReactNode }) {

@@ -47,7 +47,7 @@ test('dataset export file name uses bracketed type, dataset name, and date', () 
 })
 
 test('selected dataset item export builds an Excel workbook', async () => {
-  const blob = buildDatasetItemExportWorkbookBlob([item])
+  const blob = await buildDatasetItemExportWorkbookBlob([item])
 
   assert.equal(
     blob.type,

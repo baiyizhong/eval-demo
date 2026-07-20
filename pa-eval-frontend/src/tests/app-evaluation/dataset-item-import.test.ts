@@ -92,7 +92,7 @@ test('dataset item import template uses dataset schemas and safe file name', asy
     updatedAt: '',
   }
 
-  const blob = buildDatasetItemImportTemplateBlob(dataset)
+  const blob = await buildDatasetItemImportTemplateBlob(dataset)
 
   assert.equal(
     blob.type,

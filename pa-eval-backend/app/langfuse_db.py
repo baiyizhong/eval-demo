@@ -17,6 +17,13 @@ from app.annotation_assignment import (
 )
 from app.config import Settings, get_settings
 from app.errors import BusinessError
+from app.score_configs import (
+    PA_BOOLEAN_SCORE_CONFIG_REPAIR_MARKER,
+    PA_CLICKHOUSE_SCORE_VALUE,
+    is_langfuse_boolean_categories,
+    langfuse_boolean_categories,
+    langfuse_boolean_label,
+)
 
 
 PROJECT_ACCESS_EXISTS_SQL = """
@@ -43,10 +50,6 @@ PROJECT_ACCESS_EXISTS_SQL = """
 )
 """
 
-LANGFUSE_BOOLEAN_SCORE_CATEGORIES = [
-    {"label": "True", "value": 1},
-    {"label": "False", "value": 0},
-]
 TEXT_SCORE_MAX_LENGTH = 500
 ROLE_LEVELS = {
     "NONE": 0,
@@ -1417,7 +1420,10 @@ class LangfuseDatabaseReader:
             """,
             {**params, "limit": limit, "offset": offset},
         )
-        return {"total": total, "datas": [self._to_dataset_payload(row) for row in rows]}
+        return {
+            "total": total,
+            "datas": [self._to_dataset_payload(row) for row in rows],
+        }
 
     async def get_dataset_for_user(
         self,
@@ -1578,6 +1584,26 @@ class LangfuseDatabaseReader:
             ) from exc
 
         return await self.get_dataset_for_user(project_id, dataset_id, user_id)
+
+    async def is_dataset_name_available_for_user(
+        self,
+        project_id: str,
+        user_id: str,
+        name: str,
+    ) -> bool:
+        await self._ensure_project_visible(project_id, user_id)
+        rows = await self._fetch_all(
+            """
+            SELECT NOT EXISTS (
+                SELECT 1
+                FROM datasets
+                WHERE project_id = %(project_id)s
+                  AND name = %(name)s
+            ) AS available
+            """,
+            {"project_id": project_id, "name": name},
+        )
+        return bool(rows and rows[0].get("available"))
 
     async def update_dataset_for_user(
         self,
@@ -2313,6 +2339,289 @@ class LangfuseDatabaseReader:
                     queue_id,
                     job_id,
                 )
+
+    async def create_trace_bulk_job_for_user(
+        self,
+        project_id: str,
+        user_id: str,
+        payload: dict[str, Any],
+    ) -> dict[str, Any]:
+        if not self._database_url:
+            raise LangfuseDatabaseConfigError()
+
+        job_id = _new_langfuse_id("patracejob")
+        expires_at = datetime.now(timezone.utc) + timedelta(hours=2)
+        async with await psycopg.AsyncConnection.connect(
+            self._database_url,
+            row_factory=dict_row,
+        ) as connection:
+            async with connection.cursor() as cursor:
+                await self._get_project_for_user(cursor, project_id, user_id)
+                await cursor.execute(
+                    """
+                    INSERT INTO pa_trace_bulk_jobs (
+                        create_by,
+                        update_by,
+                        id,
+                        project_id,
+                        user_id,
+                        job_type,
+                        status,
+                        selection_type,
+                        selection_payload,
+                        operation_payload,
+                        result_payload,
+                        total_count,
+                        expires_at
+                    )
+                    VALUES (
+                        %(user_id)s,
+                        %(user_id)s,
+                        %(id)s,
+                        %(project_id)s,
+                        %(user_id)s,
+                        %(job_type)s,
+                        'PENDING',
+                        %(selection_type)s,
+                        %(selection_payload)s,
+                        %(operation_payload)s,
+                        %(result_payload)s,
+                        %(total_count)s,
+                        %(expires_at)s
+                    )
+                    RETURNING *
+                    """,
+                    {
+                        "id": job_id,
+                        "project_id": project_id,
+                        "user_id": user_id,
+                        "job_type": payload["jobType"],
+                        "selection_type": payload["selectionType"],
+                        "selection_payload": Jsonb(payload["selectionPayload"]),
+                        "operation_payload": Jsonb(payload["operationPayload"]),
+                        "result_payload": Jsonb(payload.get("resultPayload") or {}),
+                        "total_count": int(payload.get("totalCount") or 0),
+                        "expires_at": expires_at,
+                    },
+                )
+                row = await cursor.fetchone()
+
+        assert row is not None
+        return self._to_trace_bulk_job_payload(row)
+
+    async def get_trace_bulk_job_for_user(
+        self,
+        project_id: str,
+        user_id: str,
+        job_id: str,
+    ) -> dict[str, Any]:
+        if not self._database_url:
+            raise LangfuseDatabaseConfigError()
+
+        async with await psycopg.AsyncConnection.connect(
+            self._database_url,
+            row_factory=dict_row,
+        ) as connection:
+            async with connection.cursor() as cursor:
+                await self._get_project_for_user(cursor, project_id, user_id)
+                await cursor.execute(
+                    """
+                    SELECT *
+                    FROM pa_trace_bulk_jobs
+                    WHERE id = %(job_id)s
+                      AND project_id = %(project_id)s
+                      AND user_id = %(user_id)s
+                      AND expires_at > NOW()
+                    LIMIT 1
+                    """,
+                    {
+                        "job_id": job_id,
+                        "project_id": project_id,
+                        "user_id": user_id,
+                    },
+                )
+                row = await cursor.fetchone()
+
+        if row is None:
+            raise BusinessError(1033, "批量任务不存在或已过期", 404)
+        return self._to_trace_bulk_job_payload(row)
+
+    async def claim_trace_bulk_job(
+        self,
+        job_id: str,
+        lock_owner: str,
+        lease_seconds: int,
+    ) -> dict[str, Any] | None:
+        if not self._database_url:
+            raise LangfuseDatabaseConfigError()
+
+        lease_until = datetime.now(timezone.utc) + timedelta(seconds=lease_seconds)
+        async with await psycopg.AsyncConnection.connect(
+            self._database_url,
+            row_factory=dict_row,
+        ) as connection:
+            async with connection.cursor() as cursor:
+                await cursor.execute(
+                    """
+                    WITH candidate AS (
+                        SELECT id
+                        FROM pa_trace_bulk_jobs
+                        WHERE id = %(job_id)s
+                          AND expires_at > NOW()
+                          AND (
+                              status = 'PENDING'
+                              OR (
+                                  status = 'RUNNING'
+                                  AND (lock_until IS NULL OR lock_until < NOW())
+                              )
+                          )
+                        FOR UPDATE SKIP LOCKED
+                    )
+                    UPDATE pa_trace_bulk_jobs job
+                    SET
+                        status = 'RUNNING',
+                        lock_owner = %(lock_owner)s,
+                        lock_until = %(lease_until)s,
+                        attempt_count = attempt_count + 1,
+                        started_at = COALESCE(started_at, NOW()),
+                        update_by = %(lock_owner)s,
+                        update_date = NOW()
+                    FROM candidate
+                    WHERE job.id = candidate.id
+                    RETURNING job.*
+                    """,
+                    {
+                        "job_id": job_id,
+                        "lock_owner": lock_owner,
+                        "lease_until": lease_until,
+                    },
+                )
+                row = await cursor.fetchone()
+
+        return self._to_trace_bulk_job_payload(row) if row else None
+
+    async def claim_trace_bulk_jobs(
+        self,
+        lock_owner: str,
+        lease_seconds: int,
+        limit: int,
+    ) -> list[dict[str, Any]]:
+        if not self._database_url:
+            raise LangfuseDatabaseConfigError()
+
+        lease_until = datetime.now(timezone.utc) + timedelta(seconds=lease_seconds)
+        async with await psycopg.AsyncConnection.connect(
+            self._database_url,
+            row_factory=dict_row,
+        ) as connection:
+            async with connection.cursor() as cursor:
+                await cursor.execute(
+                    """
+                    WITH candidates AS (
+                        SELECT id
+                        FROM pa_trace_bulk_jobs
+                        WHERE expires_at > NOW()
+                          AND (
+                              status = 'PENDING'
+                              OR (
+                                  status = 'RUNNING'
+                                  AND (lock_until IS NULL OR lock_until < NOW())
+                              )
+                          )
+                        ORDER BY create_date ASC, id ASC
+                        FOR UPDATE SKIP LOCKED
+                        LIMIT %(limit)s
+                    )
+                    UPDATE pa_trace_bulk_jobs job
+                    SET
+                        status = 'RUNNING',
+                        lock_owner = %(lock_owner)s,
+                        lock_until = %(lease_until)s,
+                        attempt_count = attempt_count + 1,
+                        started_at = COALESCE(started_at, NOW()),
+                        update_by = %(lock_owner)s,
+                        update_date = NOW()
+                    FROM candidates
+                    WHERE job.id = candidates.id
+                    RETURNING job.*
+                    """,
+                    {
+                        "lock_owner": lock_owner,
+                        "lease_until": lease_until,
+                        "limit": max(1, limit),
+                    },
+                )
+                rows = await cursor.fetchall()
+
+        return [self._to_trace_bulk_job_payload(row) for row in rows]
+
+    async def update_trace_bulk_job(
+        self,
+        job_id: str,
+        lock_owner: str,
+        updates: dict[str, Any],
+        lease_seconds: int = 120,
+    ) -> dict[str, Any]:
+        if not self._database_url:
+            raise LangfuseDatabaseConfigError()
+
+        terminal = updates.get("status") in {"SUCCEEDED", "FAILED"}
+        lease_until = None
+        if not terminal:
+            lease_until = datetime.now(timezone.utc) + timedelta(seconds=lease_seconds)
+        async with await psycopg.AsyncConnection.connect(
+            self._database_url,
+            row_factory=dict_row,
+        ) as connection:
+            async with connection.cursor() as cursor:
+                await cursor.execute(
+                    """
+                    UPDATE pa_trace_bulk_jobs
+                    SET
+                        status = %(status)s,
+                        operation_payload = %(operation_payload)s,
+                        cursor_payload = %(cursor_payload)s,
+                        result_payload = %(result_payload)s,
+                        total_count = %(total_count)s,
+                        completed_count = %(completed_count)s,
+                        success_count = %(success_count)s,
+                        failure_count = %(failure_count)s,
+                        error_message = %(error_message)s,
+                        completed_at = %(completed_at)s,
+                        lock_owner = %(next_lock_owner)s,
+                        lock_until = %(lock_until)s,
+                        update_by = %(lock_owner)s,
+                        update_date = NOW()
+                    WHERE id = %(job_id)s
+                      AND lock_owner = %(lock_owner)s
+                    RETURNING *
+                    """,
+                    {
+                        "job_id": job_id,
+                        "lock_owner": lock_owner,
+                        "status": updates.get("status") or "RUNNING",
+                        "operation_payload": Jsonb(
+                            updates.get("operationPayload") or {}
+                        ),
+                        "cursor_payload": Jsonb(updates.get("cursorPayload") or {}),
+                        "result_payload": Jsonb(updates.get("resultPayload") or {}),
+                        "total_count": int(updates.get("totalCount") or 0),
+                        "completed_count": int(updates.get("completedCount") or 0),
+                        "success_count": int(updates.get("successCount") or 0),
+                        "failure_count": int(updates.get("failureCount") or 0),
+                        "error_message": str(updates.get("errorMessage") or "")[:1000],
+                        "completed_at": datetime.now(timezone.utc)
+                        if terminal
+                        else None,
+                        "next_lock_owner": "" if terminal else lock_owner,
+                        "lock_until": lease_until,
+                    },
+                )
+                row = await cursor.fetchone()
+
+        if row is None:
+            raise BusinessError(1035, "批量任务租约已失效", 409)
+        return self._to_trace_bulk_job_payload(row)
 
     async def get_annotation_export_job_for_user(
         self,
@@ -3315,6 +3624,26 @@ class LangfuseDatabaseReader:
 
         return await self.get_annotation_queue_for_user(project_id, queue_id, user_id)
 
+    async def is_annotation_queue_name_available_for_user(
+        self,
+        project_id: str,
+        user_id: str,
+        name: str,
+    ) -> bool:
+        await self._ensure_project_visible(project_id, user_id)
+        rows = await self._fetch_all(
+            """
+            SELECT NOT EXISTS (
+                SELECT 1
+                FROM annotation_queues
+                WHERE project_id = %(project_id)s
+                  AND name = %(name)s
+            ) AS available
+            """,
+            {"project_id": project_id, "name": name},
+        )
+        return bool(rows and rows[0].get("available"))
+
     async def update_annotation_queue_for_user(
         self,
         project_id: str,
@@ -3486,6 +3815,112 @@ class LangfuseDatabaseReader:
             {"project_id": project_id, "queue_id": queue_id},
         )
         return [self._to_annotation_item_payload(row) for row in rows]
+
+    async def list_annotation_queue_items_page_for_user(
+        self,
+        project_id: str,
+        queue_id: str,
+        user_id: str,
+        *,
+        page: int,
+        page_size: int,
+        filters: dict[str, Any],
+    ) -> dict[str, Any]:
+        await self.get_annotation_queue_for_user(project_id, queue_id, user_id)
+        filter_sql, filter_params = self._annotation_item_filter_sql(filters)
+        params = {
+            "project_id": project_id,
+            "queue_id": queue_id,
+            "limit": page_size,
+            "offset": (page - 1) * page_size,
+            **filter_params,
+        }
+        base_sql = (
+            "WITH annotation_items AS ("
+            + self._annotation_item_select_sql()
+            + """
+            WHERE aqi.project_id = %(project_id)s
+              AND aqi.queue_id = %(queue_id)s
+            )
+            """
+        )
+        total_rows = await self._fetch_all(
+            base_sql
+            + f"""
+            SELECT COUNT(*)::int AS total
+            FROM annotation_items item
+            WHERE {filter_sql}
+            """,
+            params,
+        )
+        rows = await self._fetch_all(
+            base_sql
+            + f"""
+            SELECT *
+            FROM annotation_items item
+            WHERE {filter_sql}
+            ORDER BY item.updated_at DESC, item.created_at DESC, item.id DESC
+            LIMIT %(limit)s OFFSET %(offset)s
+            """,
+            params,
+        )
+        return {
+            "total": int((total_rows[0] if total_rows else {}).get("total") or 0),
+            "datas": [self._to_annotation_item_payload(row) for row in rows],
+        }
+
+    async def count_annotation_queue_item_filters_for_user(
+        self,
+        project_id: str,
+        queue_id: str,
+        user_id: str,
+        *,
+        filters: dict[str, Any],
+    ) -> dict[str, dict[str, int]]:
+        await self.get_annotation_queue_for_user(project_id, queue_id, user_id)
+        base_sql = (
+            "WITH annotation_items AS ("
+            + self._annotation_item_select_sql()
+            + """
+            WHERE aqi.project_id = %(project_id)s
+              AND aqi.queue_id = %(queue_id)s
+            )
+            """
+        )
+        counts: dict[str, dict[str, int]] = {}
+        for response_key, field, omitted_filter in (
+            ("status", "status", "status"),
+            ("objectType", "object_type", "object_type"),
+            ("assigneeIds", "assignee_id", "assignee_ids"),
+        ):
+            filter_sql, filter_params = self._annotation_item_filter_sql(
+                filters,
+                omitted_filter=omitted_filter,
+            )
+            rows = await self._fetch_all(
+                base_sql
+                + f"""
+                SELECT item.{field} AS value, COUNT(*)::int AS total
+                FROM annotation_items item
+                WHERE {filter_sql}
+                  AND item.{field} IS NOT NULL
+                  AND item.{field} <> ''
+                GROUP BY item.{field}
+                """,
+                {
+                    "project_id": project_id,
+                    "queue_id": queue_id,
+                    **filter_params,
+                },
+            )
+            counts[response_key] = {
+                str(row["value"]): int(row.get("total") or 0) for row in rows
+            }
+        for status in ("PENDING", "COMPLETED"):
+            counts["status"].setdefault(status, 0)
+        for object_type in ("TRACE", "OBSERVATION", "SESSION"):
+            counts["objectType"].setdefault(object_type, 0)
+        return counts
 
     async def get_annotation_queue_item_for_user(
         self,
@@ -3849,7 +4284,9 @@ class LangfuseDatabaseReader:
                     str(row.get("object_id") or "") for row in await cursor.fetchall()
                 }
                 trace_ids_to_create = [
-                    trace_id for trace_id in trace_ids if trace_id not in existing_trace_ids
+                    trace_id
+                    for trace_id in trace_ids
+                    if trace_id not in existing_trace_ids
                 ]
 
                 created_item_ids: list[str] = []
@@ -3967,8 +4404,29 @@ class LangfuseDatabaseReader:
         user_id: str,
         payload: dict[str, Any],
     ) -> list[dict[str, Any]]:
+        return await self.prepare_annotation_score_payloads_batch_for_user(
+            project_id,
+            queue_id,
+            user_id,
+            [{"itemId": item_id, "scorePayload": payload}],
+        )
+
+    async def prepare_annotation_score_payloads_batch_for_user(
+        self,
+        project_id: str,
+        queue_id: str,
+        user_id: str,
+        items: list[dict[str, Any]],
+    ) -> list[dict[str, Any]]:
         if not self._database_url:
             raise LangfuseDatabaseConfigError()
+        item_ids = list(
+            dict.fromkeys(
+                str(item.get("itemId") or "") for item in items if item.get("itemId")
+            )
+        )
+        if not item_ids:
+            return []
 
         score_payloads: list[dict[str, Any]] = []
         async with await psycopg.AsyncConnection.connect(
@@ -3977,61 +4435,133 @@ class LangfuseDatabaseReader:
         ) as connection:
             async with connection.cursor() as cursor:
                 await self._get_project_for_user(cursor, project_id, user_id)
-                item = await self._get_annotation_item_score_context(
-                    cursor,
-                    project_id,
-                    queue_id,
-                    item_id,
+                await cursor.execute(
+                    """
+                    SELECT
+                        aqi.id,
+                        aqi.object_id,
+                        aqi.object_type::text AS object_type,
+                        aq.score_config_ids,
+                        o.trace_id AS observation_trace_id
+                    FROM annotation_queue_items aqi
+                    JOIN annotation_queues aq
+                      ON aq.project_id = aqi.project_id
+                     AND aq.id = aqi.queue_id
+                    LEFT JOIN observations o
+                      ON aqi.object_type::text = 'OBSERVATION'
+                     AND o.project_id = aqi.project_id
+                     AND o.id = aqi.object_id
+                    WHERE aqi.project_id = %(project_id)s
+                      AND aqi.queue_id = %(queue_id)s
+                      AND aqi.id = ANY(%(item_ids)s)
+                    """,
+                    {
+                        "project_id": project_id,
+                        "queue_id": queue_id,
+                        "item_ids": item_ids,
+                    },
                 )
-                score_config_ids = set(item["score_config_ids"] or [])
-                trace_id = item.get("resolved_trace_id") or item["object_id"]
-                observation_id = (
-                    item["object_id"] if item["object_type"] == "OBSERVATION" else None
-                )
-                session_id = (
-                    item["object_id"] if item["object_type"] == "SESSION" else None
-                )
+                item_rows = list(await cursor.fetchall())
+                item_by_id = {str(item["id"]): item for item in item_rows}
+                missing_item_ids = [
+                    item_id for item_id in item_ids if item_id not in item_by_id
+                ]
+                if missing_item_ids:
+                    raise BusinessError(1023, "标注数据不存在或无访问权限", 404)
 
-                for score in payload.get("scores") or []:
-                    config_id = score["configId"]
-                    if config_id not in score_config_ids:
-                        raise BusinessError(
-                            code=1024,
-                            message="评分指标不属于当前人工标注任务",
-                            status_code=400,
-                        )
-                    config = await self._get_score_config_row(
-                        cursor,
-                        project_id,
-                        config_id,
+                requested_config_ids = list(
+                    dict.fromkeys(
+                        str(score.get("configId") or "")
+                        for item in items
+                        for score in (item.get("scorePayload") or {}).get("scores")
+                        or []
+                        if score.get("configId")
                     )
-                    if config.get("is_archived"):
-                        raise BusinessError(
-                            code=1026,
-                            message="已归档评分指标不能继续标注",
-                            status_code=400,
-                        )
-                    value, string_value = self._normalize_score_value(
-                        config,
-                        score.get("value"),
-                        score.get("stringValue") or "",
+                )
+                await cursor.execute(
+                    """
+                    SELECT
+                        id,
+                        name,
+                        data_type::text AS data_type,
+                        min_value,
+                        max_value,
+                        categories,
+                        is_archived
+                    FROM score_configs
+                    WHERE project_id = %(project_id)s
+                      AND id = ANY(%(config_ids)s)
+                    """,
+                    {
+                        "project_id": project_id,
+                        "config_ids": requested_config_ids,
+                    },
+                )
+                configs = {
+                    str(config["id"]): config for config in await cursor.fetchall()
+                }
+
+                for item_input in items:
+                    item_id = str(item_input.get("itemId") or "")
+                    item = item_by_id[item_id]
+                    allowed_config_ids = set(item["score_config_ids"] or [])
+                    trace_id = (
+                        item.get("observation_trace_id")
+                        if item["object_type"] == "OBSERVATION"
+                        else item["object_id"]
                     )
-                    score_payloads.append(
-                        _annotation_score_api_payload(
-                            project_id=project_id,
-                            queue_id=queue_id,
-                            item_id=item_id,
-                            user_id=user_id,
-                            trace_id=trace_id,
-                            observation_id=observation_id,
-                            session_id=session_id,
-                            config=config,
-                            config_id=config_id,
-                            value=value,
-                            string_value=string_value,
-                            comment=score.get("comment") or "",
-                        )
+                    observation_id = (
+                        item["object_id"]
+                        if item["object_type"] == "OBSERVATION"
+                        else None
                     )
+                    session_id = (
+                        item["object_id"] if item["object_type"] == "SESSION" else None
+                    )
+                    for score in (item_input.get("scorePayload") or {}).get(
+                        "scores"
+                    ) or []:
+                        config_id = score["configId"]
+                        if config_id not in allowed_config_ids:
+                            raise BusinessError(
+                                code=1024,
+                                message="评分指标不属于当前人工标注任务",
+                                status_code=400,
+                            )
+                        config = configs.get(config_id)
+                        if config is None:
+                            raise BusinessError(
+                                code=1024,
+                                message="评分指标不存在或无访问权限",
+                                status_code=400,
+                            )
+                        if config.get("is_archived"):
+                            raise BusinessError(
+                                code=1026,
+                                message="已归档评分指标不能继续标注",
+                                status_code=400,
+                            )
+                        value, string_value = self._normalize_score_value(
+                            config,
+                            score.get("value"),
+                            score.get("stringValue") or "",
+                        )
+                        score_payloads.append(
+                            _annotation_score_api_payload(
+                                project_id=project_id,
+                                queue_id=queue_id,
+                                item_id=item_id,
+                                user_id=user_id,
+                                trace_id=trace_id,
+                                observation_id=observation_id,
+                                session_id=session_id,
+                                config=config,
+                                config_id=config_id,
+                                value=value,
+                                string_value=string_value,
+                                comment=score.get("comment") or "",
+                            )
+                        )
         return score_payloads
 
     async def complete_annotation_queue_item_for_user(
@@ -5675,6 +6205,130 @@ class LangfuseDatabaseReader:
             """
 
     @staticmethod
+    def _annotation_item_filter_sql(
+        filters: dict[str, Any],
+        *,
+        omitted_filter: str = "",
+    ) -> tuple[str, dict[str, Any]]:
+        conditions = ["1 = 1"]
+        params: dict[str, Any] = {}
+        keyword = str(filters.get("keyword") or "").strip()
+        if keyword:
+            params["annotation_keyword"] = f"%{keyword}%"
+            conditions.append(
+                "("
+                "item.id ILIKE %(annotation_keyword)s "
+                "OR item.object_id ILIKE %(annotation_keyword)s "
+                "OR item.object_type ILIKE %(annotation_keyword)s "
+                "OR COALESCE(item.source_title, '') ILIKE %(annotation_keyword)s "
+                "OR COALESCE(item.trace_id, '') ILIKE %(annotation_keyword)s "
+                "OR COALESCE(item.session_id, '') ILIKE %(annotation_keyword)s "
+                "OR COALESCE(item.user_id, '') ILIKE %(annotation_keyword)s "
+                "OR COALESCE(item.source_input::text, '') ILIKE %(annotation_keyword)s "
+                "OR COALESCE(item.source_output::text, '') ILIKE %(annotation_keyword)s "
+                "OR COALESCE(item.source_metadata::text, '') ILIKE %(annotation_keyword)s"
+                ")"
+            )
+        if omitted_filter != "status" and filters.get("status"):
+            params["annotation_statuses"] = list(filters["status"])
+            conditions.append("item.status = ANY(%(annotation_statuses)s)")
+        if omitted_filter != "object_type" and filters.get("object_type"):
+            params["annotation_object_types"] = list(filters["object_type"])
+            conditions.append("item.object_type = ANY(%(annotation_object_types)s)")
+        if filters.get("completed_by"):
+            params["annotation_completed_by"] = list(filters["completed_by"])
+            conditions.append("item.completed_by_id = ANY(%(annotation_completed_by)s)")
+        if omitted_filter != "assignee_ids" and filters.get("assignee_ids"):
+            params["annotation_assignee_ids"] = list(filters["assignee_ids"])
+            conditions.append("item.assignee_id = ANY(%(annotation_assignee_ids)s)")
+        if filters.get("item_ids"):
+            params["annotation_item_ids"] = list(filters["item_ids"])
+            conditions.append("item.id = ANY(%(annotation_item_ids)s)")
+        if filters.get("created_at_from"):
+            params["annotation_created_at_from"] = filters["created_at_from"]
+            conditions.append(
+                "item.created_at >= CAST(%(annotation_created_at_from)s AS timestamptz)"
+            )
+        if filters.get("created_at_to"):
+            params["annotation_created_at_to"] = filters["created_at_to"]
+            conditions.append(
+                "item.created_at <= CAST(%(annotation_created_at_to)s AS timestamptz)"
+            )
+        if filters.get("completed_at_from"):
+            params["annotation_completed_at_from"] = filters["completed_at_from"]
+            conditions.append(
+                "item.completed_at >= CAST(%(annotation_completed_at_from)s AS timestamptz)"
+            )
+        if filters.get("completed_at_to"):
+            params["annotation_completed_at_to"] = filters["completed_at_to"]
+            conditions.append(
+                "item.completed_at <= CAST(%(annotation_completed_at_to)s AS timestamptz)"
+            )
+        if filters.get("has_scores") is True:
+            conditions.append("jsonb_array_length(item.scores) > 0")
+        elif filters.get("has_scores") is False:
+            conditions.append("jsonb_array_length(item.scores) = 0")
+
+        metadata_filters = list(filters.get("metadata_filters") or [])
+        metadata_filter = filters.get("metadata_filter")
+        if metadata_filter:
+            metadata_filters.insert(0, metadata_filter)
+        LangfuseDatabaseReader._append_annotation_json_filters(
+            conditions,
+            params,
+            metadata_filters,
+            column="item.source_metadata",
+            prefix="annotation_metadata",
+        )
+        LangfuseDatabaseReader._append_annotation_json_filters(
+            conditions,
+            params,
+            list(filters.get("input_filters") or []),
+            column="item.source_input",
+            prefix="annotation_input",
+        )
+        LangfuseDatabaseReader._append_annotation_json_filters(
+            conditions,
+            params,
+            list(filters.get("output_filters") or []),
+            column="item.source_output",
+            prefix="annotation_output",
+        )
+        return " AND ".join(conditions), params
+
+    @staticmethod
+    def _append_annotation_json_filters(
+        conditions: list[str],
+        params: dict[str, Any],
+        filters: list[dict[str, Any]],
+        *,
+        column: str,
+        prefix: str,
+    ) -> None:
+        for index, value_filter in enumerate(filters):
+            key = str(value_filter.get("key") or "").strip()
+            if key.startswith("metadata."):
+                key = key.removeprefix("metadata.")
+            value = str(value_filter.get("value") or "")
+            operator = str(value_filter.get("operator") or "contains")
+            key_param = f"{prefix}_key_{index}"
+            value_param = f"{prefix}_value_{index}"
+            params[key_param] = key
+            params[value_param] = value
+            extracted = (
+                f"({column} #>> string_to_array(%({key_param})s, '.'))"
+                if key
+                else f"({column})::text"
+            )
+            if operator == "exists":
+                conditions.append(f"{extracted} IS NOT NULL")
+            elif operator == "equals":
+                conditions.append(f"COALESCE({extracted}, '') = %({value_param})s")
+            else:
+                params[value_param] = f"%{value}%"
+                conditions.append(f"COALESCE({extracted}, '') ILIKE %({value_param})s")
+
+    @staticmethod
     def _annotation_item_select_sql() -> str:
         return """
             SELECT
@@ -6876,15 +7530,8 @@ class LangfuseDatabaseReader:
             boolean_value = _parse_boolean_score_value(value, string_value)
             if boolean_value is None:
                 return None, None
-            if config_payload.get("categories"):
-                categories = _normalize_boolean_score_categories(
-                    config_payload.get("categories")
-                )
-                category_value = 1.0 if boolean_value else 0.0
-                category = _find_score_category(categories, category_value, "")
-                if category is not None:
-                    return (float(category["value"]), str(category["label"]))
-            return (1.0 if boolean_value else 0.0, str(boolean_value).lower())
+            numeric_value = 1.0 if boolean_value else 0.0
+            return numeric_value, langfuse_boolean_label(numeric_value)
         if data_type == "CATEGORICAL":
             categories = _normalize_score_categories(config_payload.get("categories"))
             category = _find_score_category(categories, value, string_value)
@@ -7144,16 +7791,49 @@ class LangfuseDatabaseReader:
         }
 
     @staticmethod
+    def _to_trace_bulk_job_payload(row: dict[str, Any]) -> dict[str, Any]:
+        return {
+            "id": row["id"],
+            "projectId": row["project_id"],
+            "userId": row["user_id"],
+            "jobType": row["job_type"],
+            "status": row["status"],
+            "selectionType": row["selection_type"],
+            "selectionPayload": row.get("selection_payload") or {},
+            "operationPayload": row.get("operation_payload") or {},
+            "cursorPayload": row.get("cursor_payload") or {},
+            "resultPayload": row.get("result_payload") or {},
+            "totalCount": int(row.get("total_count") or 0),
+            "completedCount": int(row.get("completed_count") or 0),
+            "successCount": int(row.get("success_count") or 0),
+            "failureCount": int(row.get("failure_count") or 0),
+            "attemptCount": int(row.get("attempt_count") or 0),
+            "errorMessage": row.get("error_message") or "",
+            "createdAt": _format_datetime(row["create_date"]),
+            "updatedAt": _format_datetime(row["update_date"]),
+            "startedAt": _format_datetime(row.get("started_at")),
+            "completedAt": _format_datetime(row.get("completed_at")),
+            "expiresAt": _format_datetime(row["expires_at"]),
+            "lockOwner": row.get("lock_owner") or "",
+            "lockUntil": _format_datetime(row.get("lock_until")),
+        }
+
+    @staticmethod
     def _to_score_config_payload(row: dict[str, Any]) -> dict[str, Any]:
+        data_type = row["data_type"]
         return {
             "id": row["id"],
             "projectId": row["project_id"],
             "name": row["name"],
-            "dataType": row["data_type"],
+            "dataType": data_type,
             "description": row.get("description") or "",
             "minValue": _to_float_or_none(row.get("min_value")),
             "maxValue": _to_float_or_none(row.get("max_value")),
-            "categories": _normalize_score_categories(row.get("categories")),
+            "categories": (
+                langfuse_boolean_categories()
+                if data_type == "BOOLEAN"
+                else _normalize_score_categories(row.get("categories"))
+            ),
             "archived": bool(row.get("is_archived")),
             "createdAt": _format_datetime(row["created_at"]),
             "updatedAt": _format_datetime(row["updated_at"]),
@@ -7410,48 +8090,22 @@ def _normalize_score_categories(value: Any) -> list[dict[str, float | str]]:
 
 
 def _normalize_score_config_object(config: dict[str, Any]) -> dict[str, Any]:
+    data_type = config.get("dataType") or "NUMERIC"
     return {
         "id": config.get("id") or "",
         "projectId": config.get("projectId") or "",
         "name": config.get("name") or "",
-        "dataType": config.get("dataType") or "NUMERIC",
+        "dataType": data_type,
         "description": config.get("description") or "",
         "minValue": _to_float_or_none(config.get("minValue")),
         "maxValue": _to_float_or_none(config.get("maxValue")),
-        "categories": _normalize_score_categories(config.get("categories")),
+        "categories": (
+            langfuse_boolean_categories()
+            if data_type == "BOOLEAN"
+            else _normalize_score_categories(config.get("categories"))
+        ),
         "archived": bool(config.get("archived")),
     }
-
-
-def _normalize_boolean_score_categories(value: Any) -> list[dict[str, float | str]]:
-    categories = _normalize_score_categories(value)
-    true_label = LANGFUSE_BOOLEAN_SCORE_CATEGORIES[0]["label"]
-    false_label = LANGFUSE_BOOLEAN_SCORE_CATEGORIES[1]["label"]
-    labels_by_value = {
-        category["value"]: str(category["label"]).strip()
-        for category in categories
-        if str(category.get("label") or "").strip()
-    }
-    ordered_labels = [
-        str(category["label"]).strip()
-        for category in categories
-        if str(category.get("label") or "").strip()
-    ]
-
-    if labels_by_value.get(1):
-        true_label = labels_by_value[1]
-    elif ordered_labels:
-        true_label = ordered_labels[0]
-
-    if labels_by_value.get(0):
-        false_label = labels_by_value[0]
-    elif len(ordered_labels) > 1:
-        false_label = ordered_labels[1]
-
-    return [
-        {"label": true_label, "value": 1},
-        {"label": false_label, "value": 0},
-    ]
 
 
 def _legacy_string_score_category(
@@ -7526,7 +8180,7 @@ def _annotation_score_api_payload(
     boolean_string_value: str | None = None
     if data_type == "BOOLEAN":
         score_value = 1 if value == 1 else 0
-        boolean_string_value = string_value or ("true" if score_value == 1 else "false")
+        boolean_string_value = langfuse_boolean_label(score_value)
     elif data_type in {"CATEGORICAL", "TEXT"}:
         score_value = string_value or ""
     else:
@@ -7553,9 +8207,16 @@ def _annotation_score_api_payload(
             "annotationItemId": item_id,
             "annotatorUserId": user_id,
         },
+        PA_CLICKHOUSE_SCORE_VALUE: value,
     }
     if boolean_string_value is not None:
         payload["stringValue"] = boolean_string_value
+        if config.get("categories") is not None and not is_langfuse_boolean_categories(
+            config.get("categories")
+        ):
+            payload[PA_BOOLEAN_SCORE_CONFIG_REPAIR_MARKER] = True
+    elif data_type in {"CATEGORICAL", "TEXT"} and string_value is not None:
+        payload["stringValue"] = string_value
     if session_id:
         payload["sessionId"] = session_id
     else:
@@ -7732,9 +8393,7 @@ def _score_config_storage_payload(payload: dict[str, Any]) -> dict[str, Any]:
     max_value = payload.get("maxValue") if data_type == "NUMERIC" else None
     categories: Jsonb | None = None
     if data_type == "BOOLEAN":
-        categories = Jsonb(
-            _normalize_boolean_score_categories(payload.get("categories"))
-        )
+        categories = Jsonb(langfuse_boolean_categories())
     elif data_type == "CATEGORICAL":
         categories = Jsonb(_normalize_score_categories(payload.get("categories") or []))
 

@@ -1094,6 +1094,69 @@ def test_trace_row_exposes_langfuse_scores_and_summary() -> None:
 
 
 @pytest.mark.anyio
+async def test_list_traces_by_ids_loads_scores_when_requested(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    reader = LangfuseClickHouseReader(Settings())
+    score = {
+        "id": "score-1",
+        "traceId": "trace-1",
+        "name": "quality",
+        "value": 0.9,
+        "source": "ANNOTATION",
+        "dataType": "NUMERIC",
+        "stringValue": "",
+        "comment": "通过",
+        "metadata": {},
+        "authorUserId": "user-1",
+        "configId": "score-config-1",
+        "queueId": "queue-old",
+        "createdAt": "2026-07-05T01:37:01.000Z",
+        "updatedAt": "2026-07-05T01:37:01.000Z",
+    }
+    score_calls: list[tuple[str, list[str]]] = []
+
+    async def fake_fetch_trace_rows(
+        project_id: str,
+        **_kwargs: object,
+    ) -> list[dict]:
+        return [
+            {
+                "traceId": "trace-1",
+                "projectId": project_id,
+                "environment": "default",
+                "status": "success",
+                "createdAt": "2026-07-05 01:36:59.275",
+            }
+        ]
+
+    async def fake_fetch_scores_by_trace(
+        project_id: str,
+        trace_ids: list[str],
+        **_kwargs: object,
+    ) -> dict[str, list[dict]]:
+        score_calls.append((project_id, trace_ids))
+        return {"trace-1": [score]}
+
+    monkeypatch.setattr(reader, "_fetch_trace_rows", fake_fetch_trace_rows)
+    monkeypatch.setattr(
+        reader,
+        "_fetch_scores_by_trace",
+        fake_fetch_scores_by_trace,
+    )
+
+    rows = await reader.list_traces_by_ids(
+        "project-1",
+        ["trace-1"],
+        fields="scores",
+    )
+
+    assert score_calls == [("project-1", ["trace-1"])]
+    assert rows[0]["scores"] == [score]
+    assert rows[0]["scoreSummary"] == "quality: 0.9"
+
+
+@pytest.mark.anyio
 async def test_clickhouse_reader_filters_traces_by_score_values(monkeypatch) -> None:
     reader = LangfuseClickHouseReader(Settings())
 
@@ -1345,8 +1408,10 @@ async def test_clickhouse_reader_get_observation_returns_langfuse_fields(monkeyp
 async def test_clickhouse_reader_chunks_trace_ids_when_fetching_scores(monkeypatch) -> None:
     reader = LangfuseClickHouseReader(Settings())
     captured_params = []
+    captured_queries = []
 
     async def fake_query(query: str, params: dict):
+        captured_queries.append(query)
         captured_params.append(params)
         return []
 
@@ -1359,6 +1424,30 @@ async def test_clickhouse_reader_chunks_trace_ids_when_fetching_scores(monkeypat
 
     assert len(captured_params) == 3
     assert all(len([key for key in params if key.startswith("score_trace_id_")]) <= 100 for params in captured_params)
+    assert all("FROM scores FINAL" in query for query in captured_queries)
+    assert all("AND is_deleted = 0" in query for query in captured_queries)
+
+
+@pytest.mark.anyio
+async def test_clickhouse_reader_lists_latest_queue_score_versions(monkeypatch) -> None:
+    reader = LangfuseClickHouseReader(Settings())
+    captured = {}
+
+    async def fake_query(query: str, params: dict):
+        captured["query"] = query
+        captured["params"] = params
+        return []
+
+    monkeypatch.setattr(reader, "_query_json_each_row", fake_query)
+
+    await reader.list_scores_by_queue(
+        "project-1",
+        "queue-1",
+        trace_ids=["trace-1"],
+    )
+
+    assert "FROM scores FINAL" in captured["query"]
+    assert "AND is_deleted = 0" in captured["query"]
 
 
 @pytest.mark.anyio

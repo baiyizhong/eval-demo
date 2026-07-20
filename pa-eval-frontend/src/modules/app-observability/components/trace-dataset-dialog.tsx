@@ -1,7 +1,11 @@
 import { useMemo, useState } from 'react'
 import { z } from 'zod'
 import { useQuery } from '@tanstack/react-query'
-import { listProjectDatasets } from '@/modules/app-evaluation/api/dataset-api'
+import {
+  checkProjectDatasetNameAvailability,
+  listProjectDatasets,
+} from '@/modules/app-evaluation/api/dataset-api'
+import { createAvailableResourceNameSchema } from '@/modules/app-evaluation/lib/name-availability'
 import {
   datasetTypeLabels,
   type DatasetType,
@@ -51,14 +55,14 @@ const existingDatasetSchema = z.object({
   datasetId: z.string().min(1, '请选择目标数据集'),
 })
 
-const createDatasetSchema = z.object({
+const createDatasetBaseSchema = z.object({
   name: z.string().trim().min(1, '请输入数据集名称'),
   description: z.string().trim(),
   datasetType: z.enum(['evaluation', 'badcase', 'golden', 'anomaly']),
 })
 
 type ExistingDatasetFormValues = z.infer<typeof existingDatasetSchema>
-type CreateDatasetFormValues = z.infer<typeof createDatasetSchema>
+type CreateDatasetFormValues = z.infer<typeof createDatasetBaseSchema>
 
 export type TraceDatasetSubmitValues =
   | ({
@@ -123,6 +127,18 @@ export function TraceDatasetDialog({
   const dataRangeSelectId = 'trace-dataset-data-range'
   const confirmFormId = mode === 'existing' ? existingFormId : createFormId
   const datasets = datasetsQuery.data?.datas ?? []
+  const createDatasetSchema = useMemo(
+    () =>
+      createDatasetBaseSchema.extend({
+        name: createAvailableResourceNameSchema({
+          requiredMessage: '请输入数据集名称',
+          duplicateMessage: '数据集名称已存在，请修改名称',
+          checkAvailability: (name) =>
+            checkProjectDatasetNameAvailability($api, projectId, name),
+        }),
+      }),
+    [$api, projectId]
+  )
   const description = useMemo(() => {
     if (descriptionProp) {
       return descriptionProp
@@ -319,6 +335,15 @@ export function TraceDatasetDialog({
                         <Input
                           placeholder='例如：AIOps Trace 评测集'
                           {...field}
+                          aria-invalid={Boolean(form.formState.errors.name)}
+                          onChange={(event) => {
+                            field.onChange(event)
+                            form.clearErrors('name')
+                          }}
+                          onBlur={() => {
+                            field.onBlur()
+                            void form.trigger('name')
+                          }}
                         />
                       </FormControl>
                       <FormMessage />

@@ -36,6 +36,7 @@ type AnnotationApiClient = {
   restoreProjectScoreConfig: ApiMethod
   getProjectAnnotationUsers: ApiMethod
   getProjectAnnotationQueues: ApiMethod
+  getProjectAnnotationQueueNameAvailability: ApiMethod
   createProjectAnnotationQueue: ApiMethod
   getProjectAnnotationQueue: ApiMethod
   updateProjectAnnotationQueue: ApiMethod
@@ -61,6 +62,14 @@ type AnnotationApiClient = {
 }
 
 const TRACE_ANNOTATION_TASK_ASYNC_THRESHOLD = 1000
+const TRACE_ANNOTATION_TASK_JOB_TIMEOUT_MS = 30 * 60 * 1000
+
+export type TraceAnnotationFilterSelection = {
+  type: 'FILTER'
+  filters: Record<string, unknown>
+  excludedTraceIds: string[]
+  totalCount: number
+}
 
 export type ScoreConfigInput = {
   name: string
@@ -141,6 +150,7 @@ export type TraceAnnotationTaskOptions = {
   assignmentWeights?: Record<string, number>
   onProgress?: (progress: TraceAnnotationTaskProgress) => void
   pollIntervalMs?: number
+  timeoutMs?: number
 }
 
 type TraceAnnotationTaskJob = {
@@ -267,6 +277,20 @@ export function createProjectAnnotationQueue(
     path: { projectId },
     body: input,
   })
+}
+
+export async function checkProjectAnnotationQueueNameAvailability(
+  api: AnnotationApiClient,
+  projectId: string,
+  name: string
+) {
+  const result = await api.getProjectAnnotationQueueNameAvailability<{
+    available: boolean
+  }>({
+    path: { projectId },
+    query: { name: name.trim() },
+  })
+  return result.available
 }
 
 export function updateProjectAnnotationQueue(
@@ -766,21 +790,28 @@ export function addProjectAnnotationItemToDataset(
 export function createTraceAnnotationTask(
   api: AnnotationApiClient,
   projectId: string,
-  traceIds: string[],
+  selection: string[] | TraceAnnotationFilterSelection,
   options: TraceAnnotationTaskOptions = {}
 ) {
-  const { onProgress, pollIntervalMs, ...taskOptions } = options
-  if (traceIds.length >= TRACE_ANNOTATION_TASK_ASYNC_THRESHOLD) {
-    return createTraceAnnotationTaskByJob(api, projectId, traceIds, {
+  const { onProgress, pollIntervalMs, timeoutMs, ...taskOptions } = options
+  const totalCount = Array.isArray(selection)
+    ? selection.length
+    : selection.totalCount
+  if (
+    !Array.isArray(selection) ||
+    totalCount >= TRACE_ANNOTATION_TASK_ASYNC_THRESHOLD
+  ) {
+    return createTraceAnnotationTaskByJob(api, projectId, selection, {
       ...taskOptions,
       onProgress,
       pollIntervalMs,
+      timeoutMs,
     })
   }
 
   return api.createTraceAnnotationTask<TraceAnnotationTaskResult>({
     path: { projectId },
-    body: { traceIds, ...taskOptions },
+    body: { traceIds: selection, ...taskOptions },
   })
 }
 
@@ -801,7 +832,7 @@ export function buildInitialTraceAnnotationTaskProgress(
 async function createTraceAnnotationTaskByJob(
   api: AnnotationApiClient,
   projectId: string,
-  traceIds: string[],
+  selection: string[] | TraceAnnotationFilterSelection,
   options: TraceAnnotationTaskOptions
 ): Promise<TraceAnnotationTaskResult> {
   if (
@@ -811,14 +842,31 @@ async function createTraceAnnotationTaskByJob(
     throw new Error('当前环境不支持大批量异步创建人工标注任务')
   }
 
-  const { onProgress, pollIntervalMs, ...taskOptions } = options
-  let job = await api.createProjectTraceAnnotationTaskJob<TraceAnnotationTaskJob>({
-    path: { projectId },
-    body: { traceIds, ...taskOptions },
-  })
+  const { onProgress, pollIntervalMs, timeoutMs, ...taskOptions } = options
+  let job =
+    await api.createProjectTraceAnnotationTaskJob<TraceAnnotationTaskJob>({
+      path: { projectId },
+      body: {
+        ...(Array.isArray(selection)
+          ? { traceIds: selection }
+          : {
+              selection: {
+                type: selection.type,
+                filters: selection.filters,
+                excludedTraceIds: selection.excludedTraceIds,
+              },
+            }),
+        ...taskOptions,
+      },
+    })
   onProgress?.(traceAnnotationTaskJobToProgress(job))
 
+  const startedAt = Date.now()
+  const effectiveTimeoutMs = timeoutMs ?? TRACE_ANNOTATION_TASK_JOB_TIMEOUT_MS
   while (job.status === 'PENDING' || job.status === 'RUNNING') {
+    if (Date.now() - startedAt >= effectiveTimeoutMs) {
+      throw new Error('任务处理时间较长，仍在后台执行，请稍后重试查看结果')
+    }
     await waitForTraceAnnotationTaskPoll(pollIntervalMs ?? 1000)
     job = await api.getProjectTraceAnnotationTaskJob<TraceAnnotationTaskJob>({
       path: { projectId, jobId: job.id },

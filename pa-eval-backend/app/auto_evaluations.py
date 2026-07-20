@@ -12,7 +12,7 @@ import psycopg
 from fastapi import APIRouter, BackgroundTasks, Depends, Query
 from psycopg.rows import dict_row
 from psycopg.types.json import Jsonb
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, model_validator
 
 from app.auth_context import CurrentUserContext, get_current_user_context
 from app.config import Settings, get_settings
@@ -26,8 +26,18 @@ from app.langfuse_db import (
     LangfuseDatabaseReader,
     PROJECT_ACCESS_EXISTS_SQL,
 )
-from app.langfuse_client import LangfuseAdminClient
+from app.langfuse_client import (
+    LangfuseAdminClient,
+    repair_legacy_boolean_score_configs,
+)
 from app.response import success
+from app.score_configs import (
+    PA_BOOLEAN_SCORE_CONFIG_REPAIR_MARKER,
+    PA_CLICKHOUSE_SCORE_VALUE,
+    clickhouse_score_payload,
+    is_langfuse_boolean_categories,
+    strip_pa_score_fields,
+)
 
 router = APIRouter(prefix="/api/projects/{project_id}", tags=["auto-evaluations"])
 logger = logging.getLogger(__name__)
@@ -124,6 +134,22 @@ class ReportTemplatePayload(BaseModel):
 class TraceCountPayload(BaseModel):
     trace_filter: dict[str, Any] = Field(default_factory=dict, alias="traceFilter")
 
+    @model_validator(mode="after")
+    def validate_created_at_range(self) -> "TraceCountPayload":
+        if "createdAtRange" not in self.trace_filter:
+            return self
+        created_at_range = self.trace_filter.get("createdAtRange")
+        if (
+            not isinstance(created_at_range, list)
+            or len(created_at_range) != 2
+            or not all(
+                isinstance(value, str) and value.strip()
+                for value in created_at_range
+            )
+        ):
+            raise ValueError("Trace 时间范围必须包含开始和结束时间")
+        return self
+
 
 class EvaluationReportFlowbackTargetPayload(BaseModel):
     mode: str = Field(pattern="^(EXISTING|CREATE)$")
@@ -171,9 +197,7 @@ def _sample_trace_id(sample: dict[str, Any]) -> str:
 
 def _sample_observation_id(sample: dict[str, Any]) -> str:
     observation = (
-        sample.get("observation")
-        if isinstance(sample.get("observation"), dict)
-        else {}
+        sample.get("observation") if isinstance(sample.get("observation"), dict) else {}
     )
     return _stringify_value(
         sample.get("source_observation_id")
@@ -360,7 +384,6 @@ async def _list_trace_generation_samples(
         WHERE {where_clause}
           {time_condition}
         ORDER BY o.start_time DESC, t.timestamp DESC, t.id DESC
-        LIMIT 500
         FORMAT JSONEachRow
         """
         rows = await _query_clickhouse_json_each_row(settings, query)
@@ -407,7 +430,7 @@ async def _list_trace_generation_samples(
               )
               AND (
                 %(created_at_to)s = ''
-                OR t.timestamp <= %(created_at_to)s::timestamptz
+                OR t.timestamp < %(created_at_to)s::timestamptz
               )
               AND (
                 cardinality(%(tags)s::text[]) = 0
@@ -426,7 +449,6 @@ async def _list_trace_generation_samples(
         SELECT *
         FROM latest_generations
         ORDER BY observation_start_time DESC NULLS LAST, trace_timestamp DESC NULLS LAST, trace_id DESC
-        LIMIT 500
         """,
         {
             "project_id": project_id,
@@ -550,7 +572,7 @@ async def _count_trace_generation_samples_postgres(
               )
               AND (
                 %(created_at_to)s = ''
-                OR t.timestamp <= %(created_at_to)s::timestamptz
+                OR t.timestamp < %(created_at_to)s::timestamptz
               )
               AND (
                 cardinality(%(tags)s::text[]) = 0
@@ -723,11 +745,13 @@ def _trace_time_condition(data_source_payload: dict[str, Any]) -> str:
         data_source_payload.get("createdAtRange"),
         1,
     )
+    if bool(created_at_from) != bool(created_at_to):
+        raise BusinessError(1040, "Trace 时间范围必须包含开始和结束时间", 400)
     if created_at_from and created_at_to:
         return (
             "AND t.timestamp >= parseDateTimeBestEffort("
             f"{_clickhouse_quote(created_at_from)}) "
-            "AND t.timestamp <= parseDateTimeBestEffort("
+            "AND t.timestamp < parseDateTimeBestEffort("
             f"{_clickhouse_quote(created_at_to)})"
         )
     return _trace_time_range_condition(data_source_payload.get("timeRange"))
@@ -1006,7 +1030,9 @@ async def _run_workflow_evaluator(
     except httpx.HTTPError as exc:
         raise BusinessError(4003, "工作流调用失败：无法连接上游服务", 502) from exc
     if response.status_code >= 400:
-        raise BusinessError(4003, f"工作流调用失败：上游返回 {response.status_code}", 502)
+        raise BusinessError(
+            4003, f"工作流调用失败：上游返回 {response.status_code}", 502
+        )
 
     return _parse_workflow_result(
         evaluator,
@@ -1016,7 +1042,9 @@ async def _run_workflow_evaluator(
 
 
 def _validate_workflow_evaluator_ready(evaluator: dict[str, Any]) -> None:
-    config = evaluator.get("config") if isinstance(evaluator.get("config"), dict) else {}
+    config = (
+        evaluator.get("config") if isinstance(evaluator.get("config"), dict) else {}
+    )
     if not config.get("endpointUrl"):
         raise BusinessError(4002, "工作流评估器缺少工作流地址")
     if evaluator.get("provider") == "DIFY" and not config.get("authToken"):
@@ -1054,10 +1082,18 @@ def _parse_workflow_result(
 
     mapped_scores = _resolve_mapped_scores(evaluator, outputs, score_mapping, body)
     primary_score = next(
-        (score for score in mapped_scores if isinstance(score.get("value"), int | float)),
+        (
+            score
+            for score in mapped_scores
+            if isinstance(score.get("value"), int | float)
+        ),
         None,
     )
-    score = float(primary_score["value"]) if primary_score else float(outputs.get("score") or 0)
+    score = (
+        float(primary_score["value"])
+        if primary_score
+        else float(outputs.get("score") or 0)
+    )
     passed_value = outputs.get("passed")
     if passed_value is None:
         passed = score >= 0.6
@@ -1143,7 +1179,9 @@ def _workflow_output_variable_candidates(evaluator: dict[str, Any]) -> list[Any]
     if isinstance(candidates, list) and candidates:
         return candidates
 
-    config = evaluator.get("config") if isinstance(evaluator.get("config"), dict) else {}
+    config = (
+        evaluator.get("config") if isinstance(evaluator.get("config"), dict) else {}
+    )
     mappings = config.get("outputVariableMappings")
     if isinstance(mappings, list):
         return mappings
@@ -1172,7 +1210,9 @@ def _workflow_output_value(
     if key in outputs:
         return outputs.get(key)
 
-    config = evaluator.get("config") if isinstance(evaluator.get("config"), dict) else {}
+    config = (
+        evaluator.get("config") if isinstance(evaluator.get("config"), dict) else {}
+    )
     output_mapping = config.get("outputMapping")
     if not isinstance(output_mapping, dict):
         return None
@@ -2385,21 +2425,25 @@ async def _run_auto_evaluation_background(
 
         async with await _connect(settings) as connection:
             async with connection.cursor() as cursor:
-                await _complete_auto_evaluation_success(
-                    cursor,
-                    project_id=project_id,
-                    task_id=task_id,
-                    run_id=run_id,
-                    payload=payload,
-                    evaluator=evaluator,
-                    data_source=data_source,
-                    results=results,
-                    updated_by=updated_by,
-                    langfuse_client=LangfuseAdminClient(settings),
-                    score_writer=LangfuseClickHouseScoreWriter(settings),
-                    failed_count=failed_count,
-                    error_message=error_message,
-                )
+                async with (
+                    LangfuseAdminClient(settings) as langfuse_client,
+                    LangfuseClickHouseScoreWriter(settings) as score_writer,
+                ):
+                    await _complete_auto_evaluation_success(
+                        cursor,
+                        project_id=project_id,
+                        task_id=task_id,
+                        run_id=run_id,
+                        payload=payload,
+                        evaluator=evaluator,
+                        data_source=data_source,
+                        results=results,
+                        updated_by=updated_by,
+                        langfuse_client=langfuse_client,
+                        score_writer=score_writer,
+                        failed_count=failed_count,
+                        error_message=error_message,
+                    )
     except Exception as exc:
         message = _background_error_message(exc)
         async with await _connect(settings) as connection:
@@ -2704,7 +2748,7 @@ async def _complete_auto_evaluation_success(
             "update_by": updated_by,
             "update_date": now,
         },
-        )
+    )
 
 
 def _with_complete_workflow_output_scores(
@@ -2717,11 +2761,15 @@ def _with_complete_workflow_output_scores(
 
     existing_scores = result.get("scores")
     mapping = score_mapping if isinstance(score_mapping, dict) else {}
-    scores = [
-        _mapped_workflow_score(score, mapping)
-        for score in existing_scores
-        if isinstance(score, dict)
-    ] if isinstance(existing_scores, list) else []
+    scores = (
+        [
+            _mapped_workflow_score(score, mapping)
+            for score in existing_scores
+            if isinstance(score, dict)
+        ]
+        if isinstance(existing_scores, list)
+        else []
+    )
     existing_output_variables = {
         str(score.get("outputVariable") or score.get("name") or "").strip()
         for score in scores
@@ -2837,7 +2885,7 @@ async def _sync_auto_evaluation_scores_to_langfuse(
                 score_config_id = str(score.get("scoreConfigId") or "")
                 output_score_name = str(score.get("name") or score_name)
                 score_payloads.append(
-                    _auto_evaluation_score_api_payload(
+                    _safe_auto_evaluation_score_api_payload(
                         project_id=project_id,
                         task_id=task_id,
                         run_id=run_id,
@@ -2855,7 +2903,7 @@ async def _sync_auto_evaluation_scores_to_langfuse(
                 )
         else:
             score_payloads.append(
-                _auto_evaluation_score_api_payload(
+                _safe_auto_evaluation_score_api_payload(
                     project_id=project_id,
                     task_id=task_id,
                     run_id=run_id,
@@ -2869,7 +2917,14 @@ async def _sync_auto_evaluation_scores_to_langfuse(
         return
 
     api_key = await _get_project_api_key_credentials(cursor, project_id)
-    for score_payload in score_payloads:
+    await repair_legacy_boolean_score_configs(
+        langfuse_client,
+        api_key["publicKey"],
+        api_key["secretKey"],
+        score_payloads,
+    )
+    for raw_score_payload in score_payloads:
+        score_payload = strip_pa_score_fields(raw_score_payload)
         await langfuse_client.create_score(
             api_key["publicKey"],
             api_key["secretKey"],
@@ -2879,7 +2934,7 @@ async def _sync_auto_evaluation_scores_to_langfuse(
             await score_writer.upsert_score(
                 project_id,
                 score_author_user_id,
-                score_payload,
+                clickhouse_score_payload(raw_score_payload),
                 source="API",
             )
 
@@ -2960,6 +3015,22 @@ async def _get_score_configs_by_ids(
     return configs
 
 
+def _safe_auto_evaluation_score_api_payload(**kwargs: Any) -> dict[str, Any] | None:
+    try:
+        return _auto_evaluation_score_api_payload(**kwargs)
+    except (BusinessError, TypeError, ValueError) as exc:
+        logger.warning(
+            "Skipped invalid auto evaluation score payload: score_name=%s "
+            "score_config_id=%s error=%s",
+            kwargs.get("score_name") or "",
+            kwargs.get("score_config_id") or "",
+            _background_error_message(exc)
+            if isinstance(exc, BusinessError)
+            else type(exc).__name__,
+        )
+        return None
+
+
 def _auto_evaluation_score_api_payload(
     *,
     project_id: str,
@@ -2988,10 +3059,14 @@ def _auto_evaluation_score_api_payload(
     resolved_config_id = score_config_id
     if score_config is not None:
         resolved_config_id = str(score_config.get("id") or score_config_id)
-        data_type, payload_value, string_value = _normalize_auto_evaluation_score_value(
-            score_config,
+        (
+            data_type,
             payload_value,
-        )
+            string_value,
+            clickhouse_value,
+        ) = _normalize_auto_evaluation_score_value(score_config, payload_value)
+    else:
+        clickhouse_value = payload_value
 
     payload = {
         "id": _auto_evaluation_score_id(
@@ -3016,6 +3091,7 @@ def _auto_evaluation_score_api_payload(
             "evaluatorId": evaluator_id,
             "passed": result.get("passed") if score_passed is None else score_passed,
         },
+        PA_CLICKHOUSE_SCORE_VALUE: clickhouse_value,
     }
     if string_value is not None:
         payload["stringValue"] = string_value
@@ -3023,13 +3099,20 @@ def _auto_evaluation_score_api_payload(
         payload["observationId"] = observation_id
     if resolved_config_id:
         payload["configId"] = resolved_config_id
+    if (
+        data_type == "BOOLEAN"
+        and score_config is not None
+        and score_config.get("categories") is not None
+        and not is_langfuse_boolean_categories(score_config.get("categories"))
+    ):
+        payload[PA_BOOLEAN_SCORE_CONFIG_REPAIR_MARKER] = True
     return payload
 
 
 def _normalize_auto_evaluation_score_value(
     score_config: dict[str, Any],
     raw_value: Any,
-) -> tuple[str, float | int | str | None, str | None]:
+) -> tuple[str, float | int | str | None, str | None, float | None]:
     data_type = (
         score_config.get("data_type") or score_config.get("dataType") or "NUMERIC"
     )
@@ -3040,11 +3123,11 @@ def _normalize_auto_evaluation_score_value(
     )
     if data_type == "BOOLEAN":
         score_value = 1 if value == 1 else 0
-        return data_type, score_value, string_value
+        return data_type, score_value, string_value, value
     if data_type in {"CATEGORICAL", "TEXT"}:
         text_value = string_value or ""
-        return data_type, text_value, text_value
-    return data_type, value, None
+        return data_type, text_value, text_value, value
+    return data_type, value, None, value
 
 
 def _auto_evaluation_score_id(
@@ -3671,7 +3754,8 @@ async def list_evaluation_report_badcases(
     if not source_task_id:
         return success({"total": 0, "datas": []})
 
-    scores = await LangfuseClickHouseReader(settings).list_scores_by_queue(
+    trace_reader = LangfuseClickHouseReader(settings)
+    scores = await trace_reader.list_scores_by_queue(
         project_id,
         source_task_id,
         run_id=run_id,
@@ -3693,12 +3777,16 @@ async def list_evaluation_report_badcases(
     trace_ids = _unique_report_trace_ids(badcase_rows)
     start = (page - 1) * page_size
     page_trace_ids = trace_ids[start : start + page_size]
-    traces = await LangfuseClickHouseReader(settings).list_traces_by_ids(
+    traces = await trace_reader.list_traces_by_ids(
         project_id,
         page_trace_ids,
         fields="io,metadata",
     )
-    return success({"total": len(trace_ids), "datas": traces})
+    traces_with_scores = _attach_evaluation_report_scores_to_traces(
+        traces,
+        scores,
+    )
+    return success({"total": len(trace_ids), "datas": traces_with_scores})
 
 
 @router.get("/evaluation-reports/{report_id}/flowbacks")
@@ -4573,6 +4661,30 @@ def _evaluation_report_items_from_scores(
         ),
         reverse=True,
     )
+
+
+def _attach_evaluation_report_scores_to_traces(
+    traces: list[dict[str, Any]],
+    scores: list[dict[str, Any]],
+) -> list[dict[str, Any]]:
+    scores_by_trace: dict[str, list[dict[str, Any]]] = {}
+    for score in scores:
+        trace_id = str(score.get("traceId") or "").strip()
+        if trace_id:
+            scores_by_trace.setdefault(trace_id, []).append(score)
+
+    traces_with_scores: list[dict[str, Any]] = []
+    for trace in traces:
+        trace_id = str(trace.get("traceId") or "").strip()
+        trace_scores = scores_by_trace.get(trace_id, [])
+        traces_with_scores.append(
+            {
+                **trace,
+                "scores": trace_scores,
+                "scoreSummary": _score_summary(trace_scores),
+            }
+        )
+    return traces_with_scores
 
 
 def _score_result_type(score: dict[str, Any]) -> str:

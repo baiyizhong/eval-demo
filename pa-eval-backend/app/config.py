@@ -28,6 +28,14 @@ class Settings(BaseSettings):
     pa_eval_scheduler_instance_id: str = Field(
         default_factory=lambda: f"pa-eval-scheduler-{uuid4().hex}"
     )
+    pa_eval_trace_bulk_worker_enabled: bool = Field(default=True)
+    pa_eval_trace_bulk_worker_poll_interval_seconds: float = Field(default=5)
+    pa_eval_trace_bulk_worker_batch_size: int = Field(default=4)
+    pa_eval_trace_bulk_worker_lease_seconds: int = Field(default=120)
+    pa_eval_trace_bulk_worker_instance_id: str = Field(
+        default_factory=lambda: f"pa-trace-bulk-worker-{uuid4().hex}"
+    )
+    pa_eval_annotation_score_concurrency: int = Field(default=8)
     github_client_id: str = Field(default="")
     github_client_secret: str = Field(default="")
     github_oauth_redirect_uri: str = Field(

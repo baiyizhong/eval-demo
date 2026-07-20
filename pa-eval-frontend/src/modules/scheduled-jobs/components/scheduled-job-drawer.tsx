@@ -1,6 +1,6 @@
-import { useMemo, useState } from 'react'
-import { useQuery } from '@tanstack/react-query'
+import { useEffect, useMemo, useState } from 'react'
 import { z } from 'zod'
+import { useQuery } from '@tanstack/react-query'
 import { AlertTriangle } from 'lucide-react'
 import { toast } from 'sonner'
 import { confirm } from '@/lib/confirm'
@@ -108,6 +108,7 @@ const steps = [
 
 const scheduledJobDrawerSchema = z.object({})
 const formId = 'scheduled-job-form'
+const SCHEDULED_JOB_TIMEZONE = 'Asia/Shanghai'
 const traceQuickTimeRangeOptions = [
   { value: '1d', label: '近 1 天' },
   { value: '3d', label: '近 3 天' },
@@ -159,12 +160,12 @@ function createDefaultVariableMapping(
 }
 
 function getEvaluatorOutputVariables(evaluator: ScheduledJobEvaluator) {
-  return evaluator.outputVariables?.length ? evaluator.outputVariables : ['score']
+  return evaluator.outputVariables?.length
+    ? evaluator.outputVariables
+    : ['score']
 }
 
-function createDefaultScoreMapping(
-  evaluator: ScheduledJobEvaluator
-) {
+function createDefaultScoreMapping(evaluator: ScheduledJobEvaluator) {
   const scoreMappingByVariable = new Map(
     (evaluator.outputVariableMappings ?? [])
       .filter((mapping) => mapping.variableName.trim())
@@ -198,8 +199,10 @@ function getBoundScoreMapping(
 function getPrimaryScoreName(
   scoreMapping: NonNullable<ScheduledJobTask['scoreMapping']>
 ) {
-  return Object.values(scoreMapping).find((item) => item.scoreConfigName)
-    ?.scoreConfigName ?? 'dify_score'
+  return (
+    Object.values(scoreMapping).find((item) => item.scoreConfigName)
+      ?.scoreConfigName ?? 'dify_score'
+  )
 }
 
 function findDefaultMappingField(
@@ -406,7 +409,7 @@ function formatTraceWindowHint(frequency: FrequencyForm) {
     case 'EVERY_HOURS':
       return `每次执行默认取当前整点向前 ${frequency.intervalHours} 小时的增量 Trace。`
     case 'DAILY':
-      return '每次执行默认取上一天 0 点到当天 0 点的 Trace。'
+      return `每次执行取 ${SCHEDULED_JOB_TIMEZONE} 上一完整自然日 [00:00, 次日 00:00) 的 Trace。`
     case 'WEEKLY':
       return '每次执行默认取近 7 天的 Trace。'
     case 'CRON':
@@ -445,6 +448,28 @@ function createRoundedRollingTraceWindowRange(frequency: FrequencyForm) {
   ]
 }
 
+function createPreviousDayTraceWindowRange() {
+  const parts = new Intl.DateTimeFormat('en-US', {
+    timeZone: SCHEDULED_JOB_TIMEZONE,
+    year: 'numeric',
+    month: '2-digit',
+    day: '2-digit',
+  }).formatToParts(new Date())
+  const values = Object.fromEntries(
+    parts.map((part) => [part.type, part.value])
+  )
+  const currentDayUtc = new Date(
+    Date.UTC(Number(values.year), Number(values.month) - 1, Number(values.day))
+  )
+  const previousDayUtc = new Date(currentDayUtc)
+  previousDayUtc.setUTCDate(currentDayUtc.getUTCDate() - 1)
+
+  return [
+    `${previousDayUtc.toISOString().slice(0, 10)}T00:00`,
+    `${currentDayUtc.toISOString().slice(0, 10)}T00:00`,
+  ] as [string, string]
+}
+
 function getTracePreviewRange(
   frequency: FrequencyForm,
   traceWindow?: ScheduledJobTraceWindow
@@ -467,16 +492,8 @@ function getTracePreviewRange(
     ]
   }
 
-  const end = new Date()
-
   if (traceWindow?.mode === 'PREVIOUS_DAY') {
-    end.setHours(0, 0, 0, 0)
-    const start = new Date(end)
-    start.setDate(end.getDate() - 1)
-    return [
-      toDateTimeLocalValue(start.toISOString()),
-      toDateTimeLocalValue(end.toISOString()),
-    ]
+    return createPreviousDayTraceWindowRange()
   }
 
   return null
@@ -502,8 +519,7 @@ function getDefaultForm(
     description: task?.description ?? '',
     scoreName: task?.scoreName ?? '',
     scoreMapping:
-      task?.scoreMapping ??
-      createDefaultScoreMapping(defaultEvaluator),
+      task?.scoreMapping ?? createDefaultScoreMapping(defaultEvaluator),
     frequency: frequencyToForm(task?.frequency),
     evaluatorId: task?.evaluator.id ?? defaultEvaluator.id,
     variableMapping:
@@ -591,8 +607,19 @@ function buildTraceCountPayload(
 ) {
   const traceWindow = buildTraceWindowFromFrequency(frequency, form)
   const previewRange = getTracePreviewRange(frequencyForm, traceWindow)
-  const createdAtRange =
+  const previewCreatedAtRange =
     frequency.kind === 'ONCE' ? form.traceCreatedAtRange : previewRange
+  const createdAtRange =
+    frequency.kind === 'DAILY'
+      ? (previewCreatedAtRange ?? [])
+      : [
+          toIsoFromDateTimeLocal(previewCreatedAtRange?.[0] ?? ''),
+          toIsoFromDateTimeLocal(previewCreatedAtRange?.[1] ?? ''),
+        ].filter(Boolean)
+
+  if (frequency.kind === 'ONCE' && createdAtRange.length !== 2) {
+    return null
+  }
 
   return {
     type: 'TRACE_FILTER',
@@ -601,10 +628,7 @@ function buildTraceCountPayload(
     userId: form.traceUserId,
     sessionId: form.traceSessionId,
     tags: parseCommaSeparatedValues(form.traceTags),
-    createdAtRange: [
-      toIsoFromDateTimeLocal(createdAtRange?.[0] ?? ''),
-      toIsoFromDateTimeLocal(createdAtRange?.[1] ?? ''),
-    ].filter(Boolean),
+    createdAtRange,
   }
 }
 
@@ -737,48 +761,50 @@ export function ScheduledJobDrawer({
       form.dataSourceType === 'TRACE_FILTER'
         ? buildTraceCountPayload(form.frequency, currentFrequency, form)
         : null,
-    [
-      currentFrequency,
-      form,
-    ]
+    [currentFrequency, form]
   )
-  const traceCountKey = traceCountPayload
+  const debouncedTraceCountPayload = useDebouncedValue(traceCountPayload, 400)
+  const requestedTraceCountKey = traceCountPayload
     ? JSON.stringify(traceCountPayload)
     : ''
+  const traceCountKey = debouncedTraceCountPayload
+    ? JSON.stringify(debouncedTraceCountPayload)
+    : ''
+  const isTraceCountDebouncing = requestedTraceCountKey !== traceCountKey
   const traceCountQuery = useQuery({
     queryKey: [
       'scheduled-job-trace-count',
       $api,
       projectId,
       traceCountKey,
-      traceCountPayload,
+      debouncedTraceCountPayload,
     ],
     queryFn: () =>
       $api.countProjectTraces<{ count: number }>({
         path: { projectId },
-        body: { traceFilter: traceCountPayload ?? {} },
+        body: { traceFilter: debouncedTraceCountPayload ?? {} },
       }),
-    enabled: Boolean(traceCountPayload && traceCountKey),
+    enabled: Boolean(debouncedTraceCountPayload && traceCountKey),
   })
   const traceCountState: TraceCountState =
     form.dataSourceType !== 'TRACE_FILTER'
       ? 'idle'
-      : traceCountQuery.isLoading || traceCountQuery.isFetching
-        ? 'loading'
-        : traceCountQuery.isError
-          ? 'error'
-          : traceCountQuery.data
-            ? 'success'
-            : 'idle'
+      : !traceCountPayload
+        ? 'idle'
+        : isTraceCountDebouncing ||
+            traceCountQuery.isLoading ||
+            traceCountQuery.isFetching
+          ? 'loading'
+          : traceCountQuery.isError
+            ? 'error'
+            : traceCountQuery.data
+              ? 'success'
+              : 'idle'
   const estimatedCount =
     form.dataSourceType === 'DATASET'
-      ? buildDataSource(
-          form,
-          projectId,
-          currentFrequency,
-          datasetOptions
-        ).estimatedCount
-      : traceCountQuery.isError
+      ? buildDataSource(form, projectId, currentFrequency, datasetOptions)
+          .estimatedCount
+      : !traceCountPayload || traceCountQuery.isError
         ? 0
         : Number(traceCountQuery.data?.count ?? form.traceEstimatedCount)
   const effectiveSampleCount = getEffectiveSampleCount(
@@ -927,11 +953,23 @@ export function ScheduledJobDrawer({
       return
     }
 
+    if (
+      form.dataSourceType === 'TRACE_FILTER' &&
+      traceCountState === 'loading'
+    ) {
+      toast.info('样本量统计中，请稍候再保存')
+      return
+    }
+
+    if (form.dataSourceType === 'TRACE_FILTER' && traceCountState === 'error') {
+      toast.error('样本量统计失败，请调整筛选条件或稍后重试')
+      return
+    }
+
     if (form.dataSourceType === 'TRACE_FILTER' && estimatedCount === 0) {
       const shouldContinue = await confirm({
         title: '当前筛选无样本',
-        desc:
-          '当前 Trace 筛选条件没有匹配到可评测样本，保存后任务执行时可能失败。是否继续保存？',
+        desc: '当前 Trace 筛选条件没有匹配到可评测样本，保存后任务执行时可能失败。是否继续保存？',
         confirmText: '继续保存',
         cancelBtnText: '返回调整',
       })
@@ -956,7 +994,8 @@ export function ScheduledJobDrawer({
       type: 'AUTO_EVALUATION',
       name: form.name.trim(),
       description: form.description.trim(),
-      scoreName: form.scoreName.trim() || getPrimaryScoreName(form.scoreMapping),
+      scoreName:
+        form.scoreName.trim() || getPrimaryScoreName(form.scoreMapping),
       scoreMapping: getBoundScoreMapping(form.scoreMapping),
       runMode: form.frequency.mode,
       frequency: frequencyWithLabel,
@@ -1342,7 +1381,9 @@ function ConfigStep({
                         mappingFields
                       ),
                       scoreMapping: createDefaultScoreMapping(item),
-                      scoreName: getPrimaryScoreName(createDefaultScoreMapping(item)),
+                      scoreName: getPrimaryScoreName(
+                        createDefaultScoreMapping(item)
+                      ),
                     })
                   }
                 >
@@ -1511,11 +1552,13 @@ function ConfigStep({
                     <SelectValue placeholder='选择数据集' />
                   </SelectTrigger>
                   <SelectContent>
-                    {(datasets.length ? datasets : datasetOptions).map((dataset) => (
-                      <SelectItem key={dataset.id} value={dataset.id}>
-                        {dataset.name}
-                      </SelectItem>
-                    ))}
+                    {(datasets.length ? datasets : datasetOptions).map(
+                      (dataset) => (
+                        <SelectItem key={dataset.id} value={dataset.id}>
+                          {dataset.name}
+                        </SelectItem>
+                      )
+                    )}
                   </SelectContent>
                 </Select>
               </Field>
@@ -1588,10 +1631,7 @@ function ConfigStep({
                     </ToggleGroup>
                   </div>
                   <p className='text-muted-foreground text-sm'>
-                    {formatTraceWindowSummary(
-                      form.frequency,
-                      estimatedCount
-                    )}
+                    {formatTraceWindowSummary(form.frequency, estimatedCount)}
                   </p>
                   {traceCountHelperText ? (
                     <p
@@ -1609,13 +1649,16 @@ function ConfigStep({
               ) : (
                 <Field label='Trace 数据范围'>
                   <div className='bg-muted/30 rounded-md border p-3 text-sm'>
-                    {formatTraceWindowSummary(
-                      form.frequency,
-                      estimatedCount
-                    )}
+                    {formatTraceWindowSummary(form.frequency, estimatedCount)}
                     {tracePreviewRange ? (
                       <span className='text-muted-foreground block'>
-                        预览：{tracePreviewRange[0]} - {tracePreviewRange[1]}
+                        预览（{SCHEDULED_JOB_TIMEZONE}）：
+                        {tracePreviewRange[0]} - {tracePreviewRange[1]}
+                      </span>
+                    ) : null}
+                    {form.frequency.kind === 'DAILY' ? (
+                      <span className='text-muted-foreground mt-1 block text-xs'>
+                        该口径不等同于自动评测的“最近 1d”滚动 24 小时。
                       </span>
                     ) : null}
                   </div>
@@ -1747,7 +1790,14 @@ function ConfigStep({
           </div>
 
           <div className='grid gap-3 text-sm sm:grid-cols-2'>
-            <SummaryStat label='预估样本量' value={estimatedCountValue} />
+            <SummaryStat
+              label={
+                form.dataSourceType === 'TRACE_FILTER'
+                  ? '当前预览窗口命中'
+                  : '预估样本量'
+              }
+              value={estimatedCountValue}
+            />
             <SummaryStat label='生效样本量' value={effectiveSampleCount} />
           </div>
 
@@ -1763,6 +1813,20 @@ function ConfigStep({
       </SectionCard>
     </div>
   )
+}
+
+function useDebouncedValue<T>(value: T, delayMs: number) {
+  const [debouncedValue, setDebouncedValue] = useState(value)
+
+  useEffect(() => {
+    const timeoutId = window.setTimeout(() => {
+      setDebouncedValue(value)
+    }, delayMs)
+
+    return () => window.clearTimeout(timeoutId)
+  }, [delayMs, value])
+
+  return debouncedValue
 }
 
 function BasicCard({ children }: { children: React.ReactNode }) {

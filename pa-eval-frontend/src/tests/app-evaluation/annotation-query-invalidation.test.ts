@@ -25,6 +25,8 @@ test('annotation save invalidates query key prefixes that match api-scoped query
     annotateSource,
     /queryKey:\s*\['project-annotation-navigation',\s*projectId/
   )
+  assert.match(annotateSource, /void invalidateAnnotation\(\)/)
+  assert.doesNotMatch(annotateSource, /await invalidateAnnotation\(\)/)
 })
 
 test('annotation queue pages invalidate the same api-scoped prefixes', () => {

@@ -33,14 +33,15 @@ test('data table passes cross-page selection state to bulk actions', () => {
   assert.match(dataTableSource, /bulkActions\(table, selectionState\)/)
 })
 
-test('trace bulk actions fetch all filtered traces only after explicit cross-page selection', () => {
-  assert.match(traceBulkActionsSource, /TRACE_SELECT_ALL_PAGE_SIZE = 200/)
+test('trace bulk mutations submit a filter snapshot without enumerating all matching traces', () => {
   assert.match(traceBulkActionsSource, /shouldUseAllMatchingRows/)
   assert.match(traceBulkActionsSource, /selection\?\.isAllMatchingRowsSelected/)
-  assert.doesNotMatch(traceBulkActionsSource, /table\.getIsAllPageRowsSelected\(\)/)
+  assert.match(traceBulkActionsSource, /type: 'FILTER'/)
+  assert.match(traceBulkActionsSource, /excludedTraceIds: \[\]/)
+  assert.match(traceBulkActionsSource, /buildTraceListQuery/)
+  assert.doesNotMatch(traceBulkActionsSource, /resolveSelectedTraceIds/)
   assert.doesNotMatch(
     traceBulkActionsSource,
-    /selection\.totalRowCount > selection\.selectedPageRowCount/
+    /table\.getIsAllPageRowsSelected\(\)/
   )
-  assert.match(traceBulkActionsSource, /pageSize: TRACE_SELECT_ALL_PAGE_SIZE/)
 })

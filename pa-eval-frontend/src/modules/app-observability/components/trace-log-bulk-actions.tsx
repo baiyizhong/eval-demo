@@ -56,9 +56,7 @@ export function TraceLogBulkActions({
     useState<TraceAnnotationTaskProgress | null>(null)
   const selectedRows = table.getFilteredSelectedRowModel().rows
   const selectedTraces = selectedRows.map((row) => row.original)
-  const shouldUseAllMatchingRows = Boolean(
-    selection?.isAllMatchingRowsSelected
-  )
+  const shouldUseAllMatchingRows = Boolean(selection?.isAllMatchingRowsSelected)
   const selectedCount = shouldUseAllMatchingRows
     ? (selection?.totalRowCount ?? selectedRows.length)
     : (selection?.selectedRowCount ?? selectedRows.length)
@@ -95,9 +93,29 @@ export function TraceLogBulkActions({
 
   const resolveSelectedTraces = async () => fetchAllMatchingTraces()
 
-  const resolveSelectedTraceIds = async () => {
-    const traces = await resolveSelectedTraces()
-    return traces.map((trace) => trace.traceId)
+  const buildBulkTraceSelection = () => {
+    if (!selection || !shouldUseAllMatchingRows) {
+      return selectedTraces.map((trace) => trace.traceId)
+    }
+    const query = buildTraceListQuery(
+      {
+        ...selection.queryState,
+        page: 1,
+        pageSize: 10,
+      },
+      projectId
+    )
+    const filters: Record<string, unknown> = { ...query }
+    delete filters.projectId
+    delete filters.page
+    delete filters.pageSize
+    delete filters.fields
+    return {
+      type: 'FILTER' as const,
+      filters,
+      excludedTraceIds: [],
+      totalCount: selectedCount,
+    }
   }
 
   const clearBulkSelection = () => {
@@ -143,11 +161,11 @@ export function TraceLogBulkActions({
           buildInitialTraceAnnotationTaskProgress(selectedCount)
         )
       }
-      const traceIds = await resolveSelectedTraceIds()
+      const traceSelection = buildBulkTraceSelection()
       const result = await createTraceAnnotationTask(
         $api,
         projectId,
-        traceIds,
+        traceSelection,
         {
           queueId,
           onProgress: setAnnotationTaskProgress,
@@ -179,11 +197,11 @@ export function TraceLogBulkActions({
         )
       }
       const queue = await createProjectAnnotationQueue($api, projectId, input)
-      const traceIds = await resolveSelectedTraceIds()
+      const traceSelection = buildBulkTraceSelection()
       const result = await createTraceAnnotationTask(
         $api,
         projectId,
-        traceIds,
+        traceSelection,
         {
           queueId: queue.id,
           onProgress: setAnnotationTaskProgress,
@@ -213,20 +231,30 @@ export function TraceLogBulkActions({
           buildInitialTraceDatasetAddProgress(selectedCount)
         )
       }
-      const traceIds = await resolveSelectedTraceIds()
+      const traceSelection = buildBulkTraceSelection()
+      const selectionInput = Array.isArray(traceSelection)
+        ? { traceIds: traceSelection }
+        : {
+            selection: {
+              type: traceSelection.type,
+              filters: traceSelection.filters,
+              excludedTraceIds: traceSelection.excludedTraceIds,
+            },
+            totalCount: traceSelection.totalCount,
+          }
       const input: TraceDatasetTargetInput =
         values.mode === 'existing'
           ? {
               mode: 'existing',
               datasetId: values.datasetId,
-              traceIds,
+              ...selectionInput,
             }
           : {
               mode: 'create',
               name: values.name,
               description: values.description,
               datasetType: values.datasetType,
-              traceIds,
+              ...selectionInput,
             }
       const result = await addProjectTracesToDatasetTarget(
         $api,

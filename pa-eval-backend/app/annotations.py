@@ -1,6 +1,9 @@
+import asyncio
 import json
 import logging
 import re
+from contextlib import suppress
+from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any, Literal
@@ -8,7 +11,7 @@ from uuid import uuid4
 
 from fastapi import APIRouter, BackgroundTasks, Body, Depends, Query
 from fastapi.responses import FileResponse
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 from app.annotation_exports import (
     build_annotation_export_preview,
@@ -23,9 +26,18 @@ from app.langfuse_clickhouse import (
     get_langfuse_clickhouse_reader,
     get_langfuse_clickhouse_score_writer,
 )
-from app.langfuse_client import LangfuseAdminClient, get_langfuse_client
+from app.langfuse_client import (
+    LangfuseAdminClient,
+    get_langfuse_client,
+    repair_legacy_boolean_score_configs,
+)
 from app.langfuse_db import LangfuseDatabaseReader, get_langfuse_db_reader
 from app.response import success
+from app.score_configs import (
+    clickhouse_score_payload,
+    langfuse_boolean_categories,
+    strip_pa_score_fields,
+)
 
 router = APIRouter(prefix="/api/projects/{project_id}", tags=["annotations"])
 logger = logging.getLogger(__name__)
@@ -45,17 +57,26 @@ ANNOTATION_OBJECT_TYPES: tuple[AnnotationObjectType, ...] = (
     "SESSION",
 )
 SCORE_CONFIG_NAME_PATTERN = re.compile(r"^[\w .()\-\u4e00-\u9fff]+$")
-LANGFUSE_BOOLEAN_CATEGORIES = [
-    {"label": "True", "value": 1},
-    {"label": "False", "value": 0},
-]
 TRACE_DATASET_IMPORT_BATCH_SIZE = 500
 TRACE_ANNOTATION_TASK_BATCH_SIZE = 500
 TRACE_DATASET_IMPORT_JOB_TTL = timedelta(hours=2)
 TRACE_ANNOTATION_TASK_JOB_TTL = timedelta(hours=2)
-_TRACE_DATASET_IMPORT_JOBS: dict[str, dict[str, Any]] = {}
-_TRACE_ANNOTATION_TASK_JOBS: dict[str, dict[str, Any]] = {}
 MAX_EXPORT_BASE_NAME_LENGTH = 120
+ANNOTATION_SCORE_SCOPE_MAX_ITEMS = 500
+
+
+@dataclass
+class TraceBulkWorkerHandle:
+    task: asyncio.Task[None] | None
+    stop_event: asyncio.Event | None
+
+    async def stop(self) -> None:
+        if self.stop_event is not None:
+            self.stop_event.set()
+        if self.task is not None:
+            self.task.cancel()
+            with suppress(asyncio.CancelledError):
+                await self.task
 
 
 class AnnotationQueuePayload(BaseModel):
@@ -92,6 +113,15 @@ class AnnotationQueueItemPayload(BaseModel):
     object_type: AnnotationObjectType = Field(alias="objectType")
 
 
+class TraceFilterSelectionPayload(BaseModel):
+    type: Literal["FILTER"]
+    filters: dict[str, Any] = Field(default_factory=dict)
+    excluded_trace_ids: list[str] = Field(
+        default_factory=list,
+        alias="excludedTraceIds",
+    )
+
+
 class AnnotationTraceTaskPayload(BaseModel):
     trace_ids: list[str] = Field(min_length=1, alias="traceIds")
     queue_id: str | None = Field(default=None, alias="queueId")
@@ -108,7 +138,14 @@ class AnnotationTraceTaskPayload(BaseModel):
 
 
 class AnnotationTraceTaskJobPayload(AnnotationTraceTaskPayload):
-    pass
+    trace_ids: list[str] = Field(default_factory=list, alias="traceIds")
+    selection: TraceFilterSelectionPayload | None = None
+
+    @model_validator(mode="after")
+    def validate_selection(self) -> "AnnotationTraceTaskJobPayload":
+        if not self.trace_ids and self.selection is None:
+            raise ValueError("traceIds 或 selection 必须提供一个")
+        return self
 
 
 class TraceDatasetItemsPayload(BaseModel):
@@ -116,8 +153,16 @@ class TraceDatasetItemsPayload(BaseModel):
     trace_ids: list[str] = Field(min_length=1, alias="traceIds")
 
 
-class TraceDatasetImportJobPayload(TraceDatasetItemsPayload):
-    pass
+class TraceDatasetImportJobPayload(BaseModel):
+    dataset_id: str = Field(min_length=1, alias="datasetId")
+    trace_ids: list[str] = Field(default_factory=list, alias="traceIds")
+    selection: TraceFilterSelectionPayload | None = None
+
+    @model_validator(mode="after")
+    def validate_selection(self) -> "TraceDatasetImportJobPayload":
+        if not self.trace_ids and self.selection is None:
+            raise ValueError("traceIds 或 selection 必须提供一个")
+        return self
 
 
 class AnnotationScoreInput(BaseModel):
@@ -166,6 +211,8 @@ class AnnotationBatchFiltersPayload(BaseModel):
         alias="outputFilters",
     )
     item_ids: list[str] = Field(default_factory=list, alias="itemIds")
+
+    model_config = ConfigDict(populate_by_name=True)
 
 
 class AnnotationBatchPreviewPayload(BaseModel):
@@ -485,7 +532,29 @@ async def _enrich_annotation_items_with_clickhouse_scores(
     if not items:
         return items
 
-    scores = await trace_reader.list_scores_by_queue(project_id, queue_id)
+    if len(items) > ANNOTATION_SCORE_SCOPE_MAX_ITEMS:
+        scores = await trace_reader.list_scores_by_queue(project_id, queue_id)
+    else:
+        scores = await trace_reader.list_scores_by_queue(
+            project_id,
+            queue_id,
+            trace_ids=[
+                str(item.get("objectId") or "")
+                for item in items
+                if item.get("objectType") == "TRACE"
+            ],
+            observation_ids=[
+                str(item.get("objectId") or "")
+                for item in items
+                if item.get("objectType") == "OBSERVATION"
+            ],
+            session_ids=[
+                str(item.get("objectId") or "")
+                for item in items
+                if item.get("objectType") == "SESSION"
+            ],
+            annotation_item_ids=[str(item.get("id") or "") for item in items],
+        )
     annotation_scores = [
         score
         for score in scores
@@ -499,7 +568,9 @@ async def _enrich_annotation_items_with_clickhouse_scores(
     scores_by_object: dict[tuple[str, str], list[dict[str, Any]]] = {}
 
     for score in annotation_scores:
-        metadata = score.get("metadata") if isinstance(score.get("metadata"), dict) else {}
+        metadata = (
+            score.get("metadata") if isinstance(score.get("metadata"), dict) else {}
+        )
         annotation_item_id = str(metadata.get("annotationItemId") or "")
         if annotation_item_id:
             scores_by_item_id.setdefault(annotation_item_id, []).append(score)
@@ -518,7 +589,9 @@ async def _enrich_annotation_items_with_clickhouse_scores(
         enriched_items.append(
             {
                 **item,
-                "scores": item_scores if item_scores is not None else item.get("scores", []),
+                "scores": item_scores
+                if item_scores is not None
+                else item.get("scores", []),
             }
         )
 
@@ -646,7 +719,7 @@ def _score_config_payload(payload: ScoreConfigPayload) -> dict[str, Any]:
     elif payload.data_type == "BOOLEAN":
         min_value = None
         max_value = None
-        categories = _normalize_boolean_score_categories(categories)
+        categories = langfuse_boolean_categories()
     elif payload.data_type == "CATEGORICAL":
         min_value = None
         max_value = None
@@ -671,36 +744,6 @@ def _score_config_payload(payload: ScoreConfigPayload) -> dict[str, Any]:
         "maxValue": max_value,
         "categories": categories,
     }
-
-
-def _normalize_boolean_score_categories(
-    categories: list[dict[str, Any]],
-) -> list[dict[str, float | str]]:
-    true_label = LANGFUSE_BOOLEAN_CATEGORIES[0]["label"]
-    false_label = LANGFUSE_BOOLEAN_CATEGORIES[1]["label"]
-    ordered_labels = [
-        str(category.get("label") or "").strip() for category in categories
-    ]
-    labels_by_value = {
-        category.get("value"): str(category.get("label") or "").strip()
-        for category in categories
-        if str(category.get("label") or "").strip()
-    }
-
-    if labels_by_value.get(1):
-        true_label = labels_by_value[1]
-    elif ordered_labels and ordered_labels[0]:
-        true_label = ordered_labels[0]
-
-    if labels_by_value.get(0):
-        false_label = labels_by_value[0]
-    elif len(ordered_labels) > 1 and ordered_labels[1]:
-        false_label = ordered_labels[1]
-
-    return [
-        {"label": true_label, "value": 1},
-        {"label": false_label, "value": 0},
-    ]
 
 
 def _first_non_empty_list(
@@ -749,20 +792,18 @@ async def _save_annotation_scores_with_langfuse_api(
             project_id,
             user_id,
         )
-        for score_request in score_requests:
-            await langfuse_client.create_score(
-                api_key["publicKey"],
-                api_key["secretKey"],
-                score_request,
-            )
-            if score_writer and _requires_annotation_score_clickhouse_upsert(
-                score_request
-            ):
-                await score_writer.upsert_annotation_score(
-                    project_id,
-                    user_id,
-                    score_request,
-                )
+        failures = await _write_annotation_score_requests(
+            project_id=project_id,
+            user_id=user_id,
+            score_requests=score_requests,
+            api_key=api_key,
+            reader=reader,
+            langfuse_client=langfuse_client,
+            score_writer=score_writer,
+            write_through_clickhouse=False,
+        )
+        if failures:
+            raise BusinessError(1035, "评分保存失败，请稍后重试", 502)
     return await reader.complete_annotation_queue_item_for_user(
         project_id,
         queue_id,
@@ -782,49 +823,18 @@ async def _prefill_annotation_scores_from_trace_scores(
     trace_reader: LangfuseClickHouseReader,
     langfuse_client: LangfuseAdminClient,
     score_writer: LangfuseClickHouseScoreWriter | None = None,
-) -> None:
-    if not created_items or not score_config_ids:
-        return
-
-    api_key: dict[str, str] | None = None
-    for item in created_items:
-        item_id = str(item.get("itemId") or "")
-        trace_id = str(item.get("traceId") or "")
-        if not item_id or not trace_id:
-            continue
-        trace = await trace_reader.get_trace(project_id, trace_id)
-        score_payload = _trace_scores_to_annotation_score_payload(
-            trace.get("scores") or [],
-            score_config_ids,
-        )
-        if not score_payload["scores"]:
-            continue
-        score_requests = await reader.prepare_annotation_score_payloads_for_user(
-            project_id,
-            queue_id,
-            item_id,
-            user_id,
-            score_payload,
-        )
-        if not score_requests:
-            continue
-        if api_key is None:
-            api_key = await reader.get_project_api_key_credentials_for_user(
-                project_id,
-                user_id,
-            )
-        for score_request in score_requests:
-            await langfuse_client.create_score(
-                api_key["publicKey"],
-                api_key["secretKey"],
-                score_request,
-            )
-            if score_writer is not None:
-                await score_writer.upsert_annotation_score(
-                    project_id,
-                    user_id,
-                    score_request,
-                )
+) -> list[dict[str, str]]:
+    return await _prefill_annotation_scores_from_trace_rows(
+        project_id=project_id,
+        queue_id=queue_id,
+        created_items=created_items,
+        score_config_ids=score_config_ids,
+        user_id=user_id,
+        reader=reader,
+        trace_reader=trace_reader,
+        langfuse_client=langfuse_client,
+        score_writer=score_writer,
+    )
 
 
 async def _prefill_annotation_scores_from_trace_rows(
@@ -838,9 +848,9 @@ async def _prefill_annotation_scores_from_trace_rows(
     trace_reader: LangfuseClickHouseReader,
     langfuse_client: LangfuseAdminClient,
     score_writer: LangfuseClickHouseScoreWriter | None = None,
-) -> None:
+) -> list[dict[str, str]]:
     if not created_items or not score_config_ids:
-        return
+        return []
 
     item_by_trace_id = {
         str(item.get("traceId") or ""): str(item.get("itemId") or "")
@@ -848,13 +858,14 @@ async def _prefill_annotation_scores_from_trace_rows(
         if item.get("traceId") and item.get("itemId")
     }
     if not item_by_trace_id:
-        return
+        return []
 
     traces = await trace_reader.list_traces_by_ids(
         project_id,
         list(item_by_trace_id),
+        fields="scores",
     )
-    api_key: dict[str, str] | None = None
+    batch_items: list[dict[str, Any]] = []
     for trace in traces:
         trace_id = str(trace.get("traceId") or "")
         item_id = item_by_trace_id.get(trace_id)
@@ -866,32 +877,94 @@ async def _prefill_annotation_scores_from_trace_rows(
         )
         if not score_payload["scores"]:
             continue
-        score_requests = await reader.prepare_annotation_score_payloads_for_user(
-            project_id,
-            queue_id,
-            item_id,
-            user_id,
-            score_payload,
+        batch_items.append(
+            {
+                "itemId": item_id,
+                "traceId": trace_id,
+                "scorePayload": score_payload,
+            }
         )
-        if not score_requests:
-            continue
-        if api_key is None:
-            api_key = await reader.get_project_api_key_credentials_for_user(
-                project_id,
-                user_id,
-            )
-        for score_request in score_requests:
-            await langfuse_client.create_score(
-                api_key["publicKey"],
-                api_key["secretKey"],
-                score_request,
-            )
-            if score_writer is not None:
-                await score_writer.upsert_annotation_score(
-                    project_id,
-                    user_id,
+    if not batch_items:
+        return []
+    score_requests = await reader.prepare_annotation_score_payloads_batch_for_user(
+        project_id,
+        queue_id,
+        user_id,
+        batch_items,
+    )
+    if not score_requests:
+        return []
+    api_key = await reader.get_project_api_key_credentials_for_user(
+        project_id,
+        user_id,
+    )
+    return await _write_annotation_score_requests(
+        project_id=project_id,
+        user_id=user_id,
+        score_requests=score_requests,
+        api_key=api_key,
+        reader=reader,
+        langfuse_client=langfuse_client,
+        score_writer=score_writer,
+        write_through_clickhouse=True,
+    )
+
+
+async def _write_annotation_score_requests(
+    *,
+    project_id: str,
+    user_id: str,
+    score_requests: list[dict[str, Any]],
+    api_key: dict[str, str],
+    reader: LangfuseDatabaseReader,
+    langfuse_client: LangfuseAdminClient,
+    score_writer: LangfuseClickHouseScoreWriter | None,
+    write_through_clickhouse: bool,
+) -> list[dict[str, str]]:
+    settings = getattr(reader, "_settings", None)
+    concurrency = max(
+        1,
+        int(getattr(settings, "pa_eval_annotation_score_concurrency", 8)),
+    )
+    semaphore = asyncio.Semaphore(concurrency)
+    await repair_legacy_boolean_score_configs(
+        langfuse_client,
+        api_key["publicKey"],
+        api_key["secretKey"],
+        score_requests,
+    )
+
+    async def write_one(raw_score_request: dict[str, Any]) -> dict[str, str] | None:
+        score_request = strip_pa_score_fields(raw_score_request)
+        async with semaphore:
+            try:
+                await langfuse_client.create_score(
+                    api_key["publicKey"],
+                    api_key["secretKey"],
                     score_request,
                 )
+                if write_through_clickhouse and score_writer is not None:
+                    await score_writer.upsert_annotation_score(
+                        project_id,
+                        user_id,
+                        clickhouse_score_payload(raw_score_request),
+                    )
+                return None
+            except Exception as exc:
+                logger.warning(
+                    "Failed to prefill annotation score: score_id=%s trace_id=%s",
+                    score_request.get("id"),
+                    score_request.get("traceId"),
+                    exc_info=True,
+                )
+                return {
+                    "scoreId": str(score_request.get("id") or ""),
+                    "traceId": str(score_request.get("traceId") or ""),
+                    "reason": str(exc),
+                }
+
+    results = await asyncio.gather(*(write_one(request) for request in score_requests))
+    return [failure for failure in results if failure is not None]
 
 
 def _trace_scores_to_annotation_score_payload(
@@ -924,13 +997,6 @@ def _trace_scores_to_annotation_score_payload(
             }
         )
     return {"scores": payload_scores}
-
-
-def _requires_annotation_score_clickhouse_upsert(score_request: dict[str, Any]) -> bool:
-    return (
-        score_request.get("source") == "ANNOTATION"
-        and score_request.get("dataType") == "BOOLEAN"
-    )
 
 
 def _filter_annotation_items(
@@ -1503,6 +1569,21 @@ async def create_annotation_queue(
     return success(queue)
 
 
+@router.get("/annotation-queues/name-availability")
+async def get_annotation_queue_name_availability(
+    project_id: str,
+    name: str = Query(min_length=1),
+    current_user: CurrentUserContext = Depends(get_current_user_context),
+    reader: LangfuseDatabaseReader = Depends(get_langfuse_db_reader),
+) -> dict[str, Any]:
+    available = await reader.is_annotation_queue_name_available_for_user(
+        project_id,
+        current_user.user_id,
+        name.strip(),
+    )
+    return success({"available": available})
+
+
 @router.get("/annotation-queues/{queue_id}")
 async def get_annotation_queue(
     project_id: str,
@@ -1738,7 +1819,6 @@ async def count_annotation_queue_item_filters(
     item_ids_bracket: list[str] | None = Query(default=None, alias="itemIds[]"),
     current_user: CurrentUserContext = Depends(get_current_user_context),
     reader: LangfuseDatabaseReader = Depends(get_langfuse_db_reader),
-    trace_reader: LangfuseClickHouseReader = Depends(get_langfuse_clickhouse_reader),
 ) -> dict[str, Any]:
     effective_status = _first_non_empty_list(status, status_bracket)
     effective_object_type = _first_non_empty_list(object_type, object_type_bracket)
@@ -1774,26 +1854,11 @@ async def count_annotation_queue_item_filters(
         outputFilters=parsed_output_filters,
         itemIds=effective_item_ids or [],
     )
-    items = await reader.list_annotation_queue_items_for_user(
+    counts = await reader.count_annotation_queue_item_filters_for_user(
         project_id,
         queue_id,
         current_user.user_id,
-    )
-    items = await _enrich_annotation_items_with_clickhouse_scores(
-        project_id,
-        queue_id,
-        items,
-        trace_reader,
-    )
-    if _annotation_filters_require_source(filters_payload):
-        items = await _enrich_annotation_items_with_trace_sources(
-            project_id,
-            items,
-            trace_reader,
-        )
-    counts = _annotation_item_filter_counts(
-        items,
-        filters_payload,
+        filters=filters_payload.model_dump(),
     )
     return success(counts)
 
@@ -1882,32 +1947,25 @@ async def list_annotation_queue_items(
         outputFilters=parsed_output_filters,
         itemIds=effective_item_ids or [],
     )
-    items = await reader.list_annotation_queue_items_for_user(
+    paginated = await reader.list_annotation_queue_items_page_for_user(
         project_id,
         queue_id,
         current_user.user_id,
+        page=page,
+        page_size=page_size,
+        filters=filters_payload.model_dump(),
     )
-    items = await _enrich_annotation_items_with_clickhouse_scores(
+    paginated["datas"] = await _enrich_annotation_items_with_clickhouse_scores(
         project_id,
         queue_id,
-        items,
+        paginated["datas"],
         trace_reader,
     )
-    needs_source_for_filtering = _annotation_filters_require_source(filters_payload)
-    if needs_source_for_filtering:
-        items = await _enrich_annotation_items_with_trace_sources(
-            project_id,
-            items,
-            trace_reader,
-        )
-    filtered = _filter_annotation_items(items, filters_payload)
-    paginated = _paginate(filtered, page, page_size)
-    if not needs_source_for_filtering:
-        paginated["datas"] = await _enrich_annotation_items_with_trace_source(
-            project_id,
-            paginated["datas"],
-            trace_reader,
-        )
+    paginated["datas"] = await _enrich_annotation_items_with_trace_source(
+        project_id,
+        paginated["datas"],
+        trace_reader,
+    )
     return success(paginated)
 
 
@@ -2204,14 +2262,30 @@ async def create_trace_annotation_task_job(
         get_langfuse_clickhouse_score_writer
     ),
 ) -> dict[str, Any]:
-    _cleanup_trace_annotation_task_jobs()
     task_payload = _trace_annotation_task_payload(payload)
-    job = _create_trace_annotation_task_job_payload(
+    task_payload.pop("traceIds", None)
+    selection_type, selection_payload, total_count = await _resolve_trace_job_selection(
         project_id=project_id,
-        user_id=current_user.user_id,
-        task_payload=task_payload,
+        trace_ids=payload.trace_ids,
+        selection=payload.selection,
+        trace_reader=trace_reader,
     )
-    _TRACE_ANNOTATION_TASK_JOBS[job["id"]] = job
+    job = await reader.create_trace_bulk_job_for_user(
+        project_id,
+        current_user.user_id,
+        {
+            "jobType": "ANNOTATION_TASK",
+            "selectionType": selection_type,
+            "selectionPayload": selection_payload,
+            "operationPayload": task_payload,
+            "resultPayload": {
+                "queueId": str(task_payload.get("queueId") or ""),
+                "createdCount": 0,
+                "skippedCount": 0,
+            },
+            "totalCount": total_count,
+        },
+    )
     background_tasks.add_task(
         run_trace_annotation_task_job,
         job_id=job["id"],
@@ -2228,13 +2302,15 @@ async def get_trace_annotation_task_job(
     project_id: str,
     job_id: str,
     current_user: CurrentUserContext = Depends(get_current_user_context),
+    reader: LangfuseDatabaseReader = Depends(get_langfuse_db_reader),
 ) -> dict[str, Any]:
-    _cleanup_trace_annotation_task_jobs()
-    job = _get_trace_annotation_task_job_for_user(
-        project_id=project_id,
-        user_id=current_user.user_id,
-        job_id=job_id,
+    job = await reader.get_trace_bulk_job_for_user(
+        project_id,
+        current_user.user_id,
+        job_id,
     )
+    if job.get("jobType") != "ANNOTATION_TASK":
+        raise BusinessError(1034, "人工标注任务不存在或已过期", 404)
     return success(_to_trace_annotation_task_job_response(job))
 
 
@@ -2247,14 +2323,24 @@ async def create_trace_dataset_import_job(
     reader: LangfuseDatabaseReader = Depends(get_langfuse_db_reader),
     trace_reader: LangfuseClickHouseReader = Depends(get_langfuse_clickhouse_reader),
 ) -> dict[str, Any]:
-    _cleanup_trace_dataset_import_jobs()
-    job = _create_trace_dataset_import_job_payload(
+    selection_type, selection_payload, total_count = await _resolve_trace_job_selection(
         project_id=project_id,
-        user_id=current_user.user_id,
-        dataset_id=payload.dataset_id,
         trace_ids=payload.trace_ids,
+        selection=payload.selection,
+        trace_reader=trace_reader,
     )
-    _TRACE_DATASET_IMPORT_JOBS[job["id"]] = job
+    job = await reader.create_trace_bulk_job_for_user(
+        project_id,
+        current_user.user_id,
+        {
+            "jobType": "DATASET_IMPORT",
+            "selectionType": selection_type,
+            "selectionPayload": selection_payload,
+            "operationPayload": {"datasetId": payload.dataset_id},
+            "resultPayload": {"itemIds": [], "failures": []},
+            "totalCount": total_count,
+        },
+    )
     background_tasks.add_task(
         run_trace_dataset_import_job,
         job_id=job["id"],
@@ -2269,13 +2355,15 @@ async def get_trace_dataset_import_job(
     project_id: str,
     job_id: str,
     current_user: CurrentUserContext = Depends(get_current_user_context),
+    reader: LangfuseDatabaseReader = Depends(get_langfuse_db_reader),
 ) -> dict[str, Any]:
-    _cleanup_trace_dataset_import_jobs()
-    job = _get_trace_dataset_import_job_for_user(
-        project_id=project_id,
-        user_id=current_user.user_id,
-        job_id=job_id,
+    job = await reader.get_trace_bulk_job_for_user(
+        project_id,
+        current_user.user_id,
+        job_id,
     )
+    if job.get("jobType") != "DATASET_IMPORT":
+        raise BusinessError(1033, "导入任务不存在或已过期", 404)
     return success(_to_trace_dataset_import_job_response(job))
 
 
@@ -2322,6 +2410,44 @@ async def add_traces_to_dataset(
     )
 
 
+async def _next_trace_bulk_job_batch(
+    job: dict[str, Any],
+    trace_reader: LangfuseClickHouseReader,
+    batch_size: int,
+) -> tuple[list[str], dict[str, Any], bool]:
+    selection_payload = dict(job.get("selectionPayload") or {})
+    cursor_payload = dict(job.get("cursorPayload") or {})
+    if job.get("selectionType") == "FILTER":
+        if cursor_payload.get("done"):
+            return [], cursor_payload, False
+        result = await trace_reader.list_trace_ids_for_bulk(
+            job["projectId"],
+            filters=dict(selection_payload.get("filters") or {}),
+            cursor=dict(cursor_payload.get("traceCursor") or {}),
+            excluded_trace_ids=list(selection_payload.get("excludedTraceIds") or []),
+            limit=batch_size,
+        )
+        has_more = bool(result.get("hasMore"))
+        return (
+            list(result.get("traceIds") or []),
+            {
+                "traceCursor": result.get("cursor") or {},
+                "done": not has_more,
+            },
+            has_more,
+        )
+
+    trace_ids = list(selection_payload.get("traceIds") or [])
+    offset = int(cursor_payload.get("offset") or 0)
+    batch_trace_ids = trace_ids[offset : offset + batch_size]
+    next_offset = offset + len(batch_trace_ids)
+    return (
+        batch_trace_ids,
+        {"offset": next_offset},
+        next_offset < len(trace_ids),
+    )
+
+
 async def run_trace_annotation_task_job(
     *,
     job_id: str,
@@ -2329,46 +2455,57 @@ async def run_trace_annotation_task_job(
     trace_reader: LangfuseClickHouseReader,
     langfuse_client: LangfuseAdminClient,
     score_writer: LangfuseClickHouseScoreWriter | None = None,
+    claimed_job: dict[str, Any] | None = None,
+    lock_owner: str | None = None,
 ) -> None:
-    job = _TRACE_ANNOTATION_TASK_JOBS.get(job_id)
-    if not job:
-        return
-
-    _update_trace_annotation_task_job(
-        job,
-        status="RUNNING",
-        startedAt=_utc_now_iso(),
+    effective_lock_owner = lock_owner or f"trace-bulk-{uuid4().hex}"
+    job = claimed_job or await reader.claim_trace_bulk_job(
+        job_id,
+        effective_lock_owner,
+        120,
     )
+    if not job or job.get("jobType") != "ANNOTATION_TASK":
+        return
     try:
-        trace_ids = list(job["traceIds"])
-        task_payload = dict(job["taskPayload"])
-        for batch_trace_ids in _chunk_trace_ids(
-            trace_ids,
-            TRACE_ANNOTATION_TASK_BATCH_SIZE,
-        ):
+        task_payload = dict(job.get("operationPayload") or {})
+        result_payload = dict(job.get("resultPayload") or {})
+        while True:
+            (
+                batch_trace_ids,
+                next_cursor_payload,
+                has_more,
+            ) = await _next_trace_bulk_job_batch(
+                job,
+                trace_reader,
+                TRACE_ANNOTATION_TASK_BATCH_SIZE,
+            )
+            if not batch_trace_ids:
+                break
+            completed_count = int(job.get("completedCount") or 0) + len(batch_trace_ids)
             batch_payload = {
                 **task_payload,
                 "traceIds": batch_trace_ids,
             }
-            if job.get("queueId"):
+            queue_id = str(result_payload.get("queueId") or "")
+            if queue_id:
                 batch_payload.pop("queueName", None)
-                batch_payload["queueId"] = job["queueId"]
+                batch_payload["queueId"] = queue_id
             result = await reader.create_trace_annotation_task_for_user(
                 job["projectId"],
                 job["userId"],
                 batch_payload,
             )
-            if not job.get("queueId"):
-                job["queueId"] = str(result.get("queueId") or "")
-                task_payload["queueId"] = job["queueId"]
+            if not queue_id:
+                queue_id = str(result.get("queueId") or "")
+                result_payload["queueId"] = queue_id
+                task_payload["queueId"] = queue_id
                 task_payload.pop("queueName", None)
-                job["taskPayload"] = task_payload
 
             created_items = result.get("createdItems") or []
             score_config_ids = result.get("scoreConfigIds") or []
-            await _prefill_annotation_scores_from_trace_rows(
+            score_failures = await _prefill_annotation_scores_from_trace_rows(
                 project_id=job["projectId"],
-                queue_id=str(result.get("queueId") or job.get("queueId") or ""),
+                queue_id=str(result.get("queueId") or queue_id),
                 created_items=created_items,
                 score_config_ids=score_config_ids,
                 user_id=job["userId"],
@@ -2377,23 +2514,57 @@ async def run_trace_annotation_task_job(
                 langfuse_client=langfuse_client,
                 score_writer=score_writer,
             )
+            if score_failures:
+                result_payload.setdefault("scoreFailures", []).extend(score_failures)
 
-            job["createdCount"] += int(result.get("createdCount") or 0)
-            job["skippedCount"] += int(result.get("skippedCount") or 0)
-            _update_trace_annotation_task_job(job)
+            created_count = int(result.get("createdCount") or 0)
+            skipped_count = int(result.get("skippedCount") or 0)
+            result_payload["createdCount"] = (
+                int(result_payload.get("createdCount") or 0) + created_count
+            )
+            result_payload["skippedCount"] = (
+                int(result_payload.get("skippedCount") or 0) + skipped_count
+            )
+            job = await reader.update_trace_bulk_job(
+                job_id,
+                effective_lock_owner,
+                {
+                    **_trace_bulk_job_update_values(job),
+                    "status": "RUNNING",
+                    "operationPayload": task_payload,
+                    "cursorPayload": next_cursor_payload,
+                    "resultPayload": result_payload,
+                    "completedCount": completed_count,
+                    "successCount": int(result_payload["createdCount"]),
+                    "failureCount": int(result_payload["skippedCount"]),
+                },
+            )
+            if not has_more:
+                break
 
-        _update_trace_annotation_task_job(
-            job,
-            status="SUCCEEDED",
-            completedAt=_utc_now_iso(),
+        await reader.update_trace_bulk_job(
+            job_id,
+            effective_lock_owner,
+            {
+                **_trace_bulk_job_update_values(job),
+                "status": "SUCCEEDED",
+                "operationPayload": task_payload,
+                "resultPayload": result_payload,
+                "completedCount": int(job.get("completedCount") or 0),
+                "successCount": int(result_payload.get("createdCount") or 0),
+                "failureCount": int(result_payload.get("skippedCount") or 0),
+            },
         )
     except Exception:
         logger.exception("Trace annotation task job failed: %s", job_id)
-        _update_trace_annotation_task_job(
-            job,
-            status="FAILED",
-            errorMessage="创建人工标注任务失败，请稍后重试",
-            completedAt=_utc_now_iso(),
+        await reader.update_trace_bulk_job(
+            job_id,
+            effective_lock_owner,
+            {
+                **_trace_bulk_job_update_values(job),
+                "status": "FAILED",
+                "errorMessage": "创建人工标注任务失败，请稍后重试",
+            },
         )
 
 
@@ -2412,62 +2583,92 @@ def _trace_annotation_task_payload(
     return task_payload
 
 
-def _create_trace_annotation_task_job_payload(
+async def _resolve_trace_job_selection(
     *,
     project_id: str,
-    user_id: str,
-    task_payload: dict[str, Any],
-) -> dict[str, Any]:
-    now = _utc_now_iso()
-    unique_trace_ids = list(dict.fromkeys(task_payload.get("traceIds") or []))
-    normalized_payload = {**task_payload, "traceIds": unique_trace_ids}
-    return {
-        "id": f"trace-annotation-task-{uuid4().hex}",
-        "projectId": project_id,
-        "userId": user_id,
-        "queueId": str(task_payload.get("queueId") or ""),
-        "traceIds": unique_trace_ids,
-        "taskPayload": normalized_payload,
-        "status": "PENDING",
-        "totalCount": len(unique_trace_ids),
-        "createdCount": 0,
-        "skippedCount": 0,
-        "errorMessage": "",
-        "createdAt": now,
-        "updatedAt": now,
-        "startedAt": "",
-        "completedAt": "",
-        "expiresAt": (
-            datetime.now(timezone.utc) + TRACE_ANNOTATION_TASK_JOB_TTL
-        ).isoformat(),
+    trace_ids: list[str],
+    selection: TraceFilterSelectionPayload | None,
+    trace_reader: LangfuseClickHouseReader,
+) -> tuple[str, dict[str, Any], int]:
+    if selection is None:
+        unique_trace_ids = list(dict.fromkeys(trace_ids))
+        return "EXPLICIT", {"traceIds": unique_trace_ids}, len(unique_trace_ids)
+
+    filters = _normalize_trace_filter_snapshot(selection.filters)
+    excluded_trace_ids = list(dict.fromkeys(selection.excluded_trace_ids))
+    total_count = await trace_reader.count_traces(project_id, **filters)
+    if excluded_trace_ids:
+        total_count = max(0, total_count - len(excluded_trace_ids))
+    return (
+        "FILTER",
+        {
+            "filters": filters,
+            "excludedTraceIds": excluded_trace_ids,
+        },
+        total_count,
+    )
+
+
+def _normalize_trace_filter_snapshot(filters: dict[str, Any]) -> dict[str, Any]:
+    normalized: dict[str, Any] = {}
+    direct_keys = {
+        "keyword": "keyword",
+        "statuses": "statuses",
+        "environments": "environments",
+        "tags": "tags",
+        "sessionId": "session_id",
+        "userId": "user_id",
+        "businessId": "business_id",
+        "scoreQueueId": "score_queue_id",
+        "metadataKey": "metadata_key",
+        "metadataValue": "metadata_value",
+        "createdAtRange": "created_at_range",
+        "timeRange": "time_range",
     }
+    for source_key, target_key in direct_keys.items():
+        if source_key in filters:
+            normalized[target_key] = filters[source_key]
 
-
-def _get_trace_annotation_task_job_for_user(
-    *,
-    project_id: str,
-    user_id: str,
-    job_id: str,
-) -> dict[str, Any]:
-    job = _TRACE_ANNOTATION_TASK_JOBS.get(job_id)
-    if (
-        not job
-        or job.get("projectId") != project_id
-        or job.get("userId") != user_id
+    for source_key, target_key in (
+        ("latencyMin", "latency_min"),
+        ("latencyMax", "latency_max"),
     ):
-        raise BusinessError(
-            code=1034,
-            message="人工标注任务不存在或已过期",
-            status_code=404,
-        )
-    return job
+        value = filters.get(source_key)
+        if value not in {None, ""}:
+            try:
+                normalized[target_key] = int(value)
+            except (TypeError, ValueError) as exc:
+                raise BusinessError(1036, "Trace 筛选条件格式无效", 400) from exc
+
+    for source_key, target_key in (
+        ("metadataFilters", "metadata_filters"),
+        ("categoricalScoreFilters", "categorical_score_filters"),
+        ("numericScoreFilters", "numeric_score_filters"),
+    ):
+        value = filters.get(source_key)
+        if value is None or value == "" or value == []:
+            continue
+        if isinstance(value, str):
+            try:
+                value = json.loads(value)
+            except json.JSONDecodeError as exc:
+                raise BusinessError(1036, "Trace 筛选条件格式无效", 400) from exc
+        if not isinstance(value, list):
+            raise BusinessError(1036, "Trace 筛选条件格式无效", 400)
+        normalized[target_key] = value
+    return normalized
 
 
 def _to_trace_annotation_task_job_response(job: dict[str, Any]) -> dict[str, Any]:
     total_count = int(job.get("totalCount") or 0)
-    completed_count = int(job.get("createdCount") or 0) + int(
-        job.get("skippedCount") or 0
+    result_payload = dict(job.get("resultPayload") or {})
+    created_count = int(
+        result_payload.get("createdCount") or job.get("successCount") or 0
     )
+    skipped_count = int(
+        result_payload.get("skippedCount") or job.get("failureCount") or 0
+    )
+    completed_count = int(job.get("completedCount") or 0)
     percent = 100 if total_count == 0 else round(completed_count / total_count * 100)
     if job.get("status") == "SUCCEEDED":
         percent = 100
@@ -2475,12 +2676,12 @@ def _to_trace_annotation_task_job_response(job: dict[str, Any]) -> dict[str, Any
     return {
         "id": job["id"],
         "projectId": job["projectId"],
-        "queueId": job["queueId"],
+        "queueId": str(result_payload.get("queueId") or ""),
         "status": job["status"],
         "totalCount": total_count,
         "completedCount": completed_count,
-        "createdCount": job["createdCount"],
-        "skippedCount": job["skippedCount"],
+        "createdCount": created_count,
+        "skippedCount": skipped_count,
         "percent": max(0, min(100, percent)),
         "errorMessage": job["errorMessage"],
         "createdAt": job["createdAt"],
@@ -2491,48 +2692,43 @@ def _to_trace_annotation_task_job_response(job: dict[str, Any]) -> dict[str, Any
     }
 
 
-def _update_trace_annotation_task_job(
-    job: dict[str, Any],
-    **updates: Any,
-) -> None:
-    job.update(updates)
-    job["updatedAt"] = _utc_now_iso()
-
-
-def _cleanup_trace_annotation_task_jobs() -> None:
-    now = datetime.now(timezone.utc)
-    expired_job_ids = [
-        job_id
-        for job_id, job in _TRACE_ANNOTATION_TASK_JOBS.items()
-        if _parse_time(job.get("expiresAt")) and _parse_time(job.get("expiresAt")) < now
-    ]
-    for job_id in expired_job_ids:
-        _TRACE_ANNOTATION_TASK_JOBS.pop(job_id, None)
-
-
 async def run_trace_dataset_import_job(
     *,
     job_id: str,
     reader: LangfuseDatabaseReader,
     trace_reader: LangfuseClickHouseReader,
+    claimed_job: dict[str, Any] | None = None,
+    lock_owner: str | None = None,
 ) -> None:
-    job = _TRACE_DATASET_IMPORT_JOBS.get(job_id)
-    if not job:
-        return
-
-    _update_trace_dataset_import_job(
-        job,
-        status="RUNNING",
-        startedAt=_utc_now_iso(),
+    effective_lock_owner = lock_owner or f"trace-bulk-{uuid4().hex}"
+    job = claimed_job or await reader.claim_trace_bulk_job(
+        job_id,
+        effective_lock_owner,
+        120,
     )
+    if not job or job.get("jobType") != "DATASET_IMPORT":
+        return
     try:
-        for trace_ids in _chunk_trace_ids(
-            job["traceIds"],
-            TRACE_DATASET_IMPORT_BATCH_SIZE,
-        ):
+        operation_payload = dict(job.get("operationPayload") or {})
+        result_payload = dict(job.get("resultPayload") or {})
+        success_count = int(job.get("successCount") or 0)
+        failure_count = int(job.get("failureCount") or 0)
+        while True:
+            (
+                batch_trace_ids,
+                next_cursor_payload,
+                has_more,
+            ) = await _next_trace_bulk_job_batch(
+                job,
+                trace_reader,
+                TRACE_DATASET_IMPORT_BATCH_SIZE,
+            )
+            if not batch_trace_ids:
+                break
+            completed_count = int(job.get("completedCount") or 0) + len(batch_trace_ids)
             traces = await trace_reader.list_traces_by_ids(
                 job["projectId"],
-                trace_ids,
+                batch_trace_ids,
                 fields="io,metadata",
             )
             found_trace_ids = {str(trace.get("traceId") or "") for trace in traces}
@@ -2541,100 +2737,82 @@ async def run_trace_dataset_import_job(
                     "traceId": trace_id,
                     "reason": "Trace 不存在或无访问权限",
                 }
-                for trace_id in trace_ids
+                for trace_id in batch_trace_ids
                 if trace_id not in found_trace_ids
             ]
             result = await reader.add_traces_to_dataset_for_user(
                 job["projectId"],
                 job["userId"],
                 {
-                    "datasetId": job["datasetId"],
+                    "datasetId": operation_payload["datasetId"],
                     "traces": traces,
                 },
             )
-            job["successCount"] += int(result.get("successCount") or 0)
-            job["failureCount"] += int(result.get("failureCount") or 0) + len(
+            success_count += int(result.get("successCount") or 0)
+            failure_count += int(result.get("failureCount") or 0) + len(
                 missing_failures
             )
-            job["itemIds"].extend(result.get("itemIds") or [])
-            job["failures"].extend(result.get("failures") or [])
-            job["failures"].extend(missing_failures)
-            _update_trace_dataset_import_job(job)
+            result_payload.setdefault("itemIds", []).extend(result.get("itemIds") or [])
+            result_payload.setdefault("failures", []).extend(
+                result.get("failures") or []
+            )
+            result_payload["failures"].extend(missing_failures)
+            job = await reader.update_trace_bulk_job(
+                job_id,
+                effective_lock_owner,
+                {
+                    **_trace_bulk_job_update_values(job),
+                    "status": "RUNNING",
+                    "operationPayload": operation_payload,
+                    "cursorPayload": next_cursor_payload,
+                    "resultPayload": result_payload,
+                    "completedCount": completed_count,
+                    "successCount": success_count,
+                    "failureCount": failure_count,
+                },
+            )
+            if not has_more:
+                break
 
-        _update_trace_dataset_import_job(
-            job,
-            status="SUCCEEDED",
-            completedAt=_utc_now_iso(),
+        await reader.update_trace_bulk_job(
+            job_id,
+            effective_lock_owner,
+            {
+                **_trace_bulk_job_update_values(job),
+                "status": "SUCCEEDED",
+                "operationPayload": operation_payload,
+                "resultPayload": result_payload,
+                "completedCount": int(job.get("completedCount") or 0),
+                "successCount": success_count,
+                "failureCount": failure_count,
+            },
         )
     except Exception as exc:
         logger.exception("Trace dataset import job failed: %s", job_id)
-        _update_trace_dataset_import_job(
-            job,
-            status="FAILED",
-            errorMessage="加入数据集失败，请稍后重试",
-            completedAt=_utc_now_iso(),
+        failures = result_payload.setdefault("failures", [])
+        if not failures:
+            failures.append({"traceId": "", "reason": str(exc)})
+        await reader.update_trace_bulk_job(
+            job_id,
+            effective_lock_owner,
+            {
+                **_trace_bulk_job_update_values(job),
+                "status": "FAILED",
+                "operationPayload": operation_payload,
+                "resultPayload": result_payload,
+                "completedCount": int(job.get("completedCount") or 0),
+                "successCount": success_count,
+                "failureCount": failure_count,
+                "errorMessage": "加入数据集失败，请稍后重试",
+            },
         )
-        if not job.get("failures"):
-            job["failures"].append({"traceId": "", "reason": str(exc)})
-
-
-def _create_trace_dataset_import_job_payload(
-    *,
-    project_id: str,
-    user_id: str,
-    dataset_id: str,
-    trace_ids: list[str],
-) -> dict[str, Any]:
-    now = _utc_now_iso()
-    unique_trace_ids = list(dict.fromkeys(trace_ids))
-    return {
-        "id": f"trace-dataset-import-{uuid4().hex}",
-        "projectId": project_id,
-        "userId": user_id,
-        "datasetId": dataset_id,
-        "traceIds": unique_trace_ids,
-        "status": "PENDING",
-        "totalCount": len(unique_trace_ids),
-        "successCount": 0,
-        "failureCount": 0,
-        "itemIds": [],
-        "failures": [],
-        "errorMessage": "",
-        "createdAt": now,
-        "updatedAt": now,
-        "startedAt": "",
-        "completedAt": "",
-        "expiresAt": (
-            datetime.now(timezone.utc) + TRACE_DATASET_IMPORT_JOB_TTL
-        ).isoformat(),
-    }
-
-
-def _get_trace_dataset_import_job_for_user(
-    *,
-    project_id: str,
-    user_id: str,
-    job_id: str,
-) -> dict[str, Any]:
-    job = _TRACE_DATASET_IMPORT_JOBS.get(job_id)
-    if (
-        not job
-        or job.get("projectId") != project_id
-        or job.get("userId") != user_id
-    ):
-        raise BusinessError(
-            code=1033,
-            message="导入任务不存在或已过期",
-            status_code=404,
-        )
-    return job
 
 
 def _to_trace_dataset_import_job_response(job: dict[str, Any]) -> dict[str, Any]:
     total_count = int(job.get("totalCount") or 0)
-    completed_count = int(job.get("successCount") or 0) + int(
-        job.get("failureCount") or 0
-    )
+    completed_count = int(job.get("completedCount") or 0)
+    operation_payload = dict(job.get("operationPayload") or {})
+    result_payload = dict(job.get("resultPayload") or {})
     percent = 100 if total_count == 0 else round(completed_count / total_count * 100)
     if job.get("status") == "SUCCEEDED":
         percent = 100
@@ -2642,15 +2820,15 @@ def _to_trace_dataset_import_job_response(job: dict[str, Any]) -> dict[str, Any]
     return {
         "id": job["id"],
         "projectId": job["projectId"],
-        "datasetId": job["datasetId"],
+        "datasetId": str(operation_payload.get("datasetId") or ""),
         "status": job["status"],
         "totalCount": total_count,
         "completedCount": completed_count,
         "successCount": job["successCount"],
         "failureCount": job["failureCount"],
         "percent": max(0, min(100, percent)),
-        "itemIds": job["itemIds"],
-        "failures": job["failures"],
+        "itemIds": result_payload.get("itemIds") or [],
+        "failures": result_payload.get("failures") or [],
         "errorMessage": job["errorMessage"],
         "createdAt": job["createdAt"],
         "updatedAt": job["updatedAt"],
@@ -2660,27 +2838,113 @@ def _to_trace_dataset_import_job_response(job: dict[str, Any]) -> dict[str, Any]
     }
 
 
-def _update_trace_dataset_import_job(
+def _trace_bulk_job_update_values(job: dict[str, Any]) -> dict[str, Any]:
+    return {
+        "status": job.get("status") or "RUNNING",
+        "operationPayload": job.get("operationPayload") or {},
+        "cursorPayload": job.get("cursorPayload") or {},
+        "resultPayload": job.get("resultPayload") or {},
+        "totalCount": int(job.get("totalCount") or 0),
+        "completedCount": int(job.get("completedCount") or 0),
+        "successCount": int(job.get("successCount") or 0),
+        "failureCount": int(job.get("failureCount") or 0),
+        "errorMessage": job.get("errorMessage") or "",
+    }
+
+
+async def execute_claimed_trace_bulk_job(
     job: dict[str, Any],
-    **updates: Any,
+    reader: LangfuseDatabaseReader,
+    trace_reader: LangfuseClickHouseReader,
+    langfuse_client: LangfuseAdminClient,
+    score_writer: LangfuseClickHouseScoreWriter | None,
+    lock_owner: str,
 ) -> None:
-    job.update(updates)
-    job["updatedAt"] = _utc_now_iso()
+    if job.get("jobType") == "DATASET_IMPORT":
+        await run_trace_dataset_import_job(
+            job_id=job["id"],
+            reader=reader,
+            trace_reader=trace_reader,
+            claimed_job=job,
+            lock_owner=lock_owner,
+        )
+        return
+    if job.get("jobType") == "ANNOTATION_TASK":
+        await run_trace_annotation_task_job(
+            job_id=job["id"],
+            reader=reader,
+            trace_reader=trace_reader,
+            langfuse_client=langfuse_client,
+            score_writer=score_writer,
+            claimed_job=job,
+            lock_owner=lock_owner,
+        )
 
 
-def _cleanup_trace_dataset_import_jobs() -> None:
-    now = datetime.now(timezone.utc)
-    expired_job_ids = [
-        job_id
-        for job_id, job in _TRACE_DATASET_IMPORT_JOBS.items()
-        if _parse_time(job.get("expiresAt")) and _parse_time(job.get("expiresAt")) < now
-    ]
-    for job_id in expired_job_ids:
-        _TRACE_DATASET_IMPORT_JOBS.pop(job_id, None)
+def start_trace_bulk_job_worker(settings: Settings) -> TraceBulkWorkerHandle:
+    if (
+        not settings.pa_eval_trace_bulk_worker_enabled
+        or not settings.langfuse_database_url
+    ):
+        return TraceBulkWorkerHandle(task=None, stop_event=None)
+
+    stop_event = asyncio.Event()
+    task = asyncio.create_task(_trace_bulk_job_worker_loop(settings, stop_event))
+    return TraceBulkWorkerHandle(task=task, stop_event=stop_event)
+
+
+async def _trace_bulk_job_worker_loop(
+    settings: Settings,
+    stop_event: asyncio.Event,
+) -> None:
+    reader = LangfuseDatabaseReader(settings)
+    trace_reader = LangfuseClickHouseReader(settings)
+    langfuse_client = LangfuseAdminClient(settings)
+    score_writer = LangfuseClickHouseScoreWriter(settings)
+    try:
+        while not stop_event.is_set():
+            try:
+                jobs = await reader.claim_trace_bulk_jobs(
+                    settings.pa_eval_trace_bulk_worker_instance_id,
+                    settings.pa_eval_trace_bulk_worker_lease_seconds,
+                    settings.pa_eval_trace_bulk_worker_batch_size,
+                )
+                if jobs:
+                    await asyncio.gather(
+                        *(
+                            execute_claimed_trace_bulk_job(
+                                job,
+                                reader,
+                                trace_reader,
+                                langfuse_client,
+                                score_writer,
+                                settings.pa_eval_trace_bulk_worker_instance_id,
+                            )
+                            for job in jobs
+                        )
+                    )
+            except asyncio.CancelledError:
+                raise
+            except Exception:
+                logger.exception("Trace bulk job worker polling failed")
+
+            try:
+                await asyncio.wait_for(
+                    stop_event.wait(),
+                    timeout=settings.pa_eval_trace_bulk_worker_poll_interval_seconds,
+                )
+            except TimeoutError:
+                continue
+    finally:
+        await langfuse_client.aclose()
+        await score_writer.aclose()
 
 
 def _chunk_trace_ids(trace_ids: list[str], batch_size: int) -> list[list[str]]:
-    return [trace_ids[start : start + batch_size] for start in range(0, len(trace_ids), batch_size)]
+    return [
+        trace_ids[start : start + batch_size]
+        for start in range(0, len(trace_ids), batch_size)
+    ]
 
 
 def _utc_now_iso() -> str:

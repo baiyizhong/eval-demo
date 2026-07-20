@@ -1,3 +1,4 @@
+from collections.abc import AsyncIterator
 from typing import Any
 from base64 import b64encode
 
@@ -6,6 +7,10 @@ from fastapi import Depends
 
 from app.config import Settings, get_settings
 from app.errors import LangfuseConfigError, LangfuseUpstreamError
+from app.score_configs import (
+    PA_BOOLEAN_SCORE_CONFIG_REPAIR_MARKER,
+    langfuse_boolean_categories,
+)
 
 
 class LangfuseAdminClient:
@@ -13,6 +18,19 @@ class LangfuseAdminClient:
         self._base_url = settings.langfuse_base_url.rstrip("/")
         self._admin_api_key = settings.langfuse_admin_api_key
         self._timeout = settings.pa_eval_api_timeout
+        self._client = httpx.AsyncClient(
+            base_url=self._base_url,
+            timeout=self._timeout,
+        )
+
+    async def __aenter__(self) -> "LangfuseAdminClient":
+        return self
+
+    async def __aexit__(self, *_args: object) -> None:
+        await self.aclose()
+
+    async def aclose(self) -> None:
+        await self._client.aclose()
 
     async def list_organizations(self) -> dict[str, Any]:
         return await self._request("GET", "/api/admin/organizations")
@@ -38,21 +56,52 @@ class LangfuseAdminClient:
         secret_key: str,
         payload: dict[str, Any],
     ) -> dict[str, Any]:
+        return await self._project_request(
+            "POST",
+            "/api/public/scores",
+            public_key,
+            secret_key,
+            payload,
+        )
+
+    async def update_score_config(
+        self,
+        public_key: str,
+        secret_key: str,
+        config_id: str,
+        payload: dict[str, Any],
+    ) -> dict[str, Any]:
+        return await self._project_request(
+            "PATCH",
+            f"/api/public/score-configs/{config_id}",
+            public_key,
+            secret_key,
+            payload,
+        )
+
+    async def _project_request(
+        self,
+        method: str,
+        path: str,
+        public_key: str,
+        secret_key: str,
+        payload: dict[str, Any],
+    ) -> dict[str, Any]:
         credentials = b64encode(f"{public_key}:{secret_key}".encode("utf-8")).decode(
             "ascii"
         )
         headers = {"Authorization": f"Basic {credentials}"}
         try:
-            async with httpx.AsyncClient(
-                base_url=self._base_url,
+            response = await self._client.request(
+                method,
+                path,
                 headers=headers,
-                timeout=self._timeout,
-            ) as client:
-                response = await client.post("/api/public/scores", json=payload)
-                response.raise_for_status()
-                if response.content:
-                    return response.json()
-                return {}
+                json=payload,
+            )
+            response.raise_for_status()
+            if response.content:
+                return response.json()
+            return {}
         except httpx.HTTPStatusError as exc:
             message = self._extract_error_message(exc.response)
             raise LangfuseUpstreamError(message=message, status_code=502) from exc
@@ -71,16 +120,16 @@ class LangfuseAdminClient:
 
         headers = {"Authorization": f"Bearer {self._admin_api_key}"}
         try:
-            async with httpx.AsyncClient(
-                base_url=self._base_url,
+            response = await self._client.request(
+                method,
+                path,
                 headers=headers,
-                timeout=self._timeout,
-            ) as client:
-                response = await client.request(method, path, json=json)
-                response.raise_for_status()
-                if response.content:
-                    return response.json()
-                return {}
+                json=json,
+            )
+            response.raise_for_status()
+            if response.content:
+                return response.json()
+            return {}
         except httpx.HTTPStatusError as exc:
             if allow_not_found and exc.response.status_code == 404:
                 return None
@@ -106,5 +155,32 @@ class LangfuseAdminClient:
 
 async def get_langfuse_client(
     settings: Settings = Depends(get_settings),
-) -> LangfuseAdminClient:
-    return LangfuseAdminClient(settings)
+) -> AsyncIterator[LangfuseAdminClient]:
+    client = LangfuseAdminClient(settings)
+    try:
+        yield client
+    finally:
+        await client.aclose()
+
+
+async def repair_legacy_boolean_score_configs(
+    langfuse_client: LangfuseAdminClient,
+    public_key: str,
+    secret_key: str,
+    score_requests: list[dict[str, Any]],
+) -> None:
+    config_ids = list(
+        dict.fromkeys(
+            str(score_request.get("configId") or "")
+            for score_request in score_requests
+            if score_request.get(PA_BOOLEAN_SCORE_CONFIG_REPAIR_MARKER)
+            and score_request.get("configId")
+        )
+    )
+    for config_id in config_ids:
+        await langfuse_client.update_score_config(
+            public_key,
+            secret_key,
+            config_id,
+            {"categories": langfuse_boolean_categories()},
+        )

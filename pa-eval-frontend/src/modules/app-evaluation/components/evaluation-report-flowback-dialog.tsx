@@ -20,7 +20,11 @@ import {
   SelectTrigger,
   SelectValue,
 } from '@/components/ui/select'
-import { listProjectAutoEvaluationDatasets } from '../api/dataset-api'
+import {
+  checkProjectDatasetNameAvailability,
+  listProjectAutoEvaluationDatasets,
+} from '../api/dataset-api'
+import { createAvailableResourceNameSchema } from '../lib/name-availability'
 import {
   createProjectEvaluationReportFlowback,
   previewProjectEvaluationReportFlowback,
@@ -60,6 +64,7 @@ export function EvaluationReportFlowbackDialog({
   const [mode, setMode] = useState<'EXISTING' | 'CREATE'>('CREATE')
   const [datasetId, setDatasetId] = useState('')
   const [name, setName] = useState('')
+  const [nameError, setNameError] = useState('')
   const [dedupeStrategy, setDedupeStrategy] =
     useState<EvaluationReportFlowbackInput['dedupeStrategy']>('SKIP_DUPLICATE')
   const [preview, setPreview] =
@@ -73,6 +78,27 @@ export function EvaluationReportFlowbackDialog({
     }
   }, [$api, open, projectId])
 
+  const datasetNameSchema = useMemo(
+    () =>
+      createAvailableResourceNameSchema({
+        requiredMessage: '请输入数据集名称',
+        duplicateMessage: '数据集名称已存在，请修改名称',
+        checkAvailability: (candidate) =>
+          checkProjectDatasetNameAvailability($api, projectId, candidate),
+      }),
+    [$api, projectId]
+  )
+  const checkDatasetNameAvailability = async (candidate = name) => {
+    const result = await datasetNameSchema.safeParseAsync(candidate)
+    if (!result.success) {
+      setNameError(result.error.issues[0]?.message || '数据集名称不可用')
+      return false
+    }
+    setName(result.data)
+    setNameError('')
+    return true
+  }
+
   const input = useMemo<EvaluationReportFlowbackInput>(
     () => ({
       flowbackType,
@@ -81,7 +107,11 @@ export function EvaluationReportFlowbackDialog({
       targetDataset:
         mode === 'EXISTING'
           ? { mode: 'EXISTING', datasetId }
-          : { mode: 'CREATE', name, description: '来自评测报告的回流数据' },
+          : {
+              mode: 'CREATE',
+              name: name.trim(),
+              description: '来自评测报告的回流数据',
+            },
       dedupeStrategy,
     }),
     [
@@ -100,6 +130,13 @@ export function EvaluationReportFlowbackDialog({
       toast.error('请选择目标数据集')
       return
     }
+    if (
+      mode === 'CREATE' &&
+      name.trim() &&
+      !(await checkDatasetNameAvailability())
+    ) {
+      return
+    }
     setPreviewing(true)
     try {
       const result = await previewProjectEvaluationReportFlowback(
@@ -108,16 +145,28 @@ export function EvaluationReportFlowbackDialog({
         reportId,
         input
       )
-      setPreview(result)
-      if (mode === 'CREATE' && name.trim() === '') {
-        setName(result.defaultDatasetName)
+      if (
+        mode === 'CREATE' &&
+        !(await checkDatasetNameAvailability(
+          name.trim() || result.defaultDatasetName
+        ))
+      ) {
+        setPreview(null)
+        return
       }
+      setPreview(result)
     } finally {
       setPreviewing(false)
     }
   }
 
   const handleConfirm = async () => {
+    if (
+      mode === 'CREATE' &&
+      !(await checkDatasetNameAvailability())
+    ) {
+      return
+    }
     setSubmitting(true)
     try {
       const flowback = await createProjectEvaluationReportFlowback(
@@ -208,13 +257,17 @@ export function EvaluationReportFlowbackDialog({
               </Select>
             </Field>
           ) : (
-            <Field label='新数据集名称'>
+            <Field label='新数据集名称' error={nameError}>
               <Input
+                id='evaluation-report-flowback-dataset-name'
                 value={name}
+                aria-invalid={Boolean(nameError)}
                 onChange={(event) => {
                   setPreview(null)
                   setName(event.target.value)
+                  setNameError('')
                 }}
+                onBlur={() => void checkDatasetNameAvailability()}
               />
             </Field>
           )}
@@ -283,14 +336,21 @@ export function EvaluationReportFlowbackDialog({
 function Field({
   label,
   children,
+  error,
 }: {
   label: string
   children: React.ReactNode
+  error?: string
 }) {
   return (
     <div className='flex flex-col gap-2'>
       <Label>{label}</Label>
       {children}
+      {error ? (
+        <p className='text-destructive text-sm' role='alert'>
+          {error}
+        </p>
+      ) : null}
     </div>
   )
 }

@@ -897,7 +897,9 @@ def test_rejects_download_when_annotation_export_job_not_completed() -> None:
     assert response.json()["code"] == 1033
 
 
-def test_rejects_download_when_annotation_export_file_is_missing(tmp_path: Path) -> None:
+def test_rejects_download_when_annotation_export_file_is_missing(
+    tmp_path: Path,
+) -> None:
     fake_reader = FakeAnnotationExportReader()
     fake_reader.export_job = fake_reader.job_payload(
         status="SUCCEEDED",
@@ -1121,9 +1123,7 @@ class FakeAnnotationExportReader:
     ) -> None:
         self.calls.append("mark_export_failed")
         if self.export_job:
-            self.export_job.update(
-                {"status": "FAILED", "errorMessage": error_message}
-            )
+            self.export_job.update({"status": "FAILED", "errorMessage": error_message})
 
     def job_payload(
         self,
@@ -1196,6 +1196,7 @@ class FakeAnnotationExportTraceReader:
         queue_id: str,
         *,
         run_id: str | None = None,
+        **_: object,
     ) -> list[dict]:
         self.score_calls.append((project_id, queue_id, run_id))
         return self.scores_by_queue.get(queue_id, [])

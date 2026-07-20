@@ -10,6 +10,7 @@ import { DataTable } from '@/components/common/data-table'
 import { Loading } from '@/components/common/loading'
 import { Page } from '@/components/common/page'
 import {
+  checkProjectAnnotationQueueNameAvailability,
   createProjectAnnotationQueue,
   deleteProjectAnnotationQueue,
   listProjectScoreConfigsForAnnotation,
@@ -46,6 +47,11 @@ export function ProjectAnnotationQueues() {
         queryKey: ['project-annotation-queues'],
       }),
     [queryClient]
+  )
+  const checkQueueNameAvailability = useCallback(
+    (name: string) =>
+      checkProjectAnnotationQueueNameAvailability($api, projectId, name),
+    [$api, projectId]
   )
 
   const columns = useMemo(
@@ -190,6 +196,7 @@ export function ProjectAnnotationQueues() {
         queue={editingQueue}
         scoreConfigs={scoreConfigsQuery.data ?? []}
         users={usersQuery.data ?? []}
+        checkNameAvailability={checkQueueNameAvailability}
         onOpenChange={setFormOpen}
         onSubmit={handleSubmitQueue}
       />

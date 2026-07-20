@@ -1,5 +1,6 @@
 import anyio
 import pytest
+from datetime import datetime, timedelta, timezone
 from fastapi.testclient import TestClient
 
 from app import langfuse_db
@@ -8,7 +9,15 @@ from app.errors import BusinessError
 from app.langfuse_clickhouse import get_langfuse_clickhouse_reader
 from app.langfuse_clickhouse import get_langfuse_clickhouse_score_writer
 from app.langfuse_client import get_langfuse_client
-from app.annotations import _save_annotation_scores_with_langfuse_api
+from app.annotations import (
+    AnnotationBatchFiltersPayload,
+    _annotation_item_filter_counts,
+    _enrich_annotation_items_with_clickhouse_scores,
+    _filter_annotation_items,
+    _prefill_annotation_scores_from_trace_rows,
+    _save_annotation_scores_with_langfuse_api,
+    execute_claimed_trace_bulk_job,
+)
 from app.langfuse_db import (
     LangfuseDatabaseReader,
     _annotation_score_api_payload,
@@ -21,6 +30,107 @@ from app.main import app
 class FakeAnnotationDatabaseReader:
     def __init__(self) -> None:
         self.calls: list[tuple[str, object]] = []
+        self.trace_bulk_jobs: dict[str, dict] = {}
+
+    async def create_trace_bulk_job_for_user(
+        self,
+        project_id: str,
+        user_id: str,
+        payload: dict,
+    ) -> dict:
+        self.calls.append(("create_trace_bulk_job", (project_id, user_id, payload)))
+        now = datetime.now(timezone.utc).isoformat()
+        job_id = f"bulk-job-{len(self.trace_bulk_jobs) + 1}"
+        row = {
+            "id": job_id,
+            "projectId": project_id,
+            "userId": user_id,
+            "jobType": payload["jobType"],
+            "status": "PENDING",
+            "selectionType": payload["selectionType"],
+            "selectionPayload": payload["selectionPayload"],
+            "operationPayload": payload["operationPayload"],
+            "cursorPayload": {},
+            "resultPayload": payload.get("resultPayload") or {},
+            "totalCount": payload["totalCount"],
+            "completedCount": 0,
+            "successCount": 0,
+            "failureCount": 0,
+            "attemptCount": 0,
+            "errorMessage": "",
+            "createdAt": now,
+            "updatedAt": now,
+            "startedAt": "",
+            "completedAt": "",
+            "expiresAt": (datetime.now(timezone.utc) + timedelta(hours=2)).isoformat(),
+            "lockOwner": "",
+            "lockUntil": "",
+        }
+        self.trace_bulk_jobs[job_id] = row
+        return dict(row)
+
+    async def get_trace_bulk_job_for_user(
+        self,
+        project_id: str,
+        user_id: str,
+        job_id: str,
+    ) -> dict:
+        self.calls.append(("get_trace_bulk_job", (project_id, user_id, job_id)))
+        row = self.trace_bulk_jobs.get(job_id)
+        if not row or row["projectId"] != project_id or row["userId"] != user_id:
+            raise BusinessError(1033, "批量任务不存在或已过期", 404)
+        return dict(row)
+
+    async def claim_trace_bulk_job(
+        self,
+        job_id: str,
+        lock_owner: str,
+        lease_seconds: int,
+    ) -> dict | None:
+        self.calls.append(("claim_trace_bulk_job", (job_id, lock_owner, lease_seconds)))
+        row = self.trace_bulk_jobs.get(job_id)
+        if not row or row["status"] not in {"PENDING", "RUNNING"}:
+            return None
+        row.update(
+            {
+                "status": "RUNNING",
+                "lockOwner": lock_owner,
+                "attemptCount": row["attemptCount"] + 1,
+                "startedAt": row["startedAt"] or datetime.now(timezone.utc).isoformat(),
+                "updatedAt": datetime.now(timezone.utc).isoformat(),
+            }
+        )
+        return dict(row)
+
+    async def claim_trace_bulk_jobs(
+        self,
+        lock_owner: str,
+        lease_seconds: int,
+        limit: int,
+    ) -> list[dict]:
+        claimed: list[dict] = []
+        for job_id in list(self.trace_bulk_jobs):
+            job = await self.claim_trace_bulk_job(job_id, lock_owner, lease_seconds)
+            if job:
+                claimed.append(job)
+            if len(claimed) >= limit:
+                break
+        return claimed
+
+    async def update_trace_bulk_job(
+        self,
+        job_id: str,
+        lock_owner: str,
+        updates: dict,
+    ) -> dict:
+        self.calls.append(("update_trace_bulk_job", (job_id, lock_owner, updates)))
+        row = self.trace_bulk_jobs[job_id]
+        row.update(updates)
+        row["updatedAt"] = datetime.now(timezone.utc).isoformat()
+        if row.get("status") in {"SUCCEEDED", "FAILED"}:
+            row["lockOwner"] = ""
+            row["lockUntil"] = ""
+        return dict(row)
 
     async def list_annotation_queues_for_user(
         self,
@@ -80,6 +190,15 @@ class FakeAnnotationDatabaseReader:
             "createdAt": "2026-07-06T01:00:00.000Z",
             "updatedAt": "2026-07-06T01:00:00.000Z",
         }
+
+    async def is_annotation_queue_name_available_for_user(
+        self,
+        project_id: str,
+        user_id: str,
+        name: str,
+    ) -> bool:
+        self.calls.append(("check_queue_name", (project_id, user_id, name)))
+        return name != "客服质量人工标注"
 
     async def create_trace_annotation_task_for_user(
         self,
@@ -257,6 +376,29 @@ class FakeAnnotationDatabaseReader:
             }
         ]
 
+    async def prepare_annotation_score_payloads_batch_for_user(
+        self,
+        project_id: str,
+        queue_id: str,
+        user_id: str,
+        items: list[dict],
+    ) -> list[dict]:
+        self.calls.append(
+            ("prepare_scores_batch", (project_id, queue_id, user_id, items))
+        )
+        payloads: list[dict] = []
+        for item in items:
+            payloads.extend(
+                await self.prepare_annotation_score_payloads_for_user(
+                    project_id,
+                    queue_id,
+                    item["itemId"],
+                    user_id,
+                    item["scorePayload"],
+                )
+            )
+        return payloads
+
     async def complete_annotation_queue_item_for_user(
         self,
         project_id: str,
@@ -379,6 +521,55 @@ class FakeAnnotationDatabaseReader:
             },
         ]
 
+    async def list_annotation_queue_items_page_for_user(
+        self,
+        project_id: str,
+        queue_id: str,
+        user_id: str,
+        *,
+        page: int,
+        page_size: int,
+        filters: dict,
+    ) -> dict:
+        self.calls.append(
+            (
+                "list_items_page",
+                (project_id, queue_id, user_id, page, page_size, filters),
+            )
+        )
+        items = await self.list_annotation_queue_items_for_user(
+            project_id,
+            queue_id,
+            user_id,
+        )
+        filtered = _filter_annotation_items(
+            items,
+            AnnotationBatchFiltersPayload.model_validate(filters),
+        )
+        start = (page - 1) * page_size
+        return {"total": len(filtered), "datas": filtered[start : start + page_size]}
+
+    async def count_annotation_queue_item_filters_for_user(
+        self,
+        project_id: str,
+        queue_id: str,
+        user_id: str,
+        *,
+        filters: dict,
+    ) -> dict:
+        self.calls.append(
+            ("count_item_filters", (project_id, queue_id, user_id, filters))
+        )
+        items = await self.list_annotation_queue_items_for_user(
+            project_id,
+            queue_id,
+            user_id,
+        )
+        return _annotation_item_filter_counts(
+            items,
+            AnnotationBatchFiltersPayload.model_validate(filters),
+        )
+
     async def get_annotation_queue_item_for_user(
         self,
         project_id: str,
@@ -445,6 +636,7 @@ class RecordingCursor:
 class FakeAnnotationTraceReader:
     def __init__(self) -> None:
         self.calls: list[tuple[str, str]] = []
+        self.list_calls: list[tuple[str, list[str], str | None]] = []
         self.source_calls: list[tuple[str, list[str]]] = []
         self.score_calls: list[tuple[str, str, str | None]] = []
         self.scores_by_queue: dict[str, list[dict]] = {}
@@ -479,7 +671,17 @@ class FakeAnnotationTraceReader:
         *,
         fields: str | None = None,
     ) -> list[dict]:
-        return [await self.get_trace(project_id, trace_id) for trace_id in trace_ids]
+        self.list_calls.append((project_id, trace_ids, fields))
+        requested_fields = {
+            field.strip().lower()
+            for field in str(fields or "").split(",")
+            if field.strip()
+        }
+        traces = [await self.get_trace(project_id, trace_id) for trace_id in trace_ids]
+        if "scores" not in requested_fields:
+            for trace in traces:
+                trace.pop("scores", None)
+        return traces
 
     async def list_trace_sources(
         self,
@@ -516,6 +718,7 @@ class FakeAnnotationTraceReader:
         queue_id: str,
         *,
         run_id: str | None = None,
+        **_: object,
     ) -> list[dict]:
         self.score_calls.append((project_id, queue_id, run_id))
         return self.scores_by_queue.get(queue_id, [])
@@ -524,6 +727,7 @@ class FakeAnnotationTraceReader:
 class FakeLangfuseClient:
     def __init__(self) -> None:
         self.created_scores: list[tuple[str, str, dict]] = []
+        self.updated_score_configs: list[tuple[str, str, str, dict]] = []
 
     async def create_score(
         self,
@@ -533,6 +737,18 @@ class FakeLangfuseClient:
     ) -> dict:
         self.created_scores.append((public_key, secret_key, payload))
         return {"id": payload["id"]}
+
+    async def update_score_config(
+        self,
+        public_key: str,
+        secret_key: str,
+        config_id: str,
+        payload: dict,
+    ) -> dict:
+        self.updated_score_configs.append(
+            (public_key, secret_key, config_id, payload)
+        )
+        return {"id": config_id, **payload}
 
 
 class FakeClickHouseScoreWriter:
@@ -562,8 +778,8 @@ def override_reader(fake_reader: FakeAnnotationDatabaseReader) -> None:
         login="octocat",
     )
     app.dependency_overrides[get_langfuse_client] = lambda: FakeLangfuseClient()
-    app.dependency_overrides[get_langfuse_clickhouse_score_writer] = (
-        lambda: FakeClickHouseScoreWriter()
+    app.dependency_overrides[get_langfuse_clickhouse_score_writer] = lambda: (
+        FakeClickHouseScoreWriter()
     )
 
 
@@ -640,6 +856,26 @@ def test_creates_project_annotation_queue() -> None:
     assert fake_reader.calls[0] == (
         "create_queue",
         ("project-1", "user-1", payload),
+    )
+
+
+def test_checks_annotation_queue_name_availability_before_create() -> None:
+    fake_reader = FakeAnnotationDatabaseReader()
+    override_reader(fake_reader)
+
+    try:
+        response = TestClient(app).get(
+            "/api/projects/project-1/annotation-queues/name-availability",
+            params={"name": "  客服质量人工标注  "},
+        )
+    finally:
+        clear_overrides()
+
+    assert response.status_code == 200
+    assert response.json()["data"] == {"available": False}
+    assert fake_reader.calls[0] == (
+        "check_queue_name",
+        ("project-1", "user-1", "客服质量人工标注"),
     )
 
 
@@ -739,7 +975,9 @@ def test_creates_trace_annotation_task_job_and_reports_completion() -> None:
     assert job["skippedCount"] == 0
     assert job["completedCount"] == 2
     assert job["percent"] == 100
-    assert fake_reader.calls == [
+    assert any(call[0] == "create_trace_bulk_job" for call in fake_reader.calls)
+    assert any(call[0] == "get_trace_bulk_job" for call in fake_reader.calls)
+    assert [call for call in fake_reader.calls if call[0] == "create_trace_task"] == [
         (
             "create_trace_task",
             (
@@ -809,32 +1047,136 @@ def test_creates_trace_annotation_task_prefills_scores_from_trace_detail() -> No
         "skippedCount": 0,
         "traceCount": 1,
     }
+    assert fake_trace_reader.list_calls == [("project-1", ["trace-1"], "scores")]
     assert fake_reader.calls[1] == (
-        "prepare_scores",
+        "prepare_scores_batch",
         (
             "project-1",
             "queue-new",
-            "item-new",
             "user-1",
-            {
-                "scores": [
-                    {
-                        "configId": "score-1",
-                        "value": 5,
-                        "stringValue": "",
-                        "comment": "Trace 页面当前评分",
-                    }
-                ]
-            },
+            [
+                {
+                    "itemId": "item-new",
+                    "traceId": "trace-1",
+                    "scorePayload": {
+                        "scores": [
+                            {
+                                "configId": "score-1",
+                                "value": 5,
+                                "stringValue": "",
+                                "comment": "Trace 页面当前评分",
+                            }
+                        ]
+                    },
+                }
+            ],
         ),
     )
     assert [call[0] for call in fake_reader.calls] == [
         "create_trace_task",
+        "prepare_scores_batch",
         "prepare_scores",
         "get_project_api_key",
     ]
     assert fake_langfuse_client.created_scores
     assert fake_score_writer.upserted_scores[0][2]["queueId"] == "queue-new"
+
+
+def test_prefills_annotation_scores_with_bounded_concurrency_and_failure_details() -> (
+    None
+):
+    class BatchReader(FakeAnnotationDatabaseReader):
+        def __init__(self) -> None:
+            super().__init__()
+            self._settings = type(
+                "Settings",
+                (),
+                {"pa_eval_annotation_score_concurrency": 2},
+            )()
+
+        async def prepare_annotation_score_payloads_batch_for_user(
+            self,
+            project_id: str,
+            queue_id: str,
+            user_id: str,
+            items: list[dict],
+        ) -> list[dict]:
+            self.calls.append(
+                ("prepare_scores_batch", (project_id, queue_id, user_id, items))
+            )
+            return [
+                {
+                    "id": f"score-{index}",
+                    "name": "准确性",
+                    "traceId": item["traceId"],
+                    "value": index,
+                    "dataType": "NUMERIC",
+                    "source": "ANNOTATION",
+                    "configId": "score-1",
+                    "queueId": queue_id,
+                    "metadata": {"annotationItemId": item["itemId"]},
+                }
+                for index, item in enumerate(items)
+            ]
+
+    class ConcurrentClient(FakeLangfuseClient):
+        def __init__(self) -> None:
+            super().__init__()
+            self.active = 0
+            self.max_active = 0
+
+        async def create_score(
+            self,
+            public_key: str,
+            secret_key: str,
+            payload: dict,
+        ) -> None:
+            self.active += 1
+            self.max_active = max(self.max_active, self.active)
+            await anyio.sleep(0.01)
+            self.active -= 1
+            if payload["id"] == "score-1":
+                raise RuntimeError("upstream failed")
+            self.created_scores.append((public_key, secret_key, payload))
+
+    reader = BatchReader()
+    trace_reader = FakeAnnotationTraceReader()
+    trace_reader.scores_by_trace = {
+        f"trace-{index}": [{"configId": "score-1", "name": "准确性", "value": index}]
+        for index in range(3)
+    }
+    client = ConcurrentClient()
+
+    async def run_prefill() -> list[dict]:
+        return await _prefill_annotation_scores_from_trace_rows(
+            project_id="project-1",
+            queue_id="queue-1",
+            created_items=[
+                {"itemId": f"item-{index}", "traceId": f"trace-{index}"}
+                for index in range(3)
+            ],
+            score_config_ids=["score-1"],
+            user_id="user-1",
+            reader=reader,
+            trace_reader=trace_reader,
+            langfuse_client=client,
+        )
+
+    failures = anyio.run(run_prefill)
+
+    assert client.max_active == 2
+    assert len(client.created_scores) == 2
+    assert failures == [
+        {
+            "scoreId": "score-1",
+            "traceId": "trace-1",
+            "reason": "upstream failed",
+        }
+    ]
+    assert [call[0] for call in reader.calls] == [
+        "prepare_scores_batch",
+        "get_project_api_key",
+    ]
 
 
 def test_copies_existing_annotation_scores_for_new_queue_item() -> None:
@@ -994,7 +1336,7 @@ def test_score_config_payload_uses_langfuse_category_objects() -> None:
     )
 
 
-def test_boolean_score_config_keeps_editable_labels_with_fixed_boolean_values() -> None:
+def test_boolean_score_config_uses_langfuse_standard_categories() -> None:
     fake_reader = FakeAnnotationDatabaseReader()
     override_reader(fake_reader)
 
@@ -1016,8 +1358,8 @@ def test_boolean_score_config_keeps_editable_labels_with_fixed_boolean_values() 
 
     assert response.status_code == 200
     assert fake_reader.calls[0][1][2]["categories"] == [
-        {"label": "合格", "value": 1},
-        {"label": "不合格", "value": 0},
+        {"label": "True", "value": 1},
+        {"label": "False", "value": 0},
     ]
 
 
@@ -1194,6 +1536,143 @@ def test_creates_trace_dataset_import_job_and_reports_completion() -> None:
     assert job["failures"] == [
         {"traceId": "missing-trace", "reason": "Trace 不存在或无访问权限"}
     ]
+    assert any(call[0] == "create_trace_bulk_job" for call in fake_reader.calls)
+    assert any(call[0] == "get_trace_bulk_job" for call in fake_reader.calls)
+
+
+def test_resumes_claimed_dataset_import_job_from_persisted_cursor() -> None:
+    class BatchTraceReader:
+        def __init__(self) -> None:
+            self.trace_ids: list[str] = []
+
+        async def list_traces_by_ids(
+            self,
+            project_id: str,
+            trace_ids: list[str],
+            *,
+            fields: str | None = None,
+        ) -> list[dict]:
+            self.trace_ids.extend(trace_ids)
+            return [
+                {
+                    "traceId": trace_id,
+                    "input": {},
+                    "output": {},
+                    "metadata": {},
+                }
+                for trace_id in trace_ids
+            ]
+
+    fake_reader = FakeAnnotationDatabaseReader()
+    trace_reader = BatchTraceReader()
+    job = anyio.run(
+        fake_reader.create_trace_bulk_job_for_user,
+        "project-1",
+        "user-1",
+        {
+            "jobType": "DATASET_IMPORT",
+            "selectionType": "EXPLICIT",
+            "selectionPayload": {"traceIds": ["trace-1", "trace-2", "trace-3"]},
+            "operationPayload": {"datasetId": "dataset-1"},
+            "resultPayload": {"itemIds": ["existing-item"], "failures": []},
+            "totalCount": 3,
+        },
+    )
+    stored = fake_reader.trace_bulk_jobs[job["id"]]
+    stored.update(
+        {
+            "status": "RUNNING",
+            "cursorPayload": {"offset": 2},
+            "completedCount": 2,
+            "successCount": 2,
+            "lockOwner": "worker-1",
+        }
+    )
+
+    anyio.run(
+        execute_claimed_trace_bulk_job,
+        dict(stored),
+        fake_reader,
+        trace_reader,
+        FakeLangfuseClient(),
+        FakeClickHouseScoreWriter(),
+        "worker-1",
+    )
+
+    assert trace_reader.trace_ids == ["trace-3"]
+    assert fake_reader.trace_bulk_jobs[job["id"]]["status"] == "SUCCEEDED"
+    assert fake_reader.trace_bulk_jobs[job["id"]]["completedCount"] == 3
+
+
+def test_creates_dataset_import_job_from_trace_filter_snapshot() -> None:
+    class FilterTraceReader:
+        def __init__(self) -> None:
+            self.count_filters: list[dict] = []
+            self.batch_filters: list[dict] = []
+
+        async def count_traces(self, project_id: str, **filters: object) -> int:
+            self.count_filters.append(filters)
+            return 2
+
+        async def list_trace_ids_for_bulk(
+            self,
+            project_id: str,
+            *,
+            filters: dict,
+            cursor: dict,
+            excluded_trace_ids: list[str],
+            limit: int,
+        ) -> dict:
+            self.batch_filters.append(filters)
+            return {
+                "traceIds": ["trace-1", "trace-2"],
+                "cursor": {"createdAt": "2026-07-19T00:00:00Z", "traceId": "trace-2"},
+                "hasMore": False,
+            }
+
+        async def list_traces_by_ids(
+            self,
+            project_id: str,
+            trace_ids: list[str],
+            *,
+            fields: str | None = None,
+        ) -> list[dict]:
+            return [
+                {
+                    "traceId": trace_id,
+                    "input": {},
+                    "output": {},
+                    "metadata": {},
+                }
+                for trace_id in trace_ids
+            ]
+
+    fake_reader = FakeAnnotationDatabaseReader()
+    trace_reader = FilterTraceReader()
+    override_reader_and_trace_reader(fake_reader, trace_reader)
+    try:
+        response = TestClient(app).post(
+            "/api/projects/project-1/traces/dataset-import-jobs",
+            json={
+                "datasetId": "dataset-1",
+                "selection": {
+                    "type": "FILTER",
+                    "filters": {"timeRange": "7d", "statuses": ["failed"]},
+                    "excludedTraceIds": [],
+                },
+            },
+        )
+    finally:
+        clear_overrides()
+
+    assert response.status_code == 200
+    assert response.json()["data"]["totalCount"] == 2
+    assert trace_reader.count_filters == [{"time_range": "7d", "statuses": ["failed"]}]
+    assert trace_reader.batch_filters == [{"time_range": "7d", "statuses": ["failed"]}]
+    create_call = next(
+        call for call in fake_reader.calls if call[0] == "create_trace_bulk_job"
+    )
+    assert create_call[1][2]["selectionType"] == "FILTER"
 
 
 def test_add_traces_to_dataset_skips_existing_dataset_trace_items(
@@ -1279,7 +1758,9 @@ def test_add_traces_to_dataset_skips_existing_dataset_trace_items(
     )
 
     insert_queries = [
-        (sql, params) for sql, params in cursor.queries if "INSERT INTO dataset_items" in sql
+        (sql, params)
+        for sql, params in cursor.queries
+        if "INSERT INTO dataset_items" in sql
     ]
     assert len(insert_queries) == 1
     assert insert_queries[0][1]["source_trace_id_0"] == "trace-2"
@@ -1290,10 +1771,12 @@ def test_add_traces_to_dataset_skips_existing_dataset_trace_items(
 def test_saves_annotation_scores_and_completes_queue_item() -> None:
     fake_reader = FakeAnnotationDatabaseReader()
     fake_langfuse_client = FakeLangfuseClient()
+    fake_score_writer = FakeClickHouseScoreWriter()
     override_reader_and_trace_reader(
         fake_reader,
         FakeAnnotationTraceReader(),
         fake_langfuse_client,
+        fake_score_writer,
     )
 
     payload = {
@@ -1344,9 +1827,10 @@ def test_saves_annotation_scores_and_completes_queue_item() -> None:
         "complete_item",
         ("project-1", "queue-1", "item-1", "user-1"),
     )
+    assert fake_score_writer.upserted_scores == []
 
 
-def test_saves_boolean_annotation_score_with_clickhouse_upsert_fallback() -> None:
+def test_saves_boolean_annotation_score_without_clickhouse_double_write() -> None:
     class BooleanAnnotationReader(FakeAnnotationDatabaseReader):
         async def prepare_annotation_score_payloads_for_user(
             self,
@@ -1366,7 +1850,7 @@ def test_saves_boolean_annotation_score_with_clickhouse_upsert_fallback() -> Non
                     "traceId": "trace-1",
                     "observationId": None,
                     "value": 0,
-                    "stringValue": "false",
+                    "stringValue": "False",
                     "dataType": "BOOLEAN",
                     "source": "ANNOTATION",
                     "configId": "score-bool",
@@ -1405,13 +1889,8 @@ def test_saves_boolean_annotation_score_with_clickhouse_upsert_fallback() -> Non
     anyio.run(_run_save)
 
     assert fake_langfuse_client.created_scores[0][2]["value"] == 0
-    assert fake_score_writer.upserted_scores == [
-        (
-            "project-1",
-            "user-1",
-            fake_langfuse_client.created_scores[0][2],
-        )
-    ]
+    assert fake_langfuse_client.created_scores[0][2]["stringValue"] == "False"
+    assert fake_score_writer.upserted_scores == []
 
 
 def test_previews_annotation_batch_scope_without_overwriting_completed_items() -> None:
@@ -1614,7 +2093,7 @@ def test_counts_annotation_item_filters_across_all_matching_items() -> None:
         clear_overrides()
 
     assert response.status_code == 200
-    assert fake_reader.calls[0] == ("list_items", ("project-1", "queue-1", "user-1"))
+    assert fake_reader.calls[0][0] == "count_item_filters"
     assert response.json()["data"] == {
         "status": {"PENDING": 1, "COMPLETED": 0},
         "objectType": {"TRACE": 2, "OBSERVATION": 1, "SESSION": 0},
@@ -1705,6 +2184,45 @@ def test_lists_annotation_items_uses_latest_clickhouse_scores() -> None:
     assert item["scores"] == fake_trace_reader.scores_by_queue["queue-1"]
 
 
+def test_large_annotation_export_score_enrichment_avoids_expanding_all_item_ids() -> (
+    None
+):
+    class RecordingScoreReader:
+        def __init__(self) -> None:
+            self.calls: list[dict] = []
+
+        async def list_scores_by_queue(
+            self,
+            project_id: str,
+            queue_id: str,
+            **kwargs: object,
+        ) -> list[dict]:
+            self.calls.append(kwargs)
+            return []
+
+    trace_reader = RecordingScoreReader()
+    items = [
+        {
+            "id": f"item-{index}",
+            "objectId": f"trace-{index}",
+            "objectType": "TRACE",
+            "scores": [],
+        }
+        for index in range(1001)
+    ]
+
+    result = anyio.run(
+        _enrich_annotation_items_with_clickhouse_scores,
+        "project-1",
+        "queue-1",
+        items,
+        trace_reader,
+    )
+
+    assert result == items
+    assert trace_reader.calls == [{}]
+
+
 def test_gets_annotation_item_enriches_only_current_trace_source() -> None:
     fake_reader = FakeAnnotationDatabaseReader()
     fake_trace_reader = FakeAnnotationTraceReader()
@@ -1787,7 +2305,7 @@ def test_lists_large_annotation_queue_enriches_only_current_page() -> None:
                         "title": f"trace-{index:04d}",
                         "input": {},
                         "output": {},
-                        "metadata": {},
+                        "metadata": {"app_id": "target-app"} if index == 999 else {},
                         "traceId": f"trace-{index:04d}",
                         "observationId": "",
                         "sessionId": "",
@@ -1853,7 +2371,7 @@ def test_counts_large_annotation_queue_filters_without_trace_enrichment() -> Non
                         "title": f"trace-{index:04d}",
                         "input": {},
                         "output": {},
-                        "metadata": {},
+                        "metadata": {"app_id": "target-app"} if index == 999 else {},
                         "traceId": f"trace-{index:04d}",
                         "observationId": "",
                         "sessionId": "",
@@ -1913,7 +2431,7 @@ def test_lists_large_annotation_queue_with_metadata_filter_uses_batch_trace_sour
                         "title": f"trace-{index:04d}",
                         "input": {},
                         "output": {},
-                        "metadata": {},
+                        "metadata": {"app_id": "target-app"} if index == 999 else {},
                         "traceId": f"trace-{index:04d}",
                         "observationId": "",
                         "sessionId": "",
@@ -1954,10 +2472,8 @@ def test_lists_large_annotation_queue_with_metadata_filter_uses_batch_trace_sour
     body = response.json()["data"]
     assert body["total"] == 1
     assert [item["id"] for item in body["datas"]] == ["item-0999"]
+    assert fake_trace_reader.source_calls == []
     assert fake_trace_reader.calls == []
-    assert fake_trace_reader.source_calls == [
-        ("project-1", [f"trace-{index:04d}" for index in range(1000)])
-    ]
 
 
 def test_counts_large_annotation_queue_with_metadata_filter_uses_batch_trace_sources() -> (
@@ -1985,7 +2501,7 @@ def test_counts_large_annotation_queue_with_metadata_filter_uses_batch_trace_sou
                         "title": f"trace-{index:04d}",
                         "input": {},
                         "output": {},
-                        "metadata": {},
+                        "metadata": {"app_id": "target-app"} if index == 999 else {},
                         "traceId": f"trace-{index:04d}",
                         "observationId": "",
                         "sessionId": "",
@@ -2023,9 +2539,7 @@ def test_counts_large_annotation_queue_with_metadata_filter_uses_batch_trace_sou
     assert response.status_code == 200
     assert response.json()["data"]["status"] == {"PENDING": 0, "COMPLETED": 1}
     assert fake_trace_reader.calls == []
-    assert fake_trace_reader.source_calls == [
-        ("project-1", [f"trace-{index:04d}" for index in range(1000)])
-    ]
+    assert fake_trace_reader.source_calls == []
 
 
 def test_previews_large_annotation_batch_enriches_only_preview_samples() -> None:
@@ -2342,21 +2856,21 @@ def test_bulk_updates_annotation_item_assignees_skips_completed_items() -> None:
 def test_normalizes_boolean_annotation_score_values() -> None:
     normalize = LangfuseDatabaseReader._normalize_score_value
 
-    assert normalize("BOOLEAN", True, "") == (1.0, "true")
-    assert normalize("BOOLEAN", 1, "") == (1.0, "true")
-    assert normalize("BOOLEAN", "1", "") == (1.0, "true")
-    assert normalize("BOOLEAN", "true", "") == (1.0, "true")
-    assert normalize("BOOLEAN", "是", "") == (1.0, "true")
+    assert normalize("BOOLEAN", True, "") == (1.0, "True")
+    assert normalize("BOOLEAN", 1, "") == (1.0, "True")
+    assert normalize("BOOLEAN", "1", "") == (1.0, "True")
+    assert normalize("BOOLEAN", "true", "") == (1.0, "True")
+    assert normalize("BOOLEAN", "是", "") == (1.0, "True")
 
-    assert normalize("BOOLEAN", False, "") == (0.0, "false")
-    assert normalize("BOOLEAN", 0, "") == (0.0, "false")
-    assert normalize("BOOLEAN", "0", "") == (0.0, "false")
-    assert normalize("BOOLEAN", "false", "") == (0.0, "false")
-    assert normalize("BOOLEAN", "否", "") == (0.0, "false")
+    assert normalize("BOOLEAN", False, "") == (0.0, "False")
+    assert normalize("BOOLEAN", 0, "") == (0.0, "False")
+    assert normalize("BOOLEAN", "0", "") == (0.0, "False")
+    assert normalize("BOOLEAN", "false", "") == (0.0, "False")
+    assert normalize("BOOLEAN", "否", "") == (0.0, "False")
     assert normalize("BOOLEAN", None, "") == (None, None)
 
 
-def test_normalizes_boolean_annotation_score_with_configured_categories() -> None:
+def test_normalizes_boolean_annotation_score_to_langfuse_standard_labels() -> None:
     config = {
         "data_type": "BOOLEAN",
         "categories": [
@@ -2367,15 +2881,15 @@ def test_normalizes_boolean_annotation_score_with_configured_categories() -> Non
 
     assert LangfuseDatabaseReader._normalize_score_value(config, True, "") == (
         1.0,
-        "通过",
+        "True",
     )
     assert LangfuseDatabaseReader._normalize_score_value(config, False, "") == (
         0.0,
-        "不通过",
+        "False",
     )
 
 
-def test_annotation_score_api_payload_keeps_boolean_string_value() -> None:
+def test_annotation_score_api_payload_uses_boolean_value_label_pairs() -> None:
     payload = _annotation_score_api_payload(
         project_id="project-1",
         queue_id="queue-1",
@@ -2387,13 +2901,13 @@ def test_annotation_score_api_payload_keeps_boolean_string_value() -> None:
         config={"name": "是否合格", "data_type": "BOOLEAN"},
         config_id="score-bool",
         value=1.0,
-        string_value="true",
+        string_value="通过",
         comment="人工确认合格",
     )
 
     assert payload["value"] == 1
     assert payload["dataType"] == "BOOLEAN"
-    assert payload["stringValue"] == "true"
+    assert payload["stringValue"] == "True"
 
     false_payload = _annotation_score_api_payload(
         project_id="project-1",
@@ -2406,13 +2920,189 @@ def test_annotation_score_api_payload_keeps_boolean_string_value() -> None:
         config={"name": "是否合格", "data_type": "BOOLEAN"},
         config_id="score-bool",
         value=0.0,
-        string_value="false",
+        string_value="不通过",
         comment="人工确认不合格",
     )
 
     assert false_payload["value"] == 0
     assert false_payload["dataType"] == "BOOLEAN"
-    assert false_payload["stringValue"] == "false"
+    assert false_payload["stringValue"] == "False"
+
+
+def test_repairs_legacy_boolean_config_before_saving_annotation_score() -> None:
+    class LegacyBooleanAnnotationReader(FakeAnnotationDatabaseReader):
+        async def prepare_annotation_score_payloads_for_user(
+            self,
+            project_id: str,
+            queue_id: str,
+            item_id: str,
+            user_id: str,
+            payload: dict,
+        ) -> list[dict]:
+            self.calls.append(
+                ("prepare_scores", (project_id, queue_id, item_id, user_id, payload))
+            )
+            return [
+                _annotation_score_api_payload(
+                    project_id=project_id,
+                    queue_id=queue_id,
+                    item_id=item_id,
+                    user_id=user_id,
+                    trace_id="trace-1",
+                    observation_id=None,
+                    session_id=None,
+                    config={
+                        "name": "是否合格",
+                        "data_type": "BOOLEAN",
+                        "categories": [
+                            {"label": "合格", "value": 1},
+                            {"label": "不合格", "value": 0},
+                        ],
+                    },
+                    config_id="score-bool",
+                    value=1.0,
+                    string_value="合格",
+                    comment="",
+                )
+            ]
+
+    fake_reader = LegacyBooleanAnnotationReader()
+    fake_langfuse_client = FakeLangfuseClient()
+    fake_score_writer = FakeClickHouseScoreWriter()
+
+    async def _run_save() -> None:
+        await _save_annotation_scores_with_langfuse_api(
+            project_id="project-1",
+            queue_id="queue-1",
+            item_id="item-1",
+            user_id="user-1",
+            score_payload={"scores": []},
+            reader=fake_reader,  # type: ignore[arg-type]
+            langfuse_client=fake_langfuse_client,  # type: ignore[arg-type]
+            score_writer=fake_score_writer,  # type: ignore[arg-type]
+        )
+
+    anyio.run(_run_save)
+
+    assert fake_langfuse_client.updated_score_configs == [
+        (
+            "pk-lf-test",
+            "sk-lf-test",
+            "score-bool",
+            {
+                "categories": [
+                    {"label": "True", "value": 1},
+                    {"label": "False", "value": 0},
+                ]
+            },
+        )
+    ]
+    langfuse_payload = fake_langfuse_client.created_scores[0][2]
+    assert langfuse_payload["value"] == 1
+    assert langfuse_payload["stringValue"] == "True"
+    assert not any(key.startswith("_pa") for key in langfuse_payload)
+    assert fake_score_writer.upserted_scores == []
+
+
+def test_saves_multiple_annotation_scores_concurrently_without_double_write() -> None:
+    class MultipleScoreReader(FakeAnnotationDatabaseReader):
+        async def prepare_annotation_score_payloads_for_user(
+            self,
+            project_id: str,
+            queue_id: str,
+            item_id: str,
+            user_id: str,
+            payload: dict,
+        ) -> list[dict]:
+            self.calls.append(
+                ("prepare_scores", (project_id, queue_id, item_id, user_id, payload))
+            )
+            return [
+                _annotation_score_api_payload(
+                    project_id=project_id,
+                    queue_id=queue_id,
+                    item_id=item_id,
+                    user_id=user_id,
+                    trace_id="trace-1",
+                    observation_id=None,
+                    session_id=None,
+                    config={
+                        "name": "问题类型",
+                        "data_type": "CATEGORICAL",
+                        "categories": [
+                            {"label": "正常", "value": 1},
+                            {"label": "事实错误", "value": 2},
+                        ],
+                    },
+                    config_id="score-category",
+                    value=2.0,
+                    string_value="事实错误",
+                    comment="",
+                ),
+                _annotation_score_api_payload(
+                    project_id=project_id,
+                    queue_id=queue_id,
+                    item_id=item_id,
+                    user_id=user_id,
+                    trace_id="trace-1",
+                    observation_id=None,
+                    session_id=None,
+                    config={"name": "评审说明", "data_type": "TEXT"},
+                    config_id="score-text",
+                    value=0.0,
+                    string_value="回答缺少来源",
+                    comment="",
+                ),
+            ]
+
+    class ConcurrentLangfuseClient(FakeLangfuseClient):
+        def __init__(self) -> None:
+            super().__init__()
+            self.active = 0
+            self.max_active = 0
+
+        async def create_score(
+            self,
+            public_key: str,
+            secret_key: str,
+            payload: dict,
+        ) -> dict:
+            self.active += 1
+            self.max_active = max(self.max_active, self.active)
+            await anyio.sleep(0.01)
+            self.created_scores.append((public_key, secret_key, payload))
+            self.active -= 1
+            return {"id": payload["id"]}
+
+    fake_reader = MultipleScoreReader()
+    fake_langfuse_client = ConcurrentLangfuseClient()
+    fake_score_writer = FakeClickHouseScoreWriter()
+
+    async def _run_save() -> None:
+        await _save_annotation_scores_with_langfuse_api(
+            project_id="project-1",
+            queue_id="queue-1",
+            item_id="item-1",
+            user_id="user-1",
+            score_payload={"scores": []},
+            reader=fake_reader,  # type: ignore[arg-type]
+            langfuse_client=fake_langfuse_client,  # type: ignore[arg-type]
+            score_writer=fake_score_writer,  # type: ignore[arg-type]
+        )
+
+    anyio.run(_run_save)
+
+    assert fake_langfuse_client.max_active == 2
+    langfuse_payloads = {
+        payload["configId"]: payload
+        for _public_key, _secret_key, payload in fake_langfuse_client.created_scores
+    }
+    assert langfuse_payloads["score-category"]["value"] == "事实错误"
+    assert langfuse_payloads["score-category"]["stringValue"] == "事实错误"
+    assert langfuse_payloads["score-text"]["value"] == "回答缺少来源"
+    assert langfuse_payloads["score-text"]["stringValue"] == "回答缺少来源"
+
+    assert fake_score_writer.upserted_scores == []
 
 
 def test_normalizes_categorical_annotation_score_with_langfuse_category() -> None:
@@ -2471,4 +3161,4 @@ def test_lists_annotation_queue_items_with_large_page_size_for_navigation() -> N
 
     assert response.status_code == 200
     assert response.json()["data"]["datas"][0]["id"] == "item-1"
-    assert fake_reader.calls[0] == ("list_items", ("project-1", "queue-1", "user-1"))
+    assert fake_reader.calls[0][0] == "list_items_page"

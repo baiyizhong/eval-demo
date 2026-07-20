@@ -1,3 +1,4 @@
+import { useMemo } from 'react'
 import { z } from 'zod'
 import { toast } from 'sonner'
 import {
@@ -26,6 +27,10 @@ import {
   type DatasetRecord,
   type DatasetType,
 } from '../types'
+import {
+  createAvailableResourceNameSchema,
+  type ResourceNameAvailabilityChecker,
+} from '../lib/name-availability'
 
 const jsonObjectSchema = z
   .record(z.string(), z.unknown())
@@ -33,18 +38,19 @@ const jsonObjectSchema = z
     message: '必须是合法 JSON 对象',
   })
 
-const datasetFormSchema = z.object({
-  name: z.string().min(1, '请输入数据集名称'),
+const datasetFormBaseSchema = z.object({
+  name: z.string().trim().min(1, '请输入数据集名称'),
   type: z.enum(['evaluation', 'badcase', 'golden', 'anomaly']),
   description: z.string(),
   metadata: jsonObjectSchema,
 })
 
-type DatasetFormValues = z.infer<typeof datasetFormSchema>
+type DatasetFormValues = z.infer<typeof datasetFormBaseSchema>
 
 type DatasetFormDrawerProps = {
   open: boolean
   dataset?: DatasetRecord | null
+  checkNameAvailability: ResourceNameAvailabilityChecker
   onOpenChange: (open: boolean) => void
   onSubmit: (input: DatasetFormInput) => Promise<void> | void
 }
@@ -59,11 +65,25 @@ const datasetTypes: DatasetType[] = [
 export function DatasetFormDrawer({
   open,
   dataset,
+  checkNameAvailability,
   onOpenChange,
   onSubmit,
 }: DatasetFormDrawerProps) {
   const formId = dataset ? 'edit-dataset-form' : 'create-dataset-form'
   const defaultValues = getDefaultValues(dataset)
+  const schema = useMemo(
+    () =>
+      dataset
+        ? datasetFormBaseSchema
+        : datasetFormBaseSchema.extend({
+            name: createAvailableResourceNameSchema({
+              requiredMessage: '请输入数据集名称',
+              duplicateMessage: '数据集名称已存在，请修改名称',
+              checkAvailability: checkNameAvailability,
+            }),
+          }),
+    [checkNameAvailability, dataset]
+  )
 
   const handleSubmit = async (values: DatasetFormValues) => {
     try {
@@ -95,7 +115,7 @@ export function DatasetFormDrawer({
       <BaseForm
         key={dataset?.id ?? 'create'}
         id={formId}
-        schema={datasetFormSchema}
+        schema={schema}
         defaultValues={defaultValues}
         onSubmit={handleSubmit}
       >
@@ -108,7 +128,19 @@ export function DatasetFormDrawer({
                 <FormItem>
                   <FormLabel>名称</FormLabel>
                   <FormControl>
-                    <Input placeholder='输入数据集名称' {...field} />
+                    <Input
+                      placeholder='输入数据集名称'
+                      {...field}
+                      aria-invalid={Boolean(form.formState.errors.name)}
+                      onChange={(event) => {
+                        field.onChange(event)
+                        form.clearErrors('name')
+                      }}
+                      onBlur={() => {
+                        field.onBlur()
+                        if (!dataset) void form.trigger('name')
+                      }}
+                    />
                   </FormControl>
                   <FormMessage />
                 </FormItem>

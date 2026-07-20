@@ -26,12 +26,16 @@ import {
   type ScoreConfigRecord,
 } from '../types'
 import {
+  createAvailableResourceNameSchema,
+  type ResourceNameAvailabilityChecker,
+} from '../lib/name-availability'
+import {
   AnnotationAssignmentFields,
   type AnnotationAssignmentFormValues,
 } from './annotation-assignment-fields'
 
-const annotationQueueFormSchema = z.object({
-  name: z.string().min(1, '请输入任务名称'),
+const annotationQueueFormBaseSchema = z.object({
+  name: z.string().trim().min(1, '请输入任务名称'),
   description: z.string(),
   scoreConfigIds: z.array(z.string()).min(1, '请选择至少一个评分指标'),
   assigneeIds: z.array(z.string()),
@@ -39,13 +43,16 @@ const annotationQueueFormSchema = z.object({
   assignmentWeights: z.record(z.string(), z.number().min(1)),
 })
 
-type AnnotationQueueFormValues = z.infer<typeof annotationQueueFormSchema>
+type AnnotationQueueFormValues = z.infer<
+  typeof annotationQueueFormBaseSchema
+>
 
 type AnnotationQueueFormDrawerProps = {
   open: boolean
   queue?: AnnotationQueueRecord | null
   scoreConfigs: ScoreConfigRecord[]
   users: ProjectUserRecord[]
+  checkNameAvailability: ResourceNameAvailabilityChecker
   onOpenChange: (open: boolean) => void
   onSubmit: (input: AnnotationQueueFormInput) => Promise<void> | void
 }
@@ -55,12 +62,26 @@ export function AnnotationQueueFormDrawer({
   queue,
   scoreConfigs,
   users,
+  checkNameAvailability,
   onOpenChange,
   onSubmit,
 }: AnnotationQueueFormDrawerProps) {
   const formId = queue
     ? 'edit-annotation-queue-form'
     : 'create-annotation-queue-form'
+  const schema = useMemo(
+    () =>
+      queue
+        ? annotationQueueFormBaseSchema
+        : annotationQueueFormBaseSchema.extend({
+            name: createAvailableResourceNameSchema({
+              requiredMessage: '请输入任务名称',
+              duplicateMessage: '人工标注任务名称已存在，请修改名称',
+              checkAvailability: checkNameAvailability,
+            }),
+          }),
+    [checkNameAvailability, queue]
+  )
 
   const handleSubmit = async (values: AnnotationQueueFormValues) => {
     try {
@@ -84,7 +105,7 @@ export function AnnotationQueueFormDrawer({
       <BaseForm
         key={queue?.id ?? 'new'}
         id={formId}
-        schema={annotationQueueFormSchema}
+        schema={schema}
         defaultValues={getDefaultValues(queue)}
         onSubmit={handleSubmit}
         className='flex flex-col gap-4'
@@ -101,6 +122,15 @@ export function AnnotationQueueFormDrawer({
                     <Input
                       placeholder='例如：客服会话质量人工标注'
                       {...field}
+                      aria-invalid={Boolean(form.formState.errors.name)}
+                      onChange={(event) => {
+                        field.onChange(event)
+                        form.clearErrors('name')
+                      }}
+                      onBlur={() => {
+                        field.onBlur()
+                        if (!queue) void form.trigger('name')
+                      }}
                     />
                   </FormControl>
                   <FormMessage />

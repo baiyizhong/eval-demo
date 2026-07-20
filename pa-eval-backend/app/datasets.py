@@ -263,6 +263,21 @@ async def create_dataset(
     return success(dataset)
 
 
+@router.get("/name-availability")
+async def get_dataset_name_availability(
+    project_id: str,
+    name: str = Query(min_length=1),
+    current_user: CurrentUserContext = Depends(get_current_user_context),
+    reader: LangfuseDatabaseReader = Depends(get_langfuse_db_reader),
+) -> dict[str, Any]:
+    available = await reader.is_dataset_name_available_for_user(
+        project_id,
+        current_user.user_id,
+        name.strip(),
+    )
+    return success({"available": available})
+
+
 @router.get("/{dataset_id}")
 async def get_dataset(
     project_id: str,

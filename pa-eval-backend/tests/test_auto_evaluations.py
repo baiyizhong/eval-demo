@@ -26,6 +26,7 @@ from app.auto_evaluations import (
     _run_workflow_evaluator,
     _run_auto_evaluation_background,
     _trace_time_range_condition,
+    _trace_time_condition,
     _mark_auto_evaluation_failed,
     _update_auto_evaluation_progress,
     _sample_dataset_items,
@@ -38,6 +39,7 @@ from app.auto_evaluations import (
     AutoEvaluationBadcaseConfig,
     CreateAutoEvaluationPayload,
     EvaluationReportFlowbackPayload,
+    TraceCountPayload,
 )
 from app.auth_context import get_current_user_context
 from app.langfuse_clickhouse import LangfuseClickHouseReader
@@ -128,10 +130,23 @@ class FakeBackgroundTasks:
 class FakeLangfuseScoreClient:
     def __init__(self) -> None:
         self.created_scores = []
+        self.updated_score_configs = []
 
     async def create_score(self, public_key: str, secret_key: str, payload: dict):
         self.created_scores.append((public_key, secret_key, payload))
         return {"id": payload["id"]}
+
+    async def update_score_config(
+        self,
+        public_key: str,
+        secret_key: str,
+        config_id: str,
+        payload: dict,
+    ):
+        self.updated_score_configs.append(
+            (public_key, secret_key, config_id, payload)
+        )
+        return {"id": config_id, **payload}
 
 
 class FakeClickHouseScoreWriter:
@@ -232,7 +247,9 @@ async def test_clickhouse_trace_query_filters_by_trace_ids(
     )
 
     assert rows == []
-    assert "t.id IN ({trace_id_0:String}, {trace_id_1:String})" in captured["queries"][0]
+    assert (
+        "t.id IN ({trace_id_0:String}, {trace_id_1:String})" in captured["queries"][0]
+    )
     assert captured["params"][0]["trace_id_0"] == "trace-1"
     assert captured["params"][0]["trace_id_1"] == "trace-2"
 
@@ -319,6 +336,120 @@ async def test_list_evaluation_report_items_reads_scores_for_report_run(
     }
     assert response["data"]["total"] == 1
     assert response["data"]["datas"][0]["scores"][0]["name"] == "quality"
+
+
+@pytest.mark.anyio
+async def test_list_evaluation_report_badcases_attaches_current_run_scores(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    cursor = SequentialCursor(
+        rows_by_fetchone=[
+            {"id": "project-1"},
+            {"exists": 1},
+            {
+                "source_task_id": "task-1",
+                "run_id": "run-2",
+                "score_name": "quality",
+                "report_template_snapshot": {
+                    "badcaseRule": {
+                        "mode": "SCORE_THRESHOLD",
+                        "operator": "LTE",
+                        "threshold": 0.6,
+                    }
+                },
+            },
+        ],
+        rows_by_fetchall=[
+            [
+                {
+                    "id": "item-1",
+                    "source_id": "obs-1",
+                    "trace_id": "trace-1",
+                    "observation_id": "obs-1",
+                    "result_type": "badcase",
+                    "execution_status": "COMPLETED",
+                    "dataset_flowback_status": "NONE",
+                }
+            ]
+        ],
+    )
+    captured = {}
+    current_run_score = {
+        "id": "score-current-run",
+        "traceId": "trace-1",
+        "observationId": "obs-1",
+        "name": "quality",
+        "value": 0.5,
+        "metadata": {
+            "paAutoEvaluationRunId": "run-2",
+            "passed": False,
+        },
+        "createdAt": "2026-07-20T10:00:00Z",
+    }
+
+    async def fake_connect(settings):
+        return FakeConnection(cursor)
+
+    class FakeReportBadcaseReader:
+        def __init__(self, settings):
+            pass
+
+        async def list_scores_by_queue(
+            self,
+            project_id: str,
+            queue_id: str,
+            *,
+            run_id: str | None = None,
+        ):
+            captured["score_query"] = (project_id, queue_id, run_id)
+            return [current_run_score]
+
+        async def list_traces_by_ids(
+            self,
+            project_id: str,
+            trace_ids: list[str],
+            *,
+            fields: str | None = None,
+        ):
+            captured["trace_query"] = (project_id, trace_ids, fields)
+            return [
+                {
+                    "traceId": "trace-1",
+                    "scores": [
+                        {
+                            "id": "score-other-task",
+                            "name": "manual-quality",
+                            "value": 1,
+                        }
+                    ],
+                    "scoreSummary": "manual-quality: 1",
+                }
+            ]
+
+    monkeypatch.setattr(auto_evaluations, "_connect", fake_connect)
+    monkeypatch.setattr(
+        auto_evaluations,
+        "LangfuseClickHouseReader",
+        FakeReportBadcaseReader,
+    )
+
+    response = await auto_evaluations.list_evaluation_report_badcases(
+        project_id="project-1",
+        report_id="report-1",
+        page=1,
+        page_size=10,
+        keyword=None,
+        current_user=_override_current_user(),
+        settings=auto_evaluations.Settings(),
+    )
+
+    assert captured == {
+        "score_query": ("project-1", "task-1", "run-2"),
+        "trace_query": ("project-1", ["trace-1"], "io,metadata"),
+    }
+    assert response["data"]["total"] == 1
+    assert response["data"]["datas"][0]["scores"] == [current_run_score]
+    assert response["data"]["datas"][0]["scoreSummary"] == "quality: 0.5"
 
 
 def _override_current_user():
@@ -476,9 +607,10 @@ async def test_rerun_auto_evaluation_creates_new_task_id(
     assert background_task[1][2] == new_task_id
     assert background_task[1][3] == new_run_id
     assert background_task[1][4].score_mapping == {"score": "quality"}
-    assert background_task[1][4].report_template_snapshot["badcaseRule"][
-        "threshold"
-    ] == 0.6
+    assert (
+        background_task[1][4].report_template_snapshot["badcaseRule"]["threshold"]
+        == 0.6
+    )
 
 
 @pytest.mark.anyio
@@ -710,10 +842,67 @@ async def test_count_trace_generation_samples_uses_clickhouse_count_without_samp
     assert count == 1250
     assert "countDistinct(t.id) AS count" in captured["query"]
     assert "LIMIT 500" not in captured["query"]
-    assert "positionCaseInsensitive(ifNull(t.user_id, ''), 'user-1') > 0" in captured["query"]
-    assert "positionCaseInsensitive(ifNull(t.session_id, ''), 'session-1') > 0" in captured["query"]
+    assert (
+        "positionCaseInsensitive(ifNull(t.user_id, ''), 'user-1') > 0"
+        in captured["query"]
+    )
+    assert (
+        "positionCaseInsensitive(ifNull(t.session_id, ''), 'session-1') > 0"
+        in captured["query"]
+    )
     assert "has(t.tags, 'refund')" in captured["query"]
     assert "INTERVAL 7 DAY" in captured["query"]
+
+
+@pytest.mark.anyio
+async def test_clickhouse_trace_count_uses_half_open_fixed_range_and_all_tags(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    captured: dict[str, str] = {}
+
+    async def fake_query_clickhouse(settings, query):
+        captured["query"] = query
+        return [{"count": 42}]
+
+    monkeypatch.setattr(
+        auto_evaluations,
+        "_query_clickhouse_json_each_row",
+        fake_query_clickhouse,
+    )
+
+    count = await _count_trace_generation_samples(
+        FakeCursor(),  # type: ignore[arg-type]
+        project_id="project-1",
+        data_source_payload={
+            "createdAtRange": [
+                "2026-07-17T16:00:00Z",
+                "2026-07-18T16:00:00Z",
+            ],
+            "tags": ["refund", "risk"],
+        },
+        settings=auto_evaluations.Settings(
+            langfuse_clickhouse_url="http://clickhouse.local:8123",
+        ),
+    )
+
+    assert count == 42
+    assert "t.timestamp >= parseDateTimeBestEffort(" in captured["query"]
+    assert "t.timestamp < parseDateTimeBestEffort(" in captured["query"]
+    assert "t.timestamp <= parseDateTimeBestEffort(" not in captured["query"]
+    assert "has(t.tags, 'refund')" in captured["query"]
+    assert "has(t.tags, 'risk')" in captured["query"]
+
+
+def test_trace_count_rejects_incomplete_fixed_time_range() -> None:
+    with pytest.raises(ValueError, match="开始和结束时间"):
+        TraceCountPayload(
+            traceFilter={"createdAtRange": ["2026-07-17T16:00:00Z"]}
+        )
+
+    with pytest.raises(BusinessError, match="开始和结束时间"):
+        _trace_time_condition(
+            {"createdAtRange": ["2026-07-17T16:00:00Z", ""]}
+        )
 
 
 @pytest.mark.anyio
@@ -737,11 +926,70 @@ async def test_count_trace_generation_samples_uses_postgres_count_without_sample
     assert count == 1200
     assert "COUNT(*) AS count" in cursor.sql
     assert "LIMIT 500" not in cursor.sql
+    assert "t.timestamp < %(created_at_to)s::timestamptz" in cursor.sql
+    assert "t.timestamp <= %(created_at_to)s::timestamptz" not in cursor.sql
     assert cursor.params["user_id_like"] == "%user-1%"
     assert cursor.params["session_id_like"] == "%session-1%"
     assert cursor.params["tags"] == ["refund"]
     assert cursor.params["created_at_from"] == "2026-07-04T16:00:00Z"
     assert cursor.params["created_at_to"] == "2026-07-07T16:00:00Z"
+
+
+@pytest.mark.anyio
+async def test_list_trace_generation_samples_clickhouse_is_not_capped_at_500(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    captured: dict[str, str] = {}
+    rows = [
+        {
+            "trace_id": f"trace-{index}",
+            "project_id": "project-1",
+            "observation_id": f"observation-{index}",
+        }
+        for index in range(750)
+    ]
+
+    async def fake_query_clickhouse(settings, query):
+        captured["query"] = query
+        return rows
+
+    monkeypatch.setattr(
+        auto_evaluations,
+        "_query_clickhouse_json_each_row",
+        fake_query_clickhouse,
+    )
+
+    samples = await _list_trace_generation_samples(
+        FakeCursor(),  # type: ignore[arg-type]
+        "project-1",
+        {"type": "TRACE_FILTER", "timeRange": "7d"},
+        auto_evaluations.Settings(),
+    )
+
+    assert len(samples) == 750
+    assert "LIMIT 500" not in captured["query"]
+
+
+@pytest.mark.anyio
+async def test_list_trace_generation_samples_postgres_is_not_capped_at_500() -> None:
+    rows = [
+        {
+            "trace_id": f"trace-{index}",
+            "project_id": "project-1",
+            "observation_id": f"observation-{index}",
+        }
+        for index in range(750)
+    ]
+    cursor = FakeCursor(rows=rows)
+
+    samples = await _list_trace_generation_samples(
+        cursor,  # type: ignore[arg-type]
+        "project-1",
+        {"type": "TRACE_FILTER", "timeRange": "7d"},
+    )
+
+    assert len(samples) == 750
+    assert "LIMIT 500" not in cursor.sql
 
 
 @pytest.mark.anyio
@@ -1091,9 +1339,7 @@ async def test_list_trace_generation_samples_filters_clickhouse_environments(
 
 
 @pytest.mark.anyio
-async def test_list_trace_generation_samples_queries_custom_created_at_range() -> (
-    None
-):
+async def test_list_trace_generation_samples_queries_custom_created_at_range() -> None:
     cursor = FakeCursor(rows=[{"trace_id": "trace-1", "observation_id": "obs-1"}])
 
     await _list_trace_generation_samples(
@@ -1106,7 +1352,8 @@ async def test_list_trace_generation_samples_queries_custom_created_at_range() -
     )
 
     assert "t.timestamp >= %(created_at_from)s::timestamptz" in cursor.sql
-    assert "t.timestamp <= %(created_at_to)s::timestamptz" in cursor.sql
+    assert "t.timestamp < %(created_at_to)s::timestamptz" in cursor.sql
+    assert "t.timestamp <= %(created_at_to)s::timestamptz" not in cursor.sql
     assert cursor.params["created_at_from"] == "2026-07-04T16:00:00Z"
     assert cursor.params["created_at_to"] == "2026-07-07T16:00:00Z"
 
@@ -1121,8 +1368,7 @@ def test_created_at_range_value_treats_timezone_less_values_as_shanghai_time() -
         == "2026-07-17T12:00:00Z"
     )
     assert (
-        _created_at_range_value(["2026-07-17T11:00:00Z"], 0)
-        == "2026-07-17T11:00:00Z"
+        _created_at_range_value(["2026-07-17T11:00:00Z"], 0) == "2026-07-17T11:00:00Z"
     )
 
 
@@ -1327,7 +1573,9 @@ def test_parse_workflow_result_keeps_text_outputs_as_string_scores() -> None:
     ]
 
 
-def test_parse_workflow_result_uses_score_mapping_when_output_variables_missing() -> None:
+def test_parse_workflow_result_uses_score_mapping_when_output_variables_missing() -> (
+    None
+):
     result = _parse_workflow_result(
         {"provider": "DIFY"},
         {
@@ -1535,15 +1783,89 @@ def test_auto_evaluation_score_payload_uses_bound_boolean_and_text_configs() -> 
     assert boolean_payload is not None
     assert boolean_payload["dataType"] == "BOOLEAN"
     assert boolean_payload["value"] == 0
-    assert boolean_payload["stringValue"] == "不通过"
+    assert boolean_payload["stringValue"] == "False"
     assert text_payload is not None
     assert text_payload["dataType"] == "TEXT"
     assert text_payload["value"] == "回答引用来源不足"
     assert text_payload["stringValue"] == "回答引用来源不足"
 
 
+@pytest.mark.anyio
+async def test_sync_auto_evaluation_repairs_legacy_boolean_config() -> None:
+    cursor = SequentialCursor(
+        rows_by_fetchall=[
+            [
+                {
+                    "id": "score-config-bool",
+                    "name": "是否通过",
+                    "data_type": "BOOLEAN",
+                    "min_value": None,
+                    "max_value": None,
+                    "categories": [
+                        {"label": "通过", "value": 1},
+                        {"label": "不通过", "value": 0},
+                    ],
+                }
+            ]
+        ],
+        rows_by_fetchone=[
+            {"public_key": "pk-lf-project", "secret_key": "sk-lf-project"},
+        ],
+    )
+    langfuse_client = FakeLangfuseScoreClient()
+    score_writer = FakeClickHouseScoreWriter()
+
+    await _sync_auto_evaluation_scores_to_langfuse(
+        cursor,  # type: ignore[arg-type]
+        project_id="project-1",
+        task_id="task-1",
+        run_id="run-1",
+        score_name="是否通过",
+        evaluator_id="evaluator-1",
+        results=[
+            {
+                "sample": {"id": "sample-1", "source_trace_id": "trace-1"},
+                "score": 0.0,
+                "passed": False,
+                "scores": [
+                    {
+                        "name": "是否通过",
+                        "scoreConfigId": "score-config-bool",
+                        "value": False,
+                        "passed": False,
+                    }
+                ],
+            }
+        ],
+        langfuse_client=langfuse_client,  # type: ignore[arg-type]
+        score_writer=score_writer,  # type: ignore[arg-type]
+        score_author_user_id="user-1",
+    )
+
+    assert langfuse_client.updated_score_configs == [
+        (
+            "pk-lf-project",
+            "sk-lf-project",
+            "score-config-bool",
+            {
+                "categories": [
+                    {"label": "True", "value": 1},
+                    {"label": "False", "value": 0},
+                ]
+            },
+        )
+    ]
+    payload = langfuse_client.created_scores[0][2]
+    assert payload["value"] == 0
+    assert payload["stringValue"] == "False"
+    assert not any(key.startswith("_pa") for key in payload)
+    assert not any(key.startswith("_pa") for key in score_writer.upserted_scores[0][2])
+
+
 def test_clickhouse_score_numeric_value_handles_non_numeric_score_values() -> None:
-    assert _score_numeric_value({"dataType": "CATEGORICAL", "value": "答案事实错误"}) == 0
+    assert (
+        _score_numeric_value({"dataType": "CATEGORICAL", "value": "答案事实错误"}) == 0
+    )
     assert _score_numeric_value({"dataType": "TEXT", "value": "人工备注"}) == 0
     assert _score_numeric_value({"dataType": "BOOLEAN", "value": 1}) == 1
 
@@ -1624,8 +1946,80 @@ async def test_sync_auto_evaluation_scores_uses_bound_score_config_data_types() 
         "答案事实错误",
         "回答引用来源不足",
     ]
-    assert score_writer.upserted_scores[0][2] == payloads[0]
-    assert score_writer.upserted_scores[1][2] == payloads[1]
+    categorical_clickhouse_payload = score_writer.upserted_scores[0][2]
+    assert categorical_clickhouse_payload["value"] == 2.0
+    assert categorical_clickhouse_payload["stringValue"] == "答案事实错误"
+    text_clickhouse_payload = score_writer.upserted_scores[1][2]
+    assert text_clickhouse_payload["value"] == 0.0
+    assert text_clickhouse_payload["stringValue"] == "回答引用来源不足"
+
+
+@pytest.mark.anyio
+async def test_sync_auto_evaluation_scores_skips_invalid_mapped_score_values() -> None:
+    cursor = SequentialCursor(
+        rows_by_fetchall=[
+            [
+                {
+                    "id": "score-config-quality",
+                    "name": "回答质量",
+                    "data_type": "NUMERIC",
+                    "min_value": 0,
+                    "max_value": 1,
+                    "categories": None,
+                },
+                {
+                    "id": "score-config-reason",
+                    "name": "评审理由",
+                    "data_type": "NUMERIC",
+                    "min_value": 0,
+                    "max_value": 10,
+                    "categories": None,
+                },
+            ]
+        ],
+        rows_by_fetchone=[
+            {"public_key": "pk-lf-project", "secret_key": "sk-lf-project"},
+        ],
+    )
+    langfuse_client = FakeLangfuseScoreClient()
+    score_writer = FakeClickHouseScoreWriter()
+
+    await _sync_auto_evaluation_scores_to_langfuse(
+        cursor,  # type: ignore[arg-type]
+        project_id="project-1",
+        task_id="task-1",
+        run_id="run-1",
+        score_name="quality",
+        evaluator_id="evaluator-1",
+        results=[
+            {
+                "sample": {"id": "sample-1", "source_trace_id": "trace-1"},
+                "score": 0.8,
+                "passed": True,
+                "reason": "回答完整",
+                "scores": [
+                    {
+                        "name": "回答质量",
+                        "scoreConfigId": "score-config-quality",
+                        "value": 0.8,
+                        "passed": True,
+                    },
+                    {
+                        "name": "评审理由",
+                        "scoreConfigId": "score-config-reason",
+                        "stringValue": "回答完整",
+                        "passed": True,
+                    },
+                ],
+            }
+        ],
+        langfuse_client=langfuse_client,  # type: ignore[arg-type]
+        score_writer=score_writer,  # type: ignore[arg-type]
+        score_author_user_id="creator@163.com",
+    )
+
+    assert [item[2]["name"] for item in langfuse_client.created_scores] == ["回答质量"]
+    assert [item[2]["name"] for item in score_writer.upserted_scores] == ["回答质量"]
 
 
 @pytest.mark.anyio
@@ -1879,7 +2273,11 @@ async def test_complete_auto_evaluation_success_persists_report_template_snapsho
 
     report_sql, report_params = cursor.executions[1]
     badcase_sql, badcase_params = next(
-        (execution for execution in cursor.executions if "pa_evaluation_report_badcases" in execution[0])
+        (
+            execution
+            for execution in cursor.executions
+            if "pa_evaluation_report_badcases" in execution[0]
+        )
     )
     assert "report_template_id" in report_sql
     assert "report_template_snapshot" in report_sql
@@ -2237,7 +2635,9 @@ async def test_complete_auto_evaluation_success_upserts_scores_to_clickhouse() -
 
 
 @pytest.mark.anyio
-async def test_complete_auto_evaluation_success_expands_raw_outputs_to_item_scores_and_clickhouse() -> None:
+async def test_complete_auto_evaluation_success_expands_raw_outputs_to_item_scores_and_clickhouse() -> (
+    None
+):
     cursor = SequentialCursor(
         rows_by_fetchone=[
             {"create_date": None, "create_by": "creator@163.com"},
@@ -2344,7 +2744,9 @@ async def test_complete_auto_evaluation_success_expands_raw_outputs_to_item_scor
 
 
 @pytest.mark.anyio
-async def test_complete_auto_evaluation_success_maps_output_variables_to_bound_score_names() -> None:
+async def test_complete_auto_evaluation_success_maps_output_variables_to_bound_score_names() -> (
+    None
+):
     cursor = SequentialCursor(
         rows_by_fetchone=[
             {"create_date": None, "create_by": "creator@163.com"},
@@ -2515,7 +2917,9 @@ async def test_auto_evaluation_background_continues_after_sample_timeout(
         "_complete_auto_evaluation_success",
         fake_complete,
     )
-    monkeypatch.setattr(auto_evaluations, "_mark_auto_evaluation_failed", fake_mark_failed)
+    monkeypatch.setattr(
+        auto_evaluations, "_mark_auto_evaluation_failed", fake_mark_failed
+    )
 
     async def fake_connect(settings):
         return FakeConnection(FakeCursor())

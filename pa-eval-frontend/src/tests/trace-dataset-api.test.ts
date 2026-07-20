@@ -106,7 +106,10 @@ test('trace dataset helper creates an evaluation dataset before adding traces', 
 
 test('trace dataset helper batches large trace additions', async () => {
   const calls: RecordedCall[] = []
-  const traceIds = Array.from({ length: 405 }, (_, index) => `trace-${index + 1}`)
+  const traceIds = Array.from(
+    { length: 405 },
+    (_, index) => `trace-${index + 1}`
+  )
   const api = {
     async createProjectDataset(options: unknown) {
       calls.push(['create-dataset', options])
@@ -121,10 +124,13 @@ test('trace dataset helper batches large trace additions', async () => {
         successCount: options.body.traceIds.length - 1,
         failureCount: 1,
         traceCount: options.body.traceIds.length,
-        itemIds: options.body.traceIds.slice(0, -1).map((traceId) => `item-${traceId}`),
+        itemIds: options.body.traceIds
+          .slice(0, -1)
+          .map((traceId) => `item-${traceId}`),
         failures: [
           {
-            traceId: options.body.traceIds[options.body.traceIds.length - 1] ?? '',
+            traceId:
+              options.body.traceIds[options.body.traceIds.length - 1] ?? '',
             reason: 'Trace 不存在或无访问权限',
           },
         ],
@@ -132,16 +138,17 @@ test('trace dataset helper batches large trace additions', async () => {
     },
   }
 
-  const result = await addProjectTracesToDatasetTarget(api as never, 'project-1', {
-    mode: 'existing',
-    datasetId: 'dataset-1',
-    traceIds,
-  })
-
-  assert.equal(
-    calls.filter(([name]) => name === 'add-traces').length,
-    3
+  const result = await addProjectTracesToDatasetTarget(
+    api as never,
+    'project-1',
+    {
+      mode: 'existing',
+      datasetId: 'dataset-1',
+      traceIds,
+    }
   )
+
+  assert.equal(calls.filter(([name]) => name === 'add-traces').length, 3)
   assert.deepEqual(
     calls
       .filter(([name]) => name === 'add-traces')
@@ -160,7 +167,10 @@ test('trace dataset helper batches large trace additions', async () => {
 })
 
 test('trace dataset helper uses import job and reports progress for one thousand traces', async () => {
-  const traceIds = Array.from({ length: 1000 }, (_, index) => `trace-${index + 1}`)
+  const traceIds = Array.from(
+    { length: 1000 },
+    (_, index) => `trace-${index + 1}`
+  )
   const calls: RecordedCall[] = []
   const progressValues: number[] = []
   const api = {
@@ -226,4 +236,56 @@ test('trace dataset helper uses import job and reports progress for one thousand
   assert.deepEqual(progressValues, [0, 100])
   assert.equal(result.successCount, 1000)
   assert.equal(result.failureCount, 0)
+})
+
+test('trace dataset helper submits a filter snapshot without trace ids', async () => {
+  const calls: RecordedCall[] = []
+  const api = {
+    async createProjectTraceDatasetImportJob(options: unknown) {
+      calls.push(['create-import-job', options])
+      return {
+        id: 'job-filter',
+        datasetId: 'dataset-1',
+        status: 'SUCCEEDED',
+        totalCount: 53499,
+        completedCount: 53499,
+        successCount: 53499,
+        failureCount: 0,
+        percent: 100,
+        itemIds: [],
+        failures: [],
+      }
+    },
+    async getProjectTraceDatasetImportJob() {
+      throw new Error('completed job should not be polled')
+    },
+  }
+
+  await addProjectTracesToDatasetTarget(api as never, 'project-1', {
+    mode: 'existing',
+    datasetId: 'dataset-1',
+    selection: {
+      type: 'FILTER',
+      filters: { timeRange: '7d', statuses: ['failed'] },
+      excludedTraceIds: [],
+    },
+    totalCount: 53499,
+  })
+
+  assert.deepEqual(calls, [
+    [
+      'create-import-job',
+      {
+        path: { projectId: 'project-1' },
+        body: {
+          datasetId: 'dataset-1',
+          selection: {
+            type: 'FILTER',
+            filters: { timeRange: '7d', statuses: ['failed'] },
+            excludedTraceIds: [],
+          },
+        },
+      },
+    ],
+  ])
 })

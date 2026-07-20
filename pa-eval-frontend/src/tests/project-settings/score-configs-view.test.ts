@@ -22,7 +22,7 @@ test('boolean score configs use Langfuse fixed true and false options', () => {
 
 test('boolean score configs show concise Langfuse labels to users', () => {
   assert.match(source, /formatBooleanScoreOptions/)
-  assert.match(source, /布尔类型固定使用 1 \/ 0，标签可按业务含义修改。/)
+  assert.match(source, /布尔类型固定使用 True=1、False=0。/)
   assert.doesNotMatch(source, /1（是）和 0（否）/)
   assert.doesNotMatch(source, /aria-label=\{`布尔值/)
 })
@@ -47,7 +47,7 @@ test('score config create form follows Langfuse input defaults', () => {
   assert.doesNotMatch(source, /\{ value: '1', label: '好' \}/)
 })
 
-test('categorical and boolean score options expose readonly values but editable boolean labels', () => {
+test('categorical values and boolean value-label pairs use the expected readonly rules', () => {
   assert.match(source, /function handleDataTypeChange/)
   assert.match(
     source,
@@ -62,9 +62,9 @@ test('categorical and boolean score options expose readonly values but editable 
   assert.match(source, /label='标签'/)
   assert.match(
     source,
-    /dataType === 'BOOLEAN'\s*\?\s*\(\s*<ScoreOptionRows\s*rows=\{categoryRows\}\s*onChange=\{setCategoryRows\}\s*readOnlyValue\s*\/>\s*\) : null/
+    /dataType === 'BOOLEAN'\s*\?\s*\(\s*<ScoreOptionRows\s*rows=\{categoryRows\}\s*onChange=\{setCategoryRows\}\s*readOnlyValue\s*readOnlyLabel\s*\/>\s*\) : null/
   )
-  assert.match(source, /getBooleanScoreCategories\(config\.categories\)/)
+  assert.match(source, /return BOOLEAN_SCORE_OPTIONS\.map/)
 })
 
 test('score configs range cell allows wrapping long content', () => {

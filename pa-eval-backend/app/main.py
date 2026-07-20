@@ -6,7 +6,10 @@ from fastapi.exceptions import RequestValidationError
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 
-from app.annotations import router as annotations_router
+from app.annotations import (
+    router as annotations_router,
+    start_trace_bulk_job_worker,
+)
 from app.admin_users import router as admin_users_router
 from app.audit import (
     admin_router,
@@ -36,9 +39,11 @@ def create_app() -> FastAPI:
     @asynccontextmanager
     async def lifespan(app: FastAPI):
         scheduler = start_scheduled_job_scheduler(settings)
+        trace_bulk_worker = start_trace_bulk_job_worker(settings)
         try:
             yield
         finally:
+            await trace_bulk_worker.stop()
             await scheduler.stop()
 
     app = FastAPI(title="PA Eval Backend", lifespan=lifespan)

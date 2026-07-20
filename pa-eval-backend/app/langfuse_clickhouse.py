@@ -1,4 +1,5 @@
 import json
+from collections.abc import AsyncIterator
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from typing import Any
@@ -78,9 +79,7 @@ class LangfuseClickHouseReader:
             order_ascending=bool(session_id),
         )
         trace_ids = [
-            str(row.get("traceId") or "")
-            for row in page_rows
-            if row.get("traceId")
+            str(row.get("traceId") or "") for row in page_rows if row.get("traceId")
         ]
         scores_by_trace = await self._fetch_scores_by_trace(project_id, trace_ids)
         evaluator_scores_by_trace = await self._fetch_evaluator_scores_by_trace(
@@ -165,6 +164,88 @@ class LangfuseClickHouseReader:
         )
         return await self._count_trace_rows(trace_filter)
 
+    async def list_trace_ids_for_bulk(
+        self,
+        project_id: str,
+        *,
+        filters: dict[str, Any],
+        cursor: dict[str, Any],
+        excluded_trace_ids: list[str],
+        limit: int,
+    ) -> dict[str, Any]:
+        start_time, end_time = _resolve_time_window(
+            time_range=filters.get("time_range"),
+            created_at_range=filters.get("created_at_range"),
+        )
+        trace_filter = _build_trace_filter(
+            project_id,
+            start_time=start_time,
+            end_time=end_time,
+            environments=_normalize_environments(filters.get("environments")),
+            session_id=filters.get("session_id"),
+            metadata_key=filters.get("metadata_key"),
+            metadata_value=filters.get("metadata_value"),
+            metadata_filters=filters.get("metadata_filters"),
+            keyword=filters.get("keyword"),
+            statuses=filters.get("statuses"),
+            tags=filters.get("tags"),
+            user_id=filters.get("user_id"),
+            business_id=filters.get("business_id"),
+            latency_min=filters.get("latency_min"),
+            latency_max=filters.get("latency_max"),
+            score_queue_id=filters.get("score_queue_id"),
+            categorical_score_filters=filters.get("categorical_score_filters"),
+            numeric_score_filters=filters.get("numeric_score_filters"),
+        )
+        params = dict(trace_filter.params)
+        where_parts = [trace_filter.where_sql]
+        cursor_created_at = _parse_clickhouse_datetime(cursor.get("createdAt"))
+        cursor_trace_id = str(cursor.get("traceId") or "")
+        if cursor_created_at is not None and cursor_trace_id:
+            params["bulk_cursor_created_at"] = cursor_created_at
+            params["bulk_cursor_trace_id"] = cursor_trace_id
+            where_parts.append(
+                "("
+                "base.createdAt < {bulk_cursor_created_at:DateTime64(3)} "
+                "OR (base.createdAt = {bulk_cursor_created_at:DateTime64(3)} "
+                "AND base.traceId < {bulk_cursor_trace_id:String})"
+                ")"
+            )
+        excluded_placeholders: list[str] = []
+        for index, trace_id in enumerate(dict.fromkeys(excluded_trace_ids)):
+            param_key = f"bulk_excluded_trace_id_{index}"
+            excluded_placeholders.append(f"{{{param_key}:String}}")
+            params[param_key] = trace_id
+        if excluded_placeholders:
+            where_parts.append(
+                f"base.traceId NOT IN ({', '.join(excluded_placeholders)})"
+            )
+        params["bulk_limit"] = max(1, limit)
+        rows = await self._query_json_each_row(
+            f"""
+            {trace_filter.cte_sql}
+            SELECT traceId, createdAt
+            FROM trace_base base
+            WHERE {" AND ".join(f"({part})" for part in where_parts)}
+            ORDER BY toUnixTimestamp64Milli(createdAt) DESC, traceId DESC
+            LIMIT {{bulk_limit:UInt32}}
+            FORMAT JSONEachRow
+            """,
+            params,
+        )
+        next_cursor: dict[str, Any] = {}
+        if rows:
+            last_row = rows[-1]
+            next_cursor = {
+                "createdAt": _format_clickhouse_datetime(last_row.get("createdAt")),
+                "traceId": str(last_row.get("traceId") or ""),
+            }
+        return {
+            "traceIds": [str(row.get("traceId") or "") for row in rows],
+            "cursor": next_cursor,
+            "hasMore": len(rows) >= max(1, limit),
+        }
+
     async def list_traces_by_ids(
         self,
         project_id: str,
@@ -179,7 +260,17 @@ class LangfuseClickHouseReader:
             return []
         include_io = _trace_fields_include(fields, "io")
         include_metadata = _trace_fields_include(fields, "metadata")
+        include_scores = _trace_fields_include(fields, "scores")
         rows = await self._fetch_trace_rows(project_id, trace_ids=unique_trace_ids)
+        if include_scores:
+            scores_by_trace = await self._fetch_scores_by_trace(
+                project_id,
+                unique_trace_ids,
+            )
+            for row in rows:
+                scores = scores_by_trace.get(str(row.get("traceId") or ""), [])
+                row["scores"] = scores
+                row["scoreSummary"] = _score_summary(scores)
         if include_io:
             payloads_by_trace = await self._fetch_trace_payloads(
                 project_id,
@@ -339,10 +430,7 @@ class LangfuseClickHouseReader:
             "traceTrend": trace_trend,
             "latencyTrend": latency_trend,
             "environmentDistribution": environment_distribution,
-            "slowTraces": [
-                self._to_trace_row(row)
-                for row in slow_trace_rows
-            ],
+            "slowTraces": [self._to_trace_row(row) for row in slow_trace_rows],
         }
 
     async def get_trace(self, project_id: str, trace_id: str) -> dict[str, Any]:
@@ -506,7 +594,9 @@ class LangfuseClickHouseReader:
         project_id: str,
         trace_ids: list[str],
     ) -> dict[str, dict[str, Any]]:
-        unique_trace_ids = list(dict.fromkeys(trace_id for trace_id in trace_ids if trace_id))
+        unique_trace_ids = list(
+            dict.fromkeys(trace_id for trace_id in trace_ids if trace_id)
+        )
         if not unique_trace_ids:
             return {}
 
@@ -608,8 +698,7 @@ class LangfuseClickHouseReader:
             f"toUnixTimestamp64Milli(createdAt) {order_direction}, "
             f"traceId {order_direction}"
         )
-        query = (
-            f"""
+        query = f"""
             {trace_filter.cte_sql}
             SELECT
                 traceId,
@@ -629,7 +718,6 @@ class LangfuseClickHouseReader:
             ORDER BY {order_clause}{limit_clause}
             FORMAT JSONEachRow
             """
-        )
         rows = await self._query_json_each_row(query, params)
         if include_io:
             payloads_by_trace = await self._fetch_trace_payloads(
@@ -662,7 +750,9 @@ class LangfuseClickHouseReader:
         project_id: str,
         trace_ids: list[str],
     ) -> dict[str, dict[str, Any]]:
-        unique_trace_ids = list(dict.fromkeys(trace_id for trace_id in trace_ids if trace_id))
+        unique_trace_ids = list(
+            dict.fromkeys(trace_id for trace_id in trace_ids if trace_id)
+        )
         if not unique_trace_ids:
             return {}
 
@@ -718,9 +808,41 @@ class LangfuseClickHouseReader:
         queue_id: str,
         *,
         run_id: str | None = None,
+        trace_ids: list[str] | None = None,
+        observation_ids: list[str] | None = None,
+        session_ids: list[str] | None = None,
+        annotation_item_ids: list[str] | None = None,
     ) -> list[dict[str, Any]]:
+        params: dict[str, Any] = {
+            "project_id": project_id,
+            "queue_id": queue_id,
+            "run_id": run_id or "",
+        }
+        scope_conditions: list[str] = []
+        for field, values, prefix in (
+            ("trace_id", trace_ids, "queue_trace_id"),
+            ("observation_id", observation_ids, "queue_observation_id"),
+            ("session_id", session_ids, "queue_session_id"),
+        ):
+            placeholders = []
+            for index, value in enumerate(dict.fromkeys(values or [])):
+                param_key = f"{prefix}_{index}"
+                placeholders.append(f"{{{param_key}:String}}")
+                params[param_key] = value
+            if placeholders:
+                scope_conditions.append(f"{field} IN ({', '.join(placeholders)})")
+        item_placeholders = []
+        for index, item_id in enumerate(dict.fromkeys(annotation_item_ids or [])):
+            param_key = f"queue_annotation_item_id_{index}"
+            item_placeholders.append(f"{{{param_key}:String}}")
+            params[param_key] = item_id
+        if item_placeholders:
+            scope_conditions.append(
+                f"metadata['annotationItemId'] IN ({', '.join(item_placeholders)})"
+            )
+        scope_sql = f"AND ({' OR '.join(scope_conditions)})" if scope_conditions else ""
         rows = await self._query_json_each_row(
-            """
+            f"""
             SELECT
                 id,
                 trace_id AS traceId,
@@ -739,18 +861,16 @@ class LangfuseClickHouseReader:
                 queue_id AS queueId,
                 created_at AS createdAt,
                 updated_at AS updatedAt
-            FROM scores
-            WHERE project_id = {project_id:String}
-              AND queue_id = {queue_id:String}
-              AND ({run_id:String} = '' OR metadata['paAutoEvaluationRunId'] = {run_id:String})
+            FROM scores FINAL
+            WHERE project_id = {{project_id:String}}
+              AND is_deleted = 0
+              AND queue_id = {{queue_id:String}}
+              AND ({{run_id:String}} = '' OR metadata['paAutoEvaluationRunId'] = {{run_id:String}})
+              {scope_sql}
             ORDER BY created_at DESC, id DESC
             FORMAT JSONEachRow
             """,
-            {
-                "project_id": project_id,
-                "queue_id": queue_id,
-                "run_id": run_id or "",
-            },
+            params,
         )
         return [_format_score(row) for row in rows]
 
@@ -761,7 +881,9 @@ class LangfuseClickHouseReader:
         *,
         observation_id: str | None = None,
     ) -> dict[str, list[dict[str, Any]]]:
-        unique_trace_ids = list(dict.fromkeys(trace_id for trace_id in trace_ids if trace_id))
+        unique_trace_ids = list(
+            dict.fromkeys(trace_id for trace_id in trace_ids if trace_id)
+        )
         if not unique_trace_ids:
             return {}
 
@@ -776,7 +898,9 @@ class LangfuseClickHouseReader:
 
             observation_filter = ""
             if observation_id is not None:
-                observation_filter = "\n                  AND observation_id = {observation_id:String}"
+                observation_filter = (
+                    "\n                  AND observation_id = {observation_id:String}"
+                )
                 params["observation_id"] = observation_id
 
             rows = await self._query_json_each_row(
@@ -799,14 +923,15 @@ class LangfuseClickHouseReader:
                     queue_id AS queueId,
                     created_at AS createdAt,
                     updated_at AS updatedAt
-                FROM scores
+                FROM scores FINAL
                 WHERE project_id = {project_id:String}
+                  AND is_deleted = 0
                   AND trace_id IN (__TRACE_IDS__)__OBSERVATION_FILTER__
                 ORDER BY created_at DESC, id DESC
                 FORMAT JSONEachRow
-                """
-                .replace("__TRACE_IDS__", ", ".join(trace_id_placeholders))
-                .replace("__OBSERVATION_FILTER__", observation_filter),
+                """.replace("__TRACE_IDS__", ", ".join(trace_id_placeholders)).replace(
+                    "__OBSERVATION_FILTER__", observation_filter
+                ),
                 params,
             )
 
@@ -822,7 +947,9 @@ class LangfuseClickHouseReader:
         project_id: str,
         trace_ids: list[str],
     ) -> dict[str, list[dict[str, Any]]]:
-        unique_trace_ids = list(dict.fromkeys(trace_id for trace_id in trace_ids if trace_id))
+        unique_trace_ids = list(
+            dict.fromkeys(trace_id for trace_id in trace_ids if trace_id)
+        )
         if not unique_trace_ids:
             return {}
 
@@ -912,7 +1039,8 @@ class LangfuseClickHouseReader:
             "businessId": _trace_business_id(row),
             "tags": row.get("tags") or [],
             "scores": row.get("scores") or [],
-            "scoreSummary": row.get("scoreSummary") or _score_summary(row.get("scores") or []),
+            "scoreSummary": row.get("scoreSummary")
+            or _score_summary(row.get("scores") or []),
         }
         if include_io:
             trace_row["input"] = _format_payload(row.get("input"))
@@ -928,6 +1056,19 @@ class LangfuseClickHouseScoreWriter:
         self._user = settings.langfuse_clickhouse_user
         self._password = settings.langfuse_clickhouse_password
         self._timeout = settings.pa_eval_api_timeout
+        self._client = httpx.AsyncClient(
+            timeout=self._timeout,
+            trust_env=False,
+        )
+
+    async def __aenter__(self) -> "LangfuseClickHouseScoreWriter":
+        return self
+
+    async def __aexit__(self, *_args: object) -> None:
+        await self.aclose()
+
+    async def aclose(self) -> None:
+        await self._client.aclose()
 
     async def upsert_annotation_score(
         self,
@@ -988,16 +1129,12 @@ class LangfuseClickHouseScoreWriter:
             "password": self._password,
         }
         try:
-            async with httpx.AsyncClient(
-                timeout=self._timeout,
-                trust_env=False,
-            ) as client:
-                response = await client.post(
-                    self._url,
-                    params=request_params,
-                    content=query,
-                )
-                response.raise_for_status()
+            response = await self._client.post(
+                self._url,
+                params=request_params,
+                content=query,
+            )
+            response.raise_for_status()
         except httpx.HTTPError as exc:
             raise LangfuseUpstreamError("Langfuse ClickHouse 写入失败") from exc
 
@@ -1142,7 +1279,9 @@ def _build_trace_filter(
             params[param_key] = environment
         base_filters.append(f"t.environment IN ({', '.join(environment_placeholders)})")
     if session_id:
-        base_filters.append("position(ifNull(t.session_id, ''), {session_id:String}) > 0")
+        base_filters.append(
+            "position(ifNull(t.session_id, ''), {session_id:String}) > 0"
+        )
         params["session_id"] = session_id
     _append_metadata_where_filters(
         base_filters,
@@ -1175,9 +1314,7 @@ def _build_trace_filter(
         outer_filters.append(f"has(base.tags, {{{param_key}:String}})")
     if user_id:
         params["user_id"] = user_id
-        outer_filters.append(
-            "position(ifNull(base.userId, ''), {user_id:String}) > 0"
-        )
+        outer_filters.append("position(ifNull(base.userId, ''), {user_id:String}) > 0")
     if business_id:
         params["business_id"] = business_id
         outer_filters.append(
@@ -1324,7 +1461,9 @@ def _append_score_filter_sql(
         elif operator == "equals":
             score_value_condition = f"sc.textValue = {{{value_param}:String}}"
         else:
-            score_value_condition = f"position(sc.textValue, {{{value_param}:String}}) > 0"
+            score_value_condition = (
+                f"position(sc.textValue, {{{value_param}:String}}) > 0"
+            )
         filters.append(
             f"""
             base.traceId IN (
@@ -1434,9 +1573,7 @@ def _numeric_or_none(value: Any) -> float | None:
 
 def _trace_fields_include(fields: str | None, field_name: str) -> bool:
     requested = {
-        item.strip().lower()
-        for item in str(fields or "").split(",")
-        if item.strip()
+        item.strip().lower() for item in str(fields or "").split(",") if item.strip()
     }
     return field_name.lower() in requested
 
@@ -1482,7 +1619,11 @@ def _matches_trace(
 ) -> bool:
     metadata = row.get("metadata") or {}
     needle = (keyword or "").strip().lower()
-    if needle and needle not in row["traceId"].lower() and needle not in (row.get("sessionId") or "").lower():
+    if (
+        needle
+        and needle not in row["traceId"].lower()
+        and needle not in (row.get("sessionId") or "").lower()
+    ):
         return False
     if statuses and row.get("status") not in statuses:
         return False
@@ -1504,12 +1645,16 @@ def _matches_trace(
         return False
     if latency_max is not None and latency > latency_max:
         return False
-    if score_queue_id and not _matches_score_queue_id(row.get("scores") or [], score_queue_id):
+    if score_queue_id and not _matches_score_queue_id(
+        row.get("scores") or [], score_queue_id
+    ):
         return False
     if metadata_key:
         if not isinstance(metadata, dict) or metadata_key not in metadata:
             return False
-        if metadata_value and metadata_value not in str(metadata.get(metadata_key) or ""):
+        if metadata_value and metadata_value not in str(
+            metadata.get(metadata_key) or ""
+        ):
             return False
     for metadata_filter in metadata_filters or []:
         key = str(metadata_filter.get("key") or "")
@@ -1707,7 +1852,11 @@ def _build_call_chain(observations: list[dict[str, Any]]) -> list[dict[str, Any]
     roots: list[dict[str, Any]] = []
 
     for observation in observations:
-        usage = observation.get("usageDetails") or observation.get("providedUsageDetails") or {}
+        usage = (
+            observation.get("usageDetails")
+            or observation.get("providedUsageDetails")
+            or {}
+        )
         start = _parse_clickhouse_datetime(observation.get("startTime"))
         end = _parse_clickhouse_datetime(observation.get("endTime"))
         duration = ""
@@ -1715,11 +1864,17 @@ def _build_call_chain(observations: list[dict[str, Any]]) -> list[dict[str, Any]
             duration = f"{max(0, round((end - start).total_seconds() * 1000))}ms"
         node = {
             "id": observation["id"],
-            "type": _to_chain_node_type(observation.get("type"), observation.get("name")),
-            "title": observation.get("name") or observation.get("type") or "Observation",
+            "type": _to_chain_node_type(
+                observation.get("type"), observation.get("name")
+            ),
+            "title": observation.get("name")
+            or observation.get("type")
+            or "Observation",
             "duration": duration,
             "tokensIn": int(usage.get("input") or usage.get("prompt_tokens") or 0),
-            "tokensOut": int(usage.get("output") or usage.get("completion_tokens") or 0),
+            "tokensOut": int(
+                usage.get("output") or usage.get("completion_tokens") or 0
+            ),
             "tokensTotal": int(usage.get("total") or usage.get("total_tokens") or 0),
             "tags": [observation.get("level") or "DEFAULT"],
             "children": [],
@@ -1843,5 +1998,9 @@ async def get_langfuse_clickhouse_reader(
 
 async def get_langfuse_clickhouse_score_writer(
     settings: Settings = Depends(get_settings),
-) -> LangfuseClickHouseScoreWriter:
-    return LangfuseClickHouseScoreWriter(settings)
+) -> AsyncIterator[LangfuseClickHouseScoreWriter]:
+    writer = LangfuseClickHouseScoreWriter(settings)
+    try:
+        yield writer
+    finally:
+        await writer.aclose()

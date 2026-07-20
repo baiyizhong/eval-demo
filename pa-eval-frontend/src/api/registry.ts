@@ -138,6 +138,10 @@ export const apiRegistry = {
     method: 'GET',
     url: '/projects/:projectId/datasets',
   },
+  getProjectDatasetNameAvailability: {
+    method: 'GET',
+    url: '/projects/:projectId/datasets/name-availability',
+  },
   createProjectDataset: {
     method: 'POST',
     url: '/projects/:projectId/datasets',
@@ -226,6 +230,10 @@ export const apiRegistry = {
   getProjectAnnotationQueues: {
     method: 'GET',
     url: '/projects/:projectId/annotation-queues',
+  },
+  getProjectAnnotationQueueNameAvailability: {
+    method: 'GET',
+    url: '/projects/:projectId/annotation-queues/name-availability',
   },
   createProjectAnnotationQueue: {
     method: 'POST',

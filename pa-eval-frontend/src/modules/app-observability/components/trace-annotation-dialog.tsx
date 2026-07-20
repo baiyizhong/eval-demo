@@ -3,11 +3,13 @@ import { z } from 'zod'
 import type { UseFormReturn } from 'react-hook-form'
 import { useQuery } from '@tanstack/react-query'
 import {
+  checkProjectAnnotationQueueNameAvailability,
   listProjectAnnotationQueues,
   listProjectAnnotationUsers,
   listProjectScoreConfigsForAnnotation,
   type TraceAnnotationTaskProgress,
 } from '@/modules/app-evaluation/api/annotation-api'
+import { createAvailableResourceNameSchema } from '@/modules/app-evaluation/lib/name-availability'
 import {
   AnnotationAssignmentFields,
   type AnnotationAssignmentFormValues,
@@ -50,14 +52,15 @@ const existingQueueSchema = z.object({
   queueId: z.string().min(1, '请选择人工标注队列'),
 })
 
-const newQueueSchema = z.object({
-  name: z.string().min(1, '请输入任务名称'),
+const newQueueBaseSchema = z.object({
+  name: z.string().trim().min(1, '请输入任务名称'),
   description: z.string(),
   scoreConfigIds: z.array(z.string()).min(1, '请选择至少一个评分指标'),
   assigneeIds: z.array(z.string()),
   assignmentStrategy: z.enum(['average', 'random', 'weighted']),
   assignmentWeights: z.record(z.string(), z.number().min(1)),
 })
+type NewQueueFormValues = z.infer<typeof newQueueBaseSchema>
 
 type TraceAnnotationDialogProps = {
   open: boolean
@@ -119,6 +122,18 @@ export function TraceAnnotationDialog({
   const queues = queuesQuery.data?.datas ?? []
   const scoreConfigs = scoreConfigsQuery.data ?? []
   const users = usersQuery.data ?? []
+  const newQueueSchema = useMemo(
+    () =>
+      newQueueBaseSchema.extend({
+        name: createAvailableResourceNameSchema({
+          requiredMessage: '请输入任务名称',
+          duplicateMessage: '人工标注任务名称已存在，请修改名称',
+          checkAvailability: (name) =>
+            checkProjectAnnotationQueueNameAvailability($api, projectId, name),
+        }),
+      }),
+    [$api, projectId]
+  )
   const confirmFormId = mode === 'existing' ? existingFormId : newFormId
   const description = useMemo(
     () =>
@@ -258,6 +273,15 @@ export function TraceAnnotationDialog({
                         <Input
                           placeholder='例如：Trace 异常人工标注'
                           {...field}
+                          aria-invalid={Boolean(form.formState.errors.name)}
+                          onChange={(event) => {
+                            field.onChange(event)
+                            form.clearErrors('name')
+                          }}
+                          onBlur={() => {
+                            field.onBlur()
+                            void form.trigger('name')
+                          }}
                         />
                       </FormControl>
                       <FormMessage />
@@ -392,7 +416,7 @@ export function TraceAnnotationDialog({
 }
 
 function normalizeAnnotationQueueFormValues(
-  values: z.infer<typeof newQueueSchema>
+  values: NewQueueFormValues
 ): AnnotationQueueFormInput {
   const selectedAssigneeIds = values.assigneeIds
   const assignmentStrategy: AnnotationAssignmentStrategy =

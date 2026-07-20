@@ -3,7 +3,6 @@ import json
 import re
 import zipfile
 from datetime import datetime
-from io import StringIO
 from pathlib import Path
 from typing import Any, AsyncIterator
 from xml.sax.saxutils import escape
@@ -138,36 +137,38 @@ async def _write_xlsx(
     file_path: Path,
     batches: AsyncIterator[list[dict[str, Any]]],
 ) -> int:
-    sheet_rows = StringIO()
-    row_index = 1
-    sheet_rows.write(_build_sheet_row_xml(row_index, [label for label, _ in EXPORT_COLUMNS]))
-    total_count = 0
-
-    async for batch in batches:
-        for item in batch:
-            row_index += 1
-            row = _to_export_row(item)
-            sheet_rows.write(
-                _build_sheet_row_xml(
-                    row_index,
-                    [row[label] for label, _ in EXPORT_COLUMNS],
-                )
-            )
-            total_count += 1
-
-    sheet = (
-        '<?xml version="1.0" encoding="UTF-8" standalone="yes"?>'
-        '<worksheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main">'
-        f"<sheetData>{sheet_rows.getvalue()}</sheetData>"
-        "</worksheet>"
-    )
-
     with zipfile.ZipFile(file_path, "w", compression=zipfile.ZIP_DEFLATED) as archive:
         archive.writestr("[Content_Types].xml", _CONTENT_TYPES_XML)
         archive.writestr("_rels/.rels", _ROOT_RELS_XML)
         archive.writestr("xl/workbook.xml", _WORKBOOK_XML)
         archive.writestr("xl/_rels/workbook.xml.rels", _WORKBOOK_RELS_XML)
-        archive.writestr("xl/worksheets/sheet1.xml", sheet)
+
+        total_count = 0
+        row_index = 1
+        with archive.open(
+            "xl/worksheets/sheet1.xml",
+            "w",
+            force_zip64=True,
+        ) as worksheet:
+            worksheet.write(_WORKSHEET_XML_PREFIX.encode("utf-8"))
+            worksheet.write(
+                _build_sheet_row_xml(
+                    row_index,
+                    [label for label, _ in EXPORT_COLUMNS],
+                ).encode("utf-8")
+            )
+            async for batch in batches:
+                for item in batch:
+                    row_index += 1
+                    row = _to_export_row(item)
+                    worksheet.write(
+                        _build_sheet_row_xml(
+                            row_index,
+                            [row[label] for label, _ in EXPORT_COLUMNS],
+                        ).encode("utf-8")
+                    )
+                    total_count += 1
+            worksheet.write(_WORKSHEET_XML_SUFFIX.encode("utf-8"))
     return total_count
 
 
@@ -189,19 +190,6 @@ def _safe_file_name(file_name: str) -> str:
     return sanitized or "dataset-export"
 
 
-def _build_sheet_xml(rows: list[list[str]]) -> str:
-    xml_rows = []
-    for row_index, row in enumerate(rows, start=1):
-        xml_rows.append(_build_sheet_row_xml(row_index, row))
-
-    return (
-        '<?xml version="1.0" encoding="UTF-8" standalone="yes"?>'
-        '<worksheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main">'
-        f'<sheetData>{"".join(xml_rows)}</sheetData>'
-        "</worksheet>"
-    )
-
-
 def _build_sheet_row_xml(row_index: int, row: list[str]) -> str:
     cells = []
     for column_index, value in enumerate(row, start=1):
@@ -218,6 +206,15 @@ def _excel_column_name(index: int) -> str:
         index, remainder = divmod(index - 1, 26)
         result = chr(65 + remainder) + result
     return result
+
+
+_WORKSHEET_XML_PREFIX = (
+    '<?xml version="1.0" encoding="UTF-8" standalone="yes"?>'
+    '<worksheet xmlns="http://schemas.openxmlformats.org/'
+    'spreadsheetml/2006/main"><sheetData>'
+)
+
+_WORKSHEET_XML_SUFFIX = "</sheetData></worksheet>"
 
 
 _CONTENT_TYPES_XML = """<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
