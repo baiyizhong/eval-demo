@@ -407,6 +407,27 @@ export function getProjectAnnotationQueueItem(
   })
 }
 
+export async function getNextPendingProjectAnnotationItem(
+  api: AnnotationApiClient,
+  projectId: string,
+  queueId: string
+) {
+  const result = await listProjectAnnotationQueueItems(
+    api,
+    projectId,
+    queueId,
+    {
+      page: 1,
+      pageSize: 1,
+      keyword: '',
+      filters: { status: ['PENDING'] },
+      sorting: [],
+    }
+  )
+
+  return result.datas[0] ?? null
+}
+
 export function getProjectAnnotationQueueItemFilterCounts(
   api: AnnotationApiClient,
   projectId: string,
@@ -640,7 +661,7 @@ export async function saveProjectAnnotationBatchScores(
   input: {
     filters: AnnotationBatchFiltersInput
     scores: AnnotationScoreFormInput['scores']
-    expectedPendingCount: number
+    expectedMatchCount: number
     confirmLargeBatch?: boolean
   }
 ): Promise<AnnotationBatchSaveResult> {

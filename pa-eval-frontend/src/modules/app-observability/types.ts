@@ -143,6 +143,7 @@ export type TraceListQuery = {
   numericScoreFilters?: string
   scoreQueueId?: string
   fields?: string
+  anchorTraceId?: string
 }
 
 export type TraceMetadataFilterOperator = 'equals' | 'contains' | 'exists'

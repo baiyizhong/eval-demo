@@ -37,6 +37,11 @@ const itemUrlFilters: DataTableFilterBinding[] = [
   { fieldId: 'assigneeIds', columnId: 'assignee', type: 'array' },
 ]
 
+type SelectedSessionTrace = {
+  sessionId: string
+  traceId: string
+}
+
 export function ProjectAnnotationQueueDetail() {
   const $api = useAPI()
   const navigate = useNavigate()
@@ -50,7 +55,8 @@ export function ProjectAnnotationQueueDetail() {
   const [selectedExportItemIds, setSelectedExportItemIds] = useState<string[]>(
     []
   )
-  const [selectedSessionId, setSelectedSessionId] = useState('')
+  const [selectedSessionTrace, setSelectedSessionTrace] =
+    useState<SelectedSessionTrace | null>(null)
 
   const queryState = useMemo<DataTableQueryState>(
     () => ({
@@ -138,7 +144,8 @@ export function ProjectAnnotationQueueDetail() {
               )
             }
           : undefined,
-        onOpenSession: setSelectedSessionId,
+        onOpenSession: (sessionId, traceId) =>
+          setSelectedSessionTrace({ sessionId, traceId }),
       }),
     [$api, canEditAnnotation, invalidateDetail, projectId, queueId]
   )
@@ -300,12 +307,13 @@ export function ProjectAnnotationQueueDetail() {
           />
         </section>
         <SessionTraceDialog
-          key={selectedSessionId}
+          key={`${selectedSessionTrace?.sessionId ?? ''}:${selectedSessionTrace?.traceId ?? ''}`}
           projectId={projectId}
-          sessionId={selectedSessionId}
-          open={Boolean(selectedSessionId)}
+          sessionId={selectedSessionTrace?.sessionId ?? ''}
+          highlightTraceId={selectedSessionTrace?.traceId ?? ''}
+          open={Boolean(selectedSessionTrace)}
           onOpenChange={(open) => {
-            if (!open) setSelectedSessionId('')
+            if (!open) setSelectedSessionTrace(null)
           }}
         />
         <AnnotationExportDialog

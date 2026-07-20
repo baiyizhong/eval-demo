@@ -79,6 +79,10 @@ type BatchFilterCondition = {
   operator: FilterOperator
   value: string
 }
+type SelectedSessionTrace = {
+  sessionId: string
+  traceId: string
+}
 type BatchColumnKey =
   | 'sourceDataId'
   | 'sessionId'
@@ -237,7 +241,8 @@ export function ProjectAnnotationBatch() {
     searchParams.get('item') ?? ''
   )
   const [selectedItemIds, setSelectedItemIds] = useState<string[]>([])
-  const [selectedSessionId, setSelectedSessionId] = useState('')
+  const [selectedSessionTrace, setSelectedSessionTrace] =
+    useState<SelectedSessionTrace | null>(null)
   const [completedItemIds, setCompletedItemIds] = useState<string[]>([])
   const [batchScoreConfigId, setBatchScoreConfigId] = useState('')
   const [scorePaneWidth, setScorePaneWidth] = useState(400)
@@ -458,12 +463,9 @@ export function ProjectAnnotationBatch() {
         projectId,
         queueId,
         {
-          filters: {
-            status: ['PENDING'],
-            itemIds: targetIds,
-          },
+          filters: { itemIds: targetIds },
           scores: submittedInput.scores,
-          expectedPendingCount: targetIds.length,
+          expectedMatchCount: targetIds.length,
           confirmLargeBatch: targetIds.length > 100,
         }
       )
@@ -761,7 +763,9 @@ export function ProjectAnnotationBatch() {
                         )
                       }
                       onSelect={() => setSelectedItemId(item.id)}
-                      onOpenSession={setSelectedSessionId}
+                      onOpenSession={(sessionId, traceId) =>
+                        setSelectedSessionTrace({ sessionId, traceId })
+                      }
                     />
                   ))}
                 </TableBody>
@@ -893,12 +897,13 @@ export function ProjectAnnotationBatch() {
           </main>
         </section>
         <SessionTraceDialog
-          key={selectedSessionId}
+          key={`${selectedSessionTrace?.sessionId ?? ''}:${selectedSessionTrace?.traceId ?? ''}`}
           projectId={projectId}
-          sessionId={selectedSessionId}
-          open={Boolean(selectedSessionId)}
+          sessionId={selectedSessionTrace?.sessionId ?? ''}
+          highlightTraceId={selectedSessionTrace?.traceId ?? ''}
+          open={Boolean(selectedSessionTrace)}
           onOpenChange={(open) => {
-            if (!open) setSelectedSessionId('')
+            if (!open) setSelectedSessionTrace(null)
           }}
         />
       </div>
@@ -1221,11 +1226,14 @@ function AnnotationItemTableRows({
   columnVisibility: Record<BatchColumnKey, boolean>
   onCheckedChange: (checked: boolean) => void
   onSelect: () => void
-  onOpenSession: (sessionId: string) => void
+  onOpenSession: (sessionId: string, traceId: string) => void
 }) {
   const inputText = stringifyBrief(item.source.input)
   const outputText = stringifyBrief(item.source.output)
   const metadataText = stringifyBrief(item.source.metadata)
+  const traceId =
+    item.source.traceId.trim() ||
+    (item.objectType === 'TRACE' ? item.objectId.trim() : '')
 
   return (
     <TableRow
@@ -1241,11 +1249,11 @@ function AnnotationItemTableRows({
         />
       </TableCell>
       {columnVisibility.sourceDataId ? (
-        <SummaryTableCell
-          label='源数据 ID'
-          value={item.objectId}
-          className='max-w-[220px]'
-        />
+        <TableCell className='max-w-[220px]'>
+          <span className='block truncate font-mono text-xs'>
+            {item.objectId}
+          </span>
+        </TableCell>
       ) : null}
       {columnVisibility.sessionId ? (
         <TableCell
@@ -1257,7 +1265,7 @@ function AnnotationItemTableRows({
               type='button'
               variant='link'
               className='h-auto max-w-full justify-start p-0'
-              onClick={() => onOpenSession(item.source.sessionId)}
+              onClick={() => onOpenSession(item.source.sessionId, traceId)}
             >
               <span className='truncate font-mono text-xs'>
                 {item.source.sessionId}

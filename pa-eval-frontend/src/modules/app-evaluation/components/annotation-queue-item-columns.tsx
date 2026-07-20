@@ -13,7 +13,7 @@ type CreateAnnotationQueueItemColumnsOptions = {
   queueId: string
   canEdit?: boolean
   onDelete?: (item: AnnotationQueueItemRecord) => void
-  onOpenSession?: (sessionId: string) => void
+  onOpenSession?: (sessionId: string, traceId: string) => void
 }
 
 export function createAnnotationQueueItemColumns({
@@ -107,6 +107,9 @@ export function createAnnotationQueueItemColumns({
       cell: ({ row }) => {
         const item = row.original
         const sessionId = item.source.sessionId.trim()
+        const traceId =
+          item.source.traceId.trim() ||
+          (item.objectType === 'TRACE' ? item.objectId.trim() : '')
         if (!sessionId) {
           return <span className='text-muted-foreground text-xs'>-</span>
         }
@@ -116,7 +119,7 @@ export function createAnnotationQueueItemColumns({
             type='button'
             variant='link'
             className='h-auto max-w-[220px] justify-start p-0'
-            onClick={() => onOpenSession?.(sessionId)}
+            onClick={() => onOpenSession?.(sessionId, traceId)}
           >
             <span className='truncate font-mono text-xs'>{sessionId}</span>
           </Button>

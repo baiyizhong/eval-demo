@@ -2678,6 +2678,105 @@ def test_bulk_saves_annotation_scores_only_for_pending_filtered_items() -> None:
     assert fake_reader.calls[5][1][2] == "item-2"
 
 
+def test_bulk_saves_completed_annotation_scores_in_match_count_mode() -> None:
+    fake_reader = FakeAnnotationDatabaseReader()
+    override_reader(fake_reader)
+
+    try:
+        response = TestClient(app).post(
+            "/api/projects/project-1/annotation-queues/queue-1/batch-scores",
+            json={
+                "filters": {"itemIds": ["item-done"]},
+                "scores": [
+                    {
+                        "configId": "score-1",
+                        "value": 3,
+                        "stringValue": "",
+                        "comment": "补充指标",
+                    }
+                ],
+                "expectedMatchCount": 1,
+            },
+        )
+    finally:
+        clear_overrides()
+
+    assert response.status_code == 200
+    body = response.json()["data"]
+    assert body["successCount"] == 1
+    assert body["failureCount"] == 0
+    assert body["skippedCount"] == 0
+    assert body["successItemIds"] == ["item-done"]
+    assert [call[0] for call in fake_reader.calls] == [
+        "list_items",
+        "prepare_scores",
+        "get_project_api_key",
+        "complete_item",
+        "save_scores",
+    ]
+    assert fake_reader.calls[1][1][2] == "item-done"
+
+
+def test_bulk_saves_mixed_annotation_statuses_in_match_count_mode() -> None:
+    fake_reader = FakeAnnotationDatabaseReader()
+    override_reader(fake_reader)
+
+    try:
+        response = TestClient(app).post(
+            "/api/projects/project-1/annotation-queues/queue-1/batch-scores",
+            json={
+                "filters": {"itemIds": ["item-1", "item-done"]},
+                "scores": [
+                    {
+                        "configId": "score-1",
+                        "value": 4,
+                        "stringValue": "",
+                        "comment": "统一调整",
+                    }
+                ],
+                "expectedMatchCount": 2,
+            },
+        )
+    finally:
+        clear_overrides()
+
+    assert response.status_code == 200
+    body = response.json()["data"]
+    assert body["successCount"] == 2
+    assert body["failureCount"] == 0
+    assert body["skippedCount"] == 0
+    assert body["successItemIds"] == ["item-1", "item-done"]
+
+
+def test_bulk_rejects_changed_selected_count_in_match_count_mode() -> None:
+    fake_reader = FakeAnnotationDatabaseReader()
+    override_reader(fake_reader)
+
+    try:
+        response = TestClient(app).post(
+            "/api/projects/project-1/annotation-queues/queue-1/batch-scores",
+            json={
+                "filters": {"itemIds": ["item-done"]},
+                "scores": [
+                    {
+                        "configId": "score-1",
+                        "value": 3,
+                        "stringValue": "",
+                        "comment": "补充指标",
+                    }
+                ],
+                "expectedMatchCount": 2,
+            },
+        )
+    finally:
+        clear_overrides()
+
+    assert response.status_code == 409
+    body = response.json()
+    assert body["code"] == 1027
+    assert body["message"] == "批量标注选中数据已变化，请刷新列表后重试"
+
+
 def test_bulk_saves_large_annotation_batch_by_item_ids_without_trace_enrichment() -> (
     None
 ):

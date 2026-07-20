@@ -63,6 +63,7 @@ export function buildTraceListQuery(
     userId: optionalString(state.filters.userId),
     businessId: optionalString(state.filters.businessId),
     scoreQueueId: optionalString(state.filters.scoreQueueId),
+    anchorTraceId: optionalString(state.filters.anchorTraceId),
     metadataKey: optionalString(state.filters.metadataKey),
     metadataValue: optionalString(state.filters.metadataValue),
     metadataFilters: serializeJsonFilter(metadataFilters),
@@ -108,26 +109,26 @@ function normalizeMetadataFilters(value: unknown): TraceMetadataFilter[] {
 
   const filters: TraceMetadataFilter[] = []
   value.forEach((item) => {
-      if (!item || typeof item !== 'object') {
-        return
-      }
-      const candidate = item as Record<string, unknown>
-      const key = optionalString(candidate.key)
-      if (!key) {
-        return
-      }
-      const operator =
-        candidate.operator === 'equals' ||
-        candidate.operator === 'exists' ||
-        candidate.operator === 'contains'
-          ? candidate.operator
-          : 'contains'
-      filters.push({
-        key,
-        operator,
-        value: optionalString(candidate.value),
-      })
+    if (!item || typeof item !== 'object') {
+      return
+    }
+    const candidate = item as Record<string, unknown>
+    const key = optionalString(candidate.key)
+    if (!key) {
+      return
+    }
+    const operator =
+      candidate.operator === 'equals' ||
+      candidate.operator === 'exists' ||
+      candidate.operator === 'contains'
+        ? candidate.operator
+        : 'contains'
+    filters.push({
+      key,
+      operator,
+      value: optionalString(candidate.value),
     })
+  })
   return filters
 }
 
@@ -178,7 +179,11 @@ function normalizeNumericScoreFilters(
     const candidate = item as Record<string, unknown>
     const name = optionalString(candidate.name)
     const numericValue = optionalString(candidate.value)
-    if (!name || numericValue === undefined || Number.isNaN(Number(numericValue))) {
+    if (
+      !name ||
+      numericValue === undefined ||
+      Number.isNaN(Number(numericValue))
+    ) {
       return
     }
     const operator =

@@ -103,7 +103,12 @@ test('batch annotation workspace focuses on pending item scoring layout', () => 
   assert.match(pageSource, /filterMockBatchItems\([\s\S]*selectedAssigneeId/)
   assert.match(pageSource, /saveProjectAnnotationScores/)
   assert.match(pageSource, /saveProjectAnnotationBatchScores/)
-  assert.match(pageSource, /expectedPendingCount/)
+  assert.match(pageSource, /expectedMatchCount:\s*targetIds\.length/)
+  assert.match(pageSource, /filters:\s*\{\s*itemIds:\s*targetIds\s*\}/)
+  assert.doesNotMatch(
+    pageSource,
+    /filters:\s*\{\s*status:\s*\['PENDING'\],\s*itemIds:\s*targetIds/
+  )
   assert.match(pageSource, /successItemIds/)
   assert.match(pageSource, /上一页/)
   assert.match(pageSource, /下一页/)
@@ -112,7 +117,7 @@ test('batch annotation workspace focuses on pending item scoring layout', () => 
   assert.match(pageSource, /useState\(400\)/)
   assert.match(pageSource, /--annotation-score-width/)
   assert.match(pageSource, /minmax\(320px,var\(--annotation-score-width\)\)/)
-  assert.match(pageSource, /HoverCard/)
+  assert.match(pageSource, /HoverPreviewCell/)
   assert.match(pageSource, /批量保存/)
   assert.match(pageSource, /本次批量保存指标/)
   assert.match(pageSource, /batchScoreConfigId/)
@@ -127,7 +132,6 @@ test('batch annotation workspace focuses on pending item scoring layout', () => 
   assert.match(pageSource, /assignee: '预设处理人'/)
   assert.match(pageSource, /columnVisibility\.sourceDataId/)
   assert.match(pageSource, /columnVisibility\.assignee/)
-  assert.match(pageSource, /label='源数据 ID'[\s\S]*value=\{item\.objectId\}/)
   assert.match(pageSource, /item\.assignee\?\.name/)
   assert.doesNotMatch(pageSource, /source: '源对象'/)
   assert.match(pageSource, /类型/)
@@ -172,6 +176,26 @@ test('batch annotation applies selection when exactly one item is checked', () =
   assert.doesNotMatch(
     annotationBatchSource,
     /const isBatchScoring = selectedItemsOnPage\.length > 1/
+  )
+})
+
+test('batch annotation source data id does not use hover preview', () => {
+  const sourceDataIdBranch = [
+    ...annotationBatchSource.matchAll(
+      /\{columnVisibility\.sourceDataId \? \(([\s\S]*?)\) : null\}/g
+    ),
+  ]
+    .map((match) => match[1])
+    .find((branch) => /item\.objectId/.test(branch))
+
+  assert.ok(sourceDataIdBranch)
+  assert.match(sourceDataIdBranch, /<TableCell/)
+  assert.match(sourceDataIdBranch, /item\.objectId/)
+  assert.match(sourceDataIdBranch, /truncate/)
+  assert.doesNotMatch(sourceDataIdBranch, /SummaryTableCell|HoverPreviewCell/)
+  assert.match(
+    annotationBatchSource,
+    /function SummaryTableCell[\s\S]*<HoverPreviewCell/
   )
 })
 

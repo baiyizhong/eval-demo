@@ -230,6 +230,7 @@ class AnnotationBatchScorePayload(BaseModel):
     expected_pending_count: int | None = Field(
         default=None, alias="expectedPendingCount"
     )
+    expected_match_count: int | None = Field(default=None, alias="expectedMatchCount")
     confirm_large_batch: bool = Field(default=False, alias="confirmLargeBatch")
 
 
@@ -2111,16 +2112,26 @@ async def save_annotation_batch_scores(
     filtered = _filter_annotation_items(items, payload.filters)
     pending_items = [item for item in filtered if item["status"] == "PENDING"]
     completed_count = len([item for item in filtered if item["status"] == "COMPLETED"])
+    uses_match_count = payload.expected_match_count is not None
+    target_items = filtered if uses_match_count else pending_items
 
-    if payload.expected_pending_count is not None and (
-        payload.expected_pending_count != len(pending_items)
+    if uses_match_count and payload.expected_match_count != len(target_items):
+        raise BusinessError(
+            code=1027,
+            message="批量标注选中数据已变化，请刷新列表后重试",
+            status_code=409,
+        )
+    if (
+        not uses_match_count
+        and payload.expected_pending_count is not None
+        and (payload.expected_pending_count != len(pending_items))
     ):
         raise BusinessError(
             code=1027,
             message="批量标注命中数量已变化，请刷新预览后重试",
             status_code=409,
         )
-    if len(pending_items) > 100 and not payload.confirm_large_batch:
+    if len(target_items) > 100 and not payload.confirm_large_batch:
         raise BusinessError(
             code=1028,
             message="本次批量标注超过 100 条，请确认后再提交",
@@ -2130,7 +2141,7 @@ async def save_annotation_batch_scores(
     score_payload = _score_payload(payload)
     success_item_ids: list[str] = []
     failures: list[dict[str, Any]] = []
-    for item in pending_items:
+    for item in target_items:
         try:
             await _save_annotation_scores_with_langfuse_api(
                 project_id=project_id,
@@ -2150,12 +2161,16 @@ async def save_annotation_batch_scores(
         {
             "successCount": len(success_item_ids),
             "failureCount": len(failures),
-            "skippedCount": completed_count,
+            "skippedCount": 0 if uses_match_count else completed_count,
             "successItemIds": success_item_ids,
             "failures": failures,
-            "filterSummary": _build_annotation_filter_summary(
-                payload.filters,
-                len(pending_items),
+            "filterSummary": (
+                f"选中 {len(target_items)} 条"
+                if uses_match_count
+                else _build_annotation_filter_summary(
+                    payload.filters,
+                    len(pending_items),
+                )
             ),
         }
     )

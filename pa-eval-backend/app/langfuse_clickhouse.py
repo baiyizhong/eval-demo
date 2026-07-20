@@ -29,6 +29,7 @@ class LangfuseClickHouseReader:
         environments: list[str] | None = None,
         tags: list[str] | None = None,
         session_id: str | None = None,
+        anchor_trace_id: str | None = None,
         user_id: str | None = None,
         business_id: str | None = None,
         latency_min: int | None = None,
@@ -70,7 +71,16 @@ class LangfuseClickHouseReader:
             numeric_score_filters=numeric_score_filters,
         )
         total = await self._count_trace_rows(trace_filter)
-        start = (page - 1) * page_size
+        effective_page = page
+        if session_id and anchor_trace_id:
+            anchor_page = await self._locate_trace_page(
+                trace_filter,
+                anchor_trace_id,
+                page_size,
+            )
+            if anchor_page is not None:
+                effective_page = anchor_page
+        start = (effective_page - 1) * page_size
         page_rows = await self._fetch_trace_rows(
             project_id,
             trace_filter=trace_filter,
@@ -106,6 +116,7 @@ class LangfuseClickHouseReader:
                     row.update(payload)
         return {
             "total": total,
+            "page": effective_page,
             "datas": [
                 self._to_trace_row(
                     row,
@@ -744,6 +755,46 @@ class LangfuseClickHouseReader:
         if not rows:
             return 0
         return int(rows[0].get("total") or 0)
+
+    async def _locate_trace_page(
+        self,
+        trace_filter: "TraceFilterSql",
+        anchor_trace_id: str,
+        page_size: int,
+    ) -> int | None:
+        params = {
+            **trace_filter.params,
+            "anchor_trace_id": anchor_trace_id,
+            "anchor_page_size": page_size,
+        }
+        rows = await self._query_json_each_row(
+            f"""
+            {trace_filter.cte_sql}
+            SELECT page
+            FROM (
+                SELECT
+                    traceId,
+                    intDiv(
+                        row_number() OVER (
+                            ORDER BY
+                                toUnixTimestamp64Milli(createdAt) ASC,
+                                traceId ASC
+                        ) - 1,
+                        {{anchor_page_size:UInt32}}
+                    ) + 1 AS page
+                FROM trace_base base
+                WHERE {trace_filter.where_sql}
+            )
+            WHERE traceId = {{anchor_trace_id:String}}
+            LIMIT 1
+            FORMAT JSONEachRow
+            """,
+            params,
+        )
+        if not rows:
+            return None
+        page = int(rows[0].get("page") or 0)
+        return page if page >= 1 else None
 
     async def _fetch_trace_payloads(
         self,

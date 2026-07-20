@@ -4,8 +4,11 @@ export const SESSION_TRACE_PAGE_SIZE = 20
 
 export function buildSessionTraceListQuery(
   sessionId: string,
-  page = 1
+  page = 1,
+  anchorTraceId = ''
 ): DataTableQueryState {
+  const normalizedAnchorTraceId = anchorTraceId.trim()
+
   return {
     page: Math.max(1, page),
     pageSize: SESSION_TRACE_PAGE_SIZE,
@@ -13,6 +16,9 @@ export function buildSessionTraceListQuery(
     filters: {
       sessionId,
       fields: 'core,io',
+      ...(normalizedAnchorTraceId
+        ? { anchorTraceId: normalizedAnchorTraceId }
+        : {}),
     },
     sorting: [],
   }

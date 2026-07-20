@@ -1,4 +1,4 @@
-import { useState } from 'react'
+import { useEffect, useRef, useState } from 'react'
 import { useQuery } from '@tanstack/react-query'
 import type { TraceLogRow } from '@/modules/app-observability/types'
 import { buildTraceListQuery } from '@/modules/app-observability/views/trace-logs-query'
@@ -15,11 +15,6 @@ import {
   DialogTitle,
 } from '@/components/ui/dialog'
 import {
-  buildSessionTraceListQuery,
-  formatSessionTracePreview,
-  SESSION_TRACE_PAGE_SIZE,
-} from './session-trace-dialog-utils'
-import {
   HoverCard,
   HoverCardContent,
   HoverCardTrigger,
@@ -33,10 +28,16 @@ import {
   TableRow,
 } from '@/components/ui/table'
 import { Loading } from '@/components/common/loading'
+import {
+  buildSessionTraceListQuery,
+  formatSessionTracePreview,
+  SESSION_TRACE_PAGE_SIZE,
+} from './session-trace-dialog-utils'
 
 type SessionTraceDialogProps = {
   projectId: string
   sessionId: string
+  highlightTraceId: string
   open: boolean
   onOpenChange: (open: boolean) => void
 }
@@ -48,40 +49,61 @@ type SessionTraceRow = TraceLogRow & {
 
 type SessionTraceListResponse = {
   total: number
+  page?: number
   datas: SessionTraceRow[]
 }
+
+const EMPTY_SESSION_TRACES: SessionTraceRow[] = []
 
 export function SessionTraceDialog({
   projectId,
   sessionId,
+  highlightTraceId,
   open,
   onOpenChange,
 }: SessionTraceDialogProps) {
   const $api = useAPI()
-  const [page, setPage] = useState(1)
+  const [page, setPage] = useState<number | null>(null)
+  const highlightedRowRef = useRef<HTMLTableRowElement>(null)
   const normalizedSessionId = sessionId.trim()
+  const normalizedHighlightTraceId = highlightTraceId.trim()
+  const requestedPage = page ?? 1
+  const shouldLocateAnchor =
+    page === null && Boolean(normalizedHighlightTraceId)
   const tracesQuery = useQuery({
     queryKey: [
       'annotation-session-traces',
       $api,
       projectId,
       normalizedSessionId,
-      page,
+      normalizedHighlightTraceId,
+      requestedPage,
+      shouldLocateAnchor,
     ],
     queryFn: () =>
       $api.listProjectTraces<SessionTraceListResponse>({
         path: { projectId },
         query: buildTraceListQuery(
-          buildSessionTraceListQuery(normalizedSessionId, page),
+          buildSessionTraceListQuery(
+            normalizedSessionId,
+            requestedPage,
+            shouldLocateAnchor ? normalizedHighlightTraceId : ''
+          ),
           projectId
         ),
       }),
     enabled: open && Boolean(normalizedSessionId),
   })
-  const resolvedTraces = tracesQuery.data?.datas ?? []
+  const resolvedTraces = tracesQuery.data?.datas ?? EMPTY_SESSION_TRACES
   const total = tracesQuery.data?.total ?? 0
+  const currentPage = Math.max(1, tracesQuery.data?.page ?? requestedPage)
   const pageCount = Math.max(1, Math.ceil(total / SESSION_TRACE_PAGE_SIZE))
   const isLoading = tracesQuery.isLoading
+
+  useEffect(() => {
+    if (isLoading || !highlightedRowRef.current) return
+    highlightedRowRef.current.scrollIntoView({ block: 'center' })
+  }, [isLoading, resolvedTraces])
   const copySessionId = async () => {
     if (!normalizedSessionId) {
       return
@@ -135,30 +157,43 @@ export function SessionTraceDialog({
                   </TableRow>
                 </TableHeader>
                 <TableBody>
-                  {resolvedTraces.map((trace) => (
-                    <TableRow key={trace.traceId}>
-                      <SessionTracePreviewCell
-                        label='会话 ID'
-                        value={trace.sessionId}
-                        className='w-[136px]'
-                        mono
-                      />
-                      <SessionTracePreviewCell
-                        label='Trace ID'
-                        value={trace.traceId}
-                        className='w-[168px]'
-                        mono
-                      />
-                      <SessionTracePreviewCell
-                        label='Input'
-                        value={trace.input}
-                      />
-                      <SessionTracePreviewCell
-                        label='Output'
-                        value={trace.output}
-                      />
-                    </TableRow>
-                  ))}
+                  {resolvedTraces.map((trace) => {
+                    const isHighlighted =
+                      Boolean(normalizedHighlightTraceId) &&
+                      trace.traceId === normalizedHighlightTraceId
+
+                    return (
+                      <TableRow
+                        key={trace.traceId}
+                        ref={isHighlighted ? highlightedRowRef : undefined}
+                        className={cn(
+                          isHighlighted && 'bg-accent/60 hover:bg-accent/60'
+                        )}
+                        aria-current={isHighlighted ? 'true' : undefined}
+                      >
+                        <SessionTracePreviewCell
+                          label='会话 ID'
+                          value={trace.sessionId}
+                          className='w-[136px]'
+                          mono
+                        />
+                        <SessionTracePreviewCell
+                          label='Trace ID'
+                          value={trace.traceId}
+                          className='w-[168px]'
+                          mono
+                        />
+                        <SessionTracePreviewCell
+                          label='Input'
+                          value={trace.input}
+                        />
+                        <SessionTracePreviewCell
+                          label='Output'
+                          value={trace.output}
+                        />
+                      </TableRow>
+                    )
+                  })}
                 </TableBody>
               </Table>
               {!resolvedTraces.length ? (
@@ -170,16 +205,18 @@ export function SessionTraceDialog({
           ) : null}
           <div className='flex shrink-0 flex-wrap items-center justify-between gap-2 border-t p-2 text-xs'>
             <div className='text-muted-foreground min-w-0'>
-              共 {total} 条，第 {page} / {pageCount} 页
-              <span className='ml-3'>注：数据按照 Trace 日志创建时间升序排序后分页返回。</span>
+              共 {total} 条，第 {currentPage} / {pageCount} 页
+              <span className='ml-3'>
+                注：数据按照 Trace 日志创建时间升序排序后分页返回。
+              </span>
             </div>
             <div className='flex items-center gap-2'>
               <Button
                 type='button'
                 variant='outline'
                 size='sm'
-                disabled={isLoading || page <= 1}
-                onClick={() => setPage((current) => Math.max(1, current - 1))}
+                disabled={isLoading || currentPage <= 1}
+                onClick={() => setPage(Math.max(1, currentPage - 1))}
               >
                 <ChevronLeft data-icon='inline-start' />
                 上一页
@@ -188,10 +225,8 @@ export function SessionTraceDialog({
                 type='button'
                 variant='outline'
                 size='sm'
-                disabled={isLoading || page >= pageCount}
-                onClick={() =>
-                  setPage((current) => Math.min(pageCount, current + 1))
-                }
+                disabled={isLoading || currentPage >= pageCount}
+                onClick={() => setPage(Math.min(pageCount, currentPage + 1))}
               >
                 下一页
                 <ChevronRight data-icon='inline-end' />

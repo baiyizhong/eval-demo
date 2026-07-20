@@ -350,6 +350,28 @@ def test_lists_project_traces_passes_selected_response_fields() -> None:
     assert fake_trace.list_kwargs["session_id"] == "session-1"
 
 
+def test_lists_project_traces_passes_anchor_trace_id() -> None:
+    fake_db = FakeDatabaseReader()
+    fake_trace = FakeTraceReader()
+    override_readers(fake_db, fake_trace)
+
+    try:
+        response = TestClient(app).get(
+            "/api/projects/project-1/traces",
+            params={
+                "sessionId": "session-1",
+                "anchorTraceId": "trace-25",
+                "page": 1,
+                "pageSize": 20,
+            },
+        )
+    finally:
+        clear_overrides()
+
+    assert response.status_code == 200
+    assert fake_trace.list_kwargs["anchor_trace_id"] == "trace-25"
+
+
 def test_lists_project_traces_does_not_default_time_range_with_metadata_filters() -> None:
     fake_db = FakeDatabaseReader()
     fake_trace = FakeTraceReader()
@@ -974,6 +996,46 @@ async def test_list_traces_orders_session_results_by_created_at_before_paginatio
         "trace-old",
         "trace-mid",
     ]
+
+
+@pytest.mark.anyio
+async def test_list_traces_locates_anchor_page_without_changing_session_order(
+    monkeypatch,
+) -> None:
+    reader = LangfuseClickHouseReader(Settings())
+    captured_fetch: dict = {}
+
+    async def fake_count_trace_rows(*args, **kwargs):
+        return 45
+
+    async def fake_locate_trace_page(*args, **kwargs):
+        return 2
+
+    async def fake_fetch_trace_rows(*args, **kwargs):
+        captured_fetch.update(kwargs)
+        return []
+
+    monkeypatch.setattr(reader, "_count_trace_rows", fake_count_trace_rows)
+    monkeypatch.setattr(
+        reader,
+        "_locate_trace_page",
+        fake_locate_trace_page,
+        raising=False,
+    )
+    monkeypatch.setattr(reader, "_fetch_trace_rows", fake_fetch_trace_rows)
+
+    result = await reader.list_traces(
+        "project-1",
+        page=1,
+        page_size=20,
+        session_id="session-1",
+        anchor_trace_id="trace-25",
+        time_range=None,
+    )
+
+    assert result["page"] == 2
+    assert captured_fetch["offset"] == 20
+    assert captured_fetch["order_ascending"] is True
 
 
 @pytest.mark.anyio

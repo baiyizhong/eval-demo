@@ -15,6 +15,7 @@ import { Page } from '@/components/common/page'
 import { PageAction } from '@/components/common/page-action'
 import {
   addProjectAnnotationItemToDataset,
+  getNextPendingProjectAnnotationItem,
   getProjectAnnotationQueueItem,
   getProjectAnnotationNavigation,
   getProjectAnnotationQueue,
@@ -124,10 +125,13 @@ export function ProjectAnnotationItemAnnotate() {
     !(item && queue) &&
     (itemQuery.isLoading || navigationQuery.isLoading || queueQuery.isLoading)
 
-  const goToItem = (nextItemId: string) => {
+  const goToItem = (
+    nextItemId: string,
+    nextSearchParams: URLSearchParams = searchParams
+  ) => {
     navigate({
       pathname: `/projects/${projectId}/evaluation/annotation-queues/${queueId}/items/${nextItemId}/annotate`,
-      search: searchParams.toString(),
+      search: nextSearchParams.toString(),
     })
   }
 
@@ -139,18 +143,20 @@ export function ProjectAnnotationItemAnnotate() {
     void invalidateAnnotation()
 
     if (mode === 'saveNext') {
-      const nextNavigation = await getProjectAnnotationNavigation(
+      const nextPendingItem = await getNextPendingProjectAnnotationItem(
         $api,
         projectId,
-        queueId,
-        itemId,
-        queryState
+        queueId
       )
-      if (nextNavigation.next) {
+      if (nextPendingItem) {
+        const pendingSearchParams = new URLSearchParams()
+        pendingSearchParams.set('page', '1')
+        pendingSearchParams.set('pageSize', String(queryState.pageSize))
+        pendingSearchParams.append('status', 'PENDING')
         toast.success('评分已保存，已进入下一条')
-        goToItem(nextNavigation.next.id)
+        goToItem(nextPendingItem.id, pendingSearchParams)
       } else {
-        toast.success('当前结果集已完成，请返回队列选择新的筛选条件或任务')
+        toast.success('当前标注队列已全部完成')
       }
       return
     }
@@ -257,7 +263,7 @@ export function ProjectAnnotationItemAnnotate() {
             <button
               type='button'
               aria-label='调整左右区域宽度'
-              className='hover:bg-accent focus-visible:ring-ring hidden cursor-col-resize items-center justify-center border-r border-l bg-muted/30 focus-visible:ring-2 focus-visible:outline-none lg:flex'
+              className='hover:bg-accent focus-visible:ring-ring bg-muted/30 hidden cursor-col-resize items-center justify-center border-r border-l focus-visible:ring-2 focus-visible:outline-none lg:flex'
               onPointerDown={startResize}
             >
               <GripVertical className='text-muted-foreground' />
