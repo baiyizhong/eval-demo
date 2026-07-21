@@ -13,6 +13,7 @@ from app.data_access.clickhouse import (
     get_clickhouse_http_client,
 )
 from app.errors import BusinessError, LangfuseUpstreamError
+from app.trace_count_cache import TraceCountCache
 
 
 class LangfuseClickHouseReader:
@@ -21,6 +22,10 @@ class LangfuseClickHouseReader:
         self._user = settings.langfuse_clickhouse_user
         self._password = settings.langfuse_clickhouse_password
         self._settings = settings
+        self._trace_count_cache = TraceCountCache(
+            ttl_seconds=settings.pa_eval_trace_count_cache_ttl_seconds,
+            max_entries=settings.pa_eval_trace_count_cache_max_entries,
+        )
 
     async def list_traces(
         self,
@@ -34,6 +39,8 @@ class LangfuseClickHouseReader:
         tags: list[str] | None = None,
         session_id: str | None = None,
         anchor_trace_id: str | None = None,
+        cursor_created_at: str | None = None,
+        cursor_trace_id: str | None = None,
         user_id: str | None = None,
         business_id: str | None = None,
         latency_min: int | None = None,
@@ -74,7 +81,32 @@ class LangfuseClickHouseReader:
             categorical_score_filters=categorical_score_filters,
             numeric_score_filters=numeric_score_filters,
         )
-        total = await self._count_trace_rows(trace_filter)
+        count_cache_key = _trace_count_cache_key(
+            project_id=project_id,
+            time_range=time_range,
+            created_at_range=created_at_range,
+            keyword=keyword,
+            statuses=statuses,
+            environments=environments,
+            tags=tags,
+            session_id=session_id,
+            user_id=user_id,
+            business_id=business_id,
+            latency_min=latency_min,
+            latency_max=latency_max,
+            score_queue_id=score_queue_id,
+            metadata_key=metadata_key,
+            metadata_value=metadata_value,
+            metadata_filters=metadata_filters,
+            categorical_score_filters=categorical_score_filters,
+            numeric_score_filters=numeric_score_filters,
+        )
+        cached_total = self._trace_count_cache.get(count_cache_key)
+        if cached_total is None:
+            total = await self._count_trace_rows(trace_filter)
+            self._trace_count_cache.set(count_cache_key, total)
+        else:
+            total = cached_total
         effective_page = page
         if session_id and anchor_trace_id:
             anchor_page = await self._locate_trace_page(
@@ -84,17 +116,48 @@ class LangfuseClickHouseReader:
             )
             if anchor_page is not None:
                 effective_page = anchor_page
-        start = (effective_page - 1) * page_size
+        cursor_at = _parse_clickhouse_datetime(cursor_created_at)
+        use_cursor = cursor_at is not None and bool(cursor_trace_id)
+        start = 0 if use_cursor else (effective_page - 1) * page_size
         page_rows = await self._fetch_trace_rows(
             project_id,
             trace_filter=trace_filter,
-            limit=page_size,
+            limit=page_size + 1 if use_cursor else page_size,
             offset=start,
             order_ascending=bool(session_id),
+            cursor_created_at=cursor_at if use_cursor else None,
+            cursor_trace_id=cursor_trace_id if use_cursor else None,
         )
+        has_more = (
+            len(page_rows) > page_size
+            if use_cursor
+            else start + len(page_rows) < total
+        )
+        if use_cursor:
+            page_rows = page_rows[:page_size]
         trace_ids = [
             str(row.get("traceId") or "") for row in page_rows if row.get("traceId")
         ]
+        if not trace_filter.requires_aggregation:
+            observation_summaries = await self._fetch_page_observation_summaries(
+                project_id,
+                trace_ids,
+            )
+            for row in page_rows:
+                summary = observation_summaries.get(str(row.get("traceId") or ""), {})
+                row["status"] = _trace_status_from_metadata(
+                    row.get("metadata") or {},
+                    bool(summary.get("hasIssue")),
+                )
+                start_at = _parse_clickhouse_datetime(row.get("createdAt"))
+                end_at = _parse_clickhouse_datetime(
+                    summary.get("lastEndTime") or row.get("updatedAt")
+                )
+                row["latency"] = (
+                    max(0, round((end_at - start_at).total_seconds() * 1000))
+                    if start_at is not None and end_at is not None
+                    else max(0, int(row.get("latency") or 0))
+                )
         scores_by_trace = await self._fetch_scores_by_trace(project_id, trace_ids)
         evaluator_scores_by_trace = await self._fetch_evaluator_scores_by_trace(
             project_id,
@@ -118,9 +181,18 @@ class LangfuseClickHouseReader:
                 payload = payloads_by_trace.get(str(row.get("traceId") or ""))
                 if payload:
                     row.update(payload)
+        next_cursor = None
+        if has_more and page_rows:
+            last_row = page_rows[-1]
+            next_cursor = {
+                "createdAt": _format_clickhouse_datetime(last_row.get("createdAt")),
+                "traceId": str(last_row.get("traceId") or ""),
+            }
         return {
             "total": total,
             "page": effective_page,
+            "hasMore": has_more,
+            "nextCursor": next_cursor,
             "datas": [
                 self._to_trace_row(
                     row,
@@ -686,6 +758,8 @@ class LangfuseClickHouseReader:
         limit: int | None = None,
         offset: int = 0,
         order_ascending: bool = False,
+        cursor_created_at: datetime | None = None,
+        cursor_trace_id: str | None = None,
     ) -> list[dict[str, Any]]:
         if trace_filter is None:
             trace_filter = _build_trace_filter(
@@ -703,16 +777,29 @@ class LangfuseClickHouseReader:
         if limit is not None:
             params["limit"] = limit
             params["offset"] = offset
-        limit_clause = (
-            "\n            LIMIT {limit:UInt32} OFFSET {offset:UInt32}"
-            if limit is not None
-            else ""
-        )
+        limit_clause = ""
+        if limit is not None:
+            limit_clause = "\n            LIMIT {limit:UInt32}"
+            if cursor_created_at is None or not cursor_trace_id:
+                limit_clause += " OFFSET {offset:UInt32}"
         order_direction = "ASC" if order_ascending else "DESC"
         order_clause = (
             f"toUnixTimestamp64Milli(createdAt) {order_direction}, "
             f"traceId {order_direction}"
         )
+        where_sql = trace_filter.where_sql
+        if cursor_created_at is not None and cursor_trace_id:
+            params["cursor_created_at"] = cursor_created_at
+            params["cursor_trace_id"] = cursor_trace_id
+            comparison = ">" if order_ascending else "<"
+            where_sql += f"""
+              AND (
+                    base.createdAt {comparison} {{cursor_created_at:DateTime64(3)}}
+                    OR (
+                        base.createdAt = {{cursor_created_at:DateTime64(3)}}
+                        AND base.traceId {comparison} {{cursor_trace_id:String}}
+                    )
+              )"""
         query = f"""
             {trace_filter.cte_sql}
             SELECT
@@ -729,7 +816,7 @@ class LangfuseClickHouseReader:
                 status,
                 latency
             FROM trace_base base
-            WHERE {trace_filter.where_sql}
+            WHERE {where_sql}
             ORDER BY {order_clause}{limit_clause}
             FORMAT JSONEachRow
             """
@@ -842,6 +929,47 @@ class LangfuseClickHouseReader:
                         "output": row.get("output"),
                     }
         return payloads_by_trace
+
+    async def _fetch_page_observation_summaries(
+        self,
+        project_id: str,
+        trace_ids: list[str],
+    ) -> dict[str, dict[str, Any]]:
+        unique_trace_ids = list(
+            dict.fromkeys(trace_id for trace_id in trace_ids if trace_id)
+        )
+        if not unique_trace_ids:
+            return {}
+
+        summaries: dict[str, dict[str, Any]] = {}
+        for chunk in _chunked(unique_trace_ids, 100):
+            params: dict[str, Any] = {"project_id": project_id}
+            trace_id_placeholders = []
+            for index, trace_id in enumerate(chunk):
+                param_key = f"summary_trace_id_{index}"
+                trace_id_placeholders.append(f"{{{param_key}:String}}")
+                params[param_key] = trace_id
+            rows = await self._query_json_each_row(
+                """
+                /* page_observation_summary */
+                SELECT
+                    trace_id AS traceId,
+                    max(end_time) AS lastEndTime,
+                    max(if(level IN ('ERROR', 'WARNING'), 1, 0)) AS hasIssue
+                FROM observations
+                WHERE project_id = {project_id:String}
+                  AND trace_id IN (__TRACE_IDS__)
+                  AND is_deleted = 0
+                GROUP BY trace_id
+                FORMAT JSONEachRow
+                """.replace("__TRACE_IDS__", ", ".join(trace_id_placeholders)),
+                params,
+            )
+            for row in rows:
+                trace_id = str(row.get("traceId") or "")
+                if trace_id:
+                    summaries[trace_id] = row
+        return summaries
 
     async def _fetch_scores_for_trace(
         self,
@@ -1289,6 +1417,7 @@ class TraceFilterSql:
     cte_sql: str
     where_sql: str
     params: dict[str, Any]
+    requires_aggregation: bool = False
 
 
 def _build_trace_filter(
@@ -1313,8 +1442,8 @@ def _build_trace_filter(
     categorical_score_filters: list[dict[str, Any]] | None = None,
     numeric_score_filters: list[dict[str, Any]] | None = None,
 ) -> TraceFilterSql:
-    base_filters = ["t.project_id = {project_id:String}", "t.is_deleted = 0"]
-    outer_filters = ["1 = 1"]
+    trace_filters = ["t.project_id = {project_id:String}", "t.is_deleted = 0"]
+    aggregate_filters = ["1 = 1"]
     params: dict[str, Any] = {"project_id": project_id}
 
     if trace_ids:
@@ -1323,12 +1452,12 @@ def _build_trace_filter(
             param_key = f"trace_id_{index}"
             trace_id_placeholders.append(f"{{{param_key}:String}}")
             params[param_key] = trace_id
-        base_filters.append(f"t.id IN ({', '.join(trace_id_placeholders)})")
+        trace_filters.append(f"t.id IN ({', '.join(trace_id_placeholders)})")
     if start_time is not None:
-        base_filters.append("t.timestamp >= {start_time:DateTime64(3)}")
+        trace_filters.append("t.timestamp >= {start_time:DateTime64(3)}")
         params["start_time"] = start_time
     if end_time is not None:
-        base_filters.append("t.timestamp < {end_time:DateTime64(3)}")
+        trace_filters.append("t.timestamp < {end_time:DateTime64(3)}")
         params["end_time"] = end_time
     normalized_environments = _normalize_environments(environments)
     if normalized_environments:
@@ -1337,14 +1466,16 @@ def _build_trace_filter(
             param_key = f"environment_{index}"
             environment_placeholders.append(f"{{{param_key}:String}}")
             params[param_key] = environment
-        base_filters.append(f"t.environment IN ({', '.join(environment_placeholders)})")
+        trace_filters.append(
+            f"t.environment IN ({', '.join(environment_placeholders)})"
+        )
     if session_id:
-        base_filters.append(
+        trace_filters.append(
             "position(ifNull(t.session_id, ''), {session_id:String}) > 0"
         )
         params["session_id"] = session_id
     _append_metadata_where_filters(
-        base_filters,
+        trace_filters,
         params,
         metadata_key=metadata_key,
         metadata_value=metadata_value,
@@ -1354,10 +1485,10 @@ def _build_trace_filter(
     keyword_value = (keyword or "").strip()
     if keyword_value:
         params["keyword"] = keyword_value
-        outer_filters.append(
+        trace_filters.append(
             "("
-            "positionCaseInsensitive(base.traceId, {keyword:String}) > 0 "
-            "OR positionCaseInsensitive(ifNull(base.sessionId, ''), {keyword:String}) > 0"
+            "positionCaseInsensitive(t.id, {keyword:String}) > 0 "
+            "OR positionCaseInsensitive(ifNull(t.session_id, ''), {keyword:String}) > 0"
             ")"
         )
     if statuses:
@@ -1366,33 +1497,37 @@ def _build_trace_filter(
             param_key = f"status_{index}"
             status_placeholders.append(f"{{{param_key}:String}}")
             params[param_key] = status
-        outer_filters.append(f"base.status IN ({', '.join(status_placeholders)})")
+        aggregate_filters.append(
+            f"base.status IN ({', '.join(status_placeholders)})"
+        )
     normalized_tags = _normalize_tags(tags)
     for index, tag in enumerate(normalized_tags):
         param_key = f"tag_{index}"
         params[param_key] = tag
-        outer_filters.append(f"has(base.tags, {{{param_key}:String}})")
+        trace_filters.append(f"has(t.tags, {{{param_key}:String}})")
     if user_id:
         params["user_id"] = user_id
-        outer_filters.append("position(ifNull(base.userId, ''), {user_id:String}) > 0")
+        trace_filters.append(
+            "position(ifNull(t.user_id, ''), {user_id:String}) > 0"
+        )
     if business_id:
         params["business_id"] = business_id
-        outer_filters.append(
+        trace_filters.append(
             "("
-            "position(ifNull(base.metadata['businessId'], ''), {business_id:String}) > 0 "
-            "OR position(ifNull(base.metadata['business_id'], ''), {business_id:String}) > 0 "
-            "OR position(ifNull(base.metadata['app_id'], ''), {business_id:String}) > 0"
+            "position(ifNull(t.metadata['businessId'], ''), {business_id:String}) > 0 "
+            "OR position(ifNull(t.metadata['business_id'], ''), {business_id:String}) > 0 "
+            "OR position(ifNull(t.metadata['app_id'], ''), {business_id:String}) > 0"
             ")"
         )
     if latency_min is not None:
         params["latency_min"] = latency_min
-        outer_filters.append("base.latency >= {latency_min:Int64}")
+        aggregate_filters.append("base.latency >= {latency_min:Int64}")
     if latency_max is not None:
         params["latency_max"] = latency_max
-        outer_filters.append("base.latency <= {latency_max:Int64}")
+        aggregate_filters.append("base.latency <= {latency_max:Int64}")
     if score_queue_id:
         params["score_queue_id"] = score_queue_id.strip()
-        outer_filters.append(
+        aggregate_filters.append(
             """
             base.traceId IN (
                 SELECT traceId
@@ -1402,14 +1537,71 @@ def _build_trace_filter(
             """
         )
     _append_score_filter_sql(
-        outer_filters,
+        aggregate_filters,
         params,
         categorical_score_filters=categorical_score_filters,
         numeric_score_filters=numeric_score_filters,
     )
 
-    base_where_sql = "\n                  AND ".join(base_filters)
-    where_sql = "\n              AND ".join(outer_filters)
+    trace_where_sql = "\n                  AND ".join(trace_filters)
+    where_sql = "\n              AND ".join(aggregate_filters)
+    requires_aggregation = bool(
+        statuses
+        or latency_min is not None
+        or latency_max is not None
+        or _has_score_filters(
+            score_queue_id=score_queue_id,
+            categorical_score_filters=categorical_score_filters,
+            numeric_score_filters=numeric_score_filters,
+        )
+    )
+
+    score_name_placeholders = [
+        f"{{categorical_score_name_{index}:String}}"
+        for index, item in enumerate(categorical_score_filters or [])
+        if str(item.get("name") or "").strip()
+    ] + [
+        f"{{numeric_score_name_{index}:String}}"
+        for index, item in enumerate(numeric_score_filters or [])
+        if str(item.get("name") or "").strip()
+    ]
+    score_source_conditions: list[str] = []
+    if score_queue_id:
+        score_source_conditions.append("s.queue_id = {score_queue_id:String}")
+    if score_name_placeholders:
+        score_source_conditions.append(
+            f"s.name IN ({', '.join(score_name_placeholders)})"
+        )
+    score_source_filter = (
+        f"\n                  AND ({' OR '.join(score_source_conditions)})"
+        if score_source_conditions
+        else ""
+    )
+    evaluator_name_filter = (
+        f"\n                  AND o.name IN ({', '.join(score_name_placeholders)})"
+        if score_name_placeholders
+        else ""
+    )
+    evaluator_score_union = (
+        f"""
+                UNION ALL
+                SELECT
+                    ifNull(o.trace_id, '') AS traceId,
+                    '' AS queueId,
+                    o.name AS name,
+                    ifNull(JSONExtractString(ifNull(o.output, ''), 'label'), '') AS textValue,
+                    JSONExtractFloat(ifNull(o.output, ''), 'score') AS numericValue
+                FROM observations o
+                INNER JOIN candidate_traces candidate
+                  ON candidate.traceId = ifNull(o.trace_id, '')
+                WHERE o.project_id = {{project_id:String}}
+                  AND o.is_deleted = 0
+                  AND o.type = 'EVALUATOR'
+                  AND JSONHas(ifNull(o.output, ''), 'score'){evaluator_name_filter}
+            """
+        if score_name_placeholders
+        else ""
+    )
     score_candidates_cte = (
         f""",
             score_candidates AS (
@@ -1420,21 +1612,11 @@ def _build_trace_filter(
                     {_score_text_value_sql("s")} AS textValue,
                     s.value AS numericValue
                 FROM scores s FINAL
+                INNER JOIN candidate_traces candidate
+                  ON candidate.traceId = ifNull(s.trace_id, '')
                 WHERE s.project_id = {{project_id:String}}
-                  AND ifNull(s.trace_id, '') != ''
-                UNION ALL
-                SELECT
-                    ifNull(o.trace_id, '') AS traceId,
-                    '' AS queueId,
-                    o.name AS name,
-                    ifNull(JSONExtractString(ifNull(o.output, ''), 'label'), '') AS textValue,
-                    JSONExtractFloat(ifNull(o.output, ''), 'score') AS numericValue
-                FROM observations o
-                WHERE o.project_id = {{project_id:String}}
-                  AND o.is_deleted = 0
-                  AND o.type = 'EVALUATOR'
-                  AND ifNull(o.trace_id, '') != ''
-                  AND JSONHas(ifNull(o.output, ''), 'score')
+                  AND ifNull(s.trace_id, '') != ''{score_source_filter}
+                {evaluator_score_union}
             )"""
         if _has_score_filters(
             score_queue_id=score_queue_id,
@@ -1443,19 +1625,8 @@ def _build_trace_filter(
         )
         else ""
     )
-    cte_sql = f"""
-            WITH observation_summary AS (
-                SELECT
-                    project_id,
-                    trace_id,
-                    max(end_time) AS lastEndTime,
-                    max(if(level IN ('ERROR', 'WARNING'), 1, 0)) AS hasIssue
-                FROM observations
-                WHERE project_id = {{project_id:String}}
-                  AND is_deleted = 0
-                GROUP BY project_id, trace_id
-            ),
-            trace_base AS (
+    candidate_traces_cte = f"""
+            candidate_traces AS (
                 SELECT
                     t.id AS traceId,
                     t.project_id AS projectId,
@@ -1466,7 +1637,30 @@ def _build_trace_filter(
                     t.timestamp AS createdAt,
                     t.updated_at AS updatedAt,
                     t.metadata AS metadata,
-                    t.tags AS tags,
+                    t.tags AS tags
+                FROM traces t
+                WHERE {trace_where_sql}
+            )"""
+    if requires_aggregation:
+        cte_sql = f"""
+            WITH {candidate_traces_cte},
+            observation_summary AS (
+                SELECT
+                    o.project_id,
+                    o.trace_id,
+                    max(o.end_time) AS lastEndTime,
+                    max(if(o.level IN ('ERROR', 'WARNING'), 1, 0)) AS hasIssue
+                FROM observations o
+                INNER JOIN candidate_traces candidate
+                  ON candidate.projectId = o.project_id
+                 AND candidate.traceId = o.trace_id
+                WHERE o.project_id = {{project_id:String}}
+                  AND o.is_deleted = 0
+                GROUP BY o.project_id, o.trace_id
+            ),
+            trace_base AS (
+                SELECT
+                    t.*,
                     if(
                         lower(t.metadata['status']) IN ('failed', 'error')
                         OR observation_summary.hasIssue = 1,
@@ -1475,17 +1669,44 @@ def _build_trace_filter(
                     ) AS status,
                     greatest(
                         0,
-                        toUnixTimestamp64Milli(coalesce(observation_summary.lastEndTime, t.updated_at))
-                        - toUnixTimestamp64Milli(t.timestamp)
+                        toUnixTimestamp64Milli(coalesce(observation_summary.lastEndTime, t.updatedAt))
+                        - toUnixTimestamp64Milli(t.createdAt)
                     ) AS latency
-                FROM traces t
+                FROM candidate_traces t
                 LEFT JOIN observation_summary
-                  ON observation_summary.project_id = t.project_id
-                 AND observation_summary.trace_id = t.id
-                WHERE {base_where_sql}
+                  ON observation_summary.project_id = t.projectId
+                 AND observation_summary.trace_id = t.traceId
             ){score_candidates_cte}
             """
-    return TraceFilterSql(cte_sql=cte_sql, where_sql=where_sql, params=params)
+    else:
+        cte_sql = f"""
+            WITH {candidate_traces_cte},
+            trace_base AS (
+                SELECT
+                    t.*,
+                    if(
+                        lower(t.metadata['status']) IN ('failed', 'error'),
+                        'failed',
+                        if(
+                            lower(t.metadata['status']) IN ('running', 'pending'),
+                            'running',
+                            'success'
+                        )
+                    ) AS status,
+                    greatest(
+                        0,
+                        toUnixTimestamp64Milli(t.updatedAt)
+                        - toUnixTimestamp64Milli(t.createdAt)
+                    ) AS latency
+                FROM candidate_traces t
+            )
+            """
+    return TraceFilterSql(
+        cte_sql=cte_sql,
+        where_sql=where_sql,
+        params=params,
+        requires_aggregation=requires_aggregation,
+    )
 
 
 def _has_score_filters(
@@ -1636,6 +1857,66 @@ def _trace_fields_include(fields: str | None, field_name: str) -> bool:
         item.strip().lower() for item in str(fields or "").split(",") if item.strip()
     }
     return field_name.lower() in requested
+
+
+def _trace_count_cache_key(
+    *,
+    project_id: str,
+    time_range: str | None,
+    created_at_range: list[str] | None,
+    keyword: str | None,
+    statuses: list[str] | None,
+    environments: list[str] | None,
+    tags: list[str] | None,
+    session_id: str | None,
+    user_id: str | None,
+    business_id: str | None,
+    latency_min: int | None,
+    latency_max: int | None,
+    score_queue_id: str | None,
+    metadata_key: str | None,
+    metadata_value: str | None,
+    metadata_filters: list[dict[str, Any]] | None,
+    categorical_score_filters: list[dict[str, Any]] | None,
+    numeric_score_filters: list[dict[str, Any]] | None,
+) -> str:
+    def text(value: str | None) -> str | None:
+        normalized = str(value or "").strip()
+        return normalized or None
+
+    def values(items: list[str] | None) -> list[str]:
+        return sorted({item.strip() for item in items or [] if item.strip()})
+
+    def object_filters(items: list[dict[str, Any]] | None) -> list[dict[str, Any]]:
+        normalized = [
+            {str(key): item[key] for key in sorted(item)} for item in items or []
+        ]
+        return sorted(
+            normalized,
+            key=lambda item: json.dumps(item, sort_keys=True, ensure_ascii=False),
+        )
+
+    payload = {
+        "projectId": project_id,
+        "timeRange": time_range,
+        "createdAtRange": list(created_at_range or []),
+        "keyword": text(keyword),
+        "statuses": values(statuses),
+        "environments": values(environments),
+        "tags": values(tags),
+        "sessionId": text(session_id),
+        "userId": text(user_id),
+        "businessId": text(business_id),
+        "latencyMin": latency_min,
+        "latencyMax": latency_max,
+        "scoreQueueId": text(score_queue_id),
+        "metadataKey": text(metadata_key),
+        "metadataValue": text(metadata_value),
+        "metadataFilters": object_filters(metadata_filters),
+        "categoricalScoreFilters": object_filters(categorical_score_filters),
+        "numericScoreFilters": object_filters(numeric_score_filters),
+    }
+    return json.dumps(payload, sort_keys=True, separators=(",", ":"), ensure_ascii=False)
 
 
 def _trace_created_at_sort_key(row: dict[str, Any]) -> tuple[datetime, str]:
@@ -2050,10 +2331,19 @@ def _parse_clickhouse_datetime(value: Any) -> datetime | None:
         return None
 
 
+_shared_clickhouse_reader: LangfuseClickHouseReader | None = None
+
+
 async def get_langfuse_clickhouse_reader(
     settings: Settings = Depends(get_settings),
 ) -> LangfuseClickHouseReader:
-    return LangfuseClickHouseReader(settings)
+    global _shared_clickhouse_reader
+    if (
+        _shared_clickhouse_reader is None
+        or _shared_clickhouse_reader._settings is not settings
+    ):
+        _shared_clickhouse_reader = LangfuseClickHouseReader(settings)
+    return _shared_clickhouse_reader
 
 
 async def get_langfuse_clickhouse_score_writer(

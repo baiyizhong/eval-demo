@@ -9,6 +9,7 @@ from app.data_access import clickhouse
 from app.errors import LangfuseUpstreamError
 from app.langfuse_clickhouse import (
     LangfuseClickHouseReader,
+    _build_trace_filter,
     _matches_trace,
     get_langfuse_clickhouse_reader,
 )
@@ -330,7 +331,7 @@ def test_lists_project_traces_passes_business_id_filter() -> None:
 
     assert response.status_code == 200
     assert fake_trace.list_kwargs["business_id"] == "biz-offline-retail-0713-0007"
-    assert fake_trace.list_kwargs["time_range"] is None
+    assert fake_trace.list_kwargs["time_range"] == "1d"
 
 
 def test_lists_project_traces_passes_selected_response_fields() -> None:
@@ -373,7 +374,31 @@ def test_lists_project_traces_passes_anchor_trace_id() -> None:
     assert fake_trace.list_kwargs["anchor_trace_id"] == "trace-25"
 
 
-def test_lists_project_traces_does_not_default_time_range_with_metadata_filters() -> None:
+def test_lists_project_traces_passes_keyset_cursor() -> None:
+    fake_db = FakeDatabaseReader()
+    fake_trace = FakeTraceReader()
+    override_readers(fake_db, fake_trace)
+
+    try:
+        response = TestClient(app).get(
+            "/api/projects/project-1/traces",
+            params={
+                "cursorCreatedAt": "2026-07-21T01:00:00.000Z",
+                "cursorTraceId": "trace-25",
+                "pageSize": 20,
+            },
+        )
+    finally:
+        clear_overrides()
+
+    assert response.status_code == 200
+    assert fake_trace.list_kwargs["cursor_created_at"] == (
+        "2026-07-21T01:00:00.000Z"
+    )
+    assert fake_trace.list_kwargs["cursor_trace_id"] == "trace-25"
+
+
+def test_lists_project_traces_keeps_default_time_range_with_metadata_filters() -> None:
     fake_db = FakeDatabaseReader()
     fake_trace = FakeTraceReader()
     override_readers(fake_db, fake_trace)
@@ -394,7 +419,7 @@ def test_lists_project_traces_does_not_default_time_range_with_metadata_filters(
     assert fake_trace.list_kwargs["metadata_filters"] == [
         {"key": "latencyMs", "operator": "contains", "value": "9237"},
     ]
-    assert fake_trace.list_kwargs["time_range"] is None
+    assert fake_trace.list_kwargs["time_range"] == "1d"
 
 
 def test_matches_trace_filters_by_business_id_metadata_aliases() -> None:
@@ -940,6 +965,166 @@ async def test_list_traces_pushes_pagination_and_fetches_scores_for_current_page
     ] == ["trace-2"]
     assert result["total"] == 3
     assert [row["traceId"] for row in result["datas"]] == ["trace-2"]
+
+
+@pytest.mark.anyio
+async def test_basic_trace_list_aggregates_observations_for_current_page_only(
+    monkeypatch,
+) -> None:
+    reader = LangfuseClickHouseReader(Settings())
+    captured_queries: list[tuple[str, dict]] = []
+
+    async def fake_query(query: str, params: dict):
+        captured_queries.append((query, params))
+        if "SELECT count() AS total" in query:
+            return [{"total": 100_000}]
+        if "LIMIT {limit:UInt32}" in query:
+            return [
+                {
+                    "traceId": "trace-page-1",
+                    "projectId": "project-1",
+                    "environment": "default",
+                    "createdAt": "2026-07-21 01:00:00.000",
+                    "updatedAt": "2026-07-21 01:00:01.000",
+                    "metadata": {},
+                    "tags": [],
+                }
+            ]
+        return []
+
+    monkeypatch.setattr(reader, "_query_json_each_row", fake_query)
+
+    await reader.list_traces(
+        "project-1",
+        page=1,
+        page_size=10,
+        time_range="1d",
+    )
+
+    count_and_page_queries = [
+        query
+        for query, _params in captured_queries
+        if "SELECT count() AS total" in query or "LIMIT {limit:UInt32}" in query
+    ]
+    assert count_and_page_queries
+    assert all("observation_summary AS" not in query for query in count_and_page_queries)
+    page_summary_queries = [
+        (query, params)
+        for query, params in captured_queries
+        if "page_observation_summary" in query
+    ]
+    assert len(page_summary_queries) == 1
+    assert "trace_id IN" in page_summary_queries[0][0]
+    assert "trace-page-1" in page_summary_queries[0][1].values()
+
+
+def test_aggregate_trace_filter_limits_observations_and_scores_to_candidates() -> None:
+    trace_filter = _build_trace_filter(
+        "project-1",
+        start_time=datetime(2026, 7, 20),
+        statuses=["failed"],
+        score_queue_id="queue-1",
+        categorical_score_filters=[
+            {"name": "quality", "operator": "equals", "value": "good"}
+        ],
+    )
+
+    assert "candidate_traces AS" in trace_filter.cte_sql
+    assert "INNER JOIN candidate_traces" in trace_filter.cte_sql
+    assert "s.queue_id = {score_queue_id:String}" in trace_filter.cte_sql
+    assert "s.name IN" in trace_filter.cte_sql
+
+
+@pytest.mark.anyio
+async def test_trace_list_keyset_cursor_avoids_offset_and_returns_next_cursor(
+    monkeypatch,
+) -> None:
+    reader = LangfuseClickHouseReader(Settings())
+    captured_page_queries: list[tuple[str, dict]] = []
+
+    async def fake_query(query: str, params: dict):
+        if "SELECT count() AS total" in query:
+            return [{"total": 50}]
+        if "LIMIT {limit:UInt32}" in query:
+            captured_page_queries.append((query, params))
+            return [
+                {
+                    "traceId": "trace-24",
+                    "projectId": "project-1",
+                    "environment": "default",
+                    "createdAt": "2026-07-21 00:59:00.000",
+                    "updatedAt": "2026-07-21 00:59:01.000",
+                    "metadata": {},
+                    "tags": [],
+                },
+                {
+                    "traceId": "trace-23",
+                    "projectId": "project-1",
+                    "environment": "default",
+                    "createdAt": "2026-07-21 00:58:00.000",
+                    "updatedAt": "2026-07-21 00:58:01.000",
+                    "metadata": {},
+                    "tags": [],
+                },
+            ]
+        return []
+
+    monkeypatch.setattr(reader, "_query_json_each_row", fake_query)
+
+    result = await reader.list_traces(
+        "project-1",
+        page=2,
+        page_size=1,
+        cursor_created_at="2026-07-21T01:00:00.000Z",
+        cursor_trace_id="trace-25",
+        time_range="1d",
+    )
+
+    assert len(captured_page_queries) == 1
+    query, params = captured_page_queries[0]
+    assert "OFFSET" not in query
+    assert "base.createdAt < {cursor_created_at:DateTime64(3)}" in query
+    assert params["limit"] == 2
+    assert [row["traceId"] for row in result["datas"]] == ["trace-24"]
+    assert result["hasMore"] is True
+    assert result["nextCursor"] == {
+        "createdAt": "2026-07-21T00:59:00.000Z",
+        "traceId": "trace-24",
+    }
+
+
+@pytest.mark.anyio
+async def test_trace_list_reuses_exact_count_for_same_semantic_filters(
+    monkeypatch,
+) -> None:
+    reader = LangfuseClickHouseReader(
+        Settings(
+            pa_eval_trace_count_cache_ttl_seconds=30,
+            pa_eval_trace_count_cache_max_entries=100,
+        )
+    )
+    count_calls = 0
+
+    async def fake_query(query: str, params: dict):
+        nonlocal count_calls
+        if "SELECT count() AS total" in query:
+            count_calls += 1
+            return [{"total": 100_000}]
+        return []
+
+    monkeypatch.setattr(reader, "_query_json_each_row", fake_query)
+
+    for page in (1, 2):
+        result = await reader.list_traces(
+            "project-1",
+            page=page,
+            page_size=10,
+            keyword="refund",
+            time_range="1d",
+        )
+        assert result["total"] == 100_000
+
+    assert count_calls == 1
 
 
 @pytest.mark.anyio

@@ -95,8 +95,9 @@ def generate_annotation_export_archive(
     queue: dict[str, Any],
     metrics: dict[str, Any],
     score_configs: list[dict[str, Any]],
-    items: list[dict[str, Any]],
+    items: Iterable[dict[str, Any]],
     split_metadata: bool,
+    metadata_keys: list[str] | None = None,
 ) -> Path:
     if export_format not in EXPORT_FORMATS:
         raise ValueError(f"Unsupported export format: {export_format}")
@@ -105,7 +106,11 @@ def generate_annotation_export_archive(
     safe_base_file_name = _safe_file_name(base_file_name)
     archive_path = output_dir / f"{safe_base_file_name}.zip"
     data_file_name = f"{safe_base_file_name}.{export_format}"
-    metadata_keys = _collect_metadata_keys(items) if split_metadata else []
+    metadata_keys = (
+        metadata_keys
+        if metadata_keys is not None
+        else (_collect_metadata_keys(items) if split_metadata else [])
+    )
     detail_headers = _build_detail_headers(metadata_keys, score_configs, split_metadata)
     manifest = {
         "queue": queue,
@@ -118,7 +123,9 @@ def generate_annotation_export_archive(
         "generatedAt": datetime.now(UTC).isoformat(),
     }
 
-    with zipfile.ZipFile(archive_path, "w", compression=zipfile.ZIP_DEFLATED) as archive:
+    with zipfile.ZipFile(
+        archive_path, "w", compression=zipfile.ZIP_DEFLATED
+    ) as archive:
         archive.writestr(
             "manifest.json",
             json.dumps(manifest, ensure_ascii=False, default=str, indent=2),
@@ -156,7 +163,9 @@ def _build_detail_rows(
     *,
     metadata_keys: list[str] | None = None,
 ) -> list[dict[str, str]]:
-    metadata_keys = metadata_keys if metadata_keys is not None else _collect_metadata_keys(items)
+    metadata_keys = (
+        metadata_keys if metadata_keys is not None else _collect_metadata_keys(items)
+    )
     return list(
         _iter_detail_rows(
             items,
@@ -207,7 +216,9 @@ def _iter_detail_rows(
             "observationId": _stringify(
                 source.get("observationId") or source.get("observation_id")
             ),
-            "sessionId": _stringify(source.get("sessionId") or source.get("session_id")),
+            "sessionId": _stringify(
+                source.get("sessionId") or source.get("session_id")
+            ),
             "userId": _stringify(source.get("userId") or source.get("user_id")),
             "input": _stringify(source.get("input")),
             "output": _stringify(source.get("output")),
@@ -220,13 +231,15 @@ def _iter_detail_rows(
             row["metadata"] = _stringify(raw_metadata)
 
         for config, column_name in zip(score_configs, score_columns, strict=True):
-            config_id = config.get("id") or config.get("configId") or config.get("config_id")
+            config_id = (
+                config.get("id") or config.get("configId") or config.get("config_id")
+            )
             row[column_name] = score_to_label(config, scores_by_config.get(config_id))
 
         yield row
 
 
-def _collect_metadata_keys(items: list[dict[str, Any]]) -> list[str]:
+def _collect_metadata_keys(items: Iterable[dict[str, Any]]) -> list[str]:
     keys: set[str] = set()
     for item in items:
         source = item.get("source") or {}
@@ -262,7 +275,9 @@ def _score_column_names(
     used_headers = set(reserved_headers)
     names = []
     for score_config in score_configs:
-        base_name = _stringify(score_config.get("name") or score_config.get("id") or "score")
+        base_name = _stringify(
+            score_config.get("name") or score_config.get("id") or "score"
+        )
         base_name = base_name or "score"
         column_name = _next_available_header(base_name, used_headers)
         used_headers.add(column_name)
@@ -362,7 +377,9 @@ def _render_xlsx(
         archive.writestr("[Content_Types].xml", _content_types_xml(len(sheet_specs)))
         archive.writestr("_rels/.rels", _ROOT_RELS_XML)
         archive.writestr("xl/workbook.xml", _workbook_xml(sheet_specs))
-        archive.writestr("xl/_rels/workbook.xml.rels", _workbook_rels_xml(len(sheet_specs)))
+        archive.writestr(
+            "xl/_rels/workbook.xml.rels", _workbook_rels_xml(len(sheet_specs))
+        )
         archive.writestr("xl/styles.xml", _STYLES_XML)
         for index, (_, rows, highlighted_from) in enumerate(sheet_specs, start=1):
             archive.writestr(
@@ -394,7 +411,9 @@ def _write_xlsx(
         archive.writestr("[Content_Types].xml", _content_types_xml(len(sheet_specs)))
         archive.writestr("_rels/.rels", _ROOT_RELS_XML)
         archive.writestr("xl/workbook.xml", _workbook_xml(sheet_specs))
-        archive.writestr("xl/_rels/workbook.xml.rels", _workbook_rels_xml(len(sheet_specs)))
+        archive.writestr(
+            "xl/_rels/workbook.xml.rels", _workbook_rels_xml(len(sheet_specs))
+        )
         archive.writestr("xl/styles.xml", _STYLES_XML)
         archive.writestr(
             "xl/worksheets/sheet1.xml",
@@ -485,7 +504,7 @@ def _build_sheet_xml(
     return (
         '<?xml version="1.0" encoding="UTF-8" standalone="yes"?>'
         '<worksheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main">'
-        f'<sheetData>{"".join(xml_rows)}</sheetData>'
+        f"<sheetData>{''.join(xml_rows)}</sheetData>"
         "</worksheet>"
     )
 

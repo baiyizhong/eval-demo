@@ -1,6 +1,7 @@
 import json
 import hashlib
 from datetime import datetime, timedelta, timezone
+from collections.abc import AsyncIterator
 from typing import Any
 from uuid import uuid4
 
@@ -1836,22 +1837,68 @@ class LangfuseDatabaseReader:
         *,
         batch_size: int = 1000,
     ):
-        page = 1
+        await self._ensure_project_visible(project_id, user_id)
+        await self._ensure_dataset_visible(project_id, dataset_id)
+        cursor: dict[str, Any] = {}
         while True:
-            result = await self.list_dataset_items_for_user(
-                project_id,
-                dataset_id,
-                user_id,
-                page=page,
-                page_size=batch_size,
+            params: dict[str, Any] = {
+                "project_id": project_id,
+                "dataset_id": dataset_id,
+                "limit": batch_size,
+            }
+            cursor_sql = ""
+            if cursor:
+                params.update(
+                    {
+                        "cursor_updated_at": cursor["updatedAt"],
+                        "cursor_created_at": cursor["createdAt"],
+                        "cursor_id": cursor["id"],
+                    }
+                )
+                cursor_sql = """
+                  AND (di.updated_at, di.created_at, di.id) < (
+                        %(cursor_updated_at)s,
+                        %(cursor_created_at)s,
+                        %(cursor_id)s
+                  )
+                """
+            rows = await self._fetch_all(
+                f"""
+                SELECT
+                    di.id,
+                    di.project_id,
+                    di.dataset_id,
+                    di.status::text AS status,
+                    di.input,
+                    di.expected_output,
+                    di.metadata,
+                    di.source_trace_id,
+                    di.source_observation_id,
+                    di.is_deleted,
+                    di.created_at,
+                    di.updated_at
+                FROM dataset_items di
+                WHERE di.project_id = %(project_id)s
+                  AND di.dataset_id = %(dataset_id)s
+                  AND di.valid_to IS NULL
+                  {cursor_sql}
+                ORDER BY di.updated_at DESC, di.created_at DESC, di.id DESC
+                LIMIT %(limit)s
+                """,
+                params,
             )
-            items = result["datas"]
+            items = [self._to_dataset_item_payload(row) for row in rows]
             if not items:
                 break
             yield items
             if len(items) < batch_size:
                 break
-            page += 1
+            last_row = rows[-1]
+            cursor = {
+                "updatedAt": last_row["updated_at"],
+                "createdAt": last_row["created_at"],
+                "id": last_row["id"],
+            }
 
     async def create_dataset_item_for_user(
         self,
@@ -3817,6 +3864,101 @@ class LangfuseDatabaseReader:
         )
         return [self._to_annotation_item_payload(row) for row in rows]
 
+    async def iter_annotation_queue_items_for_user(
+        self,
+        project_id: str,
+        queue_id: str,
+        user_id: str,
+        *,
+        batch_size: int = 500,
+        include_details: bool = False,
+        include_source: bool = False,
+        include_assignment: bool = False,
+        include_has_scores: bool = False,
+    ) -> AsyncIterator[list[dict[str, Any]]]:
+        """Scan a queue in stable descending order without OFFSET/full materialization."""
+        await self.get_annotation_queue_for_user(project_id, queue_id, user_id)
+        cursor_values: tuple[Any, Any, str] | None = None
+        while True:
+            params: dict[str, Any] = {
+                "project_id": project_id,
+                "queue_id": queue_id,
+                "limit": batch_size,
+            }
+            seek_sql = ""
+            if cursor_values is not None:
+                params.update(
+                    {
+                        "cursor_updated_at": cursor_values[0],
+                        "cursor_created_at": cursor_values[1],
+                        "cursor_id": cursor_values[2],
+                    }
+                )
+                seek_sql = """
+                  AND (aqi.updated_at, aqi.created_at, aqi.id) < (
+                    %(cursor_updated_at)s,
+                    %(cursor_created_at)s,
+                    %(cursor_id)s
+                  )
+                """
+            select_sql = (
+                self._annotation_item_select_sql()
+                if include_details
+                else self._annotation_item_candidate_select_sql(
+                    include_source=include_source,
+                    include_assignment=include_assignment,
+                    include_has_scores=include_has_scores,
+                )
+            )
+            rows = await self._fetch_all(
+                select_sql
+                + f"""
+                WHERE aqi.project_id = %(project_id)s
+                  AND aqi.queue_id = %(queue_id)s
+                  {seek_sql}
+                ORDER BY aqi.updated_at DESC, aqi.created_at DESC, aqi.id DESC
+                LIMIT %(limit)s
+                """,
+                params,
+            )
+            if not rows:
+                return
+            yield [self._to_annotation_item_payload(row) for row in rows]
+            last = rows[-1]
+            cursor_values = (
+                last["updated_at"],
+                last["created_at"],
+                str(last["id"]),
+            )
+            if len(rows) < batch_size:
+                return
+
+    async def list_annotation_queue_items_by_ids_for_user(
+        self,
+        project_id: str,
+        queue_id: str,
+        user_id: str,
+        item_ids: list[str],
+    ) -> list[dict[str, Any]]:
+        if not item_ids:
+            return []
+        await self.get_annotation_queue_for_user(project_id, queue_id, user_id)
+        rows = await self._fetch_all(
+            self._annotation_item_select_sql()
+            + """
+            WHERE aqi.project_id = %(project_id)s
+              AND aqi.queue_id = %(queue_id)s
+              AND aqi.id = ANY(%(item_ids)s)
+            """,
+            {"project_id": project_id, "queue_id": queue_id, "item_ids": item_ids},
+        )
+        row_by_id = {str(row["id"]): row for row in rows}
+        return [
+            self._to_annotation_item_payload(row_by_id[item_id])
+            for item_id in item_ids
+            if item_id in row_by_id
+        ]
+
     async def list_annotation_queue_items_page_for_user(
         self,
         project_id: str,
@@ -3836,9 +3978,20 @@ class LangfuseDatabaseReader:
             "offset": (page - 1) * page_size,
             **filter_params,
         }
-        base_sql = (
+        source_filters = bool(
+            filters.get("keyword")
+            or filters.get("metadata_filter")
+            or filters.get("metadata_filters")
+            or filters.get("input_filters")
+            or filters.get("output_filters")
+        )
+        candidate_base_sql = (
             "WITH annotation_items AS ("
-            + self._annotation_item_select_sql()
+            + self._annotation_item_candidate_select_sql(
+                include_source=source_filters,
+                include_assignment=bool(filters.get("assignee_ids")),
+                include_has_scores=filters.get("has_scores") is not None,
+            )
             + """
             WHERE aqi.project_id = %(project_id)s
               AND aqi.queue_id = %(queue_id)s
@@ -3846,7 +3999,7 @@ class LangfuseDatabaseReader:
             """
         )
         total_rows = await self._fetch_all(
-            base_sql
+            candidate_base_sql
             + f"""
             SELECT COUNT(*)::int AS total
             FROM annotation_items item
@@ -3854,10 +4007,10 @@ class LangfuseDatabaseReader:
             """,
             params,
         )
-        rows = await self._fetch_all(
-            base_sql
+        candidate_rows = await self._fetch_all(
+            candidate_base_sql
             + f"""
-            SELECT *
+            SELECT item.id
             FROM annotation_items item
             WHERE {filter_sql}
             ORDER BY item.updated_at DESC, item.created_at DESC, item.id DESC
@@ -3865,6 +4018,25 @@ class LangfuseDatabaseReader:
             """,
             params,
         )
+        page_ids = [str(row["id"]) for row in candidate_rows]
+        if not page_ids:
+            rows: list[dict[str, Any]] = []
+        else:
+            rows = await self._fetch_all(
+                self._annotation_item_select_sql()
+                + """
+                WHERE aqi.project_id = %(project_id)s
+                  AND aqi.queue_id = %(queue_id)s
+                  AND aqi.id = ANY(%(page_item_ids)s)
+                """,
+                {
+                    "project_id": project_id,
+                    "queue_id": queue_id,
+                    "page_item_ids": page_ids,
+                },
+            )
+            row_by_id = {str(row["id"]): row for row in rows}
+            rows = [row_by_id[item_id] for item_id in page_ids if item_id in row_by_id]
         return {
             "total": int((total_rows[0] if total_rows else {}).get("total") or 0),
             "datas": [self._to_annotation_item_payload(row) for row in rows],
@@ -3881,7 +4053,17 @@ class LangfuseDatabaseReader:
         await self.get_annotation_queue_for_user(project_id, queue_id, user_id)
         base_sql = (
             "WITH annotation_items AS ("
-            + self._annotation_item_select_sql()
+            + self._annotation_item_candidate_select_sql(
+                include_source=bool(
+                    filters.get("keyword")
+                    or filters.get("metadata_filter")
+                    or filters.get("metadata_filters")
+                    or filters.get("input_filters")
+                    or filters.get("output_filters")
+                ),
+                include_assignment=True,
+                include_has_scores=filters.get("has_scores") is not None,
+            )
             + """
             WHERE aqi.project_id = %(project_id)s
               AND aqi.queue_id = %(queue_id)s
@@ -4338,16 +4520,20 @@ class LangfuseDatabaseReader:
                     created_item_ids.extend(item["itemId"] for item in batch_items)
                     created_items.extend(batch_items)
 
-                for item in created_items:
-                    await _copy_existing_annotation_scores_for_item(
-                        cursor,
-                        project_id=project_id,
-                        queue_id=queue_id,
-                        item_id=item["itemId"],
-                        object_id=item["traceId"],
-                        object_type="TRACE",
-                        score_config_ids=score_config_ids,
-                    )
+                await _copy_existing_annotation_scores_for_items(
+                    cursor,
+                    project_id=project_id,
+                    queue_id=queue_id,
+                    items=[
+                        {
+                            "itemId": item["itemId"],
+                            "objectId": item["traceId"],
+                            "objectType": "TRACE",
+                        }
+                        for item in created_items
+                    ],
+                    score_config_ids=score_config_ids,
+                )
 
                 await self._assign_annotation_queue_items(
                     cursor,
@@ -4616,6 +4802,53 @@ class LangfuseDatabaseReader:
             item_id,
             user_id,
         )
+
+    async def complete_annotation_queue_items_for_user(
+        self,
+        project_id: str,
+        queue_id: str,
+        item_ids: list[str],
+        user_id: str,
+    ) -> None:
+        unique_item_ids = list(dict.fromkeys(item_ids))
+        if not unique_item_ids:
+            return
+        if not self._database_url:
+            raise LangfuseDatabaseConfigError()
+        async with await connect_postgres(
+            self._database_url,
+            row_factory=dict_row,
+        ) as connection:
+            async with connection.cursor() as cursor:
+                await self._get_project_for_user(cursor, project_id, user_id)
+                await cursor.execute(
+                    """
+                    UPDATE annotation_queue_items
+                    SET
+                        status = 'COMPLETED'::"AnnotationQueueStatus",
+                        annotator_user_id = %(user_id)s,
+                        completed_at = COALESCE(completed_at, NOW()),
+                        updated_at = NOW()
+                    WHERE project_id = %(project_id)s
+                      AND queue_id = %(queue_id)s
+                      AND id = ANY(%(item_ids)s)
+                    """,
+                    {
+                        "project_id": project_id,
+                        "queue_id": queue_id,
+                        "item_ids": unique_item_ids,
+                        "user_id": user_id,
+                    },
+                )
+                await cursor.execute(
+                    """
+                    UPDATE annotation_queues
+                    SET updated_at = NOW()
+                    WHERE project_id = %(project_id)s
+                      AND id = %(queue_id)s
+                    """,
+                    {"project_id": project_id, "queue_id": queue_id},
+                )
 
     async def get_project_api_key_credentials_for_user(
         self,
@@ -6266,9 +6499,9 @@ class LangfuseDatabaseReader:
                 "item.completed_at <= CAST(%(annotation_completed_at_to)s AS timestamptz)"
             )
         if filters.get("has_scores") is True:
-            conditions.append("jsonb_array_length(item.scores) > 0")
+            conditions.append("item.has_scores")
         elif filters.get("has_scores") is False:
-            conditions.append("jsonb_array_length(item.scores) = 0")
+            conditions.append("NOT item.has_scores")
 
         metadata_filters = list(filters.get("metadata_filters") or [])
         metadata_filter = filters.get("metadata_filter")
@@ -6296,6 +6529,137 @@ class LangfuseDatabaseReader:
             prefix="annotation_output",
         )
         return " AND ".join(conditions), params
+
+    @staticmethod
+    def _annotation_item_candidate_select_sql(
+        *,
+        include_source: bool = True,
+        include_assignment: bool = True,
+        include_has_scores: bool = True,
+    ) -> str:
+        """Return only fields needed to filter, count and order annotation items."""
+        source_columns = (
+            """
+                CASE
+                    WHEN aqi.object_type::text = 'TRACE' THEN COALESCE(t.name, t.id)
+                    WHEN aqi.object_type::text = 'OBSERVATION' THEN COALESCE(o.name, o.id)
+                    ELSE COALESCE(ts.id, aqi.object_id)
+                END AS source_title,
+                COALESCE(t.input, o.input) AS source_input,
+                COALESCE(t.output, o.output) AS source_output,
+                COALESCE(t.metadata, o.metadata, '{}'::jsonb) AS source_metadata,
+                COALESCE(t.id, o.trace_id, trace_from_observation.id, '') AS trace_id,
+                COALESCE(t.session_id, trace_from_observation.session_id, ts.id, '')
+                    AS session_id,
+                COALESCE(t.user_id, trace_from_observation.user_id, '') AS user_id,
+                COALESCE(t.timestamp, o.start_time, ts.created_at, aqi.created_at)
+                    AS source_created_at,
+            """
+            if include_source
+            else """
+                aqi.object_id AS source_title,
+                NULL::jsonb AS source_input,
+                NULL::jsonb AS source_output,
+                '{}'::jsonb AS source_metadata,
+                CASE WHEN aqi.object_type::text = 'TRACE' THEN aqi.object_id ELSE '' END
+                    AS trace_id,
+                CASE WHEN aqi.object_type::text = 'SESSION' THEN aqi.object_id ELSE '' END
+                    AS session_id,
+                ''::text AS user_id,
+                aqi.created_at AS source_created_at,
+            """
+        )
+        source_joins = (
+            """
+            LEFT JOIN traces t
+              ON aqi.object_type::text = 'TRACE'
+             AND t.project_id = aqi.project_id
+             AND t.id = aqi.object_id
+            LEFT JOIN observations o
+              ON aqi.object_type::text = 'OBSERVATION'
+             AND o.project_id = aqi.project_id
+             AND o.id = aqi.object_id
+            LEFT JOIN traces trace_from_observation
+              ON trace_from_observation.project_id = aqi.project_id
+             AND trace_from_observation.id = o.trace_id
+            LEFT JOIN trace_sessions ts
+              ON aqi.object_type::text = 'SESSION'
+             AND ts.project_id = aqi.project_id
+             AND ts.id = aqi.object_id
+            """
+            if include_source
+            else ""
+        )
+        assignment_join = (
+            """
+            LEFT JOIN pa_annotation_queue_item_assignments assignment
+              ON assignment.project_id = aqi.project_id
+             AND assignment.queue_id = aqi.queue_id
+             AND assignment.item_id = aqi.id
+            LEFT JOIN users assignee_user ON assignee_user.id = assignment.assignee_user_id
+            """
+            if include_assignment
+            else ""
+        )
+        assignee_columns = (
+            """
+                assignment.assignee_user_id AS assignee_id,
+                assignee_user.name AS assignee_name,
+                assignee_user.email AS assignee_email,
+            """
+            if include_assignment
+            else """
+                NULL::text AS assignee_id,
+                NULL::text AS assignee_name,
+                NULL::text AS assignee_email,
+            """
+        )
+        score_expression = (
+            """EXISTS (
+                    SELECT 1
+                    FROM scores candidate_score
+                    WHERE candidate_score.project_id = aqi.project_id
+                      AND candidate_score.queue_id = aqi.queue_id
+                      AND candidate_score.source::text = 'ANNOTATION'
+                      AND (
+                        (aqi.object_type::text = 'TRACE'
+                         AND candidate_score.trace_id = aqi.object_id
+                         AND candidate_score.observation_id IS NULL)
+                        OR (aqi.object_type::text = 'OBSERVATION'
+                            AND candidate_score.observation_id = aqi.object_id)
+                        OR (aqi.object_type::text = 'SESSION'
+                            AND candidate_score.trace_id = aqi.object_id)
+                      )
+                )"""
+            if include_has_scores
+            else "FALSE"
+        )
+        return f"""
+            SELECT
+                aqi.id,
+                aqi.project_id,
+                aqi.queue_id,
+                aqi.object_id,
+                aqi.object_type::text AS object_type,
+                aqi.status::text AS status,
+                aqi.completed_at,
+                aqi.created_at,
+                aqi.updated_at,
+                aqi.annotator_user_id AS completed_by_id,
+                completed_user.name AS completed_by_name,
+                completed_user.email AS completed_by_email,
+                {assignee_columns}
+                {source_columns}
+                0::numeric AS latency_ms,
+                0::numeric AS cost_usd,
+                {score_expression} AS has_scores,
+                CASE WHEN {score_expression} THEN '[{{}}]'::jsonb ELSE '[]'::jsonb END
+                    AS scores
+            FROM annotation_queue_items aqi
+            LEFT JOIN users completed_user ON completed_user.id = aqi.annotator_user_id
+            {assignment_join}
+            {source_joins}
+            """
 
     @staticmethod
     def _append_annotation_json_filters(
@@ -6349,6 +6713,7 @@ class LangfuseDatabaseReader:
                 assignee_user.name AS assignee_name,
                 assignee_user.email AS assignee_email,
                 COALESCE(scores.scores, '[]'::jsonb) AS scores,
+                COALESCE(scores.scores, '[]'::jsonb) <> '[]'::jsonb AS has_scores,
                 CASE
                     WHEN aqi.object_type::text = 'TRACE' THEN COALESCE(t.name, t.id)
                     WHEN aqi.object_type::text = 'OBSERVATION' THEN COALESCE(o.name, o.id)
@@ -7139,9 +7504,24 @@ class LangfuseDatabaseReader:
             weights=weights,
             existing_counts=existing_counts,
         )
-        for item_id, assignee_id in assignments:
+        if assignments:
+            values_sql: list[str] = []
+            params: dict[str, Any] = {
+                "user_id": user_id,
+                "project_id": project_id,
+                "queue_id": queue_id,
+            }
+            for index, (item_id, assignee_id) in enumerate(assignments):
+                params[f"id_{index}"] = _new_langfuse_id("paannassign")
+                params[f"item_id_{index}"] = item_id
+                params[f"assignee_id_{index}"] = assignee_id
+                values_sql.append(
+                    f"(%(user_id)s, %(user_id)s, %(id_{index})s, "
+                    f"%(project_id)s, %(queue_id)s, %(item_id_{index})s, "
+                    f"%(assignee_id_{index})s)"
+                )
             await cursor.execute(
-                """
+                f"""
                 INSERT INTO pa_annotation_queue_item_assignments (
                     create_by,
                     update_by,
@@ -7151,29 +7531,14 @@ class LangfuseDatabaseReader:
                     item_id,
                     assignee_user_id
                 )
-                VALUES (
-                    %(user_id)s,
-                    %(user_id)s,
-                    %(id)s,
-                    %(project_id)s,
-                    %(queue_id)s,
-                    %(item_id)s,
-                    %(assignee_user_id)s
-                )
+                VALUES {", ".join(values_sql)}
                 ON CONFLICT (project_id, queue_id, item_id)
                 DO UPDATE SET
                     update_by = EXCLUDED.update_by,
                     update_date = NOW(),
                     assignee_user_id = EXCLUDED.assignee_user_id
                 """,
-                {
-                    "user_id": user_id,
-                    "id": _new_langfuse_id("paannassign"),
-                    "project_id": project_id,
-                    "queue_id": queue_id,
-                    "item_id": item_id,
-                    "assignee_user_id": assignee_id,
-                },
+                params,
             )
 
     @staticmethod
@@ -8237,12 +8602,53 @@ async def _copy_existing_annotation_scores_for_item(
     object_type: str,
     score_config_ids: list[str],
 ) -> int:
-    if not score_config_ids:
-        return 0
+    return await _copy_existing_annotation_scores_for_items(
+        cursor,
+        project_id=project_id,
+        queue_id=queue_id,
+        items=[
+            {
+                "itemId": item_id,
+                "objectId": object_id,
+                "objectType": object_type,
+            }
+        ],
+        score_config_ids=score_config_ids,
+    )
 
+
+async def _copy_existing_annotation_scores_for_items(
+    cursor: psycopg.AsyncCursor[dict[str, Any]],
+    *,
+    project_id: str,
+    queue_id: str,
+    items: list[dict[str, str]],
+    score_config_ids: list[str],
+) -> int:
+    if not score_config_ids or not items:
+        return 0
+    candidate_values: list[str] = []
+    params: dict[str, Any] = {
+        "project_id": project_id,
+        "queue_id": queue_id,
+        "score_config_ids": score_config_ids,
+    }
+    for index, item in enumerate(items):
+        params[f"item_id_{index}"] = item["itemId"]
+        params[f"object_id_{index}"] = item["objectId"]
+        params[f"object_type_{index}"] = item["objectType"]
+        candidate_values.append(
+            f"(%(item_id_{index})s, %(object_id_{index})s, %(object_type_{index})s)"
+        )
     await cursor.execute(
-        """
-        SELECT DISTINCT ON (s.config_id)
+        f"""
+        WITH candidates(item_id, object_id, object_type) AS (
+            VALUES {", ".join(candidate_values)}
+        )
+        SELECT DISTINCT ON (candidate.item_id, s.config_id)
+            candidate.item_id,
+            candidate.object_id,
+            candidate.object_type,
             s.config_id,
             s.name,
             s.value,
@@ -8252,46 +8658,39 @@ async def _copy_existing_annotation_scores_for_item(
             s.author_user_id,
             s.trace_id,
             s.observation_id
-        FROM scores s
+        FROM candidates candidate
+        JOIN scores s ON (
+            (candidate.object_type = 'TRACE'
+             AND s.trace_id = candidate.object_id
+             AND s.observation_id IS NULL)
+            OR (candidate.object_type = 'OBSERVATION'
+                AND s.observation_id = candidate.object_id)
+            OR (candidate.object_type = 'SESSION'
+                AND s.trace_id = candidate.object_id)
+        )
         WHERE s.project_id = %(project_id)s
           AND s.source::text = 'ANNOTATION'
           AND s.config_id = ANY(%(score_config_ids)s)
           AND COALESCE(s.queue_id, '') <> %(queue_id)s
-          AND (
-            (
-              %(object_type)s = 'TRACE'
-              AND s.trace_id = %(object_id)s
-              AND s.observation_id IS NULL
-            )
-            OR (
-              %(object_type)s = 'OBSERVATION'
-              AND s.observation_id = %(object_id)s
-            )
-            OR (
-              %(object_type)s = 'SESSION'
-              AND s.trace_id = %(object_id)s
-            )
-          )
-        ORDER BY s.config_id, s.updated_at DESC, s.created_at DESC, s.id DESC
+        ORDER BY candidate.item_id, s.config_id,
+                 s.updated_at DESC, s.created_at DESC, s.id DESC
         """,
-        {
-            "project_id": project_id,
-            "queue_id": queue_id,
-            "object_id": object_id,
-            "object_type": object_type,
-            "score_config_ids": score_config_ids,
-        },
+        params,
     )
-    rows = await cursor.fetchall()
-    copied_count = 0
-    for row in rows:
+    rows = list(await cursor.fetchall())
+    insert_values: list[str] = []
+    insert_params: dict[str, Any] = {"project_id": project_id, "queue_id": queue_id}
+    for index, row in enumerate(rows):
         config_id = str(row.get("config_id") or "").strip()
         if not config_id:
             continue
+        item_id = str(row.get("item_id") or items[0]["itemId"])
+        object_id = str(row.get("object_id") or items[0]["objectId"])
+        object_type = str(row.get("object_type") or items[0]["objectType"])
         trace_id = str(row.get("trace_id") or object_id)
         observation_id = str(row.get("observation_id") or "")
         session_id = object_id if object_type == "SESSION" else ""
-        score_id = _annotation_score_id(
+        insert_params[f"id_{index}"] = _annotation_score_id(
             project_id=project_id,
             queue_id=queue_id,
             item_id=item_id,
@@ -8300,8 +8699,31 @@ async def _copy_existing_annotation_scores_for_item(
             observation_id=observation_id,
             session_id=session_id,
         )
+        for key in (
+            "name",
+            "value",
+            "author_user_id",
+            "comment",
+            "string_value",
+            "data_type",
+        ):
+            insert_params[f"{key}_{index}"] = row.get(key)
+        insert_params[f"name_{index}"] = row.get("name") or ""
+        insert_params[f"data_type_{index}"] = row.get("data_type") or "NUMERIC"
+        insert_params[f"trace_id_{index}"] = trace_id
+        insert_params[f"observation_id_{index}"] = observation_id or None
+        insert_params[f"config_id_{index}"] = config_id
+        insert_values.append(
+            f"(%(id_{index})s, NOW(), %(project_id)s, %(name_{index})s, "
+            f"%(value_{index})s, 'ANNOTATION'::\"ScoreSource\", "
+            f"%(author_user_id_{index})s, %(comment_{index})s, "
+            f"%(trace_id_{index})s, %(observation_id_{index})s, "
+            f"%(config_id_{index})s, %(string_value_{index})s, %(queue_id)s, "
+            f'NOW(), NOW(), %(data_type_{index})s::"ScoreConfigDataType")'
+        )
+    if insert_values:
         await cursor.execute(
-            """
+            f"""
             INSERT INTO scores (
                 id,
                 timestamp,
@@ -8320,43 +8742,12 @@ async def _copy_existing_annotation_scores_for_item(
                 updated_at,
                 data_type
             )
-            VALUES (
-                %(id)s,
-                NOW(),
-                %(project_id)s,
-                %(name)s,
-                %(value)s,
-                'ANNOTATION'::"ScoreSource",
-                %(author_user_id)s,
-                %(comment)s,
-                %(trace_id)s,
-                %(observation_id)s,
-                %(config_id)s,
-                %(string_value)s,
-                %(queue_id)s,
-                NOW(),
-                NOW(),
-                %(data_type)s::"ScoreConfigDataType"
-            )
+            VALUES {", ".join(insert_values)}
             ON CONFLICT (id) DO NOTHING
             """,
-            {
-                "id": score_id,
-                "project_id": project_id,
-                "name": row.get("name") or "",
-                "value": row.get("value"),
-                "author_user_id": row.get("author_user_id"),
-                "comment": row.get("comment"),
-                "trace_id": trace_id,
-                "observation_id": observation_id or None,
-                "config_id": config_id,
-                "string_value": row.get("string_value"),
-                "queue_id": queue_id,
-                "data_type": row.get("data_type") or "NUMERIC",
-            },
+            insert_params,
         )
-        copied_count += 1
-    return copied_count
+    return len(insert_values)
 
 
 def _annotation_score_id(

@@ -7,6 +7,7 @@ from fastapi.testclient import TestClient
 
 from app import dataset_exports
 from app.auth_context import CurrentUserContext, get_current_user_context
+from app.config import Settings
 from app.langfuse_db import LangfuseDatabaseReader, get_langfuse_db_reader
 from app.main import app
 
@@ -852,6 +853,100 @@ def test_dataset_export_streams_items_in_batches(tmp_path: Path) -> None:
     assert fake_reader.export_item_batches == [1000]
     file_path = Path(fake_reader.export_job["filePath"])
     assert file_path.read_text(encoding="utf-8").count("\n") == 4
+
+
+def test_dataset_export_reader_uses_keyset_without_count_or_offset(
+    monkeypatch,
+) -> None:
+    reader = LangfuseDatabaseReader(Settings())
+    list_calls = 0
+    queries: list[tuple[str, dict]] = []
+
+    async def fake_list(*args, **kwargs):
+        nonlocal list_calls
+        list_calls += 1
+        page = kwargs["page"]
+        rows = [
+            {
+                "id": f"item-{3 - (page - 1) * 2 - index}",
+                "projectId": "project-1",
+                "datasetId": "dataset-1",
+                "status": "ACTIVE",
+                "input": {},
+                "expectedOutput": {},
+                "metadata": {},
+                "sourceTraceId": "",
+                "sourceObservationId": "",
+                "createdAt": "2026-07-01T00:00:00.000Z",
+                "updatedAt": "2026-07-01T00:00:00.000Z",
+            }
+            for index in range(2 if page == 1 else 1)
+        ]
+        return {"total": 3, "datas": rows}
+
+    async def fake_ensure_project(*args, **kwargs):
+        return None
+
+    async def fake_ensure_dataset(*args, **kwargs):
+        return None
+
+    async def fake_fetch_all(sql: str, params: dict):
+        queries.append((sql, params))
+        rows = [
+            {
+                "id": "item-3",
+                "project_id": "project-1",
+                "dataset_id": "dataset-1",
+                "status": "ACTIVE",
+                "input": {},
+                "expected_output": {},
+                "metadata": {},
+                "source_trace_id": "",
+                "source_observation_id": "",
+                "is_deleted": False,
+                "created_at": datetime(2026, 7, 1, 0, 0, 0),
+                "updated_at": datetime(2026, 7, 1, 0, 0, 2),
+            },
+            {
+                "id": "item-2",
+                "project_id": "project-1",
+                "dataset_id": "dataset-1",
+                "status": "ACTIVE",
+                "input": {},
+                "expected_output": {},
+                "metadata": {},
+                "source_trace_id": "",
+                "source_observation_id": "",
+                "is_deleted": False,
+                "created_at": datetime(2026, 7, 1, 0, 0, 0),
+                "updated_at": datetime(2026, 7, 1, 0, 0, 1),
+            },
+        ]
+        if params.get("cursor_id") == "item-2":
+            return [{**rows[1], "id": "item-1", "updated_at": datetime(2026, 7, 1)}]
+        return rows
+
+    monkeypatch.setattr(reader, "list_dataset_items_for_user", fake_list)
+    monkeypatch.setattr(reader, "_ensure_project_visible", fake_ensure_project)
+    monkeypatch.setattr(reader, "_ensure_dataset_visible", fake_ensure_dataset)
+    monkeypatch.setattr(reader, "_fetch_all", fake_fetch_all)
+
+    async def collect_ids() -> list[str]:
+        ids: list[str] = []
+        async for batch in reader.iter_dataset_items_for_export(
+            "project-1",
+            "dataset-1",
+            "user-1",
+            batch_size=2,
+        ):
+            ids.extend(item["id"] for item in batch)
+        return ids
+
+    assert asyncio.run(collect_ids()) == ["item-3", "item-2", "item-1"]
+    assert list_calls == 0
+    assert queries
+    assert all("COUNT(" not in sql.upper() and "OFFSET" not in sql.upper() for sql, _ in queries)
+    assert queries[1][1]["cursor_id"] == "item-2"
 
 
 def test_dataset_xlsx_export_streams_items_into_workbook(tmp_path: Path) -> None:

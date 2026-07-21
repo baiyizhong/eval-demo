@@ -64,6 +64,8 @@ async def list_traces(
     tags_bracket: list[str] | None = Query(default=None, alias="tags[]"),
     session_id: str | None = Query(default=None, alias="sessionId"),
     anchor_trace_id: str | None = Query(default=None, alias="anchorTraceId"),
+    cursor_created_at: str | None = Query(default=None, alias="cursorCreatedAt"),
+    cursor_trace_id: str | None = Query(default=None, alias="cursorTraceId"),
     user_id: str | None = Query(default=None, alias="userId"),
     business_id: str | None = Query(default=None, alias="businessId"),
     latency_min: int | None = Query(default=None, alias="latencyMin"),
@@ -134,6 +136,8 @@ async def list_traces(
             tags=resolved_tags,
             session_id=session_id,
             anchor_trace_id=anchor_trace_id,
+            cursor_created_at=cursor_created_at,
+            cursor_trace_id=cursor_trace_id,
             user_id=user_id,
             business_id=business_id,
             latency_min=latency_min,
@@ -276,28 +280,7 @@ def _resolve_trace_time_range(
 ) -> str | None:
     if created_at_range:
         return None
-    if time_range:
-        return time_range
-    if any(
-        (
-            _has_text(keyword),
-            statuses,
-            environments,
-            _has_text(session_id),
-            _has_text(user_id),
-            _has_text(business_id),
-            latency_min is not None,
-            latency_max is not None,
-            _has_text(score_queue_id),
-            _has_text(metadata_key),
-            _has_text(metadata_value),
-            metadata_filters,
-            categorical_score_filters,
-            numeric_score_filters,
-        )
-    ):
-        return None
-    return "1d"
+    return time_range or "1d"
 
 
 def _has_text(value: str | None) -> bool:

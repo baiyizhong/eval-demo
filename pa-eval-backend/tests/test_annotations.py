@@ -5,6 +5,7 @@ from fastapi.testclient import TestClient
 
 from app import langfuse_db
 from app.auth_context import CurrentUserContext, get_current_user_context
+from app.config import Settings
 from app.errors import BusinessError
 from app.langfuse_clickhouse import get_langfuse_clickhouse_reader
 from app.langfuse_clickhouse import get_langfuse_clickhouse_score_writer
@@ -415,6 +416,15 @@ class FakeAnnotationDatabaseReader:
             {"scores": []},
         )
 
+    async def complete_annotation_queue_items_for_user(
+        self,
+        project_id: str,
+        queue_id: str,
+        item_ids: list[str],
+        user_id: str,
+    ) -> None:
+        self.calls.append(("complete_items", (project_id, queue_id, item_ids, user_id)))
+
     async def get_project_api_key_credentials_for_user(
         self,
         project_id: str,
@@ -520,6 +530,21 @@ class FakeAnnotationDatabaseReader:
                 "updatedAt": "2026-07-06T02:00:00.000Z",
             },
         ]
+
+    async def iter_annotation_queue_items_for_user(
+        self,
+        project_id: str,
+        queue_id: str,
+        user_id: str,
+        *,
+        batch_size: int = 500,
+        **_: object,
+    ):
+        items = await self.list_annotation_queue_items_for_user(
+            project_id, queue_id, user_id
+        )
+        for index in range(0, len(items), batch_size):
+            yield items[index : index + batch_size]
 
     async def list_annotation_queue_items_page_for_user(
         self,
@@ -689,7 +714,7 @@ class FakeAnnotationTraceReader:
         trace_ids: list[str],
     ) -> dict[str, dict]:
         self.source_calls.append((project_id, trace_ids))
-        return {
+        sources = {
             trace_id: {
                 "traceId": trace_id,
                 "sessionId": "session-1",
@@ -711,6 +736,16 @@ class FakeAnnotationTraceReader:
             }
             for trace_id in trace_ids
         }
+        if "trace-1" in sources:
+            sources["trace-1"].update(
+                {
+                    "tags": ["workflow"],
+                    "input": '{"question":"退款多久到账"}',
+                    "output": '{"answer":"通常 1-3 个工作日到账"}',
+                    "metadata": {"app_id": "app-1"},
+                }
+            )
+        return sources
 
     async def list_scores_by_queue(
         self,
@@ -745,9 +780,7 @@ class FakeLangfuseClient:
         config_id: str,
         payload: dict,
     ) -> dict:
-        self.updated_score_configs.append(
-            (public_key, secret_key, config_id, payload)
-        )
+        self.updated_score_configs.append((public_key, secret_key, config_id, payload))
         return {"id": config_id, **payload}
 
 
@@ -1221,17 +1254,18 @@ def test_copies_existing_annotation_scores_for_new_queue_item() -> None:
     copied_count = anyio.run(_run_copy)
 
     assert copied_count == 2
-    assert len(cursor.executions) == 3
+    assert len(cursor.executions) == 2
     _select_sql, select_params = cursor.executions[0]
     first_insert_sql, first_insert_params = cursor.executions[1]
-    assert "SELECT DISTINCT ON (s.config_id)" in _select_sql
+    assert "SELECT DISTINCT ON (candidate.item_id, s.config_id)" in _select_sql
     assert "INSERT INTO scores" in first_insert_sql
     assert select_params["score_config_ids"] == ["score-1", "score-2"]
     assert first_insert_params["queue_id"] == "queue-new"
-    assert first_insert_params["config_id"] == "score-1"
-    assert first_insert_params["id"] != "score-1"
-    assert first_insert_params["trace_id"] == "trace-1"
-    assert first_insert_params["comment"] == "上一轮标注"
+    assert first_insert_params["config_id_0"] == "score-1"
+    assert first_insert_params["id_0"] != "score-1"
+    assert first_insert_params["trace_id_0"] == "trace-1"
+    assert first_insert_params["comment_0"] == "上一轮标注"
+    assert first_insert_params["config_id_1"] == "score-2"
 
 
 def test_ensures_default_score_config_for_manual_annotation_queue() -> None:
@@ -2184,9 +2218,7 @@ def test_lists_annotation_items_uses_latest_clickhouse_scores() -> None:
     assert item["scores"] == fake_trace_reader.scores_by_queue["queue-1"]
 
 
-def test_large_annotation_export_score_enrichment_avoids_expanding_all_item_ids() -> (
-    None
-):
+def test_large_annotation_export_score_enrichment_scopes_each_score_query() -> None:
     class RecordingScoreReader:
         def __init__(self) -> None:
             self.calls: list[dict] = []
@@ -2220,7 +2252,13 @@ def test_large_annotation_export_score_enrichment_avoids_expanding_all_item_ids(
     )
 
     assert result == items
-    assert trace_reader.calls == [{}]
+    assert len(trace_reader.calls) == 3
+    assert all(len(call["annotation_item_ids"]) <= 500 for call in trace_reader.calls)
+    assert [
+        item_id
+        for call in trace_reader.calls
+        for item_id in call["annotation_item_ids"]
+    ] == [f"item-{index}" for index in range(1001)]
 
 
 def test_gets_annotation_item_enriches_only_current_trace_source() -> None:
@@ -2342,9 +2380,9 @@ def test_lists_large_annotation_queue_enriches_only_current_page() -> None:
     assert [item["id"] for item in body["datas"]] == [
         f"item-{index:04d}" for index in range(10, 20)
     ]
-    assert len(fake_trace_reader.calls) == 10
-    assert [trace_id for _, trace_id in fake_trace_reader.calls] == [
-        f"trace-{index:04d}" for index in range(10, 20)
+    assert fake_trace_reader.calls == []
+    assert fake_trace_reader.source_calls == [
+        ("project-1", [f"trace-{index:04d}" for index in range(10, 20)])
     ]
 
 
@@ -2606,8 +2644,9 @@ def test_previews_large_annotation_batch_enriches_only_preview_samples() -> None
     assert [item["id"] for item in body["samples"]] == [
         f"item-{index:04d}" for index in range(5)
     ]
-    assert [trace_id for _, trace_id in fake_trace_reader.calls] == [
-        f"trace-{index:04d}" for index in range(5)
+    assert fake_trace_reader.calls == []
+    assert fake_trace_reader.source_calls == [
+        ("project-1", [f"trace-{index:04d}" for index in range(5)])
     ]
 
 
@@ -2650,32 +2689,17 @@ def test_bulk_saves_annotation_scores_only_for_pending_filtered_items() -> None:
     assert body["failures"] == []
     assert [call[0] for call in fake_reader.calls] == [
         "list_items",
+        "prepare_scores_batch",
+        "prepare_scores",
         "prepare_scores",
         "get_project_api_key",
-        "complete_item",
-        "save_scores",
-        "prepare_scores",
-        "get_project_api_key",
-        "complete_item",
-        "save_scores",
+        "complete_items",
     ]
-    assert fake_reader.calls[1][1] == (
-        "project-1",
-        "queue-1",
+    assert [item["itemId"] for item in fake_reader.calls[1][1][3]] == [
         "item-1",
-        "user-1",
-        {
-            "scores": [
-                {
-                    "configId": "score-1",
-                    "value": 2.0,
-                    "stringValue": "",
-                    "comment": "同类错误统一低分",
-                }
-            ]
-        },
-    )
-    assert fake_reader.calls[5][1][2] == "item-2"
+        "item-2",
+    ]
+    assert fake_reader.calls[-1][1][2] == ["item-1", "item-2"]
 
 
 def test_bulk_saves_completed_annotation_scores_in_match_count_mode() -> None:
@@ -2709,12 +2733,12 @@ def test_bulk_saves_completed_annotation_scores_in_match_count_mode() -> None:
     assert body["successItemIds"] == ["item-done"]
     assert [call[0] for call in fake_reader.calls] == [
         "list_items",
+        "prepare_scores_batch",
         "prepare_scores",
         "get_project_api_key",
-        "complete_item",
-        "save_scores",
+        "complete_items",
     ]
-    assert fake_reader.calls[1][1][2] == "item-done"
+    assert fake_reader.calls[1][1][3][0]["itemId"] == "item-done"
 
 
 def test_bulk_saves_mixed_annotation_statuses_in_match_count_mode() -> None:
@@ -2892,27 +2916,12 @@ def test_bulk_saves_annotation_scores_with_input_output_filters() -> None:
     assert body["successItemIds"] == ["item-2"]
     assert [call[0] for call in fake_reader.calls] == [
         "list_items",
+        "prepare_scores_batch",
         "prepare_scores",
         "get_project_api_key",
-        "complete_item",
-        "save_scores",
+        "complete_items",
     ]
-    assert fake_reader.calls[1][1] == (
-        "project-1",
-        "queue-1",
-        "item-2",
-        "user-1",
-        {
-            "scores": [
-                {
-                    "configId": "score-1",
-                    "value": 5.0,
-                    "stringValue": "",
-                    "comment": "发票回答准确",
-                }
-            ]
-        },
-    )
+    assert fake_reader.calls[1][1][3][0]["itemId"] == "item-2"
 
 
 def test_bulk_updates_annotation_item_assignees_skips_completed_items() -> None:
@@ -3261,3 +3270,74 @@ def test_lists_annotation_queue_items_with_large_page_size_for_navigation() -> N
     assert response.status_code == 200
     assert response.json()["data"]["datas"][0]["id"] == "item-1"
     assert fake_reader.calls[0][0] == "list_items_page"
+
+
+def test_annotation_page_uses_light_candidates_then_current_page_details(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    reader = LangfuseDatabaseReader(Settings())
+    queries: list[tuple[str, dict]] = []
+    detail_rows = [
+        {
+            "id": item_id,
+            "project_id": "project-1",
+            "queue_id": "queue-1",
+            "object_id": trace_id,
+            "object_type": "TRACE",
+            "status": "PENDING",
+            "completed_at": None,
+            "created_at": datetime(2026, 7, 1, tzinfo=timezone.utc),
+            "updated_at": datetime(2026, 7, 2, tzinfo=timezone.utc),
+            "scores": [],
+            "has_scores": False,
+            "source_title": trace_id,
+            "source_input": {},
+            "source_output": {},
+            "source_metadata": {},
+            "trace_id": trace_id,
+            "observation_id": "",
+            "session_id": "",
+            "user_id": "",
+            "latency_ms": 0,
+            "cost_usd": 0,
+            "source_created_at": datetime(2026, 7, 1, tzinfo=timezone.utc),
+        }
+        for item_id, trace_id in (("item-1", "trace-1"), ("item-2", "trace-2"))
+    ]
+
+    async def get_queue(*_args: object) -> dict:
+        return {"id": "queue-1"}
+
+    async def fetch(sql: str, params: dict) -> list[dict]:
+        queries.append((sql, params))
+        if "COUNT(*)::int AS total" in sql:
+            return [{"total": 2}]
+        if "SELECT item.id" in sql:
+            return [{"id": "item-2"}, {"id": "item-1"}]
+        return detail_rows
+
+    monkeypatch.setattr(reader, "get_annotation_queue_for_user", get_queue)
+    monkeypatch.setattr(reader, "_fetch_all", fetch)
+
+    async def run_query() -> dict:
+        return await reader.list_annotation_queue_items_page_for_user(
+            "project-1",
+            "queue-1",
+            "user-1",
+            page=1,
+            page_size=2,
+            filters={},
+        )
+
+    result = anyio.run(run_query)
+
+    assert result["total"] == 2
+    assert [item["id"] for item in result["datas"]] == ["item-2", "item-1"]
+    assert len(queries) == 3
+    for sql, _params in queries[:2]:
+        assert "trace_latency" not in sql
+        assert "trace_cost" not in sql
+        assert "JSONB_AGG" not in sql
+    detail_sql, detail_params = queries[2]
+    assert "aqi.id = ANY(%(page_item_ids)s)" in detail_sql
+    assert detail_params["page_item_ids"] == ["item-2", "item-1"]

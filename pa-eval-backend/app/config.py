@@ -36,6 +36,8 @@ class Settings(BaseSettings):
         default_factory=lambda: f"pa-trace-bulk-worker-{uuid4().hex}"
     )
     pa_eval_annotation_score_concurrency: int = Field(default=8)
+    pa_eval_trace_count_cache_ttl_seconds: float = Field(default=30, ge=0)
+    pa_eval_trace_count_cache_max_entries: int = Field(default=1024, gt=0)
     github_client_id: str = Field(default="")
     github_client_secret: str = Field(default="")
     github_oauth_redirect_uri: str = Field(

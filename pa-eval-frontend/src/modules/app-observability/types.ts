@@ -144,6 +144,8 @@ export type TraceListQuery = {
   scoreQueueId?: string
   fields?: string
   anchorTraceId?: string
+  cursorCreatedAt?: string
+  cursorTraceId?: string
 }
 
 export type TraceMetadataFilterOperator = 'equals' | 'contains' | 'exists'
@@ -174,6 +176,11 @@ export type TraceNumericScoreFilter = {
 export type TraceListResponse = {
   total: number
   datas: TraceLogRow[]
+  hasMore?: boolean
+  nextCursor?: {
+    createdAt: string
+    traceId: string
+  } | null
 }
 
 export type TracePatchInput = {

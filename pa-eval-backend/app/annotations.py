@@ -62,6 +62,7 @@ TRACE_ANNOTATION_TASK_BATCH_SIZE = 500
 TRACE_DATASET_IMPORT_JOB_TTL = timedelta(hours=2)
 TRACE_ANNOTATION_TASK_JOB_TTL = timedelta(hours=2)
 MAX_EXPORT_BASE_NAME_LENGTH = 120
+ANNOTATION_SCAN_BATCH_SIZE = 5000
 ANNOTATION_SCORE_SCOPE_MAX_ITEMS = 500
 
 
@@ -533,28 +534,29 @@ async def _enrich_annotation_items_with_clickhouse_scores(
     if not items:
         return items
 
-    if len(items) > ANNOTATION_SCORE_SCOPE_MAX_ITEMS:
-        scores = await trace_reader.list_scores_by_queue(project_id, queue_id)
-    else:
-        scores = await trace_reader.list_scores_by_queue(
-            project_id,
-            queue_id,
-            trace_ids=[
-                str(item.get("objectId") or "")
-                for item in items
-                if item.get("objectType") == "TRACE"
-            ],
-            observation_ids=[
-                str(item.get("objectId") or "")
-                for item in items
-                if item.get("objectType") == "OBSERVATION"
-            ],
-            session_ids=[
-                str(item.get("objectId") or "")
-                for item in items
-                if item.get("objectType") == "SESSION"
-            ],
-            annotation_item_ids=[str(item.get("id") or "") for item in items],
+    scores: list[dict[str, Any]] = []
+    for batch in _chunk_items(items, ANNOTATION_SCORE_SCOPE_MAX_ITEMS):
+        scores.extend(
+            await trace_reader.list_scores_by_queue(
+                project_id,
+                queue_id,
+                trace_ids=[
+                    str(item.get("objectId") or "")
+                    for item in batch
+                    if item.get("objectType") == "TRACE"
+                ],
+                observation_ids=[
+                    str(item.get("objectId") or "")
+                    for item in batch
+                    if item.get("objectType") == "OBSERVATION"
+                ],
+                session_ids=[
+                    str(item.get("objectId") or "")
+                    for item in batch
+                    if item.get("objectType") == "SESSION"
+                ],
+                annotation_item_ids=[str(item.get("id") or "") for item in batch],
+            )
         )
     annotation_scores = [
         score
@@ -752,6 +754,10 @@ def _first_non_empty_list(
     fallback: list[Any] | None,
 ) -> list[Any] | None:
     return primary if primary else fallback
+
+
+def _chunk_items(items: list[Any], size: int) -> list[list[Any]]:
+    return [items[index : index + size] for index in range(0, len(items), size)]
 
 
 def _score_payload(
@@ -1111,6 +1117,125 @@ def _apply_annotation_export_scope(
     return [item for item in items if item["id"] in selected_ids]
 
 
+async def _iter_filtered_annotation_item_batches(
+    *,
+    project_id: str,
+    queue_id: str,
+    user_id: str,
+    filters: AnnotationBatchFiltersPayload,
+    reader: LangfuseDatabaseReader,
+    trace_reader: LangfuseClickHouseReader,
+    scope: AnnotationExportScope = "filtered",
+    item_ids: list[str] | None = None,
+    enrich_scores: bool = False,
+    enrich_all_sources: bool = False,
+):
+    selected_ids = set(item_ids or [])
+    source_filters = _annotation_filters_require_source(filters)
+    independent_filters = _source_independent_annotation_filters(filters)
+    pre_score_filters = independent_filters.model_copy(update={"has_scores": None})
+    iterator = getattr(reader, "iter_annotation_queue_items_for_user", None)
+    if iterator is None:
+        all_items = await reader.list_annotation_queue_items_for_user(
+            project_id, queue_id, user_id
+        )
+
+        async def fallback_iterator():
+            for fallback_batch in _chunk_items(all_items, ANNOTATION_SCAN_BATCH_SIZE):
+                yield fallback_batch
+
+        batches = fallback_iterator()
+    else:
+        batches = iterator(
+            project_id,
+            queue_id,
+            user_id,
+            batch_size=ANNOTATION_SCAN_BATCH_SIZE,
+            include_details=enrich_scores or enrich_all_sources,
+            include_source=source_filters,
+            include_assignment=bool(filters.assignee_ids),
+            include_has_scores=filters.has_scores is not None,
+        )
+    async for batch in batches:
+        if scope == "selected":
+            batch = [item for item in batch if item["id"] in selected_ids]
+        batch = _filter_annotation_items(
+            batch,
+            pre_score_filters if enrich_scores else independent_filters,
+        )
+        if not batch:
+            continue
+        if enrich_scores:
+            batch = await _enrich_annotation_items_with_clickhouse_scores(
+                project_id,
+                queue_id,
+                batch,
+                trace_reader,
+            )
+            batch = _filter_annotation_items(batch, independent_filters)
+        if source_filters or enrich_all_sources:
+            batch = await _enrich_annotation_items_with_trace_sources(
+                project_id,
+                batch,
+                trace_reader,
+            )
+        if source_filters:
+            batch = _filter_annotation_items(batch, filters)
+        if batch:
+            yield batch
+
+
+async def _scan_annotation_batch_preview(
+    *,
+    project_id: str,
+    queue_id: str,
+    user_id: str,
+    filters: AnnotationBatchFiltersPayload,
+    limit: int,
+    reader: LangfuseDatabaseReader,
+    trace_reader: LangfuseClickHouseReader,
+) -> dict[str, Any]:
+    total = pending = completed = 0
+    samples: list[dict[str, Any]] = []
+    needs_source = _annotation_filters_require_source(filters)
+    async for batch in _iter_filtered_annotation_item_batches(
+        project_id=project_id,
+        queue_id=queue_id,
+        user_id=user_id,
+        filters=filters,
+        reader=reader,
+        trace_reader=trace_reader,
+    ):
+        total += len(batch)
+        batch_completed = sum(item["status"] == "COMPLETED" for item in batch)
+        completed += batch_completed
+        pending += len(batch) - batch_completed
+        if len(samples) < limit:
+            pending_samples = [item for item in batch if item["status"] == "PENDING"]
+            samples.extend(pending_samples[: limit - len(samples)])
+    if not needs_source:
+        hydrate = getattr(reader, "list_annotation_queue_items_by_ids_for_user", None)
+        if hydrate is not None:
+            samples = await hydrate(
+                project_id,
+                queue_id,
+                user_id,
+                [str(item["id"]) for item in samples],
+            )
+        samples = await _enrich_annotation_items_with_trace_sources(
+            project_id,
+            samples,
+            trace_reader,
+        )
+    return {
+        "totalCount": total,
+        "pendingCount": pending,
+        "completedCount": completed,
+        "samples": samples,
+        "filterSummary": _build_annotation_filter_summary(filters, pending),
+    }
+
+
 async def _get_scoped_annotation_export_items(
     *,
     project_id: str,
@@ -1169,23 +1294,28 @@ async def _build_annotation_export_preview_payload(
     reader: LangfuseDatabaseReader,
     trace_reader: LangfuseClickHouseReader,
 ) -> dict[str, Any]:
-    queue, scoped_items = await _get_scoped_annotation_export_items(
+    queue = await reader.get_annotation_queue_for_user(project_id, queue_id, user_id)
+    total = completed = 0
+    preview_items: list[dict[str, Any]] = []
+    async for batch in _iter_filtered_annotation_item_batches(
         project_id=project_id,
         queue_id=queue_id,
         user_id=user_id,
-        scope=payload.scope,
         filters=payload.filters,
-        item_ids=payload.item_ids,
         reader=reader,
         trace_reader=trace_reader,
-        enrich_all_sources=False,
-    )
-    metrics = _annotation_export_metrics(scoped_items)
+        scope=payload.scope,
+        item_ids=payload.item_ids,
+        enrich_scores=True,
+    ):
+        total += len(batch)
+        completed += sum(item.get("status") == "COMPLETED" for item in batch)
+        if len(preview_items) < payload.preview_limit:
+            preview_items.extend(batch[: payload.preview_limit - len(preview_items)])
     preview_items = await _enrich_annotation_items_with_trace_sources(
-        project_id,
-        scoped_items[: payload.preview_limit],
-        trace_reader,
+        project_id, preview_items, trace_reader
     )
+    metrics = {"total": total, "completed": completed, "pending": total - completed}
     return build_annotation_export_preview(
         queue=queue,
         items=preview_items,
@@ -1221,17 +1351,31 @@ async def generate_annotation_export_file(
 ) -> None:
     try:
         await reader.mark_annotation_export_job_running(project_id, queue_id, job_id)
-        queue, scoped_items = await _get_scoped_annotation_export_items(
+        queue = await reader.get_annotation_queue_for_user(
+            project_id, queue_id, user_id
+        )
+        total = completed = 0
+        metadata_keys: set[str] = set()
+        async for batch in _iter_filtered_annotation_item_batches(
             project_id=project_id,
             queue_id=queue_id,
             user_id=user_id,
-            scope=scope,
             filters=filters,
-            item_ids=item_ids,
             reader=reader,
             trace_reader=trace_reader,
-        )
-        if not scoped_items:
+            scope=scope,
+            item_ids=item_ids,
+            enrich_scores=True,
+            enrich_all_sources=True,
+        ):
+            total += len(batch)
+            completed += sum(item.get("status") == "COMPLETED" for item in batch)
+            if split_metadata:
+                for item in batch:
+                    metadata = (item.get("source") or {}).get("metadata") or {}
+                    if isinstance(metadata, dict):
+                        metadata_keys.update(str(key) for key in metadata)
+        if total == 0:
             await reader.mark_annotation_export_job_failed(
                 project_id,
                 queue_id,
@@ -1239,26 +1383,57 @@ async def generate_annotation_export_file(
                 "当前范围无可导出数据",
             )
             return
+        output_dir = Path(storage_dir) / project_id / "annotation-exports"
+        output_dir.mkdir(parents=True, exist_ok=True)
+        spool_path = output_dir / f".{job_id}.jsonl"
+        with spool_path.open("w", encoding="utf-8") as spool:
+            async for batch in _iter_filtered_annotation_item_batches(
+                project_id=project_id,
+                queue_id=queue_id,
+                user_id=user_id,
+                filters=filters,
+                reader=reader,
+                trace_reader=trace_reader,
+                scope=scope,
+                item_ids=item_ids,
+                enrich_scores=True,
+                enrich_all_sources=True,
+            ):
+                for item in batch:
+                    spool.write(
+                        json.dumps(item, ensure_ascii=False, default=str) + "\n"
+                    )
+
+        def iter_spooled_items():
+            with spool_path.open("r", encoding="utf-8") as spool:
+                for line in spool:
+                    yield json.loads(line)
+
+        metrics = {"total": total, "completed": completed, "pending": total - completed}
         archive_path = generate_annotation_export_archive(
-            output_dir=Path(storage_dir) / project_id / "annotation-exports",
+            output_dir=output_dir,
             base_file_name=base_file_name,
             export_format=export_format,
             queue=queue,
-            metrics=_annotation_export_metrics(scoped_items),
+            metrics=metrics,
             score_configs=queue.get("scoreConfigs") or [],
-            items=scoped_items,
+            items=iter_spooled_items(),
             split_metadata=split_metadata,
+            metadata_keys=sorted(metadata_keys),
         )
+        spool_path.unlink(missing_ok=True)
         await reader.mark_annotation_export_job_succeeded(
             project_id,
             queue_id,
             job_id,
-            total_count=len(scoped_items),
+            total_count=total,
             file_name=archive_path.name,
             file_path=str(archive_path),
             file_size=archive_path.stat().st_size,
         )
     except Exception as exc:
+        if "spool_path" in locals():
+            spool_path.unlink(missing_ok=True)
         logger.exception(
             "Failed to generate annotation export file: project_id=%s queue_id=%s "
             "job_id=%s error=%r",
@@ -1962,7 +2137,7 @@ async def list_annotation_queue_items(
         paginated["datas"],
         trace_reader,
     )
-    paginated["datas"] = await _enrich_annotation_items_with_trace_source(
+    paginated["datas"] = await _enrich_annotation_items_with_trace_sources(
         project_id,
         paginated["datas"],
         trace_reader,
@@ -2061,27 +2236,15 @@ async def preview_annotation_batch(
     reader: LangfuseDatabaseReader = Depends(get_langfuse_db_reader),
     trace_reader: LangfuseClickHouseReader = Depends(get_langfuse_clickhouse_reader),
 ) -> dict[str, Any]:
-    items = await reader.list_annotation_queue_items_for_user(
-        project_id,
-        queue_id,
-        current_user.user_id,
+    preview = await _scan_annotation_batch_preview(
+        project_id=project_id,
+        queue_id=queue_id,
+        user_id=current_user.user_id,
+        filters=payload.filters,
+        limit=payload.limit,
+        reader=reader,
+        trace_reader=trace_reader,
     )
-    needs_source_for_filtering = _annotation_filters_require_source(payload.filters)
-    if needs_source_for_filtering:
-        items = await _enrich_annotation_items_with_trace_sources(
-            project_id,
-            items,
-            trace_reader,
-        )
-
-    preview = _annotation_batch_preview(items, payload.filters, payload.limit)
-    if not needs_source_for_filtering:
-        preview["samples"] = await _enrich_annotation_items_with_trace_source(
-            project_id,
-            preview["samples"],
-            trace_reader,
-        )
-
     return success(preview)
 
 
@@ -2098,24 +2261,26 @@ async def save_annotation_batch_scores(
         get_langfuse_clickhouse_score_writer
     ),
 ) -> dict[str, Any]:
-    items = await reader.list_annotation_queue_items_for_user(
-        project_id,
-        queue_id,
-        current_user.user_id,
-    )
-    if _annotation_filters_require_source(payload.filters):
-        items = await _enrich_annotation_items_with_trace_sources(
-            project_id,
-            items,
-            trace_reader,
+    filtered_ids: list[str] = []
+    pending_ids: list[str] = []
+    completed_count = 0
+    async for batch in _iter_filtered_annotation_item_batches(
+        project_id=project_id,
+        queue_id=queue_id,
+        user_id=current_user.user_id,
+        filters=payload.filters,
+        reader=reader,
+        trace_reader=trace_reader,
+    ):
+        filtered_ids.extend(str(item["id"]) for item in batch)
+        pending_ids.extend(
+            str(item["id"]) for item in batch if item["status"] == "PENDING"
         )
-    filtered = _filter_annotation_items(items, payload.filters)
-    pending_items = [item for item in filtered if item["status"] == "PENDING"]
-    completed_count = len([item for item in filtered if item["status"] == "COMPLETED"])
+        completed_count += sum(item["status"] == "COMPLETED" for item in batch)
     uses_match_count = payload.expected_match_count is not None
-    target_items = filtered if uses_match_count else pending_items
+    target_ids = filtered_ids if uses_match_count else pending_ids
 
-    if uses_match_count and payload.expected_match_count != len(target_items):
+    if uses_match_count and payload.expected_match_count != len(target_ids):
         raise BusinessError(
             code=1027,
             message="批量标注选中数据已变化，请刷新列表后重试",
@@ -2124,14 +2289,14 @@ async def save_annotation_batch_scores(
     if (
         not uses_match_count
         and payload.expected_pending_count is not None
-        and (payload.expected_pending_count != len(pending_items))
+        and (payload.expected_pending_count != len(pending_ids))
     ):
         raise BusinessError(
             code=1027,
             message="批量标注命中数量已变化，请刷新预览后重试",
             status_code=409,
         )
-    if len(target_items) > 100 and not payload.confirm_large_batch:
+    if len(target_ids) > 100 and not payload.confirm_large_batch:
         raise BusinessError(
             code=1028,
             message="本次批量标注超过 100 条，请确认后再提交",
@@ -2139,23 +2304,83 @@ async def save_annotation_batch_scores(
         )
 
     score_payload = _score_payload(payload)
-    success_item_ids: list[str] = []
-    failures: list[dict[str, Any]] = []
-    for item in target_items:
+    failed_reasons: dict[str, str] = {}
+    prepared_requests: list[dict[str, Any]] = []
+    for item_id_batch in _chunk_items(target_ids, ANNOTATION_SCAN_BATCH_SIZE):
         try:
-            await _save_annotation_scores_with_langfuse_api(
-                project_id=project_id,
-                queue_id=queue_id,
-                item_id=item["id"],
-                user_id=current_user.user_id,
-                score_payload=score_payload,
-                reader=reader,
-                langfuse_client=langfuse_client,
-                score_writer=score_writer,
+            prepared_requests.extend(
+                await reader.prepare_annotation_score_payloads_batch_for_user(
+                    project_id,
+                    queue_id,
+                    current_user.user_id,
+                    [
+                        {"itemId": item_id, "scorePayload": score_payload}
+                        for item_id in item_id_batch
+                    ],
+                )
             )
-            success_item_ids.append(item["id"])
-        except BusinessError as exc:
-            failures.append({"itemId": item["id"], "reason": exc.message})
+        except BusinessError:
+            # Preserve the old partial-success behavior for exceptional invalid rows.
+            for item_id in item_id_batch:
+                try:
+                    prepared_requests.extend(
+                        await reader.prepare_annotation_score_payloads_batch_for_user(
+                            project_id,
+                            queue_id,
+                            current_user.user_id,
+                            [{"itemId": item_id, "scorePayload": score_payload}],
+                        )
+                    )
+                except BusinessError as item_exc:
+                    failed_reasons[item_id] = item_exc.message
+
+    if prepared_requests:
+        api_key = await reader.get_project_api_key_credentials_for_user(
+            project_id,
+            current_user.user_id,
+        )
+        request_item_ids = {
+            str(request.get("id") or ""): str(
+                (request.get("metadata") or {}).get("annotationItemId") or ""
+            )
+            for request in prepared_requests
+        }
+        write_failures = await _write_annotation_score_requests(
+            project_id=project_id,
+            user_id=current_user.user_id,
+            score_requests=prepared_requests,
+            api_key=api_key,
+            reader=reader,
+            langfuse_client=langfuse_client,
+            score_writer=score_writer,
+            write_through_clickhouse=False,
+        )
+        for failure in write_failures:
+            item_id = request_item_ids.get(str(failure.get("scoreId") or ""), "")
+            if item_id:
+                failed_reasons.setdefault(item_id, "评分保存失败，请稍后重试")
+
+    success_item_ids = [
+        item_id for item_id in target_ids if item_id not in failed_reasons
+    ]
+    complete_many = getattr(reader, "complete_annotation_queue_items_for_user", None)
+    if complete_many is not None:
+        await complete_many(
+            project_id,
+            queue_id,
+            success_item_ids,
+            current_user.user_id,
+        )
+    else:
+        for item_id in success_item_ids:
+            await reader.complete_annotation_queue_item_for_user(
+                project_id, queue_id, item_id, current_user.user_id
+            )
+    failures = [
+        {"itemId": item_id, "reason": failed_reasons[item_id]}
+        for item_id in target_ids
+        if item_id in failed_reasons
+    ]
 
     return success(
         {
@@ -2165,11 +2390,11 @@ async def save_annotation_batch_scores(
             "successItemIds": success_item_ids,
             "failures": failures,
             "filterSummary": (
-                f"选中 {len(target_items)} 条"
+                f"选中 {len(target_ids)} 条"
                 if uses_match_count
                 else _build_annotation_filter_summary(
                     payload.filters,
-                    len(pending_items),
+                    len(pending_ids),
                 )
             ),
         }
