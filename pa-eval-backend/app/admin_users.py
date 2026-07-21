@@ -8,6 +8,7 @@ from pydantic import BaseModel
 
 from app.auth_context import CurrentUserContext, get_current_user_context
 from app.config import Settings, get_settings
+from app.data_access.postgres import connect_postgres
 from app.errors import BusinessError
 from app.langfuse_db import LangfuseDatabaseConfigError
 from app.response import success
@@ -248,10 +249,10 @@ class AdminUserService:
         if not row or row.get("admin") is not True:
             raise AdminPermissionError()
 
-    async def _connect(self) -> psycopg.AsyncConnection:
+    async def _connect(self) -> Any:
         if not self._database_url:
             raise LangfuseDatabaseConfigError()
-        return await psycopg.AsyncConnection.connect(
+        return await connect_postgres(
             self._database_url,
             row_factory=dict_row,
         )

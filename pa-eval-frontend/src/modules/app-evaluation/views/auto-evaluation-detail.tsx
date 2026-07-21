@@ -35,7 +35,7 @@ export function ProjectAutoEvaluationDetail() {
     queryFn: () => getProjectAutoEvaluationTask($api, projectId, taskId),
     enabled: Boolean(taskId),
     refetchInterval: (query) =>
-      query.state.data?.status === 'RUNNING' ? 3000 : false,
+      query.state.data?.status === 'RUNNING' ? 5000 : false,
   })
   const reportQuery = useQuery({
     queryKey: [
@@ -47,13 +47,13 @@ export function ProjectAutoEvaluationDetail() {
     queryFn: () =>
       getProjectAutoEvaluationLatestReport($api, projectId, taskId),
     enabled: Boolean(taskId),
-    refetchInterval: taskQuery.data?.status === 'RUNNING' ? 3000 : false,
+    refetchInterval: taskQuery.data?.status === 'RUNNING' ? 5000 : false,
   })
   const runsQuery = useQuery({
     queryKey: ['project-auto-evaluation-runs', $api, projectId, taskId],
     queryFn: () => listProjectAutoEvaluationRuns($api, projectId, taskId),
     enabled: Boolean(taskId),
-    refetchInterval: taskQuery.data?.status === 'RUNNING' ? 3000 : false,
+    refetchInterval: taskQuery.data?.status === 'RUNNING' ? 5000 : false,
   })
 
   const invalidateDetail = useMemo(

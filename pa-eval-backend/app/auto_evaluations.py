@@ -16,6 +16,7 @@ from pydantic import BaseModel, Field, model_validator
 
 from app.auth_context import CurrentUserContext, get_current_user_context
 from app.config import Settings, get_settings
+from app.data_access.postgres import connect_postgres
 from app.errors import BusinessError
 from app.langfuse_clickhouse import (
     LangfuseClickHouseReader,
@@ -208,10 +209,10 @@ def _sample_observation_id(sample: dict[str, Any]) -> str:
     )
 
 
-async def _connect(settings: Settings) -> psycopg.AsyncConnection:
+async def _connect(settings: Settings) -> Any:
     if not settings.langfuse_database_url:
         raise LangfuseDatabaseConfigError()
-    return await psycopg.AsyncConnection.connect(
+    return await connect_postgres(
         settings.langfuse_database_url,
         row_factory=dict_row,
     )

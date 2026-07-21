@@ -5,6 +5,7 @@ from fastapi.testclient import TestClient
 
 from app.auth_context import CurrentUserContext, get_current_user_context
 from app.config import Settings
+from app.data_access import clickhouse
 from app.errors import LangfuseUpstreamError
 from app.langfuse_clickhouse import (
     LangfuseClickHouseReader,
@@ -1514,7 +1515,6 @@ async def test_clickhouse_reader_lists_latest_queue_score_versions(monkeypatch) 
 
 @pytest.mark.anyio
 async def test_clickhouse_reader_disables_environment_proxy(monkeypatch) -> None:
-    reader = LangfuseClickHouseReader(Settings())
     captured = {}
 
     class FakeResponse:
@@ -1524,20 +1524,26 @@ async def test_clickhouse_reader_disables_environment_proxy(monkeypatch) -> None
             return None
 
     class FakeAsyncClient:
+        is_closed = False
+
         def __init__(self, **kwargs) -> None:
             captured["client_kwargs"] = kwargs
-
-        async def __aenter__(self):
-            return self
-
-        async def __aexit__(self, exc_type, exc, tb) -> None:
-            return None
 
         async def post(self, *args, **kwargs) -> FakeResponse:
             return FakeResponse()
 
-    monkeypatch.setattr("app.langfuse_clickhouse.httpx.AsyncClient", FakeAsyncClient)
+        async def aclose(self) -> None:
+            self.is_closed = True
+
+    await clickhouse.close_clickhouse_http_client()
+    monkeypatch.setattr(clickhouse.httpx, "AsyncClient", FakeAsyncClient)
+    clickhouse.start_clickhouse_http_client(
+        Settings(),
+        clickhouse.get_data_access_pool_settings(),
+    )
+    reader = LangfuseClickHouseReader(Settings())
 
     await reader._query_json_each_row("SELECT 1 FORMAT JSONEachRow", {})
 
     assert captured["client_kwargs"]["trust_env"] is False
+    await clickhouse.close_clickhouse_http_client()

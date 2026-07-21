@@ -13,6 +13,7 @@ from app.auth_context import (
     parse_access_token,
 )
 from app.config import Settings, get_settings
+from app.data_access.postgres import connect_postgres
 from app.langfuse_db import LangfuseDatabaseConfigError
 from app.response import success
 
@@ -278,10 +279,10 @@ class AdminAuditService:
         except psycopg.Error:
             return
 
-    async def _connect(self) -> psycopg.AsyncConnection:
+    async def _connect(self) -> Any:
         if not self._database_url:
             raise LangfuseDatabaseConfigError()
-        return await psycopg.AsyncConnection.connect(
+        return await connect_postgres(
             self._database_url,
             row_factory=dict_row,
         )

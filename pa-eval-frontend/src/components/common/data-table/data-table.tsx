@@ -5,7 +5,11 @@ import {
   useState,
   type ReactNode,
 } from 'react'
-import { keepPreviousData, useQuery } from '@tanstack/react-query'
+import {
+  keepPreviousData,
+  useQuery,
+  type UseQueryOptions,
+} from '@tanstack/react-query'
 import {
   flexRender,
   getCoreRowModel,
@@ -94,7 +98,7 @@ type DataTableRequestConfig<TData, TResponse> = {
     readonly unknown[] | ((state: DataTableQueryState) => readonly unknown[])
   queryFn: (state: DataTableQueryState) => Promise<TResponse>
   enabled?: boolean
-  refetchInterval?: number | false
+  refetchInterval?: UseQueryOptions<TResponse>['refetchInterval']
   selectRows?: (response: TResponse) => TData[]
   selectTotal?: (response: TResponse) => number
 }

@@ -8,6 +8,10 @@ import httpx
 from fastapi import Depends
 
 from app.config import Settings, get_settings
+from app.data_access.clickhouse import (
+    create_clickhouse_http_client,
+    get_clickhouse_http_client,
+)
 from app.errors import BusinessError, LangfuseUpstreamError
 
 
@@ -16,7 +20,7 @@ class LangfuseClickHouseReader:
         self._url = settings.langfuse_clickhouse_url
         self._user = settings.langfuse_clickhouse_user
         self._password = settings.langfuse_clickhouse_password
-        self._timeout = settings.pa_eval_api_timeout
+        self._settings = settings
 
     async def list_traces(
         self,
@@ -1054,10 +1058,16 @@ class LangfuseClickHouseReader:
             **{f"param_{key}": value for key, value in params.items()},
         }
         try:
-            async with httpx.AsyncClient(
-                timeout=self._timeout,
-                trust_env=False,
-            ) as client:
+            client = get_clickhouse_http_client()
+            if client is None:
+                async with create_clickhouse_http_client(self._settings) as client:
+                    response = await client.post(
+                        self._url,
+                        params=request_params,
+                        content=query,
+                    )
+                    response.raise_for_status()
+            else:
                 response = await client.post(
                     self._url,
                     params=request_params,
@@ -1106,11 +1116,9 @@ class LangfuseClickHouseScoreWriter:
         self._url = settings.langfuse_clickhouse_url
         self._user = settings.langfuse_clickhouse_user
         self._password = settings.langfuse_clickhouse_password
-        self._timeout = settings.pa_eval_api_timeout
-        self._client = httpx.AsyncClient(
-            timeout=self._timeout,
-            trust_env=False,
-        )
+        shared_client = get_clickhouse_http_client()
+        self._owns_client = shared_client is None
+        self._client = shared_client or create_clickhouse_http_client(settings)
 
     async def __aenter__(self) -> "LangfuseClickHouseScoreWriter":
         return self
@@ -1119,7 +1127,8 @@ class LangfuseClickHouseScoreWriter:
         await self.aclose()
 
     async def aclose(self) -> None:
-        await self._client.aclose()
+        if self._owns_client and not self._client.is_closed:
+            await self._client.aclose()
 
     async def upsert_annotation_score(
         self,

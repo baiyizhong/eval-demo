@@ -16,6 +16,7 @@ from app.annotation_assignment import (
     plan_annotation_assignments,
 )
 from app.config import Settings, get_settings
+from app.data_access.postgres import connect_postgres
 from app.errors import BusinessError
 from app.score_configs import (
     PA_BOOLEAN_SCORE_CONFIG_REPAIR_MARKER,
@@ -441,7 +442,7 @@ class LangfuseDatabaseReader:
             raise LangfuseDatabaseConfigError()
 
         project_id = _new_langfuse_id("project")
-        async with await psycopg.AsyncConnection.connect(
+        async with await connect_postgres(
             self._database_url,
             row_factory=dict_row,
         ) as connection:
@@ -526,7 +527,7 @@ class LangfuseDatabaseReader:
         if not self._database_url:
             raise LangfuseDatabaseConfigError()
 
-        async with await psycopg.AsyncConnection.connect(
+        async with await connect_postgres(
             self._database_url,
             row_factory=dict_row,
         ) as connection:
@@ -637,7 +638,7 @@ class LangfuseDatabaseReader:
         public_key = f"pk-lf-{uuid4()}"
         secret_key = f"sk-lf-{uuid4()}"
 
-        async with await psycopg.AsyncConnection.connect(
+        async with await connect_postgres(
             self._database_url,
             row_factory=dict_row,
         ) as connection:
@@ -711,7 +712,7 @@ class LangfuseDatabaseReader:
         if not self._database_url:
             raise LangfuseDatabaseConfigError()
 
-        async with await psycopg.AsyncConnection.connect(
+        async with await connect_postgres(
             self._database_url,
             row_factory=dict_row,
         ) as connection:
@@ -762,7 +763,7 @@ class LangfuseDatabaseReader:
         if not self._database_url:
             raise LangfuseDatabaseConfigError()
 
-        async with await psycopg.AsyncConnection.connect(
+        async with await connect_postgres(
             self._database_url,
             row_factory=dict_row,
         ) as connection:
@@ -936,7 +937,7 @@ class LangfuseDatabaseReader:
             raise LangfuseDatabaseConfigError()
 
         setting_id = f"pamodeldefault_{project_id}"
-        async with await psycopg.AsyncConnection.connect(
+        async with await connect_postgres(
             self._database_url,
             row_factory=dict_row,
         ) as connection:
@@ -1014,7 +1015,7 @@ class LangfuseDatabaseReader:
             raise LangfuseDatabaseConfigError()
 
         connection_id = _new_langfuse_id("pallm")
-        async with await psycopg.AsyncConnection.connect(
+        async with await connect_postgres(
             self._database_url,
             row_factory=dict_row,
         ) as connection:
@@ -1090,7 +1091,7 @@ class LangfuseDatabaseReader:
         if not self._database_url:
             raise LangfuseDatabaseConfigError()
 
-        async with await psycopg.AsyncConnection.connect(
+        async with await connect_postgres(
             self._database_url,
             row_factory=dict_row,
         ) as connection:
@@ -1151,7 +1152,7 @@ class LangfuseDatabaseReader:
         if not self._database_url:
             raise LangfuseDatabaseConfigError()
 
-        async with await psycopg.AsyncConnection.connect(
+        async with await connect_postgres(
             self._database_url,
             row_factory=dict_row,
         ) as connection:
@@ -1190,7 +1191,7 @@ class LangfuseDatabaseReader:
             raise LangfuseDatabaseConfigError()
 
         model_id = _new_langfuse_id("pamodel")
-        async with await psycopg.AsyncConnection.connect(
+        async with await connect_postgres(
             self._database_url,
             row_factory=dict_row,
         ) as connection:
@@ -1264,7 +1265,7 @@ class LangfuseDatabaseReader:
         if not self._database_url:
             raise LangfuseDatabaseConfigError()
 
-        async with await psycopg.AsyncConnection.connect(
+        async with await connect_postgres(
             self._database_url,
             row_factory=dict_row,
         ) as connection:
@@ -1320,7 +1321,7 @@ class LangfuseDatabaseReader:
         if not self._database_url:
             raise LangfuseDatabaseConfigError()
 
-        async with await psycopg.AsyncConnection.connect(
+        async with await connect_postgres(
             self._database_url,
             row_factory=dict_row,
         ) as connection:
@@ -1485,7 +1486,7 @@ class LangfuseDatabaseReader:
         if not self._database_url:
             raise LangfuseDatabaseConfigError()
 
-        async with await psycopg.AsyncConnection.connect(
+        async with await connect_postgres(
             self._database_url,
             row_factory=dict_row,
         ) as connection:
@@ -1533,7 +1534,7 @@ class LangfuseDatabaseReader:
 
         dataset_id = _new_langfuse_id("dataset")
         try:
-            async with await psycopg.AsyncConnection.connect(
+            async with await connect_postgres(
                 self._database_url,
                 row_factory=dict_row,
             ) as connection:
@@ -1616,7 +1617,7 @@ class LangfuseDatabaseReader:
             raise LangfuseDatabaseConfigError()
 
         try:
-            async with await psycopg.AsyncConnection.connect(
+            async with await connect_postgres(
                 self._database_url,
                 row_factory=dict_row,
             ) as connection:
@@ -1673,7 +1674,7 @@ class LangfuseDatabaseReader:
         if not self._database_url:
             raise LangfuseDatabaseConfigError()
 
-        async with await psycopg.AsyncConnection.connect(
+        async with await connect_postgres(
             self._database_url,
             row_factory=dict_row,
         ) as connection:
@@ -1863,7 +1864,7 @@ class LangfuseDatabaseReader:
             raise LangfuseDatabaseConfigError()
 
         item_id = _new_langfuse_id("datasetitem")
-        async with await psycopg.AsyncConnection.connect(
+        async with await connect_postgres(
             self._database_url,
             row_factory=dict_row,
         ) as connection:
@@ -1945,7 +1946,7 @@ class LangfuseDatabaseReader:
         if not self._database_url:
             raise LangfuseDatabaseConfigError()
 
-        async with await psycopg.AsyncConnection.connect(
+        async with await connect_postgres(
             self._database_url,
             row_factory=dict_row,
         ) as connection:
@@ -2013,7 +2014,7 @@ class LangfuseDatabaseReader:
         if not self._database_url:
             raise LangfuseDatabaseConfigError()
 
-        async with await psycopg.AsyncConnection.connect(
+        async with await connect_postgres(
             self._database_url,
             row_factory=dict_row,
         ) as connection:
@@ -2071,7 +2072,7 @@ class LangfuseDatabaseReader:
         if not self._database_url:
             raise LangfuseDatabaseConfigError()
 
-        async with await psycopg.AsyncConnection.connect(
+        async with await connect_postgres(
             self._database_url,
             row_factory=dict_row,
         ) as connection:
@@ -2118,7 +2119,7 @@ class LangfuseDatabaseReader:
 
         job_id = _new_langfuse_id("paexport")
         expires_at = datetime.now(timezone.utc) + timedelta(days=7)
-        async with await psycopg.AsyncConnection.connect(
+        async with await connect_postgres(
             self._database_url,
             row_factory=dict_row,
         ) as connection:
@@ -2174,7 +2175,7 @@ class LangfuseDatabaseReader:
         if not self._database_url:
             raise LangfuseDatabaseConfigError()
 
-        async with await psycopg.AsyncConnection.connect(
+        async with await connect_postgres(
             self._database_url,
             row_factory=dict_row,
         ) as connection:
@@ -2285,7 +2286,7 @@ class LangfuseDatabaseReader:
             "defaultFileName": file_name,
             "fileName": file_name,
         }
-        async with await psycopg.AsyncConnection.connect(
+        async with await connect_postgres(
             self._database_url,
             row_factory=dict_row,
         ) as connection:
@@ -2351,7 +2352,7 @@ class LangfuseDatabaseReader:
 
         job_id = _new_langfuse_id("patracejob")
         expires_at = datetime.now(timezone.utc) + timedelta(hours=2)
-        async with await psycopg.AsyncConnection.connect(
+        async with await connect_postgres(
             self._database_url,
             row_factory=dict_row,
         ) as connection:
@@ -2418,7 +2419,7 @@ class LangfuseDatabaseReader:
         if not self._database_url:
             raise LangfuseDatabaseConfigError()
 
-        async with await psycopg.AsyncConnection.connect(
+        async with await connect_postgres(
             self._database_url,
             row_factory=dict_row,
         ) as connection:
@@ -2456,7 +2457,7 @@ class LangfuseDatabaseReader:
             raise LangfuseDatabaseConfigError()
 
         lease_until = datetime.now(timezone.utc) + timedelta(seconds=lease_seconds)
-        async with await psycopg.AsyncConnection.connect(
+        async with await connect_postgres(
             self._database_url,
             row_factory=dict_row,
         ) as connection:
@@ -2510,7 +2511,7 @@ class LangfuseDatabaseReader:
             raise LangfuseDatabaseConfigError()
 
         lease_until = datetime.now(timezone.utc) + timedelta(seconds=lease_seconds)
-        async with await psycopg.AsyncConnection.connect(
+        async with await connect_postgres(
             self._database_url,
             row_factory=dict_row,
         ) as connection:
@@ -2569,7 +2570,7 @@ class LangfuseDatabaseReader:
         lease_until = None
         if not terminal:
             lease_until = datetime.now(timezone.utc) + timedelta(seconds=lease_seconds)
-        async with await psycopg.AsyncConnection.connect(
+        async with await connect_postgres(
             self._database_url,
             row_factory=dict_row,
         ) as connection:
@@ -2633,7 +2634,7 @@ class LangfuseDatabaseReader:
         if not self._database_url:
             raise LangfuseDatabaseConfigError()
 
-        async with await psycopg.AsyncConnection.connect(
+        async with await connect_postgres(
             self._database_url,
             row_factory=dict_row,
         ) as connection:
@@ -2764,7 +2765,7 @@ class LangfuseDatabaseReader:
         if not self._database_url:
             raise LangfuseDatabaseConfigError()
 
-        async with await psycopg.AsyncConnection.connect(
+        async with await connect_postgres(
             self._database_url,
             row_factory=dict_row,
         ) as connection:
@@ -2818,7 +2819,7 @@ class LangfuseDatabaseReader:
             raise LangfuseDatabaseConfigError()
 
         config_id = _new_langfuse_id("scorecfg")
-        async with await psycopg.AsyncConnection.connect(
+        async with await connect_postgres(
             self._database_url,
             row_factory=dict_row,
         ) as connection:
@@ -2875,7 +2876,7 @@ class LangfuseDatabaseReader:
         if not self._database_url:
             raise LangfuseDatabaseConfigError()
 
-        async with await psycopg.AsyncConnection.connect(
+        async with await connect_postgres(
             self._database_url,
             row_factory=dict_row,
         ) as connection:
@@ -2919,7 +2920,7 @@ class LangfuseDatabaseReader:
         if not self._database_url:
             raise LangfuseDatabaseConfigError()
 
-        async with await psycopg.AsyncConnection.connect(
+        async with await connect_postgres(
             self._database_url,
             row_factory=dict_row,
         ) as connection:
@@ -3015,7 +3016,7 @@ class LangfuseDatabaseReader:
         if not self._database_url:
             raise LangfuseDatabaseConfigError()
 
-        async with await psycopg.AsyncConnection.connect(
+        async with await connect_postgres(
             self._database_url,
             row_factory=dict_row,
         ) as connection:
@@ -3116,7 +3117,7 @@ class LangfuseDatabaseReader:
         if not self._database_url:
             raise LangfuseDatabaseConfigError()
 
-        async with await psycopg.AsyncConnection.connect(
+        async with await connect_postgres(
             self._database_url,
             row_factory=dict_row,
         ) as connection:
@@ -3208,7 +3209,7 @@ class LangfuseDatabaseReader:
         if not self._database_url:
             raise LangfuseDatabaseConfigError()
 
-        async with await psycopg.AsyncConnection.connect(
+        async with await connect_postgres(
             self._database_url,
             row_factory=dict_row,
         ) as connection:
@@ -3260,7 +3261,7 @@ class LangfuseDatabaseReader:
         if not self._database_url:
             raise LangfuseDatabaseConfigError()
 
-        async with await psycopg.AsyncConnection.connect(
+        async with await connect_postgres(
             self._database_url,
             row_factory=dict_row,
         ) as connection:
@@ -3562,7 +3563,7 @@ class LangfuseDatabaseReader:
 
         queue_id = _new_langfuse_id("annqueue")
         try:
-            async with await psycopg.AsyncConnection.connect(
+            async with await connect_postgres(
                 self._database_url,
                 row_factory=dict_row,
             ) as connection:
@@ -3655,7 +3656,7 @@ class LangfuseDatabaseReader:
             raise LangfuseDatabaseConfigError()
 
         try:
-            async with await psycopg.AsyncConnection.connect(
+            async with await connect_postgres(
                 self._database_url,
                 row_factory=dict_row,
             ) as connection:
@@ -3724,7 +3725,7 @@ class LangfuseDatabaseReader:
         if not self._database_url:
             raise LangfuseDatabaseConfigError()
 
-        async with await psycopg.AsyncConnection.connect(
+        async with await connect_postgres(
             self._database_url,
             row_factory=dict_row,
         ) as connection:
@@ -3963,7 +3964,7 @@ class LangfuseDatabaseReader:
             raise LangfuseDatabaseConfigError()
 
         item_id = _new_langfuse_id("annitem")
-        async with await psycopg.AsyncConnection.connect(
+        async with await connect_postgres(
             self._database_url,
             row_factory=dict_row,
         ) as connection:
@@ -4058,7 +4059,7 @@ class LangfuseDatabaseReader:
         if not self._database_url:
             raise LangfuseDatabaseConfigError()
 
-        async with await psycopg.AsyncConnection.connect(
+        async with await connect_postgres(
             self._database_url,
             row_factory=dict_row,
         ) as connection:
@@ -4121,7 +4122,7 @@ class LangfuseDatabaseReader:
                 status_code=404,
             )
 
-        async with await psycopg.AsyncConnection.connect(
+        async with await connect_postgres(
             self._database_url,
             row_factory=dict_row,
         ) as connection:
@@ -4221,7 +4222,7 @@ class LangfuseDatabaseReader:
             raise LangfuseDatabaseConfigError()
 
         trace_ids = list(dict.fromkeys(payload.get("traceIds") or []))
-        async with await psycopg.AsyncConnection.connect(
+        async with await connect_postgres(
             self._database_url,
             row_factory=dict_row,
         ) as connection:
@@ -4429,7 +4430,7 @@ class LangfuseDatabaseReader:
             return []
 
         score_payloads: list[dict[str, Any]] = []
-        async with await psycopg.AsyncConnection.connect(
+        async with await connect_postgres(
             self._database_url,
             row_factory=dict_row,
         ) as connection:
@@ -4574,7 +4575,7 @@ class LangfuseDatabaseReader:
         if not self._database_url:
             raise LangfuseDatabaseConfigError()
 
-        async with await psycopg.AsyncConnection.connect(
+        async with await connect_postgres(
             self._database_url,
             row_factory=dict_row,
         ) as connection:
@@ -4645,7 +4646,7 @@ class LangfuseDatabaseReader:
             raise LangfuseDatabaseConfigError()
 
         dataset_item_id = _new_langfuse_id("datasetitem")
-        async with await psycopg.AsyncConnection.connect(
+        async with await connect_postgres(
             self._database_url,
             row_factory=dict_row,
         ) as connection:
@@ -4754,7 +4755,7 @@ class LangfuseDatabaseReader:
 
         traces = _unique_traces_by_trace_id(payload.get("traces") or [])
         item_ids: list[str] = []
-        async with await psycopg.AsyncConnection.connect(
+        async with await connect_postgres(
             self._database_url,
             row_factory=dict_row,
         ) as connection:
@@ -5167,7 +5168,7 @@ class LangfuseDatabaseReader:
             raise LangfuseDatabaseConfigError()
 
         evaluator_id = _new_langfuse_id("evaltmpl")
-        async with await psycopg.AsyncConnection.connect(
+        async with await connect_postgres(
             self._database_url,
             row_factory=dict_row,
         ) as connection:
@@ -5277,7 +5278,7 @@ class LangfuseDatabaseReader:
             raise LangfuseDatabaseConfigError()
 
         evaluator_id = _new_langfuse_id("paeval")
-        async with await psycopg.AsyncConnection.connect(
+        async with await connect_postgres(
             self._database_url,
             row_factory=dict_row,
         ) as connection:
@@ -5372,7 +5373,7 @@ class LangfuseDatabaseReader:
         if not self._database_url:
             raise LangfuseDatabaseConfigError()
 
-        async with await psycopg.AsyncConnection.connect(
+        async with await connect_postgres(
             self._database_url,
             row_factory=dict_row,
         ) as connection:
@@ -5455,7 +5456,7 @@ class LangfuseDatabaseReader:
         if not self._database_url:
             raise LangfuseDatabaseConfigError()
 
-        async with await psycopg.AsyncConnection.connect(
+        async with await connect_postgres(
             self._database_url,
             row_factory=dict_row,
         ) as connection:
@@ -5562,7 +5563,7 @@ class LangfuseDatabaseReader:
             raise LangfuseDatabaseConfigError()
 
         membership_id = _new_langfuse_id("orgmem")
-        async with await psycopg.AsyncConnection.connect(
+        async with await connect_postgres(
             self._database_url,
             row_factory=dict_row,
         ) as connection:
@@ -5646,7 +5647,7 @@ class LangfuseDatabaseReader:
         if not self._database_url:
             raise LangfuseDatabaseConfigError()
 
-        async with await psycopg.AsyncConnection.connect(
+        async with await connect_postgres(
             self._database_url,
             row_factory=dict_row,
         ) as connection:
@@ -5709,7 +5710,7 @@ class LangfuseDatabaseReader:
         if not self._database_url:
             raise LangfuseDatabaseConfigError()
 
-        async with await psycopg.AsyncConnection.connect(
+        async with await connect_postgres(
             self._database_url,
             row_factory=dict_row,
         ) as connection:
@@ -5980,7 +5981,7 @@ class LangfuseDatabaseReader:
         organization_id = _new_langfuse_id("org")
         project_id = _new_langfuse_id("project")
 
-        async with await psycopg.AsyncConnection.connect(
+        async with await connect_postgres(
             self._database_url,
             row_factory=dict_row,
         ) as connection:
@@ -6086,7 +6087,7 @@ class LangfuseDatabaseReader:
         if not self._database_url:
             raise LangfuseDatabaseConfigError()
 
-        async with await psycopg.AsyncConnection.connect(
+        async with await connect_postgres(
             self._database_url,
             row_factory=dict_row,
         ) as connection:
@@ -6464,7 +6465,7 @@ class LangfuseDatabaseReader:
         if not self._database_url:
             raise LangfuseDatabaseConfigError()
 
-        async with await psycopg.AsyncConnection.connect(
+        async with await connect_postgres(
             self._database_url,
             row_factory=dict_row,
         ) as connection:
@@ -6673,7 +6674,7 @@ class LangfuseDatabaseReader:
         if not self._database_url:
             raise LangfuseDatabaseConfigError()
 
-        async with await psycopg.AsyncConnection.connect(
+        async with await connect_postgres(
             self._database_url,
             row_factory=dict_row,
         ) as connection:
@@ -6836,7 +6837,7 @@ class LangfuseDatabaseReader:
         if not self._database_url:
             raise LangfuseDatabaseConfigError()
 
-        async with await psycopg.AsyncConnection.connect(
+        async with await connect_postgres(
             self._database_url,
             row_factory=dict_row,
         ) as connection:
@@ -6913,7 +6914,7 @@ class LangfuseDatabaseReader:
         if not self._database_url:
             raise LangfuseDatabaseConfigError()
 
-        async with await psycopg.AsyncConnection.connect(
+        async with await connect_postgres(
             self._database_url,
             row_factory=dict_row,
         ) as connection:

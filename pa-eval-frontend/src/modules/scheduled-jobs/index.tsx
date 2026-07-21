@@ -125,7 +125,6 @@ function ScheduledJobsProject({
         ['scheduled-job-tasks', $api, projectId, state] as const,
       queryFn: (state: DataTableQueryState) =>
         listProjectScheduledJobs($api, projectId, state),
-      refetchInterval: 3000,
     }),
     [$api, projectId]
   )
@@ -135,7 +134,6 @@ function ScheduledJobsProject({
         ['scheduled-job-logs', $api, projectId, state] as const,
       queryFn: (state: DataTableQueryState) =>
         listProjectScheduledJobLogs($api, projectId, state),
-      refetchInterval: 3000,
     }),
     [$api, projectId]
   )

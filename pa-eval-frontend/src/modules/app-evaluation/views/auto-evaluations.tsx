@@ -4,6 +4,7 @@ import { Plus, RefreshCw } from 'lucide-react'
 import { useNavigate, useParams } from 'react-router'
 import { toast } from 'sonner'
 import { confirm } from '@/lib/confirm'
+import { createProgressiveRefetchInterval } from '@/lib/progressive-refetch-interval'
 import { useAPI } from '@/hooks/use-api'
 import { usePermission } from '@/hooks/use-permission'
 import { DataTable } from '@/components/common/data-table'
@@ -22,6 +23,8 @@ import {
   autoEvaluationStatusLabels,
   type AutoEvaluationTaskRecord,
 } from '../types'
+
+const autoEvaluationRefetchInterval = createProgressiveRefetchInterval()
 
 export function ProjectAutoEvaluations() {
   const { projectId = 'project_customer_agent' } = useParams()
@@ -115,7 +118,7 @@ export function ProjectAutoEvaluations() {
               ],
               queryFn: (state) =>
                 listProjectAutoEvaluationTasks($api, projectId, state),
-              refetchInterval: 3000,
+              refetchInterval: autoEvaluationRefetchInterval,
             }}
             urlState={{
               defaultPageSize: 10,

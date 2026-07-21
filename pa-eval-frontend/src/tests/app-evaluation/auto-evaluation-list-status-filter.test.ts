@@ -26,7 +26,6 @@ test('auto evaluation list uses status toolbar filter instead of summary cards',
   assert.match(apiSource, /query\.filters\.status/)
   assert.match(apiSource, /\.\.\.\(status\?\.length \? \{ status \} : \{\}\)/)
   assert.match(mockSource, /req\.query\?\.status/)
-  assert.match(backendSource, /status: list\[AutoEvaluationTaskStatus\]/)
+  assert.match(backendSource, /status: list\[str\]/)
   assert.match(backendSource, /status = ANY\(%\(status\)s::text\[\]\)/)
 })
-

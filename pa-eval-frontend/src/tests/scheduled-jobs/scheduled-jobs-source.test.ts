@@ -502,3 +502,10 @@ test('scheduled jobs mock helpers support deterministic time and ids', () => {
   )
   assert.match(manualLog.evaluationReportPath ?? '', /\/evaluation\/reports\//)
 })
+
+test('scheduled job tables do not poll and keep manual refresh invalidation', () => {
+  assert.doesNotMatch(pageSource, /refetchInterval/)
+  assert.match(pageSource, /query\.queryKey\[0\] === 'scheduled-job-tasks'/)
+  assert.match(pageSource, /query\.queryKey\[0\] === 'scheduled-job-logs'/)
+  assert.match(pageSource, /toast\.success\('定时任务数据已刷新'\)/)
+})

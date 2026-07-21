@@ -19,6 +19,11 @@ from app.audit import (
 from app.auto_evaluations import router as auto_evaluations_router
 from app.auth import router as auth_router
 from app.config import get_settings
+from app.data_access import (
+    close_data_access_resources,
+    get_data_access_pool_settings,
+    start_data_access_resources,
+)
 from app.datasets import router as datasets_router
 from app.errors import BusinessError
 from app.evaluators import router as evaluators_router
@@ -35,16 +40,27 @@ from app.users import router as user_router
 
 def create_app() -> FastAPI:
     settings = get_settings()
+    pool_settings = get_data_access_pool_settings()
 
     @asynccontextmanager
     async def lifespan(app: FastAPI):
-        scheduler = start_scheduled_job_scheduler(settings)
-        trace_bulk_worker = start_trace_bulk_job_worker(settings)
+        scheduler = None
+        trace_bulk_worker = None
+        await start_data_access_resources(settings, pool_settings)
         try:
+            scheduler = start_scheduled_job_scheduler(settings)
+            trace_bulk_worker = start_trace_bulk_job_worker(settings)
             yield
         finally:
-            await trace_bulk_worker.stop()
-            await scheduler.stop()
+            try:
+                if trace_bulk_worker is not None:
+                    await trace_bulk_worker.stop()
+            finally:
+                try:
+                    if scheduler is not None:
+                        await scheduler.stop()
+                finally:
+                    await close_data_access_resources()
 
     app = FastAPI(title="PA Eval Backend", lifespan=lifespan)
 
