@@ -2,7 +2,7 @@ import asyncio
 import json
 import logging
 import re
-from contextlib import suppress
+from contextlib import asynccontextmanager, suppress
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
@@ -901,20 +901,37 @@ async def _prefill_annotation_scores_from_trace_rows(
     )
     if not score_requests:
         return []
-    api_key = await reader.get_project_api_key_credentials_for_user(
-        project_id,
-        user_id,
-    )
-    return await _write_annotation_score_requests(
-        project_id=project_id,
-        user_id=user_id,
-        score_requests=score_requests,
-        api_key=api_key,
-        reader=reader,
-        langfuse_client=langfuse_client,
-        score_writer=score_writer,
-        write_through_clickhouse=True,
-    )
+    if score_writer is None:
+        return [
+            {
+                "scoreId": str(score_request.get("id") or ""),
+                "traceId": str(score_request.get("traceId") or ""),
+                "reason": "ClickHouse Score 写入器不可用",
+            }
+            for score_request in score_requests
+        ]
+    try:
+        await score_writer.upsert_annotation_scores(
+            project_id,
+            user_id,
+            [clickhouse_score_payload(score_request) for score_request in score_requests],
+        )
+    except Exception as exc:
+        logger.warning(
+            "Failed to batch prefill annotation scores: project_id=%s queue_id=%s",
+            project_id,
+            queue_id,
+            exc_info=True,
+        )
+        return [
+            {
+                "scoreId": str(score_request.get("id") or ""),
+                "traceId": str(score_request.get("traceId") or ""),
+                "reason": str(exc),
+            }
+            for score_request in score_requests
+        ]
+    return []
 
 
 async def _write_annotation_score_requests(
@@ -2507,6 +2524,7 @@ async def create_trace_annotation_task_job(
     score_writer: LangfuseClickHouseScoreWriter = Depends(
         get_langfuse_clickhouse_score_writer
     ),
+    settings: Settings = Depends(get_settings),
 ) -> dict[str, Any]:
     task_payload = _trace_annotation_task_payload(payload)
     task_payload.pop("traceIds", None)
@@ -2532,14 +2550,15 @@ async def create_trace_annotation_task_job(
             "totalCount": total_count,
         },
     )
-    background_tasks.add_task(
-        run_trace_annotation_task_job,
-        job_id=job["id"],
-        reader=reader,
-        trace_reader=trace_reader,
-        langfuse_client=langfuse_client,
-        score_writer=score_writer,
-    )
+    if not settings.pa_eval_trace_bulk_worker_enabled:
+        background_tasks.add_task(
+            run_trace_annotation_task_job,
+            job_id=job["id"],
+            reader=reader,
+            trace_reader=trace_reader,
+            langfuse_client=langfuse_client,
+            score_writer=score_writer,
+        )
     return success(_to_trace_annotation_task_job_response(job))
 
 
@@ -2694,6 +2713,46 @@ async def _next_trace_bulk_job_batch(
     )
 
 
+@asynccontextmanager
+async def _maintain_trace_bulk_job_lease(
+    *,
+    reader: LangfuseDatabaseReader,
+    job_id: str,
+    lock_owner: str,
+    lease_seconds: int,
+    heartbeat_interval_seconds: float | None = None,
+):
+    stop_event = asyncio.Event()
+    owner_task = asyncio.current_task()
+    interval = heartbeat_interval_seconds or max(1.0, lease_seconds / 3)
+
+    async def heartbeat() -> None:
+        while not stop_event.is_set():
+            try:
+                await asyncio.wait_for(stop_event.wait(), timeout=interval)
+                return
+            except TimeoutError:
+                renewed = await reader.renew_trace_bulk_job_lease(
+                    job_id,
+                    lock_owner,
+                    lease_seconds,
+                )
+                if not renewed:
+                    logger.error("Trace bulk job lease lost: %s", job_id)
+                    if owner_task is not None:
+                        owner_task.cancel()
+                    return
+
+    heartbeat_task = asyncio.create_task(heartbeat())
+    try:
+        yield
+    finally:
+        stop_event.set()
+        heartbeat_task.cancel()
+        with suppress(asyncio.CancelledError):
+            await heartbeat_task
+
+
 async def run_trace_annotation_task_job(
     *,
     job_id: str,
@@ -2712,6 +2771,18 @@ async def run_trace_annotation_task_job(
     )
     if not job or job.get("jobType") != "ANNOTATION_TASK":
         return
+    settings = getattr(reader, "_settings", None)
+    lease_seconds = max(
+        1,
+        int(getattr(settings, "pa_eval_trace_bulk_worker_lease_seconds", 120)),
+    )
+    lease_context = _maintain_trace_bulk_job_lease(
+        reader=reader,
+        job_id=job_id,
+        lock_owner=effective_lock_owner,
+        lease_seconds=lease_seconds,
+    )
+    await lease_context.__aenter__()
     try:
         task_payload = dict(job.get("operationPayload") or {})
         result_payload = dict(job.get("resultPayload") or {})
@@ -2812,6 +2883,8 @@ async def run_trace_annotation_task_job(
                 "errorMessage": "创建人工标注任务失败，请稍后重试",
             },
         )
+    finally:
+        await lease_context.__aexit__(None, None, None)
 
 
 def _trace_annotation_task_payload(

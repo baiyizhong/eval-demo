@@ -1,12 +1,17 @@
+import inspect
+import json
+
 import anyio
 import pytest
 from datetime import datetime, timedelta, timezone
 from fastapi.testclient import TestClient
 
+from app import annotations as annotations_module
 from app import langfuse_db
 from app.auth_context import CurrentUserContext, get_current_user_context
-from app.config import Settings
+from app.config import Settings, get_settings
 from app.errors import BusinessError
+from app.langfuse_clickhouse import LangfuseClickHouseScoreWriter
 from app.langfuse_clickhouse import get_langfuse_clickhouse_reader
 from app.langfuse_clickhouse import get_langfuse_clickhouse_score_writer
 from app.langfuse_client import get_langfuse_client
@@ -117,6 +122,17 @@ class FakeAnnotationDatabaseReader:
             if len(claimed) >= limit:
                 break
         return claimed
+
+    async def renew_trace_bulk_job_lease(
+        self,
+        job_id: str,
+        lock_owner: str,
+        lease_seconds: int,
+    ) -> bool:
+        self.calls.append(
+            ("renew_trace_bulk_job_lease", (job_id, lock_owner, lease_seconds))
+        )
+        return True
 
     async def update_trace_bulk_job(
         self,
@@ -820,6 +836,7 @@ class FakeLangfuseClient:
 class FakeClickHouseScoreWriter:
     def __init__(self) -> None:
         self.upserted_scores: list[tuple[str, str, dict]] = []
+        self.batch_write_count = 0
 
     async def upsert_annotation_score(
         self,
@@ -828,6 +845,69 @@ class FakeClickHouseScoreWriter:
         score_request: dict,
     ) -> None:
         self.upserted_scores.append((project_id, user_id, score_request))
+
+    async def upsert_annotation_scores(
+        self,
+        project_id: str,
+        user_id: str,
+        score_requests: list[dict],
+    ) -> None:
+        self.batch_write_count += 1
+        self.upserted_scores.extend(
+            (project_id, user_id, score_request) for score_request in score_requests
+        )
+
+
+def test_clickhouse_score_writer_batches_annotation_scores_in_one_insert() -> None:
+    writer = object.__new__(LangfuseClickHouseScoreWriter)
+    queries: list[str] = []
+
+    async def fake_insert(query: str) -> None:
+        queries.append(query)
+
+    writer._insert_json_each_row = fake_insert  # type: ignore[method-assign]
+
+    async def run_batch() -> None:
+        await writer.upsert_annotation_scores(
+            "project-1",
+            "user-1",
+            [
+                {
+                    "id": "score-1",
+                    "name": "准确性",
+                    "traceId": "trace-1",
+                    "value": 1,
+                    "configId": "config-1",
+                    "queueId": "queue-1",
+                },
+                {
+                    "id": "score-2",
+                    "name": "完整性",
+                    "traceId": "trace-2",
+                    "value": 0.5,
+                    "configId": "config-2",
+                    "queueId": "queue-1",
+                },
+            ],
+        )
+
+    anyio.run(run_batch)
+
+    assert len(queries) == 1
+    prefix, rows_payload = queries[0].split("\n", 1)
+    assert prefix == "INSERT INTO scores FORMAT JSONEachRow"
+    rows = [json.loads(line) for line in rows_payload.splitlines()]
+    assert [row["id"] for row in rows] == ["score-1", "score-2"]
+    assert {row["source"] for row in rows} == {"ANNOTATION"}
+    assert {row["author_user_id"] for row in rows} == {"user-1"}
+
+
+def test_trace_annotation_batch_does_not_copy_scores_in_postgres() -> None:
+    source = inspect.getsource(
+        LangfuseDatabaseReader.create_trace_annotation_task_for_user
+    )
+
+    assert "_copy_existing_annotation_scores_for_items" not in source
 
 
 def override_reader(fake_reader: FakeAnnotationDatabaseReader) -> None:
@@ -1014,6 +1094,9 @@ def test_creates_trace_annotation_task_job_and_reports_completion() -> None:
 
     fake_reader = BatchAnnotationReader()
     override_reader(fake_reader)
+    app.dependency_overrides[get_settings] = lambda: Settings(
+        pa_eval_trace_bulk_worker_enabled=False
+    )
 
     try:
         response = TestClient(app).post(
@@ -1053,6 +1136,56 @@ def test_creates_trace_annotation_task_job_and_reports_completion() -> None:
             ),
         )
     ]
+
+
+def test_trace_annotation_job_only_enqueues_when_worker_is_enabled() -> None:
+    fake_reader = FakeAnnotationDatabaseReader()
+    override_reader(fake_reader)
+    app.dependency_overrides[get_settings] = lambda: Settings(
+        pa_eval_trace_bulk_worker_enabled=True
+    )
+
+    try:
+        response = TestClient(app).post(
+            "/api/projects/project-1/traces/annotation-task-jobs",
+            json={"traceIds": ["trace-1"], "queueId": "queue-1"},
+        )
+    finally:
+        clear_overrides()
+
+    assert response.status_code == 200
+    assert response.json()["data"]["status"] == "PENDING"
+    assert not any(call[0] == "create_trace_task" for call in fake_reader.calls)
+
+
+def test_trace_bulk_job_heartbeat_renews_lease_until_context_exits() -> None:
+    fake_reader = FakeAnnotationDatabaseReader()
+
+    async def run_heartbeat() -> None:
+        async with annotations_module._maintain_trace_bulk_job_lease(
+            reader=fake_reader,  # type: ignore[arg-type]
+            job_id="job-1",
+            lock_owner="worker-1",
+            lease_seconds=3,
+            heartbeat_interval_seconds=0.01,
+        ):
+            await anyio.sleep(0.035)
+
+        renew_count = sum(
+            call[0] == "renew_trace_bulk_job_lease" for call in fake_reader.calls
+        )
+        await anyio.sleep(0.02)
+        assert sum(
+            call[0] == "renew_trace_bulk_job_lease" for call in fake_reader.calls
+        ) == renew_count
+
+    anyio.run(run_heartbeat)
+
+    renew_calls = [
+        call for call in fake_reader.calls if call[0] == "renew_trace_bulk_job_lease"
+    ]
+    assert len(renew_calls) >= 2
+    assert all(call[1] == ("job-1", "worker-1", 3) for call in renew_calls)
 
 
 def test_creates_trace_annotation_task_prefills_scores_from_trace_detail() -> None:
@@ -1142,15 +1275,13 @@ def test_creates_trace_annotation_task_prefills_scores_from_trace_detail() -> No
         "create_trace_task",
         "prepare_scores_batch",
         "prepare_scores",
-        "get_project_api_key",
     ]
-    assert fake_langfuse_client.created_scores
+    assert fake_langfuse_client.created_scores == []
+    assert fake_score_writer.batch_write_count == 1
     assert fake_score_writer.upserted_scores[0][2]["queueId"] == "queue-new"
 
 
-def test_prefills_annotation_scores_with_bounded_concurrency_and_failure_details() -> (
-    None
-):
+def test_prefills_annotation_scores_reports_batch_clickhouse_failure() -> None:
     class BatchReader(FakeAnnotationDatabaseReader):
         def __init__(self) -> None:
             super().__init__()
@@ -1185,25 +1316,14 @@ def test_prefills_annotation_scores_with_bounded_concurrency_and_failure_details
                 for index, item in enumerate(items)
             ]
 
-    class ConcurrentClient(FakeLangfuseClient):
-        def __init__(self) -> None:
-            super().__init__()
-            self.active = 0
-            self.max_active = 0
-
-        async def create_score(
+    class FailingBatchWriter(FakeClickHouseScoreWriter):
+        async def upsert_annotation_scores(
             self,
-            public_key: str,
-            secret_key: str,
-            payload: dict,
+            project_id: str,
+            user_id: str,
+            score_requests: list[dict],
         ) -> None:
-            self.active += 1
-            self.max_active = max(self.max_active, self.active)
-            await anyio.sleep(0.01)
-            self.active -= 1
-            if payload["id"] == "score-1":
-                raise RuntimeError("upstream failed")
-            self.created_scores.append((public_key, secret_key, payload))
+            raise RuntimeError("clickhouse failed")
 
     reader = BatchReader()
     trace_reader = FakeAnnotationTraceReader()
@@ -1211,7 +1331,8 @@ def test_prefills_annotation_scores_with_bounded_concurrency_and_failure_details
         f"trace-{index}": [{"configId": "score-1", "name": "准确性", "value": index}]
         for index in range(3)
     }
-    client = ConcurrentClient()
+    client = FakeLangfuseClient()
+    score_writer = FailingBatchWriter()
 
     async def run_prefill() -> list[dict]:
         return await _prefill_annotation_scores_from_trace_rows(
@@ -1223,26 +1344,24 @@ def test_prefills_annotation_scores_with_bounded_concurrency_and_failure_details
             ],
             score_config_ids=["score-1"],
             user_id="user-1",
-            reader=reader,
-            trace_reader=trace_reader,
-            langfuse_client=client,
-        )
+                reader=reader,
+                trace_reader=trace_reader,
+                langfuse_client=client,
+                score_writer=score_writer,  # type: ignore[arg-type]
+            )
 
     failures = anyio.run(run_prefill)
 
-    assert client.max_active == 2
-    assert len(client.created_scores) == 2
+    assert client.created_scores == []
     assert failures == [
         {
-            "scoreId": "score-1",
-            "traceId": "trace-1",
-            "reason": "upstream failed",
+            "scoreId": f"score-{index}",
+            "traceId": f"trace-{index}",
+            "reason": "clickhouse failed",
         }
+        for index in range(3)
     ]
-    assert [call[0] for call in reader.calls] == [
-        "prepare_scores_batch",
-        "get_project_api_key",
-    ]
+    assert [call[0] for call in reader.calls] == ["prepare_scores_batch"]
 
 
 def test_copies_existing_annotation_scores_for_new_queue_item() -> None:

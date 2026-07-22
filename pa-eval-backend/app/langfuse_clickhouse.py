@@ -1264,10 +1264,22 @@ class LangfuseClickHouseScoreWriter:
         user_id: str,
         score_request: dict[str, Any],
     ) -> None:
-        await self.upsert_score(
+        await self.upsert_annotation_scores(
             project_id,
             user_id,
-            score_request,
+            [score_request],
+        )
+
+    async def upsert_annotation_scores(
+        self,
+        project_id: str,
+        user_id: str,
+        score_requests: list[dict[str, Any]],
+    ) -> None:
+        await self.upsert_scores(
+            project_id,
+            user_id,
+            score_requests,
             source="ANNOTATION",
         )
 
@@ -1279,38 +1291,31 @@ class LangfuseClickHouseScoreWriter:
         *,
         source: str = "API",
     ) -> None:
-        now = _clickhouse_datetime_ms(datetime.now(UTC))
-        record = {
-            "id": score_request["id"],
-            "timestamp": now,
-            "project_id": project_id,
-            "environment": score_request.get("environment") or "default",
-            "trace_id": score_request.get("traceId") or None,
-            "observation_id": score_request.get("observationId") or None,
-            "session_id": score_request.get("sessionId") or None,
-            "dataset_run_id": None,
-            "name": score_request["name"],
-            "value": _score_numeric_value(score_request),
-            "source": source,
-            "comment": score_request.get("comment") or None,
-            "metadata": _clickhouse_string_map(score_request.get("metadata")),
-            "author_user_id": user_id,
-            "config_id": score_request.get("configId") or None,
-            "data_type": score_request.get("dataType") or "NUMERIC",
-            "string_value": score_request.get("stringValue") or None,
-            "long_string_value": score_request.get("longStringValue") or "",
-            "queue_id": score_request.get("queueId") or None,
-            "execution_trace_id": score_request.get("executionTraceId") or None,
-            "created_at": now,
-            "updated_at": now,
-            "event_ts": now,
-            "is_deleted": 0,
-        }
-        await self._insert_json_each_row(
-            "INSERT INTO scores FORMAT JSONEachRow\n"
-            + json.dumps(record, ensure_ascii=False)
+        await self.upsert_scores(
+            project_id,
+            user_id,
+            [score_request],
+            source=source,
         )
 
+    async def upsert_scores(
+        self,
+        project_id: str,
+        user_id: str,
+        score_requests: list[dict[str, Any]],
+        *,
+        source: str = "API",
+    ) -> None:
+        if not score_requests:
+            return
+        records = [
+            _clickhouse_score_record(project_id, user_id, score_request, source)
+            for score_request in score_requests
+        ]
+        await self._insert_json_each_row(
+            "INSERT INTO scores FORMAT JSONEachRow\n"
+            + "\n".join(json.dumps(record, ensure_ascii=False) for record in records)
+        )
     async def _insert_json_each_row(self, query: str) -> None:
         request_params = {
             "user": self._user,
@@ -1325,6 +1330,41 @@ class LangfuseClickHouseScoreWriter:
             response.raise_for_status()
         except httpx.HTTPError as exc:
             raise LangfuseUpstreamError("Langfuse ClickHouse 写入失败") from exc
+
+
+def _clickhouse_score_record(
+    project_id: str,
+    user_id: str,
+    score_request: dict[str, Any],
+    source: str,
+) -> dict[str, Any]:
+    now = _clickhouse_datetime_ms(datetime.now(UTC))
+    return {
+        "id": score_request["id"],
+        "timestamp": now,
+        "project_id": project_id,
+        "environment": score_request.get("environment") or "default",
+        "trace_id": score_request.get("traceId") or None,
+        "observation_id": score_request.get("observationId") or None,
+        "session_id": score_request.get("sessionId") or None,
+        "dataset_run_id": None,
+        "name": score_request["name"],
+        "value": _score_numeric_value(score_request),
+        "source": source,
+        "comment": score_request.get("comment") or None,
+        "metadata": _clickhouse_string_map(score_request.get("metadata")),
+        "author_user_id": user_id,
+        "config_id": score_request.get("configId") or None,
+        "data_type": score_request.get("dataType") or "NUMERIC",
+        "string_value": score_request.get("stringValue") or None,
+        "long_string_value": score_request.get("longStringValue") or "",
+        "queue_id": score_request.get("queueId") or None,
+        "execution_trace_id": score_request.get("executionTraceId") or None,
+        "created_at": now,
+        "updated_at": now,
+        "event_ts": now,
+        "is_deleted": 0,
+    }
 
 
 def _score_numeric_value(score_request: dict[str, Any]) -> float:

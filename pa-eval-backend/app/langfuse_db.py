@@ -2632,6 +2632,41 @@ class LangfuseDatabaseReader:
 
         return [self._to_trace_bulk_job_payload(row) for row in rows]
 
+    async def renew_trace_bulk_job_lease(
+        self,
+        job_id: str,
+        lock_owner: str,
+        lease_seconds: int,
+    ) -> bool:
+        if not self._database_url:
+            raise LangfuseDatabaseConfigError()
+
+        lease_until = datetime.now(timezone.utc) + timedelta(seconds=lease_seconds)
+        async with await connect_postgres(
+            self._database_url,
+            row_factory=dict_row,
+        ) as connection:
+            async with connection.cursor() as cursor:
+                await cursor.execute(
+                    """
+                    UPDATE pa_trace_bulk_jobs
+                    SET
+                        lock_until = %(lease_until)s,
+                        update_by = %(lock_owner)s,
+                        update_date = NOW()
+                    WHERE id = %(job_id)s
+                      AND status = 'RUNNING'
+                      AND lock_owner = %(lock_owner)s
+                      AND expires_at > NOW()
+                    """,
+                    {
+                        "job_id": job_id,
+                        "lock_owner": lock_owner,
+                        "lease_until": lease_until,
+                    },
+                )
+                return cursor.rowcount > 0
+
     async def update_trace_bulk_job(
         self,
         job_id: str,
@@ -4580,21 +4615,6 @@ class LangfuseDatabaseReader:
                     )
                     created_item_ids.extend(item["itemId"] for item in batch_items)
                     created_items.extend(batch_items)
-
-                await _copy_existing_annotation_scores_for_items(
-                    cursor,
-                    project_id=project_id,
-                    queue_id=queue_id,
-                    items=[
-                        {
-                            "itemId": item["itemId"],
-                            "objectId": item["traceId"],
-                            "objectType": "TRACE",
-                        }
-                        for item in created_items
-                    ],
-                    score_config_ids=score_config_ids,
-                )
 
                 await self._assign_annotation_queue_items(
                     cursor,
