@@ -168,12 +168,18 @@ export default [
   {
     url: '/api/projects/:projectId/score-configs',
     method: 'get',
-    response: (req: any) =>
-      success(
-        db.scoreConfigs.filter(
-          (item: MockRecord) => item.projectId === projectId(req)
-        )
-      ),
+    response: (req: any) => {
+      const includeArchived =
+        req.query?.includeArchived === true ||
+        req.query?.includeArchived === 'true'
+      const rows = db.scoreConfigs.filter(
+        (item: MockRecord) =>
+          item.projectId === projectId(req) &&
+          (includeArchived || !item.archived) &&
+          keywordIncludes(item.name, req.query?.keyword)
+      )
+      return success(paginate(rows, req.query))
+    },
   },
   {
     url: '/api/projects/:projectId/score-configs',

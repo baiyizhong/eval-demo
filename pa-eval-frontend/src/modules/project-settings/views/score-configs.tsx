@@ -1,9 +1,10 @@
-import { useMemo, useState, type ReactNode } from 'react'
-import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
+import { useState, type ReactNode } from 'react'
+import { useMutation, useQueryClient } from '@tanstack/react-query'
+import { type ColumnDef } from '@tanstack/react-table'
 import {
   archiveProjectScoreConfig,
   createProjectScoreConfig,
-  listProjectScoreConfigs,
+  listProjectScoreConfigsPage,
   restoreProjectScoreConfig,
   updateProjectScoreConfig,
   type ScoreConfigInput,
@@ -31,14 +32,6 @@ import {
   SelectTrigger,
   SelectValue,
 } from '@/components/ui/select'
-import {
-  Table,
-  TableBody,
-  TableCell,
-  TableHead,
-  TableHeader,
-  TableRow,
-} from '@/components/ui/table'
 import { Textarea } from '@/components/ui/textarea'
 import {
   Tooltip,
@@ -46,7 +39,10 @@ import {
   TooltipTrigger,
 } from '@/components/ui/tooltip'
 import { ContentSection } from '@/components/common/content-section'
-import { Loading } from '@/components/common/loading'
+import {
+  DataTable,
+  type DataTableListResponse,
+} from '@/components/common/data-table'
 import type {
   ScoreConfig,
   ScoreConfigCategory,
@@ -104,25 +100,6 @@ export function ProjectScoreConfigsSettings() {
   const canEditScoreConfigs = can('project:score-config:edit')
   const [editingConfig, setEditingConfig] = useState<ScoreConfig | null>(null)
   const [formOpen, setFormOpen] = useState(false)
-  const configsQuery = useQuery({
-    queryKey: ['project-score-configs', $api, projectId],
-    enabled: Boolean(projectId),
-    queryFn: async () => {
-      const records = await listProjectScoreConfigs($api, projectId, true)
-      return records.map((record): ScoreConfig => ({
-        id: record.id,
-        name: record.name,
-        dataType: record.dataType,
-        description: record.description,
-        minValue: record.minValue,
-        maxValue: record.maxValue,
-        categories: record.categories,
-        isArchived: Boolean(record.archived),
-        createdAt: record.createdAt,
-        updatedAt: record.updatedAt || record.createdAt || '',
-      }))
-    },
-  })
   const saveMutation = useMutation({
     mutationFn: (input: ScoreConfigInput) =>
       editingConfig
@@ -150,13 +127,6 @@ export function ProjectScoreConfigsSettings() {
     },
   })
 
-  const sortedConfigs = useMemo(
-    () =>
-      [...(configsQuery.data ?? [])].sort(
-        (first, second) => Number(first.isArchived) - Number(second.isArchived)
-      ),
-    [configsQuery.data]
-  )
   const openCreate = () => {
     if (!canEditScoreConfigs) return
     setEditingConfig(null)
@@ -168,6 +138,106 @@ export function ProjectScoreConfigsSettings() {
     setEditingConfig(config)
     setFormOpen(true)
   }
+
+  const columns: ColumnDef<ScoreConfig>[] = [
+    {
+      accessorKey: 'name',
+      header: '名称',
+      cell: ({ row }) => {
+        const config = row.original
+        return (
+          <div className='flex flex-col gap-1'>
+            <span className='max-w-52 truncate font-medium'>{config.name}</span>
+            {config.description ? (
+              <Tooltip>
+                <TooltipTrigger asChild>
+                  <span className='text-muted-foreground max-w-52 truncate'>
+                    {config.description}
+                  </span>
+                </TooltipTrigger>
+                <TooltipContent className='max-w-80 break-words whitespace-normal'>
+                  {config.description}
+                </TooltipContent>
+              </Tooltip>
+            ) : (
+              <span className='text-muted-foreground max-w-52 truncate'>-</span>
+            )}
+          </div>
+        )
+      },
+    },
+    {
+      accessorKey: 'dataType',
+      header: '类型',
+      cell: ({ row }) => DATA_TYPE_LABELS[row.original.dataType],
+    },
+    {
+      id: 'range',
+      header: '范围/选项',
+      cell: ({ row }) => (
+        <div className='max-w-80 break-words whitespace-normal'>
+          {getConfigRange(row.original)}
+        </div>
+      ),
+    },
+    {
+      accessorKey: 'isArchived',
+      header: '状态',
+      cell: ({ row }) => {
+        const config = row.original
+        return (
+          <Badge
+            variant={config.isArchived ? 'outline' : 'secondary'}
+            className={
+              config.isArchived
+                ? 'border-border bg-muted text-muted-foreground'
+                : 'border-success/20 bg-success/10 text-success'
+            }
+          >
+            {config.isArchived ? '已归档' : '启用中'}
+          </Badge>
+        )
+      },
+    },
+    {
+      accessorKey: 'updatedAt',
+      header: '更新时间',
+      cell: ({ row }) =>
+        row.original.updatedAt ? formatDateTime(row.original.updatedAt) : '-',
+    },
+    ...(canEditScoreConfigs
+      ? [
+          {
+            id: 'actions',
+            header: () => <div className='text-end'>操作</div>,
+            cell: ({ row }: { row: { original: ScoreConfig } }) => {
+              const config = row.original
+              return (
+                <div className='flex justify-end gap-2'>
+                  <Button
+                    type='button'
+                    variant='outline'
+                    size='sm'
+                    onClick={() => openEdit(config)}
+                  >
+                    编辑
+                  </Button>
+                  <Button
+                    type='button'
+                    variant='outline'
+                    size='sm'
+                    disabled={archiveMutation.isPending}
+                    onClick={() => archiveMutation.mutate(config)}
+                  >
+                    {config.isArchived ? '恢复' : '归档'}
+                  </Button>
+                </div>
+              )
+            },
+          } satisfies ColumnDef<ScoreConfig>,
+        ]
+      : []),
+  ]
 
   return (
     <ContentSection
@@ -183,115 +253,68 @@ export function ProjectScoreConfigsSettings() {
             </Button>
           </div>
         ) : null}
-        {configsQuery.isLoading ? (
-          <Loading text='加载评分指标中...' className='min-h-24' />
-        ) : null}
-        {configsQuery.isError ? (
-          <div className='text-destructive rounded-lg border p-4 text-sm'>
-            评分指标加载失败，请确认项目权限和后端服务。
-          </div>
-        ) : null}
-        {!configsQuery.isLoading && !configsQuery.isError ? (
-          <div className='rounded-lg border'>
-            <Table>
-              <TableHeader>
-                <TableRow>
-                  <TableHead>名称</TableHead>
-                  <TableHead>类型</TableHead>
-                  <TableHead>范围/选项</TableHead>
-                  <TableHead>状态</TableHead>
-                  <TableHead>更新时间</TableHead>
-                  {canEditScoreConfigs ? (
-                    <TableHead className='text-end'>操作</TableHead>
-                  ) : null}
-                </TableRow>
-              </TableHeader>
-              <TableBody>
-                {sortedConfigs.map((config) => (
-                  <TableRow key={config.id}>
-                    <TableCell>
-                      <div className='flex flex-col gap-1'>
-                        <span className='max-w-52 truncate font-medium'>
-                          {config.name}
-                        </span>
-                        {config.description ? (
-                          <Tooltip>
-                            <TooltipTrigger asChild>
-                              <span className='text-muted-foreground max-w-52 truncate'>
-                                {config.description}
-                              </span>
-                            </TooltipTrigger>
-                            <TooltipContent className='max-w-80 break-words whitespace-normal'>
-                              {config.description}
-                            </TooltipContent>
-                          </Tooltip>
-                        ) : (
-                          <span className='text-muted-foreground max-w-52 truncate'>
-                            -
-                          </span>
-                        )}
-                      </div>
-                    </TableCell>
-                    <TableCell>{DATA_TYPE_LABELS[config.dataType]}</TableCell>
-                    <TableCell className='max-w-80 break-words whitespace-normal'>
-                      {getConfigRange(config)}
-                    </TableCell>
-                    <TableCell>
-                      <Badge
-                        variant={config.isArchived ? 'outline' : 'secondary'}
-                        className={
-                          config.isArchived
-                            ? 'border-border bg-muted text-muted-foreground'
-                            : 'border-success/20 bg-success/10 text-success'
-                        }
-                      >
-                        {config.isArchived ? '已归档' : '启用中'}
-                      </Badge>
-                    </TableCell>
-                    <TableCell>
-                      {config.updatedAt
-                        ? formatDateTime(config.updatedAt)
-                        : '-'}
-                    </TableCell>
-                    {canEditScoreConfigs ? (
-                      <TableCell>
-                        <div className='flex justify-end gap-2'>
-                          <Button
-                            type='button'
-                            variant='outline'
-                            size='sm'
-                            onClick={() => openEdit(config)}
-                          >
-                            编辑
-                          </Button>
-                          <Button
-                            type='button'
-                            variant='outline'
-                            size='sm'
-                            disabled={archiveMutation.isPending}
-                            onClick={() => archiveMutation.mutate(config)}
-                          >
-                            {config.isArchived ? '恢复' : '归档'}
-                          </Button>
-                        </div>
-                      </TableCell>
-                    ) : null}
-                  </TableRow>
-                ))}
-                {sortedConfigs.length === 0 ? (
-                  <TableRow>
-                    <TableCell
-                      colSpan={canEditScoreConfigs ? 6 : 5}
-                      className='text-muted-foreground h-24 text-center'
-                    >
-                      当前项目暂无评分指标
-                    </TableCell>
-                  </TableRow>
-                ) : null}
-              </TableBody>
-            </Table>
-          </div>
-        ) : null}
+        <section className='bg-card text-card-foreground min-w-0 rounded-lg border p-4'>
+          <DataTable<ScoreConfig, DataTableListResponse<ScoreConfig>>
+            columns={columns}
+            request={{
+              queryKey: (state) => [
+                'project-score-configs',
+                $api,
+                projectId,
+                state,
+              ],
+              enabled: Boolean(projectId),
+              queryFn: async (state) => {
+                const response = await listProjectScoreConfigsPage(
+                  $api,
+                  projectId,
+                  {
+                    includeArchived: true,
+                    keyword: state.keyword,
+                    page: state.page,
+                    pageSize: state.pageSize,
+                  }
+                )
+                return {
+                  total: response.total,
+                  datas: response.datas.map((record): ScoreConfig => ({
+                    id: record.id,
+                    name: record.name,
+                    dataType: record.dataType,
+                    description: record.description,
+                    minValue: record.minValue,
+                    maxValue: record.maxValue,
+                    categories: record.categories,
+                    isArchived: Boolean(record.archived),
+                    createdAt: record.createdAt,
+                    updatedAt: record.updatedAt || record.createdAt || '',
+                  })),
+                }
+              },
+            }}
+            urlState={{
+              pageKey: 'scoreConfigPage',
+              pageSizeKey: 'scoreConfigPageSize',
+              globalFilterKey: 'scoreConfigKeyword',
+              defaultPageSize: 10,
+            }}
+            toolbar={{
+              searchPlaceholder: '按指标名称搜索',
+              columnLabels: {
+                name: '名称',
+                dataType: '类型',
+                range: '范围/选项',
+                isArchived: '状态',
+                updatedAt: '更新时间',
+                actions: '操作',
+              },
+            }}
+            enableRowSelection={false}
+            emptyText='当前项目暂无评分指标'
+            errorText='评分指标加载失败，请确认项目权限和后端服务。'
+            loadingText='加载评分指标中...'
+          />
+        </section>
         <ScoreConfigDialog
           key={formOpen ? (editingConfig?.id ?? 'new') : 'closed'}
           open={canEditScoreConfigs && formOpen}

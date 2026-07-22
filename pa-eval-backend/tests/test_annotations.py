@@ -228,6 +228,39 @@ class FakeAnnotationDatabaseReader:
             "archived": False,
         }
 
+    async def list_score_configs_for_user(
+        self,
+        project_id: str,
+        user_id: str,
+        *,
+        include_archived: bool,
+        keyword: str | None,
+        page: int,
+        page_size: int,
+    ) -> dict:
+        self.calls.append(
+            (
+                "list_score_configs",
+                (project_id, user_id, include_archived, keyword, page, page_size),
+            )
+        )
+        return {
+            "total": 1,
+            "datas": [
+                {
+                    "id": "score-default",
+                    "projectId": project_id,
+                    "name": "人工质量评分",
+                    "dataType": "NUMERIC",
+                    "description": "Trace 人工标注默认评分指标",
+                    "minValue": 1,
+                    "maxValue": 5,
+                    "categories": [],
+                    "archived": False,
+                }
+            ],
+        }
+
     async def create_score_config_for_user(
         self,
         project_id: str,
@@ -1287,6 +1320,48 @@ def test_ensures_default_score_config_for_manual_annotation_queue() -> None:
         "ensure_default_score_config",
         ("project-1", "user-1"),
     )
+
+
+def test_lists_score_configs_with_pa_pagination() -> None:
+    fake_reader = FakeAnnotationDatabaseReader()
+    override_reader(fake_reader)
+
+    try:
+        response = TestClient(app).get(
+            "/api/projects/project-1/score-configs",
+            params={
+                "includeArchived": True,
+                "keyword": "准确",
+                "page": 2,
+                "pageSize": 5,
+            },
+        )
+    finally:
+        clear_overrides()
+
+    assert response.status_code == 200
+    assert response.json()["data"] == {
+        "total": 1,
+        "datas": [
+            {
+                "id": "score-default",
+                "projectId": "project-1",
+                "name": "人工质量评分",
+                "dataType": "NUMERIC",
+                "description": "Trace 人工标注默认评分指标",
+                "minValue": 1,
+                "maxValue": 5,
+                "categories": [],
+                "archived": False,
+            }
+        ],
+    }
+    assert fake_reader.calls == [
+        (
+            "list_score_configs",
+            ("project-1", "user-1", True, "准确", 2, 5),
+        )
+    ]
 
 
 def test_creates_updates_and_archives_score_configs() -> None:

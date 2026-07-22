@@ -48,7 +48,7 @@ test('trace log advanced filters expose Langfuse score filters', () => {
 })
 
 test('trace log score filters load score configs for typed score selectors', () => {
-  assert.match(traceLogsSource, /getProjectScoreConfigs/)
+  assert.match(traceLogsSource, /listProjectScoreConfigs/)
   assert.match(traceLogsSource, /scoreConfigsQuery/)
   assert.match(traceLogsSource, /buildTraceLogFilterGroups\(scoreConfigs\)/)
   assert.match(source, /function buildTraceLogFilterGroups/)

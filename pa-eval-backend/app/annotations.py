@@ -1584,6 +1584,9 @@ def _build_annotation_filter_summary(
 async def list_score_configs(
     project_id: str,
     include_archived: bool = Query(default=False, alias="includeArchived"),
+    keyword: str | None = Query(default=None, max_length=200),
+    page: int = Query(default=1, ge=1),
+    page_size: int = Query(default=10, ge=1, le=200, alias="pageSize"),
     current_user: CurrentUserContext = Depends(get_current_user_context),
     reader: LangfuseDatabaseReader = Depends(get_langfuse_db_reader),
 ) -> dict[str, Any]:
@@ -1591,6 +1594,9 @@ async def list_score_configs(
         project_id,
         current_user.user_id,
         include_archived=include_archived,
+        keyword=keyword,
+        page=page,
+        page_size=page_size,
     )
     return success(configs)
 

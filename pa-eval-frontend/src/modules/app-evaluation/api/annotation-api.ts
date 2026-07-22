@@ -165,14 +165,55 @@ type TraceAnnotationTaskJob = {
   errorMessage?: string
 }
 
-export function listProjectScoreConfigs(
+export async function listProjectScoreConfigs(
   api: AnnotationApiClient,
   projectId: string,
   includeArchived = false
 ) {
-  return api.getProjectScoreConfigs<ScoreConfigRecord[]>({
+  const pageSize = 200
+  const firstPage = await listProjectScoreConfigsPage(api, projectId, {
+    includeArchived,
+    page: 1,
+    pageSize,
+  })
+  const records = [...firstPage.datas]
+  const totalPages = Math.ceil(firstPage.total / pageSize)
+
+  for (let page = 2; page <= totalPages; page += 1) {
+    const nextPage = await listProjectScoreConfigsPage(api, projectId, {
+      includeArchived,
+      page,
+      pageSize,
+    })
+    records.push(...nextPage.datas)
+  }
+
+  return records
+}
+
+export type ScoreConfigListResponse = {
+  total: number
+  datas: ScoreConfigRecord[]
+}
+
+export function listProjectScoreConfigsPage(
+  api: AnnotationApiClient,
+  projectId: string,
+  options: {
+    includeArchived?: boolean
+    keyword?: string
+    page: number
+    pageSize: number
+  }
+) {
+  return api.getProjectScoreConfigs<ScoreConfigListResponse>({
     path: { projectId },
-    query: includeArchived ? { includeArchived: true } : undefined,
+    query: {
+      includeArchived: options.includeArchived || undefined,
+      keyword: options.keyword || undefined,
+      page: options.page,
+      pageSize: options.pageSize,
+    },
   })
 }
 

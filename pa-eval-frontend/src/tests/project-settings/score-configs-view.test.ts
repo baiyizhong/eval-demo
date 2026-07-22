@@ -7,6 +7,19 @@ const source = readFileSync(
   'utf8'
 )
 
+test('score configs page uses server pagination through the shared data table', () => {
+  assert.match(source, /<DataTable<ScoreConfig/)
+  assert.match(source, /listProjectScoreConfigsPage/)
+  assert.match(source, /page:\s*state\.page/)
+  assert.match(source, /pageSize:\s*state\.pageSize/)
+  assert.match(source, /keyword:\s*state\.keyword/)
+  assert.match(source, /pageKey:\s*'scoreConfigPage'/)
+  assert.match(source, /pageSizeKey:\s*'scoreConfigPageSize'/)
+  assert.match(source, /globalFilterKey:\s*'scoreConfigKeyword'/)
+  assert.match(source, /searchPlaceholder:\s*'按指标名称搜索'/)
+  assert.doesNotMatch(source, /sortedConfigs\.map/)
+})
+
 test('score configs page removes recommended metric preparation action', () => {
   assert.doesNotMatch(source, /准备推荐指标/)
   assert.doesNotMatch(source, /ensureDefaultProjectScoreConfig/)
@@ -70,7 +83,7 @@ test('categorical values and boolean value-label pairs use the expected readonly
 test('score configs range cell allows wrapping long content', () => {
   assert.match(
     source,
-    /<TableCell className='max-w-80 break-words whitespace-normal'>/
+    /<div className='max-w-80 break-words whitespace-normal'>/
   )
   assert.match(source, /max-w-52 truncate/)
 })

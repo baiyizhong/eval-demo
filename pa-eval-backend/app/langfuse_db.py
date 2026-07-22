@@ -2805,8 +2805,31 @@ class LangfuseDatabaseReader:
         user_id: str,
         *,
         include_archived: bool = False,
-    ) -> list[dict[str, Any]]:
+        keyword: str | None = None,
+        page: int = 1,
+        page_size: int = 10,
+    ) -> dict[str, Any]:
         await self._ensure_project_visible(project_id, user_id)
+        normalized_keyword = (keyword or "").strip()
+        query_params = {
+            "project_id": project_id,
+            "include_archived": include_archived,
+            "keyword": normalized_keyword,
+            "like": f"%{normalized_keyword}%",
+        }
+        total_rows = await self._fetch_all(
+            """
+            SELECT COUNT(*)::int AS total
+            FROM score_configs
+            WHERE project_id = %(project_id)s
+              AND (%(include_archived)s IS TRUE OR is_archived IS FALSE)
+              AND (
+                  %(keyword)s = ''
+                  OR name ILIKE %(like)s
+              )
+            """,
+            query_params,
+        )
         rows = await self._fetch_all(
             """
             SELECT
@@ -2824,14 +2847,23 @@ class LangfuseDatabaseReader:
             FROM score_configs
             WHERE project_id = %(project_id)s
               AND (%(include_archived)s IS TRUE OR is_archived IS FALSE)
+              AND (
+                  %(keyword)s = ''
+                  OR name ILIKE %(like)s
+              )
             ORDER BY is_archived ASC, updated_at DESC, created_at DESC, id DESC
+            LIMIT %(limit)s OFFSET %(offset)s
             """,
             {
-                "project_id": project_id,
-                "include_archived": include_archived,
+                **query_params,
+                "limit": page_size,
+                "offset": (page - 1) * page_size,
             },
         )
-        return [self._to_score_config_payload(row) for row in rows]
+        return {
+            "total": int(total_rows[0]["total"]) if total_rows else 0,
+            "datas": [self._to_score_config_payload(row) for row in rows],
+        }
 
     async def ensure_default_score_config_for_user(
         self,

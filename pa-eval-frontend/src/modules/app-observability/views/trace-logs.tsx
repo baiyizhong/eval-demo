@@ -1,5 +1,6 @@
 import { useCallback, useMemo, useState } from 'react'
 import { useQuery } from '@tanstack/react-query'
+import { listProjectScoreConfigs } from '@/modules/app-evaluation/api/annotation-api'
 import { useParams, useSearchParams } from 'react-router'
 import { useAPI } from '@/hooks/use-api'
 import { DataTable } from '@/components/common/data-table'
@@ -15,11 +16,7 @@ import {
   traceLogUrlFilters,
 } from '../components/trace-log-filters'
 import { normalizeTraceTimeFilterValues } from '../trace-time-ranges'
-import type {
-  TraceListResponse,
-  TraceLogRow,
-  TraceScoreConfigOption,
-} from '../types'
+import type { TraceListResponse, TraceLogRow } from '../types'
 import { buildTraceListQuery } from './trace-logs-query'
 
 export function TraceLogs() {
@@ -54,10 +51,7 @@ export function TraceLogs() {
   )
   const scoreConfigsQuery = useQuery({
     queryKey: ['project-score-configs', $api, projectId, 'trace-log-filters'],
-    queryFn: () =>
-      $api.getProjectScoreConfigs<TraceScoreConfigOption[]>({
-        path: { projectId },
-      }),
+    queryFn: () => listProjectScoreConfigs($api, projectId),
     staleTime: 5 * 60 * 1000,
   })
   const scoreConfigs = useMemo(
