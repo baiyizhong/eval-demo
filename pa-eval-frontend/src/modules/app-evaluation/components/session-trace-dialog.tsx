@@ -4,6 +4,7 @@ import type { TraceLogRow } from '@/modules/app-observability/types'
 import { buildTraceListQuery } from '@/modules/app-observability/views/trace-logs-query'
 import { Copy, ChevronLeft, ChevronRight } from 'lucide-react'
 import { toast } from 'sonner'
+import { copyTextToClipboard } from '@/lib/clipboard'
 import { cn } from '@/lib/utils'
 import { useAPI } from '@/hooks/use-api'
 import { Button } from '@/components/ui/button'
@@ -109,8 +110,12 @@ export function SessionTraceDialog({
       return
     }
 
-    await navigator.clipboard.writeText(normalizedSessionId)
-    toast.success('已复制')
+    try {
+      await copyTextToClipboard(normalizedSessionId)
+      toast.success('已复制')
+    } catch {
+      toast.error('复制失败，请手动复制')
+    }
   }
 
   return (

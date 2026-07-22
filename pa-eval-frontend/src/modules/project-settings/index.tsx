@@ -60,7 +60,7 @@ export function ProjectSettings() {
             selectPlaceholder='项目设置分组'
           />
         </aside>
-        <div className='flex w-full overflow-y-hidden p-1'>
+        <div className='flex w-full min-w-0 overflow-y-hidden p-1'>
           <Outlet />
         </div>
       </div>

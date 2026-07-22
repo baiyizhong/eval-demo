@@ -13,7 +13,10 @@ test('mock evaluators match evaluator list view shape', () => {
     assert.equal(typeof evaluator.version, 'string')
     assert.ok(Array.isArray(evaluator.variables))
     assert.equal(typeof evaluator.description, 'string')
-    assert.match(String(evaluator.provider), /^(LANGFUSE|DIFY|HIAGENT|N8N|OPENJUDGE)$/)
+    assert.match(
+      String(evaluator.provider),
+      /^(LANGFUSE|DIFY|HIAGENT|N8N|OPENJUDGE)$/
+    )
     assert.equal(
       typeof evaluator.projectId === 'string' || evaluator.projectId === null,
       true
@@ -23,4 +26,22 @@ test('mock evaluators match evaluator list view shape', () => {
     assert.equal(typeof evaluator.updatedAt, 'string')
     assert.ok(!Number.isNaN(new Date(String(evaluator.updatedAt)).getTime()))
   }
+})
+
+test('mock evaluators include selectable workflows for auto evaluation', () => {
+  const evaluators = db.evaluators as Array<Record<string, unknown>>
+  const selectableEvaluators = evaluators.filter(
+    (evaluator) =>
+      evaluator.type === 'WORKFLOW' &&
+      (evaluator.provider === 'DIFY' || evaluator.provider === 'N8N')
+  )
+
+  assert.ok(selectableEvaluators.length >= 2)
+  assert.ok(
+    selectableEvaluators.some(
+      (evaluator) =>
+        Array.isArray(evaluator.outputVariableMappings) &&
+        evaluator.outputVariableMappings.length > 0
+    )
+  )
 })

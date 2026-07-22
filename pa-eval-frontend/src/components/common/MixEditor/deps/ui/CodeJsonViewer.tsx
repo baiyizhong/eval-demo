@@ -8,10 +8,10 @@ import React18JsonView from "react18-json-view";
 import "react18-json-view/src/style.css";
 import "react18-json-view/src/dark.css";
 import { useTheme } from "next-themes";
+import { copyTextToClipboard } from "@/lib/clipboard";
 import { deepParseJson } from "../utils/shared";
 import { Button } from "./button";
 import { Skeleton } from "./skeleton";
-import { copyTextToClipboard } from "../utils/clipboard";
 import { cn } from "./utils";
 
 // Migrated from /Users/panpan/Project/eval-demo/langfuse/web/src/components/ui/CodeJsonViewer.tsx
@@ -46,7 +46,7 @@ export function JSONView(props: {
 
   const handleOnCopy = (event?: React.MouseEvent<HTMLButtonElement>) => {
     event?.preventDefault();
-    void copyTextToClipboard(stringifyJsonNode(parsedJson));
+    void copyTextToClipboard(stringifyJsonNode(parsedJson)).catch(() => undefined);
     event?.currentTarget.focus();
   };
 

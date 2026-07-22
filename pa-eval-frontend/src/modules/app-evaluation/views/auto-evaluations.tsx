@@ -166,7 +166,6 @@ export function ProjectAutoEvaluations() {
               />
             }
             emptyText='当前项目下暂无匹配的自动评测任务'
-            minTableWidth={1280}
           />
         </section>
       </div>
@@ -178,9 +177,8 @@ export function ProjectAutoEvaluations() {
         showOverlay={true}
         showConfirm={false}
         cancelText='关闭'
-        contentProps={{ className: 'overflow-y-auto' }}
       >
-        <div className='p-4'>
+        <div className='flex min-h-full flex-col p-4'>
           <AutoEvaluationTaskForm
             projectId={projectId}
             onCompleted={(taskId, mode) => {

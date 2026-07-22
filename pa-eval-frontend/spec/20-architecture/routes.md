@@ -36,7 +36,11 @@
 
 | 文件 | 职责 |
 | --- | --- |
-| `src/routes/index.tsx` | 定义全局 `routes` 数组，集中声明页面、布局和错误页 |
+| `src/routes/index.tsx` | 定义全局 `routes` 数组，组合根路由、公共页、环境门禁和布局分支 |
+| `src/routes/lazy-pages.tsx` | 集中声明需要懒加载的业务页面组件 |
+| `src/routes/sidebar-routes.tsx` | 维护 `SidebarLayout` 下的业务路由分支 |
+| `src/routes/topbar-navigation.tsx` | 维护顶部导航配置和 `AppsTopbarLayout` 包装组件 |
+| `src/routes/topbar-routes.tsx` | 维护 `TopbarLayout` 下的应用、设置、后台、审计等路由分支 |
 | `src/router.tsx` | 调用 `createBrowserRouter(routes, options)` 创建应用 router |
 | `src/main.tsx` | 初始化权限数据，创建 router，并渲染 `RouterProvider` |
 | `src/components/common/route-guard.tsx` | 路由级权限守卫 |
@@ -103,17 +107,8 @@ export const routes = [
     children: [
       {
         path: '',
-        element: <SidebarLayout />,
-        children: [
-          { index: true, element: <Dashboard /> },
-          { path: 'dashboard', element: <Dashboard /> },
-          { path: 'tasks', element: <Tasks /> },
-        ],
-      },
-      {
-        path: '',
-        element: <TopbarLayout navigation={appsTopbarNavigation} />,
-        children: [{ path: 'apps', element: <Apps /> }],
+        element: <EnvironmentGate />,
+        children: [...sidebarRoutes, ...topbarRoutes],
       },
       { path: '401', element: <UnauthorisedError /> },
       { path: '403', element: <ForbiddenError /> },
@@ -151,8 +146,8 @@ export const routes = [
 新增页面时按以下步骤处理：
 
 1. 在 `src/modules/<module>/index.tsx` 导出页面组件。
-2. 在 `src/routes/index.tsx` 顶部导入页面组件。
-3. 根据页面布局选择挂入 `SidebarLayout` 或 `TopbarLayout` 分支。
+2. 需要懒加载时，在 `src/routes/lazy-pages.tsx` 导出 lazy 页面组件。
+3. 根据页面布局挂入 `src/routes/sidebar-routes.tsx` 或 `src/routes/topbar-routes.tsx`。
 4. 如需路由级权限，用 `RouteGuard` 包裹页面元素。
 5. 如需侧边栏入口，同步更新 `src/lib/sidebar-data.ts` 中的本地菜单构造逻辑。
 6. 如需顶部栏入口，同步更新传给 `TopbarLayout` 的 `navigation.items`。
@@ -330,7 +325,8 @@ export function isRouteActive(
 
 ## 约束
 
-- 所有全局路由统一在 `src/routes/index.tsx` 维护。
+- 所有全局路由仍由 `src/routes/index.tsx` 导出，具体布局分支放在 `src/routes/sidebar-routes.tsx` 和 `src/routes/topbar-routes.tsx`。
+- 业务页面 lazy 导入统一放在 `src/routes/lazy-pages.tsx`，不要散落在各页面模块。
 - 新路由必须明确选择布局分支，不要把业务页直接挂在根路由下。
 - 布局分支使用 `path: ''`，业务页面使用具体相对路径。
 - 根路由保留 `errorElement: <RootErrorBoundary />`。

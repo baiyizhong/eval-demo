@@ -64,6 +64,8 @@ import type {
 import { autoEvaluationStepLabels } from './auto-evaluation-steps'
 
 const AUTO_EVALUATION_DEFAULT_TRACE_TIME_RANGE = '1d'
+const AUTO_EVALUATION_NAME_MAX_LENGTH = 40
+const AUTO_EVALUATION_DESCRIPTION_MAX_LENGTH = 200
 const AUTO_EVALUATION_TRACE_QUICK_TIME_RANGE_OPTIONS = [
   { label: '1d', value: '1d' },
   { label: '3d', value: '3d' },
@@ -440,7 +442,7 @@ export function AutoEvaluationTaskForm({
   }
 
   return (
-    <div className='flex flex-col gap-5'>
+    <div className='flex min-h-full min-w-0 flex-1 flex-col gap-5 overflow-x-clip'>
       <Stepper
         items={autoEvaluationStepItems}
         currentStep={step}
@@ -465,6 +467,7 @@ export function AutoEvaluationTaskForm({
             <Field label='任务名称'>
               <Input
                 placeholder='例如：客服回答质量自动评测'
+                maxLength={AUTO_EVALUATION_NAME_MAX_LENGTH}
                 value={form.name}
                 onChange={(event) =>
                   updateForm({ ...form, name: event.target.value })
@@ -475,6 +478,7 @@ export function AutoEvaluationTaskForm({
               <Textarea
                 className='min-h-28 resize-none'
                 placeholder='描述本次自动评测的目标、样本范围或执行策略'
+                maxLength={AUTO_EVALUATION_DESCRIPTION_MAX_LENGTH}
                 value={form.description}
                 onChange={(event) =>
                   updateForm({ ...form, description: event.target.value })
@@ -486,8 +490,8 @@ export function AutoEvaluationTaskForm({
       ) : null}
 
       {step === 1 ? (
-        <section className='grid min-h-0 gap-4 lg:grid-cols-[320px_1fr]'>
-          <div className='bg-card text-card-foreground flex max-h-[min(560px,calc(100vh-320px))] min-h-[420px] flex-col gap-3 rounded-lg border p-4'>
+        <section className='grid w-full max-w-full min-w-0 gap-4 lg:grid-cols-[minmax(0,320px)_minmax(0,1fr)]'>
+          <div className='bg-card text-card-foreground flex min-h-[420px] max-w-full min-w-0 flex-col gap-3 rounded-lg border p-4'>
             <div>
               <h3 className='text-sm font-semibold'>评估器列表</h3>
             </div>
@@ -497,13 +501,13 @@ export function AutoEvaluationTaskForm({
               value={evaluatorKeyword}
               onChange={(event) => setEvaluatorKeyword(event.target.value)}
             />
-            <div className='flex min-h-0 flex-1 flex-col gap-2 overflow-y-auto pr-1'>
+            <div className='flex min-w-0 flex-col gap-2'>
               {evaluators.map((evaluator) => (
                 <button
                   key={evaluator.id}
                   type='button'
                   className={cn(
-                    'bg-background rounded-lg border p-3 text-left transition-colors',
+                    'bg-background w-full min-w-0 rounded-lg border p-3 text-left transition-colors',
                     'hover:border-primary/50 hover:bg-accent focus-visible:ring-ring/50 focus-visible:ring-[3px] focus-visible:outline-none',
                     form.evaluatorId === evaluator.id &&
                       'border-primary bg-primary/5'
@@ -520,8 +524,10 @@ export function AutoEvaluationTaskForm({
                     })
                   }
                 >
-                  <span className='flex flex-col gap-1'>
-                    <span className='font-medium'>{evaluator.name}</span>
+                  <span className='flex min-w-0 flex-col gap-1'>
+                    <span className='truncate font-medium'>
+                      {evaluator.name}
+                    </span>
                     <span className='text-muted-foreground line-clamp-2 text-xs leading-5'>
                       {evaluator.description || '暂无描述'}
                     </span>
@@ -542,14 +548,14 @@ export function AutoEvaluationTaskForm({
             </div>
           </div>
 
-          <div className='bg-card text-card-foreground flex min-h-[420px] flex-col gap-4 rounded-lg border p-4'>
+          <div className='bg-card text-card-foreground flex min-h-[420px] max-w-full min-w-0 flex-col gap-4 rounded-lg border p-4'>
             {selectedEvaluator ? (
               <>
-                <div className='flex flex-col gap-1'>
-                  <h3 className='text-sm font-semibold'>
+                <div className='flex min-w-0 flex-col gap-1'>
+                  <h3 className='text-sm font-semibold break-words'>
                     {selectedEvaluator.name}
                   </h3>
-                  <p className='text-muted-foreground text-sm leading-6'>
+                  <p className='text-muted-foreground text-sm leading-6 break-words'>
                     {selectedEvaluator.description || '暂无描述'}
                   </p>
                 </div>
@@ -574,9 +580,11 @@ export function AutoEvaluationTaskForm({
                   {selectedEvaluator.variables.map((variable) => (
                     <div
                       key={variable}
-                      className='bg-background grid gap-2 rounded-lg border p-3 md:grid-cols-[minmax(160px,220px)_1fr] md:items-center'
+                      className='bg-background grid max-w-full min-w-0 gap-2 rounded-lg border p-3 md:grid-cols-[minmax(0,220px)_minmax(0,1fr)] md:items-center'
                     >
-                      <Label className='text-sm font-medium'>{variable}</Label>
+                      <Label className='min-w-0 truncate text-sm font-medium'>
+                        {variable}
+                      </Label>
                       <Select
                         value={getMappingSelectValue(
                           form.variableMapping[variable]
@@ -591,7 +599,7 @@ export function AutoEvaluationTaskForm({
                           })
                         }
                       >
-                        <SelectTrigger className='w-full'>
+                        <SelectTrigger className='w-full min-w-0'>
                           <SelectValue placeholder='选择字段' />
                         </SelectTrigger>
                         <SelectContent>
@@ -621,9 +629,9 @@ export function AutoEvaluationTaskForm({
                         return (
                           <div
                             key={variable}
-                            className='bg-background grid gap-2 rounded-lg border p-3 md:grid-cols-[minmax(160px,220px)_1fr] md:items-center'
+                            className='bg-background grid max-w-full min-w-0 gap-2 rounded-lg border p-3 md:grid-cols-[minmax(0,220px)_minmax(0,1fr)] md:items-center'
                           >
-                            <Label className='text-sm font-medium'>
+                            <Label className='min-w-0 truncate text-sm font-medium'>
                               {variable}
                             </Label>
                             <div className='flex min-w-0 items-center gap-2'>
@@ -638,7 +646,7 @@ export function AutoEvaluationTaskForm({
                                 {mapping?.scoreConfigName || '未绑定评分指标'}
                               </Badge>
                               {!mapping?.scoreConfigName ? (
-                                <span className='text-muted-foreground text-xs'>
+                                <span className='text-muted-foreground min-w-0 truncate text-xs'>
                                   请先在评估器中完成输出变量绑定
                                 </span>
                               ) : null}
@@ -1024,7 +1032,7 @@ export function AutoEvaluationTaskForm({
         </section>
       ) : null}
 
-      <div className='bg-background/95 supports-[backdrop-filter]:bg-background/80 sticky bottom-0 -mx-4 -mb-4 flex flex-wrap justify-between gap-2 border-t px-4 py-4 backdrop-blur'>
+      <div className='bg-background/95 supports-[backdrop-filter]:bg-background/80 sticky bottom-0 -mx-4 -mb-4 mt-auto flex flex-wrap justify-between gap-2 border-t px-4 py-4 backdrop-blur'>
         <div className='ml-auto flex gap-2'>
           <Button
             type='button'
@@ -1353,6 +1361,12 @@ function getStepError(
 ) {
   if (step === 0) {
     if (!form.name.trim()) return '任务名称不能为空'
+    if (form.name.length > AUTO_EVALUATION_NAME_MAX_LENGTH) {
+      return '任务名称不能超过40个字'
+    }
+    if (form.description.length > AUTO_EVALUATION_DESCRIPTION_MAX_LENGTH) {
+      return '任务描述不能超过200个字'
+    }
   }
   if (step === 1) {
     if (!form.evaluatorId) return '请选择评估器'

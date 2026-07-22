@@ -8,22 +8,23 @@ import {
   SheetTitle,
 } from '@/components/ui/sheet'
 import {
-  getResizeHandleClassName,
-  getResizableDrawerWidth,
-  getResizableDrawerWidthResetKey,
-  shouldCloseDrawerOnInteractOutside,
-  shouldCloseDrawerOnOutsideDoubleClick,
-  shouldEnableResizableDrawer,
-  shouldShowDrawerOverlay,
-  shouldUseModalDrawer,
-} from './drawer-resizable'
-import {
   getDrawerBodyClassName,
   getDrawerContentClassName,
   getDrawerHeaderClassName,
 } from './drawer-layout'
-
-type DrawerMode = 'default' | 'enhanced'
+import {
+  getResizeHandleClassName,
+  getResizableDrawerWidth,
+  getResizableDrawerWidthResetKey,
+  shouldCloseDrawerOnInteractOutside,
+  shouldCloseDrawerOnOutsideClick,
+  shouldEnableResizableDrawer,
+  shouldIgnoreDrawerOutsideClick,
+  shouldPreventDrawerScrollChaining,
+  shouldShowDrawerOverlay,
+  shouldUseModalDrawer,
+} from './drawer-resizable'
+import { getDrawerWidth, type DrawerMode } from './drawer-width'
 
 type DrawerActionProps = React.ComponentProps<typeof Button>
 
@@ -31,7 +32,7 @@ type DrawerProps = React.ComponentProps<typeof Sheet> & {
   title: React.ReactNode
   children?: React.ReactNode
   mode?: DrawerMode
-  width?: number | string
+  width?: string
   resizable?: boolean
   showOverlay?: boolean
   actions?: React.ReactNode | null
@@ -46,21 +47,13 @@ type DrawerProps = React.ComponentProps<typeof Sheet> & {
   contentProps?: Omit<React.ComponentProps<typeof SheetContent>, 'children'>
 }
 
-function getDrawerWidth(mode: DrawerMode, width?: number | string) {
-  if (width) {
-    return typeof width === 'number' ? `${width}px` : width
-  }
-
-  return mode === 'enhanced' ? '50vw' : '500px'
-}
-
 function Drawer({
   title,
   children,
   mode = 'default',
   width,
   resizable = true,
-  showOverlay=true,
+  showOverlay = true,
   actions,
   showCancel = true,
   showConfirm = true,
@@ -132,16 +125,12 @@ function Drawer({
 
   React.useEffect(() => {
     if (
-      !shouldCloseDrawerOnOutsideDoubleClick(
-        open,
-        resolvedShowOverlay,
-        isResizing
-      )
+      !shouldCloseDrawerOnOutsideClick(open, resolvedShowOverlay, isResizing)
     ) {
       return
     }
 
-    const handleDocumentDoubleClick = (event: MouseEvent) => {
+    const handleDocumentClick = (event: MouseEvent) => {
       const target = event.target
 
       if (!(target instanceof Node)) {
@@ -156,15 +145,91 @@ function Drawer({
         return
       }
 
+      if (shouldIgnoreDrawerOutsideClick(target)) {
+        return
+      }
+
       onOpenChange?.(false)
     }
 
-    document.addEventListener('dblclick', handleDocumentDoubleClick)
+    document.addEventListener('click', handleDocumentClick)
 
     return () => {
-      document.removeEventListener('dblclick', handleDocumentDoubleClick)
+      document.removeEventListener('click', handleDocumentClick)
     }
   }, [drawerContentId, isResizing, onOpenChange, open, resolvedShowOverlay])
+
+  React.useEffect(() => {
+    if (!open) {
+      return
+    }
+
+    const contentElement = document.querySelector<HTMLElement>(
+      `[data-drawer-content-id="${drawerContentId}"]`
+    )
+
+    if (!contentElement) {
+      return
+    }
+
+    let previousTouchY: number | null = null
+
+    const handleWheel = (event: WheelEvent) => {
+      if (
+        shouldPreventDrawerScrollChaining(
+          event.target,
+          contentElement,
+          event.deltaY
+        )
+      ) {
+        event.preventDefault()
+      }
+    }
+
+    const handleTouchStart = (event: TouchEvent) => {
+      previousTouchY = event.touches[0]?.clientY ?? null
+    }
+
+    const handleTouchMove = (event: TouchEvent) => {
+      const currentTouchY = event.touches[0]?.clientY
+
+      if (previousTouchY === null || currentTouchY === undefined) {
+        previousTouchY = currentTouchY ?? null
+        return
+      }
+
+      const deltaY = previousTouchY - currentTouchY
+      previousTouchY = currentTouchY
+
+      if (
+        shouldPreventDrawerScrollChaining(event.target, contentElement, deltaY)
+      ) {
+        event.preventDefault()
+      }
+    }
+
+    const handleTouchEnd = () => {
+      previousTouchY = null
+    }
+
+    contentElement.addEventListener('wheel', handleWheel, { passive: false })
+    contentElement.addEventListener('touchstart', handleTouchStart, {
+      passive: true,
+    })
+    contentElement.addEventListener('touchmove', handleTouchMove, {
+      passive: false,
+    })
+    contentElement.addEventListener('touchend', handleTouchEnd)
+    contentElement.addEventListener('touchcancel', handleTouchEnd)
+
+    return () => {
+      contentElement.removeEventListener('wheel', handleWheel)
+      contentElement.removeEventListener('touchstart', handleTouchStart)
+      contentElement.removeEventListener('touchmove', handleTouchMove)
+      contentElement.removeEventListener('touchend', handleTouchEnd)
+      contentElement.removeEventListener('touchcancel', handleTouchEnd)
+    }
+  }, [drawerContentId, open])
 
   const handleCancel = () => {
     onCancel?.()
@@ -176,7 +241,7 @@ function Drawer({
   >['onInteractOutside'] = (event) => {
     contentOnInteractOutside?.(event)
 
-    if (!shouldCloseDrawerOnInteractOutside(isResizable)) {
+    if (!shouldCloseDrawerOnInteractOutside(isResizing)) {
       event.preventDefault()
     }
   }

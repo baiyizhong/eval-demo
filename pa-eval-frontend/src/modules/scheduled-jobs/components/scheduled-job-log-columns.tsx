@@ -222,7 +222,6 @@ export function ScheduledJobLogTable({ request }: ScheduledJobLogTableProps) {
         },
       }}
       emptyText='暂无执行日志'
-      minTableWidth={1400}
       enableRowSelection={false}
     />
   )

@@ -1005,6 +1005,32 @@ def test_creates_project_annotation_queue() -> None:
     )
 
 
+@pytest.mark.parametrize(
+    ("field", "value"),
+    [
+        ("name", "任务" * 21),
+        ("description", "描述" * 101),
+    ],
+)
+def test_rejects_annotation_queue_fields_over_max_length(
+    field: str,
+    value: str,
+) -> None:
+    payload = {
+        "name": "新增人工标注",
+        "description": "人工复核",
+        "scoreConfigIds": ["score-1"],
+    }
+    payload[field] = value
+
+    response = TestClient(app).post(
+        "/api/projects/project-1/annotation-queues",
+        json=payload,
+    )
+
+    assert response.status_code == 422
+
+
 def test_checks_annotation_queue_name_availability_before_create() -> None:
     fake_reader = FakeAnnotationDatabaseReader()
     override_reader(fake_reader)

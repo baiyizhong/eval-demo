@@ -123,7 +123,7 @@ type MixEditorView = 'pretty' | 'json';
 ```
 
 - `json`：JSON 树视图或文本视图
-- `pretty`：格式化视图，结构化 JSON 展示为表格，Markdown 展示为预览
+- `pretty`：格式化视图，结构化 JSON 展示为表格并默认展开第一层，Markdown 展示为预览
 
 ```tsx
 const [view, setView] = useState<MixEditorView>('json');
@@ -252,7 +252,7 @@ const jsonString = '{"id":1,"name":"demo"}';
 
 默认值：`1`
 
-传给 `JSONView` 的折叠深度。组件初始会根据 `jsonCollapsedDepth !== undefined` 设置为折叠状态。
+传给 `JSONView` 的折叠深度。JSON 模式默认展开；用户点击折叠按钮后，组件会按该深度折叠内容。
 
 当组件处于非编辑态、内容是结构化对象 / 数组，并且当前视图是 `json` 时，会显示展开 / 折叠按钮。
 
@@ -288,9 +288,9 @@ const jsonString = '{"id":1,"name":"demo"}';
 
 类型：`number | string`
 
-默认值：`160`
+默认值：`260`
 
-编辑器最小高度。
+内容区域的最小高度，同时传给编辑态的 `CodeMirrorEditor`。该参数在 JSON、格式化、Markdown、文本浏览态以及编辑态均生效。
 
 ```tsx
 <MixEditor value={value} editorMinHeight={300} />

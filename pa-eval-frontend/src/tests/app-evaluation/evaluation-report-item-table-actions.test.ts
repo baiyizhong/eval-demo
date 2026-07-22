@@ -108,7 +108,7 @@ test('evaluation report badcase table reuses trace log columns', () => {
   assert.match(badcaseSource, /createTraceLogColumns/)
   assert.match(badcaseSource, /TraceDetailDrawer/)
   assert.match(badcaseSource, /searchPlaceholder:\s*'搜索 traceId \/ score'/)
-  assert.match(badcaseSource, /minTableWidth=\{1880\}/)
+  assert.doesNotMatch(badcaseSource, /minTableWidth=\{/)
 })
 
 test('evaluation report tables use stable query keys that can be invalidated by detail page', () => {

@@ -49,6 +49,28 @@ import app.auto_evaluations as auto_evaluations
 from app.errors import BusinessError
 
 
+@pytest.mark.parametrize(
+    ("field", "value"),
+    [
+        ("name", "任务" * 21),
+        ("description", "描述" * 101),
+    ],
+)
+def test_rejects_auto_evaluation_fields_over_max_length(
+    field: str,
+    value: str,
+) -> None:
+    payload = {
+        "name": "客服质量自动评测",
+        "description": "检查客服回复",
+        "evaluatorId": "evaluator-1",
+    }
+    payload[field] = value
+
+    with pytest.raises(ValueError):
+        CreateAutoEvaluationPayload.model_validate(payload)
+
+
 class FakeCursor:
     def __init__(self, row=None, rows=None):
         self.row = row

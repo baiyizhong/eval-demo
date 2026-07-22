@@ -171,7 +171,7 @@ test('session trace dialog exposes a session id copy action', () => {
   assert.match(dialogSource, /import \{ Copy/)
   assert.match(
     dialogSource,
-    /navigator\.clipboard\.writeText\(normalizedSessionId\)/
+    /copyTextToClipboard\(normalizedSessionId\)/
   )
   assert.match(dialogSource, /toast\.success\('已复制'\)/)
   assert.match(dialogSource, /aria-label='复制 Session ID'/)

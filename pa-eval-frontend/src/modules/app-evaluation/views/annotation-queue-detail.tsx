@@ -6,7 +6,7 @@ import { toast } from 'sonner'
 import { confirm } from '@/lib/confirm'
 import { useAPI } from '@/hooks/use-api'
 import { usePermission } from '@/hooks/use-permission'
-import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card'
+import { ChartMetricCard } from '@/components/common/charts'
 import {
   DataTable,
   type DataTableFilterBinding,
@@ -222,24 +222,29 @@ export function ProjectAnnotationQueueDetail() {
           ) : null}
         </PageAction>
 
-        {queueQuery.isLoading || metricQuery.isLoading ? (
-          <Loading text='加载人工标注任务详情中...' className='flex-1' />
-        ) : null}
-
-        {queue && metrics ? (
-          <>
-            <section className='grid gap-4 md:grid-cols-2 xl:grid-cols-4'>
-              <MetricCard title='总量' value={String(metrics.total)} />
-              <MetricCard title='待处理' value={String(metrics.pending)} />
-              <MetricCard title='已完成' value={String(metrics.completed)} />
-              <MetricCard
-                title='完成率'
-                value={`${metrics.completionRate}%`}
-                description={`最近更新 ${formatDateTime(metrics.updatedAt)}`}
-              />
-            </section>
-          </>
-        ) : null}
+        <section className='grid min-h-[120px] gap-4 md:grid-cols-2 xl:grid-cols-4'>
+          <ChartMetricCard
+            title='总量'
+            value={metrics ? String(metrics.total) : '--'}
+          />
+          <ChartMetricCard
+            title='待处理'
+            value={metrics ? String(metrics.pending) : '--'}
+          />
+          <ChartMetricCard
+            title='已完成'
+            value={metrics ? String(metrics.completed) : '--'}
+          />
+          <ChartMetricCard
+            title='完成率'
+            value={metrics ? `${metrics.completionRate}%` : '--'}
+            description={
+              metrics
+                ? `最近更新 ${formatDateTime(metrics.updatedAt)}`
+                : '\u00A0'
+            }
+          />
+        </section>
 
         <section className='bg-card text-card-foreground flex min-h-0 min-w-0 flex-1 flex-col rounded-lg border p-4'>
           <DataTable<AnnotationQueueItemRecord>
@@ -280,6 +285,10 @@ export function ProjectAnnotationQueueDetail() {
                 assignee: '预设处理人',
                 completedBy: '实际处理人',
               },
+              columnVisibility: {
+                objectType: false,
+                assignee: false
+              }
             }}
             bulkActions={(table) => (
               <AnnotationQueueItemBulkActions
@@ -303,7 +312,6 @@ export function ProjectAnnotationQueueDetail() {
               />
             }
             emptyText='当前筛选条件下暂无标注数据'
-            minTableWidth={1320}
           />
         </section>
         <SessionTraceDialog
@@ -379,34 +387,6 @@ function createItemToolbarFilters({
       })),
     },
   ]
-}
-
-function MetricCard({
-  title,
-  value,
-  description,
-}: {
-  title: string
-  value: string
-  description?: string
-}) {
-  return (
-    <Card>
-      <CardHeader>
-        <CardTitle className='text-muted-foreground text-sm font-medium'>
-          {title}
-        </CardTitle>
-      </CardHeader>
-      <CardContent>
-        <div className='text-2xl font-semibold'>{value}</div>
-        {description ? (
-          <div className='text-muted-foreground mt-1 text-xs'>
-            {description}
-          </div>
-        ) : null}
-      </CardContent>
-    </Card>
-  )
 }
 
 async function handleDeleteItem(

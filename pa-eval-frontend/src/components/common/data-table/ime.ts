@@ -1,17 +1,31 @@
 export type SearchInputCommitEvent = {
-  eventType: 'change' | 'compositionend'
+  eventType: 'change' | 'compositionend' | 'keydown' | 'submit' | 'clear'
+  key?: string
   value: string
   isComposing: boolean
 }
 
 export function getSearchInputCommitValue({
   eventType,
+  key,
   value,
   isComposing,
 }: SearchInputCommitEvent) {
-  if (eventType === 'change' && isComposing) {
+  if (isComposing) {
     return null
   }
 
-  return value
+  if (eventType === 'keydown') {
+    return key === 'Enter' ? value : null
+  }
+
+  if (eventType === 'submit') {
+    return value
+  }
+
+  if (eventType === 'clear') {
+    return ''
+  }
+
+  return null
 }

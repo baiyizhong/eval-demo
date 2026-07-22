@@ -43,6 +43,7 @@ import { ContentSection } from '@/components/common/content-section'
 import { Drawer } from '@/components/common/drawer'
 import { Loading } from '@/components/common/loading'
 import { SidebarNav } from '@/components/common/sidebar-nav'
+import { ChartMetricCard } from '@/components/common/charts'
 import { Main } from '@/components/layout/main'
 
 type AuditLogRecord = {
@@ -256,28 +257,6 @@ function StaticSystemPage({
         ))}
       </div>
     </SystemPageShell>
-  )
-}
-
-function MetricCard({
-  title,
-  value,
-  description,
-}: {
-  title: string
-  value: string | number
-  description: string
-}) {
-  return (
-    <Card className='rounded-md'>
-      <CardHeader className='pb-2'>
-        <CardDescription>{title}</CardDescription>
-        <CardTitle className='text-2xl'>{value}</CardTitle>
-      </CardHeader>
-      <CardContent className='text-muted-foreground text-xs'>
-        {description}
-      </CardContent>
-    </Card>
   )
 }
 
@@ -594,34 +573,40 @@ export function BackendOverview() {
       {overview ? (
         <>
           <div className='grid gap-3 md:grid-cols-3 xl:grid-cols-6'>
-            <MetricCard
+            <ChartMetricCard
+              className='rounded-md'
               title='服务状态'
               value={overview.service.status}
               description={overview.service.name}
             />
-            <MetricCard
+            <ChartMetricCard
+              className='rounded-md'
               title='数据库连接'
               value={overview.database.connected ? 'connected' : 'offline'}
               description={
                 overview.database.configured ? '已配置连接' : '未配置连接'
               }
             />
-            <MetricCard
+            <ChartMetricCard
+              className='rounded-md'
               title='组织'
               value={overview.metrics.organizations}
               description='Langfuse organizations'
             />
-            <MetricCard
+            <ChartMetricCard
+              className='rounded-md'
               title='项目'
               value={overview.metrics.projects}
               description={`活跃 ${overview.metrics.activeProjects} / 归档 ${overview.metrics.archivedProjects}`}
             />
-            <MetricCard
+            <ChartMetricCard
+              className='rounded-md'
               title='用户'
               value={overview.metrics.users}
               description='Langfuse users'
             />
-            <MetricCard
+            <ChartMetricCard
+              className='rounded-md'
               title='审计日志'
               value={overview.metrics.auditLogs}
               description='PA audit logs'

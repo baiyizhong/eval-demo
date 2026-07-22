@@ -1,7 +1,7 @@
 import { memo, type JSX, useState } from "react";
 import { type Row } from "@tanstack/react-table";
+import { copyTextToClipboard } from "@/lib/clipboard";
 import { type JsonTableRow } from "./utils/jsonExpansionUtils";
-import { copyTextToClipboard } from "../utils/clipboard";
 import { Button } from "../ui/button";
 import { Copy, Check } from "lucide-react";
 import { cn } from "../ui/utils";

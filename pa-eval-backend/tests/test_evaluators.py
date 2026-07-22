@@ -631,3 +631,45 @@ def test_rejects_deleting_langfuse_evaluator() -> None:
     assert response.json()["code"] == 4018
     assert response.json()["message"] == "Langfuse 原生评估器由 Langfuse 管理，请在 Langfuse 中删除"
     assert fake_reader.deleted_pa_evaluator is None
+
+
+@pytest.mark.parametrize(
+    ("field", "value"),
+    [
+        ("name", "名" * 31),
+        ("description", "描述" * 101),
+        ("inputVariables", ["输入变量" * 8]),
+        (
+            "outputVariableMappings",
+            [
+                {
+                    "variableName": "变量" * 16,
+                    "scoreConfigName": "回答质量",
+                }
+            ],
+        ),
+    ],
+)
+def test_rejects_evaluator_fields_over_max_length(field: str, value: object) -> None:
+    payload = {
+        "name": "客服质量评估",
+        "type": "WORKFLOW",
+        "provider": "DIFY",
+        "projectId": "project-1",
+        "description": "检查客服回复",
+        "variables": ["input"],
+        "inputVariables": ["input"],
+        "outputVariables": ["quality_score"],
+        "outputVariableMappings": [
+            {
+                "variableName": "quality_score",
+                "scoreConfigName": "回答质量",
+            }
+        ],
+        "endpointUrl": "https://dify.example.com/v1/workflows/run",
+    }
+    payload[field] = value
+
+    response = TestClient(app).post("/api/evaluators", json=payload)
+
+    assert response.status_code == 422

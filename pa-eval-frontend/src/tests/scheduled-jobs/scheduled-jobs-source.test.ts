@@ -16,7 +16,7 @@ import {
   shouldShowSampleWarning,
 } from '../../modules/scheduled-jobs/mock-store.ts'
 
-const routesSource = readFileSync('src/routes/index.tsx', 'utf8')
+const routesSource = readFileSync('src/routes/sidebar-routes.tsx', 'utf8')
 const iconMapSource = readFileSync('src/components/layout/icon-map.ts', 'utf8')
 const apiRegistrySource = readFileSync('src/api/registry.ts', 'utf8')
 const typesSource = readFileSync('src/modules/scheduled-jobs/types.ts', 'utf8')

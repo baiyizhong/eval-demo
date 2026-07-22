@@ -6,7 +6,6 @@ import { toast } from 'sonner'
 import { confirm } from '@/lib/confirm'
 import { useAPI } from '@/hooks/use-api'
 import { usePermission } from '@/hooks/use-permission'
-import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card'
 import {
   DataTable,
   type DataTableFilterBinding,
@@ -304,39 +303,27 @@ export function ProjectDatasetDetail() {
         ) : null}
 
         {dataset && metrics ? (
-          <>
-            <section className='grid gap-4 md:grid-cols-2 xl:grid-cols-4'>
-              <MetricCard title='总数据量' value={String(metrics.total)} />
-              <MetricCard title='ACTIVE 数量' value={String(metrics.active)} />
-              <MetricCard
-                title='ARCHIVED 数量'
+          <section className='bg-card text-card-foreground rounded-lg border p-4'>
+            <div className='grid gap-x-8 gap-y-3 text-sm sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4'>
+              <InfoItem label='名称' value={dataset.name} />
+              <InfoItem
+                label='描述'
+                value={dataset.description || '-'}
+              />
+              <InfoItem label='类型' value={<DatasetTypeBadge type={dataset.type} />} />
+              <InfoItem label='总数据量' value={String(metrics.total)} />
+              <InfoItem label='运行数' value={String(dataset.runCount)} />
+              <InfoItem label='有效数量' value={String(metrics.active)} />
+              <InfoItem
+                label='归档数量'
                 value={String(metrics.archived)}
               />
-              <MetricCard
-                title='最近更新时间'
+              <InfoItem
+                label='最近更新时间'
                 value={formatDateTime(metrics.updatedAt)}
               />
-            </section>
-            <section className='bg-card text-card-foreground rounded-lg border p-4'>
-              <div className='flex flex-wrap items-center gap-x-8 gap-y-3 text-sm'>
-                <InfoItem label='名称' value={dataset.name} />
-                <InfoItem
-                  label='描述'
-                  value={dataset.description || '-'}
-                  wide
-                />
-                <InfoItem
-                  label='类型'
-                  value={<DatasetTypeBadge type={dataset.type} />}
-                />
-                <InfoItem label='运行数' value={String(dataset.runCount)} />
-                <InfoItem
-                  label='创建时间'
-                  value={formatDateTime(dataset.createdAt)}
-                />
-              </div>
-            </section>
-          </>
+            </div>
+          </section>
         ) : null}
 
         <section className='bg-card text-card-foreground flex min-h-0 min-w-0 flex-1 flex-col rounded-lg border p-4'>
@@ -390,7 +377,6 @@ export function ProjectDatasetDetail() {
               />
             }
             emptyText='当前筛选条件下暂无数据项'
-            minTableWidth={1280}
           />
         </section>
       </div>
@@ -413,21 +399,6 @@ export function ProjectDatasetDetail() {
   )
 }
 
-function MetricCard({ title, value }: { title: string; value: string }) {
-  return (
-    <Card>
-      <CardHeader>
-        <CardTitle className='text-muted-foreground text-sm font-normal'>
-          {title}
-        </CardTitle>
-      </CardHeader>
-      <CardContent>
-        <div className='text-xl font-semibold'>{value}</div>
-      </CardContent>
-    </Card>
-  )
-}
-
 function InfoItem({
   label,
   value,
@@ -441,7 +412,7 @@ function InfoItem({
     <div
       className={
         wide
-          ? 'flex max-w-xl min-w-64 items-center gap-2'
+          ? 'flex min-w-0 items-center gap-2 sm:col-span-2 lg:col-span-2 xl:col-span-2'
           : 'flex items-center gap-2'
       }
     >

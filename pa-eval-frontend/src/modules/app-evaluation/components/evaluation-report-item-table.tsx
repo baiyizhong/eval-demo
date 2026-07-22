@@ -219,7 +219,6 @@ export function EvaluationReportItemTable({
           />
         }
         emptyText='暂无评测数据'
-        minTableWidth={1100}
       />
     </section>
   )

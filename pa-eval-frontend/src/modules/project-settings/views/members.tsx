@@ -541,7 +541,6 @@ export function ProjectMembersSettings() {
               },
             }}
             enableRowSelection={false}
-            minTableWidth={900}
             emptyText='当前项目暂无可展示成员。'
             errorText='项目成员加载失败，请确认后端服务和项目权限。'
           />

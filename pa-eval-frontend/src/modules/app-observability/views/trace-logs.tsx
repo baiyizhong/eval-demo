@@ -15,6 +15,10 @@ import {
   traceLogToolbarFilters,
   traceLogUrlFilters,
 } from '../components/trace-log-filters'
+import {
+  TraceOperationSuccessAlert,
+  type TraceOperationSuccessNotice,
+} from '../components/trace-operation-success-alert'
 import { normalizeTraceTimeFilterValues } from '../trace-time-ranges'
 import type { TraceListResponse, TraceLogRow } from '../types'
 import { buildTraceListQuery } from './trace-logs-query'
@@ -26,6 +30,8 @@ export function TraceLogs() {
   const [selectedTraceId, setSelectedTraceId] = useState<string | null>(
     searchParams.get('traceId')
   )
+  const [successNotice, setSuccessNotice] =
+    useState<TraceOperationSuccessNotice | null>(null)
 
   const closeTrace = useCallback(() => {
     const next = new URLSearchParams(searchParams)
@@ -67,6 +73,12 @@ export function TraceLogs() {
     <Page fluid className='flex min-h-[calc(100svh-3.5rem)] flex-col'>
       <div className='flex min-h-0 flex-1 flex-col gap-4'>
         <ObservabilityPageNav />
+        {successNotice ? (
+          <TraceOperationSuccessAlert
+            notice={successNotice}
+            onClose={() => setSuccessNotice(null)}
+          />
+        ) : null}
         <section className='bg-card text-card-foreground flex min-h-0 min-w-0 flex-1 flex-col rounded-lg border p-4'>
           <DataTable<TraceLogRow>
             className='min-h-0 flex-1'
@@ -99,6 +111,10 @@ export function TraceLogs() {
                 latency: '延迟',
                 createdAt: '创建时间',
               },
+              columnVisibility: {
+                latency: false,
+                status: false,
+              },
             }}
             filterPanel={{
               title: '高级筛选',
@@ -111,6 +127,7 @@ export function TraceLogs() {
                 table={table}
                 selection={selection}
                 projectId={projectId}
+                onOperationSuccess={setSuccessNotice}
               />
             )}
             loadingText={
@@ -120,7 +137,6 @@ export function TraceLogs() {
               />
             }
             emptyText='当前筛选条件下暂无 Trace 数据'
-            minTableWidth={1880}
           />
           <TraceDetailDrawer
             projectId={projectId}

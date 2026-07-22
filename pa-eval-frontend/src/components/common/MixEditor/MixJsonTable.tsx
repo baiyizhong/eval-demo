@@ -30,10 +30,15 @@ import {
 import { cn } from './deps/ui/utils';
 
 export function MixJsonTable({ value }: { value: unknown }) {
-  const [expanded, setExpanded] = useState<ExpandedState>({});
-  const [expandedCells, setExpandedCells] = useState<Set<string>>(new Set());
-
   const data = useMemo(() => transformJsonToTableData(value), [value]);
+  const [expanded, setExpanded] = useState<ExpandedState>(() =>
+    Object.fromEntries(
+      data
+        .filter((row) => row.hasChildren)
+        .map((row) => [convertRowIdToKeyPath(row.id), true]),
+    ),
+  );
+  const [expandedCells, setExpandedCells] = useState<Set<string>>(new Set());
 
   const table = useReactTable({
     data,

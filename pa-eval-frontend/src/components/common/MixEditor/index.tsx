@@ -19,11 +19,11 @@ import {
   UnfoldVertical,
   X,
 } from 'lucide-react';
+import { copyTextToClipboard } from '@/lib/clipboard';
 import { CodeMirrorEditor } from './deps/editor/CodeMirrorEditor';
 import { JSONView } from './deps/ui/CodeJsonViewer';
 import { Button } from './deps/ui/button';
 import { cn } from './deps/ui/utils';
-import { copyTextToClipboard } from './deps/utils/clipboard';
 import { MixJsonTable } from './MixJsonTable';
 import { MixMarkdownView } from './MixMarkdownView';
 import {
@@ -83,17 +83,15 @@ export function MixEditor({
   jsonCollapsedDepth = 1,
   className,
   editorClassName,
-  editorMinHeight = 160,
-  editorMaxHeight = 400,
+  editorMinHeight = 120,
+  editorMaxHeight = 300,
 }: MixEditorProps) {
   const [internalValue, setInternalValue] = useState(defaultValue);
   const [internalView, setInternalView] = useState<MixEditorView | undefined>(
     defaultView,
   );
   const [isEditing, setIsEditing] = useState(defaultEditing && !readOnly);
-  const [jsonIsCollapsed, setJsonIsCollapsed] = useState(
-    jsonCollapsedDepth !== undefined,
-  );
+  const [jsonIsCollapsed, setJsonIsCollapsed] = useState(false);
   const [draft, setDraft] = useState(() =>
     defaultEditing && !readOnly
       ? stringifyForEditor(
@@ -155,6 +153,10 @@ export function MixEditor({
   const hasSearchResults = !searchIsActive || filteredValue !== undefined;
   const displayValue = hasSearchResults ? filteredValue : parsedValue;
   const resolvedJsonCollapsedDepth = jsonCollapsedDepth ?? 1;
+  const resolvedEditorMinHeight =
+    typeof editorMinHeight === 'number'
+      ? `${editorMinHeight}px`
+      : editorMinHeight;
   const CopyIcon = copyStatus === 'copied' ? Check : Copy;
 
   useEffect(() => {
@@ -409,42 +411,44 @@ export function MixEditor({
         </div>
       </div>
 
-      {isEditing ? (
-        <>
-          <CodeMirrorEditor
-            value={draft}
-            onChange={setDraft}
-            mode={editorMode}
-            minHeight={editorMinHeight}
-            maxHeight={editorMaxHeight}
-            className={cn('rounded-none border-0', editorClassName)}
+      <div style={{ minHeight: resolvedEditorMinHeight }}>
+        {isEditing ? (
+          <>
+            <CodeMirrorEditor
+              value={draft}
+              onChange={setDraft}
+              mode={editorMode}
+              minHeight={editorMinHeight}
+              maxHeight={editorMaxHeight}
+              className={cn('rounded-none border-0', editorClassName)}
+            />
+            {!draftValidation.ok ? (
+              <p className="mt-2 text-xs text-destructive" role="alert">
+                {draftValidation.message}
+              </p>
+            ) : null}
+          </>
+        ) : searchIsActive && !hasSearchResults ? (
+          <div className="flex min-h-[120px] items-center justify-center rounded-sm border border-dashed text-xs text-muted-foreground">
+            无匹配结果
+          </div>
+        ) : resolvedView === 'pretty' && tableAvailable ? (
+          <MixJsonTable value={displayValue} />
+        ) : resolvedView === 'pretty' && markdown !== undefined ? (
+          <MixMarkdownView markdown={markdown} />
+        ) : (
+          <JSONView
+            json={displayValue}
+            hideTitle
+            borderless
+            collapseStringsAfterLength={null}
+            externalJsonCollapsed={jsonIsCollapsed}
+            jsonCollapsedDepth={resolvedJsonCollapsedDepth}
+            onToggleCollapse={handleJsonToggleCollapse}
+            codeClassName="max-h-[520px] overflow-auto"
           />
-          {!draftValidation.ok ? (
-            <p className="mt-2 text-xs text-destructive" role="alert">
-              {draftValidation.message}
-            </p>
-          ) : null}
-        </>
-      ) : searchIsActive && !hasSearchResults ? (
-        <div className="flex min-h-[120px] items-center justify-center rounded-sm border border-dashed text-xs text-muted-foreground">
-          无匹配结果
-        </div>
-      ) : resolvedView === 'pretty' && tableAvailable ? (
-        <MixJsonTable value={displayValue} />
-      ) : resolvedView === 'pretty' && markdown !== undefined ? (
-        <MixMarkdownView markdown={markdown} />
-      ) : (
-        <JSONView
-          json={displayValue}
-          hideTitle
-          borderless
-          collapseStringsAfterLength={null}
-          externalJsonCollapsed={jsonIsCollapsed}
-          jsonCollapsedDepth={resolvedJsonCollapsedDepth}
-          onToggleCollapse={handleJsonToggleCollapse}
-          codeClassName="max-h-[520px] overflow-auto"
-        />
-      )}
+        )}
+      </div>
     </section>
   );
 }

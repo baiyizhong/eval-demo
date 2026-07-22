@@ -19,6 +19,7 @@ import {
   SelectTrigger,
   SelectValue,
 } from '@/components/ui/select'
+import { Separator } from '@/components/ui/separator'
 import { Switch } from '@/components/ui/switch'
 import { Textarea } from '@/components/ui/textarea'
 import { ToggleGroup, ToggleGroupItem } from '@/components/ui/toggle-group'
@@ -109,6 +110,8 @@ const steps = [
 const scheduledJobDrawerSchema = z.object({})
 const formId = 'scheduled-job-form'
 const SCHEDULED_JOB_TIMEZONE = 'Asia/Shanghai'
+const SCHEDULED_JOB_NAME_MAX_LENGTH = 40
+const SCHEDULED_JOB_DESCRIPTION_MAX_LENGTH = 200
 const traceQuickTimeRangeOptions = [
   { value: '1d', label: '近 1 天' },
   { value: '3d', label: '近 3 天' },
@@ -838,6 +841,16 @@ export function ScheduledJobDrawer({
       return false
     }
 
+    if (form.name.length > SCHEDULED_JOB_NAME_MAX_LENGTH) {
+      toast.error('任务名称不能超过40个字')
+      return false
+    }
+
+    if (form.description.length > SCHEDULED_JOB_DESCRIPTION_MAX_LENGTH) {
+      toast.error('任务描述不能超过200个字')
+      return false
+    }
+
     if (
       form.frequency.mode === 'ONCE' &&
       !isValidIsoDateTime(form.frequency.runAt)
@@ -1042,13 +1055,24 @@ export function ScheduledJobDrawer({
       title={task ? '编辑定时任务' : '创建定时任务'}
       showConfirm={false}
       showCancel={false}
+      actions={
+        <Button
+          type='button'
+          variant='outline'
+          size='sm'
+          aria-label='关闭抽屉'
+          onClick={() => onOpenChange(false)}
+        >
+          关闭
+        </Button>
+      }
     >
       <BaseForm
         id={formId}
         schema={scheduledJobDrawerSchema}
         defaultValues={{}}
         onSubmit={handleConfirm}
-        className='flex flex-col gap-6'
+        className='flex min-h-full flex-col gap-6'
       >
         <Stepper items={steps} currentStep={step} />
 
@@ -1073,13 +1097,15 @@ export function ScheduledJobDrawer({
             updateForm={updateForm}
           />
         )}
-        <div className='border-border flex justify-end gap-2 border-t pt-4'>
-          <Button type='button' variant='outline' onClick={handleCancel}>
-            {step === 0 ? '取消' : '上一步'}
-          </Button>
-          <Button type='submit' form={formId}>
-            {step === 0 ? '下一步' : '保存'}
-          </Button>
+        <div className='bg-background/95 supports-[backdrop-filter]:bg-background/80 sticky bottom-0 -mx-4 mt-auto -mb-4 flex flex-wrap justify-between gap-2 border-t px-4 pt-4 backdrop-blur'>
+          <div className='ml-auto flex gap-2'>
+            <Button type='button' variant='outline' onClick={handleCancel}>
+              {step === 0 ? '取消' : '上一步'}
+            </Button>
+            <Button type='submit' form={formId}>
+              {step === 0 ? '下一步' : '保存'}
+            </Button>
+          </div>
         </div>
       </BaseForm>
     </Drawer>
@@ -1112,6 +1138,7 @@ function BasicStep({ form, updateForm, updateFrequency }: StepProps) {
             <Input
               value={form.name}
               placeholder='输入任务名称'
+              maxLength={SCHEDULED_JOB_NAME_MAX_LENGTH}
               onChange={(event) => updateForm({ name: event.target.value })}
             />
           </Field>
@@ -1121,6 +1148,7 @@ function BasicStep({ form, updateForm, updateFrequency }: StepProps) {
               className='min-h-24 resize-none'
               value={form.description}
               placeholder='说明任务用途'
+              maxLength={SCHEDULED_JOB_DESCRIPTION_MAX_LENGTH}
               onChange={(event) =>
                 updateForm({ description: event.target.value })
               }
@@ -1128,6 +1156,8 @@ function BasicStep({ form, updateForm, updateFrequency }: StepProps) {
           </Field>
         </div>
       </BasicCard>
+
+      <Separator className='border-t border-dashed bg-transparent' />
 
       <BasicCard>
         <div className='grid gap-4'>
@@ -1830,11 +1860,7 @@ function useDebouncedValue<T>(value: T, delayMs: number) {
 }
 
 function BasicCard({ children }: { children: React.ReactNode }) {
-  return (
-    <section className='bg-card text-card-foreground rounded-lg border p-4'>
-      {children}
-    </section>
-  )
+  return <section>{children}</section>
 }
 
 function SectionCard({

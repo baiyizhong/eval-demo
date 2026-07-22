@@ -1,5 +1,5 @@
 import type { Row } from '@tanstack/react-table'
-import { Eye, MoreHorizontal, Play, Trash2 } from 'lucide-react'
+import { Eye, MoreHorizontal, RefreshCw, Trash2 } from 'lucide-react'
 import { Link } from 'react-router'
 import { Button } from '@/components/ui/button'
 import {
@@ -48,7 +48,7 @@ export function AutoEvaluationRowActions({
             </Link>
           </DropdownMenuItem>
           <DropdownMenuItem onSelect={() => onRerun(task)}>
-            <Play data-icon='inline-start' />
+            <RefreshCw data-icon='inline-start' />
             重新运行
           </DropdownMenuItem>
           <DropdownMenuItem

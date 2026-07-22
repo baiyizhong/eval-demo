@@ -34,9 +34,18 @@ import {
   type AnnotationAssignmentFormValues,
 } from './annotation-assignment-fields'
 
+const ANNOTATION_QUEUE_NAME_MAX_LENGTH = 40
+const ANNOTATION_QUEUE_DESCRIPTION_MAX_LENGTH = 200
+
 const annotationQueueFormBaseSchema = z.object({
-  name: z.string().trim().min(1, '请输入任务名称'),
-  description: z.string(),
+  name: z
+    .string()
+    .trim()
+    .min(1, '请输入任务名称')
+    .max(ANNOTATION_QUEUE_NAME_MAX_LENGTH, '任务名称不能超过40个字'),
+  description: z
+    .string()
+    .max(ANNOTATION_QUEUE_DESCRIPTION_MAX_LENGTH, '任务描述不能超过200个字'),
   scoreConfigIds: z.array(z.string()).min(1, '请选择至少一个评分指标'),
   assigneeIds: z.array(z.string()),
   assignmentStrategy: z.enum(['average', 'random', 'weighted']),
@@ -77,6 +86,8 @@ export function AnnotationQueueFormDrawer({
             name: createAvailableResourceNameSchema({
               requiredMessage: '请输入任务名称',
               duplicateMessage: '人工标注任务名称已存在，请修改名称',
+              maxLength: ANNOTATION_QUEUE_NAME_MAX_LENGTH,
+              maxLengthMessage: '任务名称不能超过40个字',
               checkAvailability: checkNameAvailability,
             }),
           }),
@@ -108,7 +119,7 @@ export function AnnotationQueueFormDrawer({
         schema={schema}
         defaultValues={getDefaultValues(queue)}
         onSubmit={handleSubmit}
-        className='flex flex-col gap-4'
+        className='flex min-w-0 flex-col gap-4 overflow-x-hidden'
       >
         {(form) => (
           <>
@@ -121,6 +132,7 @@ export function AnnotationQueueFormDrawer({
                   <FormControl>
                     <Input
                       placeholder='例如：客服会话质量人工标注'
+                      maxLength={ANNOTATION_QUEUE_NAME_MAX_LENGTH}
                       {...field}
                       aria-invalid={Boolean(form.formState.errors.name)}
                       onChange={(event) => {
@@ -144,7 +156,11 @@ export function AnnotationQueueFormDrawer({
                 <FormItem>
                   <FormLabel>任务描述</FormLabel>
                   <FormControl>
-                    <Textarea placeholder='说明任务目标和标注范围' {...field} />
+                    <Textarea
+                      placeholder='说明任务目标和标注范围'
+                      maxLength={ANNOTATION_QUEUE_DESCRIPTION_MAX_LENGTH}
+                      {...field}
+                    />
                   </FormControl>
                   <FormMessage />
                 </FormItem>
@@ -205,7 +221,7 @@ export function AnnotationQueueFormDrawer({
               control={form.control}
               name='assigneeIds'
               render={({ field }) => (
-                <FormItem>
+                <FormItem className='min-w-0'>
                   <FormLabel>候选处理人</FormLabel>
                   <CandidateAssigneeSelector
                     users={users}
@@ -275,8 +291,8 @@ function CandidateAssigneeSelector({
   }
 
   return (
-    <div className='flex flex-col gap-2 rounded-md border p-3'>
-      <div className='flex flex-col gap-2 sm:flex-row sm:items-center'>
+    <div className='flex w-full max-w-full min-w-0 flex-col gap-2 overflow-hidden rounded-md border p-3'>
+      <div className='flex min-w-0 flex-col gap-2 sm:flex-row sm:items-center'>
         <Input
           value={keyword}
           onChange={(event) => setKeyword(event.target.value)}
@@ -307,11 +323,11 @@ function CandidateAssigneeSelector({
       <div className='text-muted-foreground text-xs'>
         已选 {selectedCount} 人
       </div>
-      <div className='max-h-56 overflow-auto rounded-md border'>
+      <div className='max-h-56 w-full max-w-full min-w-0 overflow-x-hidden overflow-y-auto rounded-md border'>
         {filteredUsers.map((user) => (
           <label
             key={user.id}
-            className='hover:bg-muted/60 flex cursor-pointer items-center gap-2 border-b px-3 py-2 text-sm last:border-b-0'
+            className='hover:bg-muted/60 grid w-full max-w-full min-w-0 cursor-pointer grid-cols-[auto_minmax(0,1fr)] items-center gap-2 overflow-hidden border-b px-3 py-2 text-sm last:border-b-0'
           >
             <Checkbox
               checked={selectedSet.has(user.id)}
@@ -320,7 +336,10 @@ function CandidateAssigneeSelector({
               }
               aria-label={`选择候选处理人 ${user.name || user.email || user.id}`}
             />
-            <span className='min-w-0 flex-1 truncate'>
+            <span
+              className='block min-w-0 truncate'
+              title={user.name || user.email || user.id}
+            >
               {user.name || user.email || user.id}
               {user.email ? (
                 <span className='text-muted-foreground'>（{user.email}）</span>

@@ -390,6 +390,9 @@ export function ProjectDatasets() {
                   createdAt: '创建时间',
                   updatedAt: '更新时间',
                 },
+                columnVisibility: {
+                  createdAt: false
+                }
               }}
               loadingText={
                 <Loading
@@ -398,7 +401,6 @@ export function ProjectDatasets() {
                 />
               }
               emptyText='当前项目下暂无匹配的数据集'
-              minTableWidth={1080}
             />
           </section>
         </Tabs>

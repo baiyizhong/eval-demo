@@ -4,7 +4,7 @@ import { Main } from '@/components/layout/main'
 
 const defaultLinks: React.ComponentProps<typeof PageHeader>['links'] = [
   {
-    title: '项目管理',
+    title: '项目首页',
     href: '/apps',
     isActive: true,
     disabled: false,

@@ -15,6 +15,9 @@ import { Loading } from '@/components/common/loading'
 import { type ProjectListResponse, toProjectInfo } from '../project-info'
 import type { ProjectInfo } from '../types'
 
+const PROJECT_NAME_MAX_LENGTH = 40
+const PROJECT_DESCRIPTION_MAX_LENGTH = 200
+
 function formatDateTime(value: string) {
   const date = new Date(value)
 
@@ -118,6 +121,16 @@ function ProjectGeneralSettingsForm({
     event.preventDefault()
     if (readOnly) return
 
+    if (name.length > PROJECT_NAME_MAX_LENGTH) {
+      toast.error('项目名称不能超过30个字')
+      return
+    }
+
+    if (description.length > PROJECT_DESCRIPTION_MAX_LENGTH) {
+      toast.error('项目描述不能超过200个字')
+      return
+    }
+
     const nextProject = {
       name: name.trim() || project.name,
       description: description.trim(),
@@ -139,6 +152,7 @@ function ProjectGeneralSettingsForm({
           id='project-name'
           value={name}
           disabled={readOnly}
+          maxLength={PROJECT_NAME_MAX_LENGTH}
           onChange={(event) => setName(event.target.value)}
           placeholder='输入项目名称'
         />
@@ -149,6 +163,7 @@ function ProjectGeneralSettingsForm({
           id='project-description'
           value={description}
           disabled={readOnly}
+          maxLength={PROJECT_DESCRIPTION_MAX_LENGTH}
           onChange={(event) => setDescription(event.target.value)}
           placeholder='输入项目描述'
           rows={4}

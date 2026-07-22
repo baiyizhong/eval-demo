@@ -310,6 +310,7 @@ export function ProjectScoreConfigsSettings() {
               },
             }}
             enableRowSelection={false}
+            minTableWidth='max-content'
             emptyText='当前项目暂无评分指标'
             errorText='评分指标加载失败，请确认项目权限和后端服务。'
             loadingText='加载评分指标中...'

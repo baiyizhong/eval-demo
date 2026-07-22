@@ -108,6 +108,9 @@ export function DataTableTypeUsage() {
           columnLabels: {
             name: '名称',
           },
+          columnVisibility: {
+            status: false,
+          },
         }}
         bulkActions={() => <ExampleActions />}
       />

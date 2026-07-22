@@ -133,6 +133,7 @@ type DataTableToolbarConfig = {
   searchPlaceholder?: string
   filters?: DataTableToolbarFilter[]
   columnLabels?: Record<string, string>
+  columnVisibility?: VisibilityState
 }
 
 type DataTableProviderConfig<
@@ -225,7 +226,7 @@ function DataTableContent<
   emptyText = '暂无结果。',
   errorText = '数据加载失败。',
   loadingText = '正在加载数据...',
-  minTableWidth = 900,
+  minTableWidth = 1024,
   className,
   tableClassName,
 }: DataTableProps<TData, TResponse, TAction, TContext>) {
@@ -236,7 +237,9 @@ function DataTableContent<
   const [rowSelection, setRowSelection] = useState<RowSelectionState>({})
   const [isAllMatchingRowsSelected, setIsAllMatchingRowsSelected] =
     useState(false)
-  const [columnVisibility, setColumnVisibility] = useState<VisibilityState>({})
+  const [columnVisibility, setColumnVisibility] = useState<VisibilityState>(
+    () => toolbar?.columnVisibility ?? {}
+  )
 
   const pageKey = urlState?.pageKey ?? 'page'
   const pageSizeKey = urlState?.pageSizeKey ?? 'pageSize'
@@ -590,7 +593,7 @@ function DataTableContent<
           />
         ) : null}
 
-        <div className='min-h-0 flex-1 overflow-x-auto rounded-md border'>
+        <div className='min-h-0 flex-1 overflow-hidden rounded-md border [&_[data-slot=table-container]]:h-full'>
           <Table
             className={cn(tableClassName)}
             style={{ minWidth: normalizeWidth(minTableWidth) }}

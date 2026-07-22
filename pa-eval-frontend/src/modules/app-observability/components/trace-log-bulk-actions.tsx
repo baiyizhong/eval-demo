@@ -30,6 +30,7 @@ import {
   TraceDatasetDialog,
   type TraceDatasetSubmitValues,
 } from './trace-dataset-dialog'
+import type { TraceOperationSuccessNotice } from './trace-operation-success-alert'
 
 const TRACE_SELECT_ALL_PAGE_SIZE = 200
 
@@ -37,17 +38,21 @@ type TraceLogBulkActionsProps = {
   table: Table<TraceLogRow>
   selection?: DataTableSelectionState<TraceLogRow>
   projectId: string
+  onOperationSuccess: (notice: TraceOperationSuccessNotice) => void
 }
 
 export function TraceLogBulkActions({
   table,
   selection,
   projectId,
+  onOperationSuccess,
 }: TraceLogBulkActionsProps) {
   const $api = useAPI()
   const queryClient = useQueryClient()
   const { can } = usePermission({ type: 'project', projectId })
   const canEditTrace = can('project:trace:edit')
+  const canViewDataset = can('project:dataset:view')
+  const canViewAnnotation = can('project:annotation:view')
   const [datasetDialogOpen, setDatasetDialogOpen] = useState(false)
   const [datasetImportProgress, setDatasetImportProgress] =
     useState<TraceDatasetAddProgress | null>(null)
@@ -174,15 +179,25 @@ export function TraceLogBulkActions({
       await queryClient.invalidateQueries({
         queryKey: ['project-annotation-queues', projectId],
       })
-      toast.success(
-        `已加入人工标注队列：新增 ${result.createdCount} 条，跳过 ${result.skippedCount} 条`
-      )
+      const summary = `新增 ${result.createdCount} 条，跳过 ${result.skippedCount} 条`
+      onOperationSuccess({
+        title:
+          result.createdCount === 0 && result.skippedCount > 0
+            ? '人工标注任务处理完成'
+            : '已成功加入人工标注任务',
+        summary,
+        linkLabel: '查看人工标注任务',
+        to: canViewAnnotation
+          ? `/projects/${encodeURIComponent(projectId)}/evaluation/annotation-queues/${encodeURIComponent(result.queueId)}`
+          : undefined,
+      })
       clearBulkSelection()
       setAnnotationTaskProgress(null)
     } catch (error) {
       toast.error(
         error instanceof Error ? error.message : '创建人工标注任务失败'
       )
+      throw error
     }
   }
 
@@ -210,9 +225,15 @@ export function TraceLogBulkActions({
       await queryClient.invalidateQueries({
         queryKey: ['project-annotation-queues', projectId],
       })
-      toast.success(
-        `已创建人工标注任务：新增 ${result.createdCount} 条，跳过 ${result.skippedCount} 条`
-      )
+      const summary = `新增 ${result.createdCount} 条，跳过 ${result.skippedCount} 条`
+      onOperationSuccess({
+        title: '已成功创建人工标注任务',
+        summary,
+        linkLabel: '查看人工标注任务',
+        to: canViewAnnotation
+          ? `/projects/${encodeURIComponent(projectId)}/evaluation/annotation-queues/${encodeURIComponent(result.queueId)}`
+          : undefined,
+      })
       clearBulkSelection()
       setAnnotationTaskProgress(null)
     } catch (error) {
@@ -270,15 +291,20 @@ export function TraceLogBulkActions({
       await queryClient.invalidateQueries({
         queryKey: ['project-datasets'],
       })
-      const successMessage =
-        values.mode === 'create'
-          ? `已创建评测集并加入 ${result.successCount} 条 Trace`
-          : `已加入 ${result.successCount} 条 Trace`
-      toast.success(
-        result.failureCount
-          ? `${successMessage}，失败 ${result.failureCount} 条`
-          : successMessage
-      )
+      if (result.successCount === 0 && result.failureCount > 0) {
+        throw new Error(`加入数据集失败：失败 ${result.failureCount} 条`)
+      }
+      onOperationSuccess({
+        title:
+          values.mode === 'create' ? '已成功创建数据集' : '已成功加入数据集',
+        summary:
+          `${values.mode === 'create' ? '已加入' : '成功加入'} ${result.successCount} 条 Trace` +
+          (result.failureCount ? `，失败 ${result.failureCount} 条` : ''),
+        linkLabel: '查看数据集',
+        to: canViewDataset
+          ? `/projects/${encodeURIComponent(projectId)}/evaluation/datasets/${encodeURIComponent(result.datasetId)}`
+          : undefined,
+      })
       clearBulkSelection()
       setDatasetImportProgress(null)
     } catch (error) {

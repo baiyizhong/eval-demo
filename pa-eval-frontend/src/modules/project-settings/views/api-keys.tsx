@@ -3,6 +3,7 @@ import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { Copy, KeyRound, Pencil, Plus, Trash2 } from 'lucide-react'
 import { useParams } from 'react-router'
 import { toast } from 'sonner'
+import { copyTextToClipboard } from '@/lib/clipboard'
 import { useAPI } from '@/hooks/use-api'
 import { usePermission } from '@/hooks/use-permission'
 import {
@@ -67,8 +68,12 @@ function formatDateTime(value?: string | null) {
 }
 
 async function copyValue(label: string, value: string) {
-  await navigator.clipboard.writeText(value)
-  toast.success(`${label} 已复制`)
+  try {
+    await copyTextToClipboard(value)
+    toast.success(`${label} 已复制`)
+  } catch {
+    toast.error(`${label} 复制失败，请手动复制`)
+  }
 }
 
 export function ProjectApiKeysSettings() {

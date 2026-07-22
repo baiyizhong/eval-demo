@@ -77,6 +77,15 @@ test('annotation queue candidate assignee selector supports search and bulk sele
   assert.match(formSource, /filteredUsers/)
 })
 
+test('annotation queue candidate assignee list cannot expand the drawer with long names', () => {
+  assert.match(formSource, /flex min-w-0 flex-col gap-4 overflow-x-hidden/)
+  assert.match(formSource, /<FormItem className='min-w-0'>/)
+  assert.match(formSource, /w-full max-w-full min-w-0 flex-col/)
+  assert.match(formSource, /overflow-x-hidden overflow-y-auto/)
+  assert.match(formSource, /grid-cols-\[auto_minmax\(0,1fr\)\]/)
+  assert.match(formSource, /className='block min-w-0 truncate'/)
+})
+
 test('annotation queue item list displays assigned handler separately from completion user', () => {
   assert.match(typesSource, /assignee: ProjectUserRecord \| null/)
   assert.match(typesSource, /completedBy: ProjectUserRecord \| null/)

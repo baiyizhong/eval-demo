@@ -6,7 +6,7 @@ import {
   getResizableDrawerWidth,
   shouldShowDrawerOverlay,
   shouldCloseDrawerOnInteractOutside,
-  shouldCloseDrawerOnOutsideDoubleClick,
+  shouldCloseDrawerOnOutsideClick,
   shouldEnableResizableDrawer,
   shouldUseModalDrawer,
 } from '../../components/common/drawer/drawer-resizable.ts'
@@ -38,16 +38,16 @@ test('drawer uses non-modal behavior when overlay is hidden', () => {
   assert.equal(shouldUseModalDrawer('default', false), false)
 })
 
-test('resizable drawer does not close on overlay interaction', () => {
+test('drawer closes on overlay interaction unless it is being resized', () => {
   assert.equal(shouldCloseDrawerOnInteractOutside(true), false)
   assert.equal(shouldCloseDrawerOnInteractOutside(false), true)
 })
 
-test('drawer closes on outside double click when open and not resizing', () => {
-  assert.equal(shouldCloseDrawerOnOutsideDoubleClick(true, false, false), true)
-  assert.equal(shouldCloseDrawerOnOutsideDoubleClick(true, true, false), true)
-  assert.equal(shouldCloseDrawerOnOutsideDoubleClick(false, false, false), false)
-  assert.equal(shouldCloseDrawerOnOutsideDoubleClick(true, false, true), false)
+test('drawer closes on outside click only when overlay is hidden', () => {
+  assert.equal(shouldCloseDrawerOnOutsideClick(true, false, false), true)
+  assert.equal(shouldCloseDrawerOnOutsideClick(true, true, false), false)
+  assert.equal(shouldCloseDrawerOnOutsideClick(false, false, false), false)
+  assert.equal(shouldCloseDrawerOnOutsideClick(true, false, true), false)
 })
 
 test('resizable drawer width is clamped to the viewport', () => {
@@ -67,5 +67,8 @@ test('resize handle exposes hover and active visual states', () => {
   const className = getResizeHandleClassName()
 
   assert.equal(className.includes('hover:after:bg-primary'), true)
-  assert.equal(className.includes('data-[resizing=true]:after:bg-primary'), true)
+  assert.equal(
+    className.includes('data-[resizing=true]:after:bg-primary'),
+    true
+  )
 })

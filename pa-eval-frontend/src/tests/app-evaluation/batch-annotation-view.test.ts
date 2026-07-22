@@ -7,7 +7,7 @@ const apiSource = readFileSync(
   'utf8'
 )
 const registrySource = readFileSync('src/api/registry.ts', 'utf8')
-const routesSource = readFileSync('src/routes/index.tsx', 'utf8')
+const routesSource = readFileSync('src/routes/sidebar-routes.tsx', 'utf8')
 const queueColumnsSource = readFileSync(
   'src/modules/app-evaluation/components/annotation-queue-columns.tsx',
   'utf8'

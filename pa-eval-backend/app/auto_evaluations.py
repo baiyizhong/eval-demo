@@ -79,8 +79,8 @@ class AutoEvaluationBadcaseConfig(BaseModel):
 
 
 class CreateAutoEvaluationPayload(BaseModel):
-    name: str = Field(min_length=1, max_length=120)
-    description: str = Field(default="", max_length=1000)
+    name: str = Field(min_length=1, max_length=40)
+    description: str = Field(default="", max_length=200)
     score_name: str = Field(alias="scoreName", default="dify_score", min_length=1)
     score_mapping: dict[str, Any] = Field(default_factory=dict, alias="scoreMapping")
     evaluator_id: str = Field(alias="evaluatorId", min_length=1)

@@ -38,10 +38,19 @@ const jsonObjectSchema = z
     message: '必须是合法 JSON 对象',
   })
 
+const DATASET_NAME_MAX_LENGTH = 30
+const DATASET_DESCRIPTION_MAX_LENGTH = 200
+
 const datasetFormBaseSchema = z.object({
-  name: z.string().trim().min(1, '请输入数据集名称'),
+  name: z
+    .string()
+    .trim()
+    .min(1, '请输入数据集名称')
+    .max(DATASET_NAME_MAX_LENGTH, '数据集名称不能超过30个字'),
   type: z.enum(['evaluation', 'badcase', 'golden', 'anomaly']),
-  description: z.string(),
+  description: z
+    .string()
+    .max(DATASET_DESCRIPTION_MAX_LENGTH, '数据集描述不能超过200个字'),
   metadata: jsonObjectSchema,
 })
 
@@ -79,6 +88,8 @@ export function DatasetFormDrawer({
             name: createAvailableResourceNameSchema({
               requiredMessage: '请输入数据集名称',
               duplicateMessage: '数据集名称已存在，请修改名称',
+              maxLength: DATASET_NAME_MAX_LENGTH,
+              maxLengthMessage: '数据集名称不能超过30个字',
               checkAvailability: checkNameAvailability,
             }),
           }),
@@ -130,6 +141,7 @@ export function DatasetFormDrawer({
                   <FormControl>
                     <Input
                       placeholder='输入数据集名称'
+                      maxLength={DATASET_NAME_MAX_LENGTH}
                       {...field}
                       aria-invalid={Boolean(form.formState.errors.name)}
                       onChange={(event) => {
@@ -179,7 +191,11 @@ export function DatasetFormDrawer({
                 <FormItem>
                   <FormLabel>描述</FormLabel>
                   <FormControl>
-                    <Textarea placeholder='输入数据集描述' {...field} />
+                    <Textarea
+                      placeholder='输入数据集描述'
+                      maxLength={DATASET_DESCRIPTION_MAX_LENGTH}
+                      {...field}
+                    />
                   </FormControl>
                   <FormMessage />
                 </FormItem>

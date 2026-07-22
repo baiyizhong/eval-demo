@@ -2,6 +2,7 @@
 
 import * as React from "react";
 
+import { copyTextToClipboard } from "@/lib/clipboard";
 import { cn } from "./utils";
 
 function Table({ className, ...props }: React.ComponentProps<"table">) {
@@ -131,9 +132,13 @@ function TableCellWithCopyButton({
         onClick={async (event) => {
           event.preventDefault();
           event.stopPropagation();
-          await navigator.clipboard.writeText(text);
-          setIsCopied(true);
-          window.setTimeout(() => setIsCopied(false), 1500);
+          try {
+            await copyTextToClipboard(text);
+            setIsCopied(true);
+            window.setTimeout(() => setIsCopied(false), 1500);
+          } catch {
+            setIsCopied(false);
+          }
         }}
       >
         {isCopied ? "✓" : "⧉"}

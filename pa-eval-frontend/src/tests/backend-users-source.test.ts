@@ -2,7 +2,7 @@ import assert from 'node:assert/strict'
 import { readFileSync } from 'node:fs'
 import { test } from 'node:test'
 
-const routesSource = readFileSync('src/routes/index.tsx', 'utf8')
+const topbarRoutesSource = readFileSync('src/routes/topbar-routes.tsx', 'utf8')
 const systemPagesSource = readFileSync(
   'src/modules/system-pages/index.tsx',
   'utf8'
@@ -13,9 +13,9 @@ const systemApiSource = readFileSync(
 )
 
 test('backend management uses sidebar subpages for overview and users', () => {
-  assert.match(routesSource, /path:\s*'backend'[\s\S]*children:/)
-  assert.match(routesSource, /Navigate to='overview'/)
-  assert.match(routesSource, /path:\s*'users'/)
+  assert.match(topbarRoutesSource, /path:\s*'backend'[\s\S]*children:/)
+  assert.match(topbarRoutesSource, /Navigate to='overview'/)
+  assert.match(topbarRoutesSource, /path:\s*'users'/)
   assert.match(systemPagesSource, /SidebarNav/)
   assert.match(systemPagesSource, /后台分组/)
 })

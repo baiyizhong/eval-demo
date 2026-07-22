@@ -25,10 +25,26 @@ import {
 import { Input } from '@/components/ui/input'
 import { Textarea } from '@/components/ui/textarea'
 
+const ORGANIZATION_NAME_MAX_LENGTH = 40
+const ORGANIZATION_SUBSYSTEM_MAX_LENGTH = 40
+const ORGANIZATION_DESCRIPTION_MAX_LENGTH = 200
+
 const organizationInfoFormSchema = z.object({
-  name: z.string().trim().min(2, '请输入至少 2 个字符的组织名称'),
-  subsystem: z.string().trim().optional(),
-  description: z.string().trim().optional(),
+  name: z
+    .string()
+    .trim()
+    .min(2, '请输入至少 2 个字符的组织名称')
+    .max(ORGANIZATION_NAME_MAX_LENGTH, '组织名称不能超过40个字'),
+  subsystem: z
+    .string()
+    .trim()
+    .max(ORGANIZATION_SUBSYSTEM_MAX_LENGTH, '所属子系统不能超过40个字')
+    .optional(),
+  description: z
+    .string()
+    .trim()
+    .max(ORGANIZATION_DESCRIPTION_MAX_LENGTH, '组织描述不能超过200个字')
+    .optional(),
 })
 
 type OrganizationInfoFormValues = z.infer<typeof organizationInfoFormSchema>
@@ -109,6 +125,7 @@ export function OrganizationInfoForm({
                 <Input
                   placeholder='输入组织名称'
                   disabled={!canEditOrganization}
+                  maxLength={ORGANIZATION_NAME_MAX_LENGTH}
                   {...field}
                 />
               </FormControl>
@@ -126,6 +143,7 @@ export function OrganizationInfoForm({
                 <Input
                   placeholder='输入所属子系统'
                   disabled={!canEditOrganization}
+                  maxLength={ORGANIZATION_SUBSYSTEM_MAX_LENGTH}
                   {...field}
                 />
               </FormControl>
@@ -144,6 +162,7 @@ export function OrganizationInfoForm({
                   placeholder='输入组织描述'
                   className='min-h-28 resize-none'
                   disabled={!canEditOrganization}
+                  maxLength={ORGANIZATION_DESCRIPTION_MAX_LENGTH}
                   {...field}
                 />
               </FormControl>

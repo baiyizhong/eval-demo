@@ -66,6 +66,36 @@ test('resource name schema trims input and reports duplicate names', async () =>
   assert.deepEqual(checkedNames, ['重复名称', '可用名称'])
 })
 
+test('resource name schema validates the configured maximum length', async () => {
+  const schema = createAvailableResourceNameSchema({
+    requiredMessage: '请输入名称',
+    duplicateMessage: '名称已存在，请修改名称',
+    maxLength: 3,
+    maxLengthMessage: '名称不能超过3个字',
+    checkAvailability: async () => true,
+  })
+
+  const result = await schema.safeParseAsync('四个字符')
+
+  assert.equal(result.success, false)
+  assert.equal(result.error?.issues[0]?.message, '名称不能超过3个字')
+})
+
+test('dataset create and edit drawers limit the name and description fields', () => {
+  const source = readFileSync(
+    'src/modules/app-evaluation/components/dataset-form-drawer.tsx',
+    'utf8'
+  )
+
+  assert.match(source, /DATASET_NAME_MAX_LENGTH = 30/)
+  assert.match(source, /DATASET_DESCRIPTION_MAX_LENGTH = 200/)
+  assert.match(source, /max\(DATASET_NAME_MAX_LENGTH/)
+  assert.match(source, /max\(DATASET_DESCRIPTION_MAX_LENGTH/)
+  assert.match(source, /maxLength=\{DATASET_NAME_MAX_LENGTH\}/)
+  assert.match(source, /maxLength=\{DATASET_DESCRIPTION_MAX_LENGTH\}/)
+  assert.doesNotMatch(source, /dataset \? undefined : DATASET_.*_MAX_LENGTH/)
+})
+
 test('all dataset and annotation create forms validate names before submit', () => {
   const sources = [
     'src/modules/app-evaluation/components/dataset-form-drawer.tsx',

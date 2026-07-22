@@ -3,7 +3,7 @@ import { readFileSync } from 'node:fs'
 import { test } from 'node:test'
 
 test('organization members route is visible with organization view permission', () => {
-  const source = readFileSync('src/routes/index.tsx', 'utf8')
+  const source = readFileSync('src/routes/topbar-routes.tsx', 'utf8')
   const membersRoute = source.match(
     /path: 'members'[\s\S]*?<SettingsOrganizationMembers \/>[\s\S]*?<\/RouteGuard>/
   )?.[0]

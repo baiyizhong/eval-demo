@@ -31,10 +31,10 @@ export function ChartMetricCard({
   ...props
 }: ChartMetricCardProps) {
   return (
-    <Card className={className} {...props}>
+    <Card className={cn('min-h-[120px] gap-2 py-4', className)} {...props}>
       <CardHeader
         className={cn(
-          'flex flex-row items-center justify-between gap-2 pb-2',
+          'flex flex-row items-center justify-between gap-2 pb-0',
           headerClassName
         )}
       >
@@ -44,7 +44,14 @@ export function ChartMetricCard({
         {icon}
       </CardHeader>
       <CardContent className={contentClassName}>
-        <div className={cn('text-2xl font-bold', valueClassName)}>{value}</div>
+        <div
+          className={cn(
+            'mb-1 text-2xl font-bold tabular-nums',
+            valueClassName
+          )}
+        >
+          {value}
+        </div>
         {description ? (
           <p
             className={cn(

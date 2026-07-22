@@ -18,7 +18,7 @@ export function RootLayout() {
         <Outlet />
       </Suspense>
       <ConfirmProvider />
-      <Toaster duration={4000} />
+      <Toaster duration={1800} visibleToasts={1} />
     </>
   )
 }

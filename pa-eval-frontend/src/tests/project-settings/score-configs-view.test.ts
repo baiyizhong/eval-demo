@@ -88,6 +88,11 @@ test('score configs range cell allows wrapping long content', () => {
   assert.match(source, /max-w-52 truncate/)
 })
 
+test('score configs table uses intrinsic width for horizontal scrolling', () => {
+  assert.match(source, /minTableWidth='max-content'/)
+  assert.doesNotMatch(source, /minTableWidth=\{\d+\}/)
+})
+
 test('score config dialog keeps footer visible and scrolls long category forms', () => {
   assert.match(
     source,

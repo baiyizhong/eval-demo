@@ -20,7 +20,7 @@ class ModelConfigPayload(BaseModel):
 
 
 class OutputVariableMappingPayload(BaseModel):
-    variable_name: str = Field(alias="variableName", min_length=1)
+    variable_name: str = Field(alias="variableName", min_length=1, max_length=30)
     score_config_name: str = Field(alias="scoreConfigName", min_length=1)
     score_config_id: str | None = Field(default=None, alias="scoreConfigId")
 
@@ -37,11 +37,11 @@ class OutputVariableMappingPayload(BaseModel):
 
 
 class CreateEvaluatorPayload(BaseModel):
-    name: str = Field(min_length=1, max_length=120)
+    name: str = Field(min_length=1, max_length=30)
     type: EvaluatorType
     provider: EvaluatorProvider
     project_id: str = Field(alias="projectId", min_length=1)
-    description: str = Field(default="", max_length=1000)
+    description: str = Field(default="", max_length=200)
     variables: list[str] = Field(default_factory=list)
     input_variables: list[str] = Field(default_factory=list, alias="inputVariables")
     output_variables: list[str] = Field(default_factory=list, alias="outputVariables")
@@ -81,6 +81,8 @@ class CreateEvaluatorPayload(BaseModel):
             self.input_variables = self.variables
         if not self.variables:
             self.variables = self.input_variables
+        if _serialized_variables_length(self.input_variables) > 30:
+            raise ValueError("输入变量不能超过30个字")
         if not self.output_variables:
             self.output_variables = [
                 mapping.variable_name
@@ -116,6 +118,10 @@ class CreateEvaluatorPayload(BaseModel):
                 raise ValueError("OpenJudge 评估器必须填写 SDK 标识")
 
         return self
+
+
+def _serialized_variables_length(variables: list[str]) -> int:
+    return sum(len(variable) for variable in variables) + max(len(variables) - 1, 0)
 
     def to_storage_payload(self) -> dict[str, Any]:
         base = {

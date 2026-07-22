@@ -456,13 +456,19 @@ export function CodeMirrorEditor({
         ...(minHeight
           ? [
               EditorView.theme({
-                ".cm-gutter,.cm-content": {
+                "&": {
                   minHeight:
                     typeof minHeight === "number"
                       ? `${minHeight}px`
                       : minHeight,
                 },
-                ".cm-scroller": { overflow: "auto" },
+                ".cm-scroller": {
+                  minHeight:
+                    typeof minHeight === "number"
+                      ? `${minHeight}px`
+                      : minHeight,
+                  overflow: "auto",
+                },
               }),
             ]
           : []),

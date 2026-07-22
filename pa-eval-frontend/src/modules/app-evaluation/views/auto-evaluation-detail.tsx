@@ -1,12 +1,13 @@
 import { useMemo } from 'react'
 import { useQuery, useQueryClient } from '@tanstack/react-query'
-import { RefreshCw, RotateCcw, Trash2 } from 'lucide-react'
+import { RefreshCw, Trash2 } from 'lucide-react'
 import { useNavigate, useParams } from 'react-router'
 import { toast } from 'sonner'
 import { confirm } from '@/lib/confirm'
 import { useAPI } from '@/hooks/use-api'
 import { usePermission } from '@/hooks/use-permission'
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card'
+import { ChartMetricCard } from '@/components/common/charts'
 import { Loading } from '@/components/common/loading'
 import { Page } from '@/components/common/page'
 import { PageAction } from '@/components/common/page-action'
@@ -165,7 +166,7 @@ export function ProjectAutoEvaluationDetail() {
                     {
                       id: 'rerun',
                       label: '重新运行',
-                      icon: RotateCcw,
+                      icon: RefreshCw,
                       iconPosition: 'start' as const,
                       variant: 'outline' as const,
                       size: 'sm' as const,
@@ -192,13 +193,16 @@ export function ProjectAutoEvaluationDetail() {
         ) : task ? (
           <>
             <section className='grid gap-3 md:grid-cols-4'>
-              <MetricCard label='样本数' value={task.dataSource.sampleCount} />
-              <MetricCard
-                label='已完成'
+              <ChartMetricCard
+                title='样本数'
+                value={task.dataSource.sampleCount}
+              />
+              <ChartMetricCard
+                title='已完成'
                 value={task.executionStats.completed}
               />
-              <MetricCard label='失败' value={task.executionStats.failed} />
-              <MetricCard label='Badcase' value={task.badcaseCount} />
+              <ChartMetricCard title='失败' value={task.executionStats.failed} />
+              <ChartMetricCard title='Badcase' value={task.badcaseCount} />
             </section>
             <section className='grid gap-4 xl:grid-cols-[1fr_420px]'>
               <Card>
@@ -244,17 +248,6 @@ export function ProjectAutoEvaluationDetail() {
         )}
       </div>
     </Page>
-  )
-}
-
-function MetricCard({ label, value }: { label: string; value: number }) {
-  return (
-    <Card>
-      <CardHeader>
-        <CardTitle className='text-muted-foreground text-sm'>{label}</CardTitle>
-      </CardHeader>
-      <CardContent className='text-2xl font-semibold'>{value}</CardContent>
-    </Card>
   )
 }
 

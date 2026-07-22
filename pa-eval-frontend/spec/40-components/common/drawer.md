@@ -49,7 +49,7 @@ type DrawerProps = React.ComponentProps<typeof Sheet> & {
   title: React.ReactNode;
   children?: React.ReactNode;
   mode?: DrawerMode;
-  width?: number | string;
+  width?: string;
   resizable?: boolean;
   showOverlay?: boolean;
   actions?: React.ReactNode | null;
@@ -72,7 +72,7 @@ type DrawerProps = React.ComponentProps<typeof Sheet> & {
 - `title`：抽屉标题，必传。
 - `children`：抽屉主体内容。
 - `mode`：抽屉宽度模式，默认 `default`。
-- `width`：自定义抽屉宽度，支持数字或 CSS 宽度字符串。
+- `width`：自定义抽屉宽度，使用 CSS 宽度字符串；优先使用带 `rem` 上下限的 `clamp()`，不要传入固定像素宽度。
 - `resizable`：是否允许从抽屉左侧边缘拖拽调整宽度；`enhanced` 模式默认开启，其他模式默认关闭，传 `false` 可强制关闭。
 - `showOverlay`：是否显示遮罩层；默认模式默认显示，`enhanced` 模式默认关闭，传入布尔值可强制覆盖；关闭遮罩层时默认同步使用非 modal 模式，让抽屉下方内容可直接点击。
 - `actions`：自定义标题右侧操作区；传 `null` 可隐藏默认按钮。
@@ -88,18 +88,23 @@ type DrawerProps = React.ComponentProps<typeof Sheet> & {
 
 ## 宽度规则
 
-- `mode="default"`：默认宽度 `450px`。
-- `mode="enhanced"`：默认宽度 `70vw`。
-- 传入 `width` 时优先使用 `width`，数字会转换为 `px`。
-- 抽屉最大宽度限制为 `100vw`，避免移动端溢出。
-- `resizable` 开启时，用户可拖拽抽屉左侧边缘调整宽度；开始拖拽后宽度会切换为像素值，最小宽度为 `360px`，小屏下不超过当前视口宽度。
+- `mode="default"`：默认宽度 `clamp(30rem, 32vw, 36rem)`，用于常规新建、编辑表单。
+- `mode="enhanced"`：默认宽度 `clamp(44rem, 50vw, 64rem)`，用于复杂表单和多列详情。
+- 传入 `width` 时优先使用 `width`。高信息密度详情可使用 `clamp(64rem, 70vw, 96rem)`，不应使用固定 `px` 或无边界的单一 `vw`。
+- 抽屉最大宽度限制为 `100vw`，避免超出当前浏览器视口。
+- `resizable` 开启时，用户可拖拽抽屉左侧边缘调整宽度；开始拖拽后宽度会切换为运行时像素值，最小宽度为 `360px`，且不超过当前视口宽度。
 - 拖拽后的宽度会在关闭动画期间保持，避免关闭时抽屉跳回默认宽度造成抖动。
 - `showOverlay={false}` 时不会渲染遮罩层，并默认禁用 Radix Dialog 的 modal 行为，抽屉下方页面内容可直接点击；`enhanced` 模式默认采用该行为。
-- 抽屉打开且未拖拽调整宽度时，双击抽屉内容外会关闭抽屉；`showOverlay={false}` 时可双击底层页面区域关闭，`showOverlay={true}` 时可双击遮罩层关闭，双击抽屉内容内部不会关闭。
-- `resizable` 开启时，点击遮罩层不会关闭抽屉；需要通过取消按钮、业务操作或外部受控状态关闭。
+- `showOverlay={false}` 且抽屉打开、未拖拽调整宽度时，点击抽屉内容外的页面空白区域会关闭抽屉；点击抽屉内容内部、按钮、链接、表格行等可交互元素不会关闭，便于直接切换为另一条数据的抽屉内容。有遮罩抽屉保持 Radix/Sheet 默认外部交互。
+- `showOverlay={true}` 时点击遮罩层默认关闭抽屉；仅在正在拖拽调整宽度时阻止关闭。调用方仍可通过 `contentProps.onInteractOutside` 主动阻止默认关闭行为。
 
 ```tsx
-<Drawer open={open} onOpenChange={setOpen} title="编辑配置" width={520}>
+<Drawer
+  open={open}
+  onOpenChange={setOpen}
+  title="编辑配置"
+  width="clamp(36rem, 40vw, 48rem)"
+>
   {/* content */}
 </Drawer>
 
@@ -129,7 +134,7 @@ type DrawerProps = React.ComponentProps<typeof Sheet> & {
 
 ## 内容滚动
 
-`Drawer` 的标题区固定在顶部，主体内容区独立滚动。调用方传入的 `children` 会渲染在内部滚动容器中；当内容高度超过视口时，只滚动主体内容，不滚动 `SheetHeader`。
+`Drawer` 的标题区固定在顶部，主体内容区独立滚动。调用方传入的 `children` 会渲染在内部滚动容器中；当内容高度超过视口时，只滚动主体内容，不滚动 `SheetHeader`。抽屉内部的滚轮、触控板和触屏滑动不会串联滚动到底层页面；如果内部没有可继续滚动的容器，组件会阻止该次滚动传递。
 
 ```tsx
 <Drawer

@@ -145,7 +145,6 @@ export function ProjectEvaluationReports() {
               />
             }
             emptyText='当前项目下暂无匹配的评测报告'
-            minTableWidth={1200}
           />
         </section>
       </div>

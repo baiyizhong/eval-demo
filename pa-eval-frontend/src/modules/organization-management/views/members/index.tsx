@@ -434,7 +434,6 @@ export function SettingsOrganizationMembers() {
                   },
                 }}
                 enableRowSelection={false}
-                minTableWidth={920}
                 emptyText='当前组织暂无成员。'
                 errorText='成员列表加载失败。'
               />

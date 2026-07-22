@@ -6,7 +6,7 @@ import { settingsNavigationItems } from './nav'
 
 export function Settings() {
   return (
-    <Main>
+    <Main fixed>
       <div className='flex flex-col gap-0.5'>
         <h1 className='text-2xl font-bold tracking-tight md:text-3xl'>
           组织管理
@@ -22,7 +22,7 @@ export function Settings() {
             selectPlaceholder='组织分组'
           />
         </aside>
-        <div className='flex w-full overflow-y-hidden p-1'>
+        <div className='flex w-full min-w-0 overflow-y-hidden p-1'>
           <Outlet />
         </div>
       </div>

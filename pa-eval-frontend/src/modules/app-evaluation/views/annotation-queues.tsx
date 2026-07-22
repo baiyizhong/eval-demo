@@ -187,7 +187,6 @@ export function ProjectAnnotationQueues() {
               />
             }
             emptyText='当前项目下暂无匹配的人工标注任务'
-            minTableWidth={1280}
           />
         </section>
       </div>

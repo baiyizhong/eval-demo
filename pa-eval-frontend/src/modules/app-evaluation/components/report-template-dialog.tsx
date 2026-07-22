@@ -142,15 +142,15 @@ export function ReportTemplateDialog({
 
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
-      <DialogContent className='max-h-[86svh] overflow-hidden sm:max-w-5xl'>
-        <DialogHeader>
+      <DialogContent className='flex max-h-[86svh] flex-col overflow-hidden sm:max-w-5xl'>
+        <DialogHeader className='shrink-0'>
           <DialogTitle>报告模板</DialogTitle>
           <DialogDescription>
             模板会在自动评测创建时保存为快照，历史报告不会随模板修改变化。
           </DialogDescription>
         </DialogHeader>
-        <div className='grid min-h-0 gap-4 overflow-hidden md:grid-cols-[260px_1fr]'>
-          <div className='flex min-h-0 flex-col gap-2 overflow-auto border-r pr-3'>
+        <div className='grid min-h-0 flex-1 gap-4 overflow-hidden md:grid-cols-[260px_minmax(0,1fr)]'>
+          <div className='flex min-h-0 flex-col gap-2 overflow-y-auto border-r pr-3'>
             <Button
               type='button'
               variant={selectedId === 'new' ? 'default' : 'outline'}
@@ -185,7 +185,7 @@ export function ReportTemplateDialog({
               </Button>
             ))}
           </div>
-          <div className='min-h-0 overflow-auto pr-1'>
+          <div className='min-h-0 min-w-0 overflow-y-auto pr-1'>
             <div className='grid gap-4 md:grid-cols-2'>
               <Field label='模板名称'>
                 <Input

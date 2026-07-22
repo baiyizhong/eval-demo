@@ -115,7 +115,6 @@ export function EvaluationReportBadcaseTable({
           />
         }
         emptyText='暂无 Badcase'
-        minTableWidth={1880}
       />
       <TraceDetailDrawer
         projectId={projectId}

@@ -12,7 +12,7 @@ export default [
           name: db.users[0].name,
           email: db.users[0].email,
         },
-        superAdmin: false,
+        superAdmin: true,
         permissions: [],
         orgs: db.organizations.map((org) => ({
           id: org.id,
