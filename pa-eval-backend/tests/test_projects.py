@@ -242,6 +242,47 @@ def clear_overrides() -> None:
     app.dependency_overrides.clear()
 
 
+def test_project_payload_uses_native_retention_days_and_ignores_metadata() -> None:
+    payload = LangfuseDatabaseReader._to_project_payload(
+        {
+            "id": "project-1",
+            "name": "评测项目",
+            "org_id": "org-1",
+            "organization_name": "PA 平台主组织",
+            "retention_days": 7,
+            "metadata": {
+                "paEval": {
+                    "description": "客服评测",
+                    "retentionDays": 30,
+                }
+            },
+            "deleted_at": None,
+            "created_at": "2026-07-02T08:00:00.000Z",
+            "updated_at": "2026-07-02T09:00:00.000Z",
+        }
+    )
+
+    assert payload["retentionDays"] == 7
+
+
+def test_project_payload_uses_default_retention_days_for_null_native_value() -> None:
+    payload = LangfuseDatabaseReader._to_project_payload(
+        {
+            "id": "project-1",
+            "name": "评测项目",
+            "org_id": "org-1",
+            "organization_name": "PA 平台主组织",
+            "retention_days": None,
+            "metadata": {"paEval": {"retentionDays": 30}},
+            "deleted_at": None,
+            "created_at": "2026-07-02T08:00:00.000Z",
+            "updated_at": "2026-07-02T09:00:00.000Z",
+        }
+    )
+
+    assert payload["retentionDays"] == 14
+
+
 class RecordingLangfuseReader(LangfuseDatabaseReader):
     def __init__(
         self,
@@ -261,6 +302,27 @@ class RecordingLangfuseReader(LangfuseDatabaseReader):
         return self.rows
 
 
+class ProjectQueryRecordingReader(LangfuseDatabaseReader):
+    def __init__(self) -> None:
+        self.queries: list[str] = []
+
+    async def _fetch_all(self, sql: str, params: dict | None = None) -> list[dict]:
+        self.queries.append(sql)
+        return [
+            {
+                "id": "project-1",
+                "name": "评测项目",
+                "org_id": "org-1",
+                "organization_name": "PA 平台主组织",
+                "retention_days": 7,
+                "metadata": {},
+                "deleted_at": None,
+                "created_at": "2026-07-02T08:00:00.000Z",
+                "updated_at": "2026-07-02T09:00:00.000Z",
+            }
+        ]
+
+
 class FakeAsyncConnection:
     def __init__(self, cursor: "CreateMissingProjectMemberCursor") -> None:
         self._cursor = cursor
@@ -273,6 +335,92 @@ class FakeAsyncConnection:
 
     def cursor(self) -> "CreateMissingProjectMemberCursor":
         return self._cursor
+
+
+class ProjectPersistenceConnection:
+    def __init__(self, cursor: "ProjectPersistenceCursor") -> None:
+        self._cursor = cursor
+
+    async def __aenter__(self) -> "ProjectPersistenceConnection":
+        return self
+
+    async def __aexit__(self, *args) -> None:
+        return None
+
+    def cursor(self) -> "ProjectPersistenceCursor":
+        return self._cursor
+
+
+class ProjectPersistenceCursor:
+    def __init__(self, retention_days: int | None = 9) -> None:
+        self.queries: list[tuple[str, dict]] = []
+        self.retention_days = retention_days
+        self._next_fetchone: dict | None = None
+
+    async def __aenter__(self) -> "ProjectPersistenceCursor":
+        return self
+
+    async def __aexit__(self, *args) -> None:
+        return None
+
+    async def execute(self, sql: str, params: dict | None = None) -> None:
+        params = params or {}
+        self.queries.append((sql, params))
+        if "FROM organizations o" in sql:
+            self._next_fetchone = {
+                "id": "org-1",
+                "name": "PA 平台主组织",
+                "role": "OWNER",
+            }
+            return
+        if "FROM projects p" in sql and "p.id = %(project_id)s" in sql:
+            self._next_fetchone = self._project_row(
+                retention_days=self.retention_days,
+                metadata={
+                    "paEval": {
+                        "description": "旧描述",
+                        "retentionDays": 30,
+                    }
+                },
+            )
+            return
+        if "INSERT INTO projects" in sql:
+            self._next_fetchone = self._project_row(
+                retention_days=params.get("retention_days"),
+                metadata=params["metadata"].obj,
+                name=params["name"],
+            )
+            return
+        if "UPDATE projects" in sql:
+            self._next_fetchone = self._project_row(
+                retention_days=params.get("retention_days", self.retention_days),
+                metadata=params["metadata"].obj,
+                name=params.get("name", "评测项目"),
+            )
+            return
+        self._next_fetchone = None
+
+    async def fetchone(self) -> dict | None:
+        return self._next_fetchone
+
+    @staticmethod
+    def _project_row(
+        *,
+        retention_days: int | None,
+        metadata: dict,
+        name: str = "评测项目",
+    ) -> dict:
+        return {
+            "id": "project-1",
+            "name": name,
+            "org_id": "org-1",
+            "organization_name": "PA 平台主组织",
+            "retention_days": retention_days,
+            "created_at": "2026-07-02T08:00:00.000Z",
+            "updated_at": "2026-07-02T09:00:00.000Z",
+            "deleted_at": None,
+            "metadata": metadata,
+        }
 
 
 class CreateMissingProjectMemberCursor:
@@ -370,6 +518,112 @@ class CreateMissingProjectMemberCursor:
         if self._next_fetchone is None:
             return []
         return [self._next_fetchone]
+
+
+@pytest.mark.anyio
+@pytest.mark.parametrize(
+    ("payload", "expected_retention_days"),
+    [
+        ({"name": "评测项目", "description": "新描述", "retentionDays": 7}, 7),
+        ({"name": "评测项目", "description": "新描述"}, 14),
+    ],
+)
+async def test_create_project_writes_native_retention_days(
+    monkeypatch,
+    payload: dict,
+    expected_retention_days: int,
+) -> None:
+    cursor = ProjectPersistenceCursor()
+
+    async def fake_connect(*args, **kwargs):
+        return ProjectPersistenceConnection(cursor)
+
+    monkeypatch.setattr(langfuse_db, "connect_postgres", fake_connect)
+    reader = LangfuseDatabaseReader(
+        Settings(langfuse_database_url="postgresql://example")
+    )
+
+    await reader.create_project_for_user(
+        organization_id="org-1",
+        user_id="user-1",
+        user_email="admin@example.com",
+        payload=payload,
+    )
+
+    project_insert = next(
+        query for query in cursor.queries if "INSERT INTO projects" in query[0]
+    )
+    assert project_insert[1]["retention_days"] == expected_retention_days
+    assert "retentionDays" not in project_insert[1]["metadata"].obj["paEval"]
+
+
+@pytest.mark.anyio
+@pytest.mark.parametrize(
+    ("payload", "expected_retention_days"),
+    [
+        ({"name": "更新项目", "description": "新描述", "retentionDays": 21}, 21),
+        ({"name": "更新项目", "description": "新描述"}, 9),
+    ],
+)
+async def test_update_project_writes_native_retention_days(
+    monkeypatch,
+    payload: dict,
+    expected_retention_days: int,
+) -> None:
+    cursor = ProjectPersistenceCursor(retention_days=9)
+
+    async def fake_connect(*args, **kwargs):
+        return ProjectPersistenceConnection(cursor)
+
+    monkeypatch.setattr(langfuse_db, "connect_postgres", fake_connect)
+    reader = LangfuseDatabaseReader(
+        Settings(langfuse_database_url="postgresql://example")
+    )
+
+    await reader.update_project_for_user(
+        project_id="project-1",
+        user_id="user-1",
+        user_email="admin@example.com",
+        payload=payload,
+    )
+
+    project_update = next(
+        query for query in cursor.queries if "UPDATE projects" in query[0]
+    )
+    assert project_update[1]["retention_days"] == expected_retention_days
+    assert project_update[1]["metadata"].obj["paEval"]["retentionDays"] == 30
+
+
+@pytest.mark.anyio
+async def test_project_queries_select_native_retention_days(monkeypatch) -> None:
+    reader = ProjectQueryRecordingReader()
+
+    await reader.list_projects()
+    await reader.list_projects_for_user("user-1")
+    await reader.get_project_for_user("project-1", "user-1")
+
+    assert len(reader.queries) == 3
+    assert all("p.retention_days" in sql for sql in reader.queries)
+
+    cursor = ProjectPersistenceCursor(retention_days=9)
+
+    async def fake_connect(*args, **kwargs):
+        return ProjectPersistenceConnection(cursor)
+
+    monkeypatch.setattr(langfuse_db, "connect_postgres", fake_connect)
+    persistence_reader = LangfuseDatabaseReader(
+        Settings(langfuse_database_url="postgresql://example")
+    )
+    await persistence_reader.archive_project_for_user(
+        project_id="project-1",
+        user_id="user-1",
+        user_email="admin@example.com",
+    )
+
+    archive_update = next(
+        query for query in cursor.queries if "UPDATE projects" in query[0]
+    )
+    assert "retention_days" in archive_update[0]
 
 
 def test_lists_projects_with_pa_pagination_and_keyword_filter() -> None:

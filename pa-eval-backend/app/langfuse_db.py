@@ -261,6 +261,7 @@ class LangfuseDatabaseReader:
                 p.name,
                 p.org_id,
                 o.name AS organization_name,
+                p.retention_days,
                 p.created_at,
                 p.updated_at,
                 p.deleted_at,
@@ -280,6 +281,7 @@ class LangfuseDatabaseReader:
                 p.name,
                 p.org_id,
                 o.name AS organization_name,
+                p.retention_days,
                 p.created_at,
                 p.updated_at,
                 p.deleted_at,
@@ -412,6 +414,7 @@ class LangfuseDatabaseReader:
                 p.name,
                 p.org_id,
                 o.name AS organization_name,
+                p.retention_days,
                 p.created_at,
                 p.updated_at,
                 p.deleted_at,
@@ -458,21 +461,35 @@ class LangfuseDatabaseReader:
                     None,
                     {
                         "description": payload.get("description") or "",
-                        "retentionDays": payload.get("retentionDays"),
                         "createdBy": user_email,
                         "updatedBy": user_email,
                     },
                 )
                 await cursor.execute(
                     """
-                    INSERT INTO projects (id, name, org_id, metadata)
-                    VALUES (%(id)s, %(name)s, %(org_id)s, %(metadata)s)
-                    RETURNING id, name, org_id, created_at, updated_at, deleted_at, metadata
+                    INSERT INTO projects (id, name, org_id, retention_days, metadata)
+                    VALUES (
+                        %(id)s,
+                        %(name)s,
+                        %(org_id)s,
+                        %(retention_days)s,
+                        %(metadata)s
+                    )
+                    RETURNING
+                        id,
+                        name,
+                        org_id,
+                        retention_days,
+                        created_at,
+                        updated_at,
+                        deleted_at,
+                        metadata
                     """,
                     {
                         "id": project_id,
                         "name": payload["name"],
                         "org_id": organization_id,
+                        "retention_days": payload.get("retentionDays", 14),
                         "metadata": Jsonb(metadata),
                     },
                 )
@@ -542,7 +559,6 @@ class LangfuseDatabaseReader:
                     current.get("metadata"),
                     {
                         "description": payload.get("description") or "",
-                        "retentionDays": payload.get("retentionDays"),
                         "updatedBy": user_email,
                     },
                 )
@@ -551,14 +567,27 @@ class LangfuseDatabaseReader:
                     UPDATE projects
                     SET
                         name = %(name)s,
+                        retention_days = %(retention_days)s,
                         metadata = %(metadata)s,
                         updated_at = NOW()
                     WHERE id = %(project_id)s
-                    RETURNING id, name, org_id, created_at, updated_at, deleted_at, metadata
+                    RETURNING
+                        id,
+                        name,
+                        org_id,
+                        retention_days,
+                        created_at,
+                        updated_at,
+                        deleted_at,
+                        metadata
                     """,
                     {
                         "project_id": project_id,
                         "name": payload["name"],
+                        "retention_days": payload.get(
+                            "retentionDays",
+                            current.get("retention_days"),
+                        ),
                         "metadata": Jsonb(metadata),
                     },
                 )
@@ -7008,6 +7037,7 @@ class LangfuseDatabaseReader:
                 p.name,
                 p.org_id,
                 o.name AS organization_name,
+                p.retention_days,
                 p.created_at,
                 p.updated_at,
                 p.deleted_at,
@@ -7061,7 +7091,15 @@ class LangfuseDatabaseReader:
                         metadata = %(metadata)s,
                         updated_at = NOW()
                     WHERE id = %(project_id)s
-                    RETURNING id, name, org_id, created_at, updated_at, deleted_at, metadata
+                    RETURNING
+                        id,
+                        name,
+                        org_id,
+                        retention_days,
+                        created_at,
+                        updated_at,
+                        deleted_at,
+                        metadata
                     """,
                     {
                         "project_id": project_id,
@@ -7927,9 +7965,7 @@ class LangfuseDatabaseReader:
         metadata = row.get("metadata") or {}
         pa_eval = metadata.get("paEval") if isinstance(metadata, dict) else None
         description = pa_eval.get("description") if isinstance(pa_eval, dict) else None
-        retention_days = (
-            pa_eval.get("retentionDays") if isinstance(pa_eval, dict) else None
-        )
+        retention_days = row.get("retention_days")
         organization_name = row["organization_name"]
 
         return {
@@ -7938,7 +7974,7 @@ class LangfuseDatabaseReader:
             "organizationId": row["org_id"],
             "organizationName": organization_name,
             "description": description or f"所属组织：{organization_name}",
-            "retentionDays": retention_days or 14,
+            "retentionDays": retention_days if retention_days is not None else 14,
             "status": "archived" if row.get("deleted_at") else "active",
             "createdAt": _format_datetime(row["created_at"]),
             "updatedAt": _format_datetime(row["updated_at"]),
