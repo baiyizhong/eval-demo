@@ -4,19 +4,52 @@ from fastapi import APIRouter, Depends, Query
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 from app.auth_context import CurrentUserContext, get_current_user_context
-from app.errors import UnsupportedOperationError
+from app.errors import BusinessError
+from app.evaluation_mapping import normalize_sample_mapping
 from app.langfuse_db import LangfuseDatabaseReader, get_langfuse_db_reader
+from app.openjudge_defaults import (
+    default_openjudge_evaluator_payload,
+    default_openjudge_evaluator_payloads,
+    is_default_openjudge_evaluator_id,
+)
 from app.response import success
 
 router = APIRouter(prefix="/api/evaluators", tags=["evaluators"])
 
 EvaluatorType = Literal["LLM_AS_JUDGE", "CODE", "WORKFLOW", "SDK"]
 EvaluatorProvider = Literal["LANGFUSE", "DIFY", "HIAGENT", "N8N", "OPENJUDGE"]
+EvaluationScenario = Literal[
+    "SINGLE_TURN",
+    "MULTI_TURN",
+    "TOOL_CALLING",
+    "MULTI_TURN_TOOL_CALLING",
+    "RAG_FACTUALITY",
+    "SAFETY",
+    "AGENT_SKILL",
+    "CUSTOM",
+]
 
 
 class ModelConfigPayload(BaseModel):
     provider: str = Field(min_length=1)
     model: str = Field(min_length=1)
+
+
+class OutputVariableMappingPayload(BaseModel):
+    variable_name: str = Field(alias="variableName", min_length=1)
+    score_config_name: str = Field(alias="scoreConfigName", min_length=1)
+    score_config_id: str | None = Field(default=None, alias="scoreConfigId")
+
+    model_config = ConfigDict(populate_by_name=True)
+
+    def to_storage_payload(self) -> dict[str, Any]:
+        payload = {
+            "variableName": self.variable_name,
+            "scoreConfigName": self.score_config_name,
+        }
+        if self.score_config_id:
+            payload["scoreConfigId"] = self.score_config_id
+        return payload
 
 
 class CreateEvaluatorPayload(BaseModel):
@@ -25,7 +58,17 @@ class CreateEvaluatorPayload(BaseModel):
     provider: EvaluatorProvider
     project_id: str = Field(alias="projectId", min_length=1)
     description: str = Field(default="", max_length=1000)
+    evaluation_scenario: EvaluationScenario = Field(
+        default="SINGLE_TURN",
+        alias="evaluationScenario",
+    )
     variables: list[str] = Field(default_factory=list)
+    input_variables: list[str] = Field(default_factory=list, alias="inputVariables")
+    output_variables: list[str] = Field(default_factory=list, alias="outputVariables")
+    output_variable_mappings: list[OutputVariableMappingPayload] = Field(
+        default_factory=list,
+        alias="outputVariableMappings",
+    )
     prompt: str | None = None
     model_config_payload: ModelConfigPayload | None = Field(
         default=None,
@@ -54,6 +97,17 @@ class CreateEvaluatorPayload(BaseModel):
 
     @model_validator(mode="after")
     def validate_by_type(self) -> "CreateEvaluatorPayload":
+        if not self.input_variables:
+            self.input_variables = self.variables
+        if not self.variables:
+            self.variables = self.input_variables
+        if not self.output_variables:
+            self.output_variables = [
+                mapping.variable_name
+                for mapping in self.output_variable_mappings
+                if mapping.variable_name
+            ]
+
         if self.type in {"LLM_AS_JUDGE", "CODE"} and self.provider != "LANGFUSE":
             raise ValueError("Langfuse 原生评估器 provider 必须为 LANGFUSE")
 
@@ -91,6 +145,8 @@ class CreateEvaluatorPayload(BaseModel):
             "project_id": self.project_id,
             "description": self.description,
             "variables": self.variables,
+            "input_variables": self.input_variables,
+            "output_variables": self.output_variables,
         }
 
         if self.type in {"LLM_AS_JUDGE", "CODE"}:
@@ -118,22 +174,38 @@ class CreateEvaluatorPayload(BaseModel):
             return {
                 **base,
                 "config": {
+                    "evaluationScenario": self.evaluation_scenario,
                     "endpointUrl": self.endpoint_url,
                     "authType": self.auth_type or "NONE",
                     "authToken": self.auth_token,
-                    "inputMapping": self.input_mapping or {},
+                    "inputMapping": normalize_sample_mapping(
+                        self.input_mapping,
+                        self.input_variables,
+                    ),
                     "outputMapping": self.output_mapping or {},
+                    "outputVariableMappings": self._output_variable_mappings(),
                 },
             }
 
         return {
             **base,
             "config": {
+                "evaluationScenario": self.evaluation_scenario,
                 "sdkPackage": self.sdk_package,
-                "inputMapping": self.input_mapping or {},
+                "inputMapping": normalize_sample_mapping(
+                    self.input_mapping,
+                    self.input_variables,
+                ),
                 "outputMapping": self.output_mapping or {},
+                "outputVariableMappings": self._output_variable_mappings(),
             },
         }
+
+    def _output_variable_mappings(self) -> list[dict[str, Any]]:
+        return [
+            mapping.to_storage_payload()
+            for mapping in self.output_variable_mappings
+        ]
 
 
 def _paginate(items: list[dict[str, Any]], page: int, page_size: int) -> dict[str, Any]:
@@ -157,11 +229,22 @@ def _matches_keyword(item: dict[str, Any], keyword: str | None) -> bool:
     return any(isinstance(field, str) and needle in field.lower() for field in fields)
 
 
+def _project_name_from_evaluators(
+    evaluators: list[dict[str, Any]],
+    project_id: str,
+) -> str:
+    for item in evaluators:
+        if item.get("projectId") == project_id and item.get("projectName"):
+            return str(item["projectName"])
+    return "当前项目"
+
+
 @router.get("")
 async def list_evaluators(
     page: int = Query(default=1, ge=1),
     page_size: int = Query(default=10, ge=1, le=200, alias="pageSize"),
     keyword: str | None = Query(default=None),
+    project_id: str | None = Query(default=None, alias="projectId"),
     evaluator_type: str | None = Query(
         default=None,
         alias="type",
@@ -171,7 +254,24 @@ async def list_evaluators(
     reader: LangfuseDatabaseReader = Depends(get_langfuse_db_reader),
 ) -> dict[str, Any]:
     evaluators = await reader.list_evaluators_for_user(current_user.user_id)
-    filtered = [item for item in evaluators if _matches_keyword(item, keyword)]
+    filtered = evaluators
+
+    if project_id:
+        await reader.ensure_project_visible(project_id, current_user.user_id)
+        filtered = [
+            item
+            for item in filtered
+            if item.get("projectId") in {project_id, None, ""}
+        ]
+        filtered = [
+            *default_openjudge_evaluator_payloads(
+                project_id,
+                _project_name_from_evaluators(evaluators, project_id),
+            ),
+            *filtered,
+        ]
+
+    filtered = [item for item in filtered if _matches_keyword(item, keyword)]
 
     if evaluator_type:
         filtered = [item for item in filtered if item["type"] == evaluator_type]
@@ -206,6 +306,32 @@ async def create_evaluator(
 @router.get("/{evaluator_id}")
 async def get_evaluator(
     evaluator_id: str,
+    project_id: str | None = Query(default=None, alias="projectId"),
+    current_user: CurrentUserContext = Depends(get_current_user_context),
+    reader: LangfuseDatabaseReader = Depends(get_langfuse_db_reader),
+) -> dict[str, Any]:
+    if is_default_openjudge_evaluator_id(evaluator_id):
+        if not project_id:
+            raise BusinessError(1006, "评估器不存在或无访问权限", 404)
+        await reader.ensure_project_visible(project_id, current_user.user_id)
+        return success(
+            default_openjudge_evaluator_payload(
+                project_id,
+                evaluator_id=evaluator_id,
+            )
+        )
+
+    evaluator = await reader.get_evaluator_for_user(
+        evaluator_id,
+        current_user.user_id,
+    )
+    return success(evaluator)
+
+
+@router.patch("/{evaluator_id}")
+async def update_evaluator(
+    evaluator_id: str,
+    payload: CreateEvaluatorPayload,
     current_user: CurrentUserContext = Depends(get_current_user_context),
     reader: LangfuseDatabaseReader = Depends(get_langfuse_db_reader),
 ) -> dict[str, Any]:
@@ -213,7 +339,20 @@ async def get_evaluator(
         evaluator_id,
         current_user.user_id,
     )
-    return success(evaluator)
+    if evaluator["provider"] == "LANGFUSE":
+        raise BusinessError(
+            4019,
+            "Langfuse 原生评估器由 Langfuse 管理，请在 Langfuse 中编辑",
+            409,
+        )
+
+    updated = await reader.update_pa_evaluator_for_user(
+        evaluator_id,
+        payload.to_storage_payload(),
+        current_user.user_id,
+        current_user.email,
+    )
+    return success(updated)
 
 
 @router.delete("/{evaluator_id}")
@@ -227,7 +366,11 @@ async def delete_evaluator(
         current_user.user_id,
     )
     if evaluator["provider"] == "LANGFUSE":
-        raise UnsupportedOperationError("Langfuse 原生评估器暂不支持在 PA Eval 中删除")
+        raise BusinessError(
+            4018,
+            "Langfuse 原生评估器由 Langfuse 管理，请在 Langfuse 中删除",
+            409,
+        )
 
     await reader.delete_pa_evaluator_for_user(evaluator_id, current_user.user_id)
     return success({"id": evaluator_id})

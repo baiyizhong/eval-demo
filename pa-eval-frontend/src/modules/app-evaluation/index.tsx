@@ -9,7 +9,7 @@ export function AppEvaluationIndexRedirect() {
 
   return (
     <Navigate
-      to={`/projects/${projectId}/evaluation/datasets`}
+      to={`/projects/${projectId}/evaluation/scenario-evaluations`}
       replace
     />
   )

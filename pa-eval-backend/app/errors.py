@@ -49,3 +49,13 @@ class AuthRequiredError(BusinessError):
 class AuthSessionConfigError(BusinessError):
     def __init__(self) -> None:
         super().__init__(code=3004, message="认证会话密钥未配置", status_code=500)
+
+
+class AuthProviderConfigError(BusinessError):
+    def __init__(self, message: str = "企业认证 API 未配置") -> None:
+        super().__init__(code=3005, message=message, status_code=500)
+
+
+class AuthInvalidCredentialsError(BusinessError):
+    def __init__(self) -> None:
+        super().__init__(code=3006, message="账号或密码错误", status_code=401)

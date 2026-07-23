@@ -43,16 +43,6 @@ export type LlmConnection = {
   withDefaultModels: boolean
 }
 
-export type ModelDefinition = {
-  id: string
-  modelName: string
-  matchPattern: string
-  unit: string
-  inputPrice: string
-  outputPrice: string
-  tokenizerId: string
-}
-
 export type DefaultModel = {
   id: string
   llmConnectionId: string

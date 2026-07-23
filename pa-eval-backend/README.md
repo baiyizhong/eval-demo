@@ -19,6 +19,9 @@ LANGFUSE_ADMIN_API_KEY=replace-with-langfuse-admin-api-key
 PA_EVAL_CORS_ORIGINS=http://localhost:5173
 ```
 
+`LANGFUSE_ADMIN_API_KEY` 应与 Langfuse 服务的 `ADMIN_API_KEY` 保持一致。
+如果运行环境已注入 `ADMIN_API_KEY`，PA 后端也会自动兼容该变量名。
+
 前端真实接口模式：
 
 ```bash

@@ -1,8 +1,16 @@
+import type { TraceLogRow } from '@/modules/app-observability/types'
+import type { EvaluationScenario } from './lib/evaluation-scenarios'
+
 export type DatasetType = 'evaluation' | 'badcase' | 'golden' | 'anomaly'
 
 export type DatasetTypeFilter = DatasetType | 'all'
 
 export type DatasetItemStatus = 'ACTIVE' | 'ARCHIVED'
+
+export type DatasetExportFormat = 'xlsx' | 'csv' | 'txt'
+
+export type DatasetExportJobStatus =
+  'PENDING' | 'RUNNING' | 'SUCCEEDED' | 'FAILED'
 
 export type JsonObject = Record<string, unknown>
 
@@ -33,6 +41,22 @@ export type DatasetItemRecord = {
   sourceObservationId: string
   createdAt: string
   updatedAt: string
+}
+
+export type DatasetExportJobRecord = {
+  id: string
+  projectId: string
+  datasetId: string
+  format: DatasetExportFormat
+  status: DatasetExportJobStatus
+  totalCount: number
+  exportedCount: number
+  fileName: string
+  fileSize: number
+  errorMessage: string
+  createdAt: string
+  updatedAt: string
+  expiresAt: string
 }
 
 export type DatasetFormInput = {
@@ -83,7 +107,7 @@ export type DatasetMetricSummary = {
 export const datasetTypeLabels: Record<DatasetType, string> = {
   evaluation: '评测集',
   badcase: 'badcase集',
-  golden: '黄金级',
+  golden: '黄金集',
   anomaly: '异常集',
 }
 
@@ -96,12 +120,38 @@ export type AnnotationObjectType = 'TRACE' | 'OBSERVATION' | 'SESSION'
 
 export type AnnotationItemStatus = 'PENDING' | 'COMPLETED'
 
+export type AnnotationAssignmentStrategy = 'average' | 'random' | 'weighted'
+
+export type AnnotationExportScope = 'filtered' | 'selected'
+
+export type AnnotationExportFormat = 'xlsx' | 'csv' | 'txt'
+
+export type AnnotationExportJobStatus =
+  | 'PENDING'
+  | 'RUNNING'
+  | 'SUCCEEDED'
+  | 'FAILED'
+
 export type ScoreDataType = 'NUMERIC' | 'CATEGORICAL' | 'BOOLEAN' | 'TEXT'
+
+export type ScoreConfigCategory = {
+  label: string
+  value: number
+}
 
 export type ProjectUserRecord = {
   id: string
   name: string
   email: string
+  role?: 'OWNER' | 'ADMIN' | 'MEMBER' | 'VIEWER' | null
+  organizationRole?: 'OWNER' | 'ADMIN' | 'MEMBER' | 'VIEWER' | 'NONE' | null
+  projectRole?: 'OWNER' | 'ADMIN' | 'MEMBER' | 'VIEWER' | 'NONE' | null
+  status?: 'active' | 'pending'
+  invitedBy?: {
+    name?: string | null
+    email?: string | null
+  }
+  createdAt?: string
 }
 
 export type ScoreConfigRecord = {
@@ -112,8 +162,10 @@ export type ScoreConfigRecord = {
   description: string
   minValue?: number
   maxValue?: number
-  categories?: string[]
+  categories?: ScoreConfigCategory[]
   archived?: boolean
+  createdAt?: string
+  updatedAt?: string
 }
 
 export type AnnotationQueueRecord = {
@@ -123,6 +175,8 @@ export type AnnotationQueueRecord = {
   description: string
   scoreConfigIds: string[]
   assigneeIds: string[]
+  assignmentStrategy: AnnotationAssignmentStrategy
+  assignmentWeights: Record<string, number>
   completedCount: number
   pendingCount: number
   scoreConfigs: ScoreConfigRecord[]
@@ -131,11 +185,45 @@ export type AnnotationQueueRecord = {
   updatedAt: string
 }
 
+export type AnnotationExportPreviewRow = Record<string, string>
+
+export type AnnotationExportPreview = {
+  queue: AnnotationQueueRecord
+  metrics: {
+    total: number
+    completed: number
+    pending: number
+  }
+  scoreConfigs: ScoreConfigRecord[]
+  metadataKeys: string[]
+  previewItems: AnnotationExportPreviewRow[]
+}
+
+export type AnnotationExportJobRecord = {
+  id: string
+  projectId: string
+  queueId: string
+  scope: AnnotationExportScope
+  format: AnnotationExportFormat
+  status: AnnotationExportJobStatus
+  totalCount: number
+  exportedCount: number
+  fileName: string
+  fileSize: number
+  errorMessage: string
+  metadata: JsonObject
+  createdAt: string
+  updatedAt: string
+  expiresAt: string
+}
+
 export type AnnotationQueueFormInput = {
   name: string
   description: string
   scoreConfigIds: string[]
   assigneeIds: string[]
+  assignmentStrategy: AnnotationAssignmentStrategy
+  assignmentWeights: Record<string, number>
 }
 
 export type AnnotationScoreRecord = {
@@ -178,6 +266,7 @@ export type AnnotationQueueItemRecord = {
   scores: AnnotationScoreRecord[]
   completedAt: string
   completedBy: ProjectUserRecord | null
+  assignee: ProjectUserRecord | null
   createdAt: string
   updatedAt: string
 }
@@ -190,6 +279,21 @@ export type AnnotationQueueMetricSummary = {
   updatedAt: string
 }
 
+export type AnnotationQueueItemFilterCounts = {
+  status: Record<AnnotationItemStatus, number>
+  objectType: Record<AnnotationObjectType, number>
+  assigneeIds: Record<string, number>
+}
+
+export type AnnotationQueueItemAssigneeUpdateResult = {
+  assigneeUserId: string
+  requestedCount: number
+  updatedCount: number
+  skippedCount: number
+  updatedItemIds: string[]
+  skippedItemIds: string[]
+}
+
 export type AnnotationScoreFormInput = {
   scores: {
     configId: string
@@ -197,6 +301,59 @@ export type AnnotationScoreFormInput = {
     stringValue: string
     comment: string
   }[]
+}
+
+export type AnnotationBatchFiltersInput = {
+  keyword?: string
+  status?: AnnotationItemStatus[]
+  objectType?: AnnotationObjectType[]
+  completedBy?: string[]
+  createdAtFrom?: string
+  createdAtTo?: string
+  completedAtFrom?: string
+  completedAtTo?: string
+  hasScores?: boolean
+  metadataFilter?: {
+    key: string
+    operator: 'contains' | 'equals' | 'exists'
+    value?: string
+  }
+  metadataFilters?: {
+    key: string
+    operator: 'contains' | 'equals' | 'exists'
+    value?: string
+  }[]
+  inputFilters?: {
+    key: string
+    operator: 'contains' | 'equals' | 'exists'
+    value?: string
+  }[]
+  outputFilters?: {
+    key: string
+    operator: 'contains' | 'equals' | 'exists'
+    value?: string
+  }[]
+  itemIds?: string[]
+}
+
+export type AnnotationBatchPreviewResult = {
+  totalCount: number
+  pendingCount: number
+  completedCount: number
+  samples: AnnotationQueueItemRecord[]
+  filterSummary: string
+}
+
+export type AnnotationBatchSaveResult = {
+  successCount: number
+  failureCount: number
+  skippedCount: number
+  successItemIds: string[]
+  failures: {
+    itemId: string
+    reason: string
+  }[]
+  filterSummary: string
 }
 
 export type AddAnnotationItemToDatasetInput = {
@@ -242,7 +399,8 @@ export const scoreDataTypeLabels: Record<ScoreDataType, string> = {
 export type AutoEvaluationTaskStatus =
   'DRAFT' | 'READY' | 'RUNNING' | 'COMPLETED' | 'FAILED' | 'CANCELLED'
 
-export type AutoEvaluationEvaluatorType = 'LLM_AS_JUDGE' | 'CODE' | 'WORKFLOW'
+export type AutoEvaluationEvaluatorType =
+  'LLM_AS_JUDGE' | 'CODE' | 'WORKFLOW' | 'SDK'
 
 export type AutoEvaluationDataSourceType = 'DATASET' | 'TRACE_FILTER'
 
@@ -292,6 +450,7 @@ export type AutoEvaluationEvaluatorSummary = {
   name: string
   type: AutoEvaluationEvaluatorType
   version: string
+  evaluationScenario?: EvaluationScenario
 }
 
 export type AutoEvaluationDataSourceSummary = {
@@ -340,6 +499,12 @@ export type AutoEvaluationTaskRecord = {
 
 export type MockAutoEvaluationEvaluator = AutoEvaluationEvaluatorSummary & {
   variables: string[]
+  outputVariables?: string[]
+  outputVariableMappings?: {
+    variableName: string
+    scoreConfigId?: string
+    scoreConfigName: string
+  }[]
   description: string
   updatedAt: string
 }
@@ -373,6 +538,13 @@ export type AutoEvaluationTaskFormInput = {
   name: string
   description: string
   scoreName: string
+  scoreMapping: Record<
+    string,
+    {
+      scoreConfigId: string
+      scoreConfigName: string
+    }
+  >
   evaluatorId: string
   variableMapping: Record<string, string>
   reportTemplateId: string
@@ -380,9 +552,9 @@ export type AutoEvaluationTaskFormInput = {
     | { type: 'DATASET'; datasetId: string; projectId?: string }
     | {
         type: 'TRACE_FILTER'
-        timeRange: string
+        timeRange: '' | '1d' | '3d' | '7d'
+        createdAtRange: string[]
         environments: string[]
-        traceName: string
         userId: string
         sessionId: string
         tags: string[]
@@ -413,24 +585,39 @@ export type EvaluationReportRecord = {
   errorMessage?: string
 }
 
-export type EvaluationReportBadcaseRecord = {
-  id: string
-  reportId: string
-  traceId: string
-  observationId: string
-  datasetItemId: string
-  scoreName: string
-  scoreValue: number
-  reason: string
-  comment: string
-  sourceType: EvaluationReportSourceType
-  flowbackStatus: 'NONE' | 'FLOWED_BACK'
-}
+export type EvaluationReportBadcaseRecord = TraceLogRow
 
 export type EvaluationReportItemRecord = {
   id: string
   reportId: string
   sourceId: string
+  traceId?: string
+  observationId?: string
+  input?: unknown
+  output?: unknown
+  expectedOutput?: unknown
+  rawResult?: unknown
+  extra?: Record<string, unknown>
+  reason?: string
+  status?: string
+  scores?: {
+    id: string
+    traceId: string
+    observationId: string
+    name: string
+    value?: number | null
+    source?: string
+    dataType?: string
+    stringValue?: string
+    longStringValue?: string
+    comment?: string
+    metadata?: Record<string, unknown>
+    authorUserId?: string
+    configId?: string
+    queueId?: string
+    createdAt?: string
+    updatedAt?: string
+  }[]
   scoreSummary: string
   resultType: 'normal' | 'badcase'
   executionStatus: string
@@ -503,6 +690,7 @@ export const autoEvaluationEvaluatorTypeLabels: Record<
   LLM_AS_JUDGE: 'LLM-as-Judge',
   CODE: 'Code',
   WORKFLOW: '工作流',
+  SDK: 'SDK',
 }
 
 export const autoEvaluationDataSourceLabels: Record<

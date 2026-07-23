@@ -1,10 +1,30 @@
 import { useEffect, useState } from 'react'
+import {
+  ChevronLeftIcon,
+  ChevronRightIcon,
+  DoubleArrowLeftIcon,
+  DoubleArrowRightIcon,
+} from '@radix-ui/react-icons'
+import { listTaskEvaluators } from '@/modules/tasks/api/evaluator-api'
+import {
+  evaluationScenarioLabels,
+  evaluationScenarioOptions,
+  type EvaluationScenario,
+} from '@/modules/app-evaluation/lib/evaluation-scenarios'
+import { Info } from 'lucide-react'
 import { useNavigate } from 'react-router'
 import { toast } from 'sonner'
+import { cn, getPageNumbers } from '@/lib/utils'
 import { useAPI } from '@/hooks/use-api'
-import { confirm } from '@/lib/confirm'
+import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
-import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card'
+import {
+  Dialog,
+  DialogContent,
+  DialogDescription,
+  DialogHeader,
+  DialogTitle,
+} from '@/components/ui/dialog'
 import { Input } from '@/components/ui/input'
 import { Label } from '@/components/ui/label'
 import {
@@ -15,31 +35,61 @@ import {
   SelectTrigger,
   SelectValue,
 } from '@/components/ui/select'
-import { Switch } from '@/components/ui/switch'
+import {
+  Table,
+  TableBody,
+  TableCell,
+  TableHead,
+  TableHeader,
+  TableRow,
+} from '@/components/ui/table'
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs'
 import { Textarea } from '@/components/ui/textarea'
+import { ToggleGroup, ToggleGroupItem } from '@/components/ui/toggle-group'
+import {
+  Tooltip,
+  TooltipContent,
+  TooltipTrigger,
+} from '@/components/ui/tooltip'
+import { Stepper } from '@/components/common/stepper'
 import {
   countProjectAutoEvaluationTraces,
   createProjectAutoEvaluationTask,
+  listProjectAutoEvaluationTracePreview,
+  type TraceLogRow,
 } from '../api/auto-evaluation-api'
 import { listProjectAutoEvaluationDatasets } from '../api/dataset-api'
 import { listProjectEvaluationReportTemplates } from '../api/report-template-api'
-import { listTaskEvaluators } from '@/modules/tasks/api/evaluator-api'
 import type {
   AutoEvaluationTaskFormInput,
   EvaluationReportTemplateRecord,
   MockAutoEvaluationDataset,
   MockAutoEvaluationEvaluator,
 } from '../types'
+import { autoEvaluationStepLabels } from './auto-evaluation-steps'
+
+const AUTO_EVALUATION_DEFAULT_TRACE_TIME_RANGE = '1d'
+const AUTO_EVALUATION_TRACE_QUICK_TIME_RANGE_OPTIONS = [
+  { label: '1d', value: '1d' },
+  { label: '3d', value: '3d' },
+  { label: '7d', value: '7d' },
+] as const
+const TRACE_PREVIEW_PAGE_SIZE = 10
+const TRACE_PREVIEW_PAGE_SIZE_OPTIONS = [10, 20, 30, 40, 50] as const
+const AUTO_EVALUATION_SUPPORTED_WORKFLOW_PROVIDERS: readonly string[] = [
+  'DIFY',
+  'N8N',
+]
 
 const initialForm: AutoEvaluationTaskFormInput = {
   name: '',
   description: '',
   scoreName: '',
+  scoreMapping: {},
   evaluatorId: '',
   variableMapping: {},
   reportTemplateId: 'default',
-  dataSource: { type: 'DATASET', datasetId: '' },
+  dataSource: createDefaultTraceFilter(),
   sampleRate: 100,
   badcase: {
     enabled: true,
@@ -54,72 +104,319 @@ const sampleFieldOptions = [
   'sample.output',
   'sample.expectedOutput',
   'sample.context',
+  'sample.reference',
+  'sample.messages',
+  'sample.history',
+  'sample.conversation',
+  'sample.trajectory',
+  'sample.tool_calls',
+  'sample.tool_result',
+  'sample.skill',
+  'sample.instruction',
+  'sample.artifact',
+  'sample.policy',
   'sample.metadata',
   'sample.trace.id',
   'sample.observation.id',
   'sample.datasetItem.id',
 ]
+const defaultSampleMappingByVariable: Record<string, string> = {
+  input: 'sample.input',
+  output: 'sample.output',
+  expected_output: 'sample.expectedOutput',
+  expectedoutput: 'sample.expectedOutput',
+  context: 'sample.context',
+  conversation_context: 'sample.context',
+  reference: 'sample.reference',
+  messages: 'sample.messages',
+  history: 'sample.history',
+  conversation: 'sample.conversation',
+  trajectory: 'sample.trajectory',
+  tool_calls: 'sample.tool_calls',
+  toolcalls: 'sample.tool_calls',
+  tool_result: 'sample.tool_result',
+  toolresult: 'sample.tool_result',
+  skill: 'sample.skill',
+  instruction: 'sample.instruction',
+  artifact: 'sample.artifact',
+  policy: 'sample.policy',
+  trace_id: 'sample.trace.id',
+  observation_id: 'sample.observation.id',
+  dataset_item_id: 'sample.datasetItem.id',
+  datasetitem_id: 'sample.datasetItem.id',
+  metadata: 'sample.metadata',
+}
+const legacyMappingAliases: Record<string, string> = {
+  'trace.input': 'sample.input',
+  'dataset.input': 'sample.input',
+  'trace.output': 'sample.output',
+  'dataset.output': 'sample.output',
+  'trace.expectedoutput': 'sample.expectedOutput',
+  'dataset.expectedoutput': 'sample.expectedOutput',
+  'trace.expected_output': 'sample.expectedOutput',
+  'dataset.expected_output': 'sample.expectedOutput',
+  'trace.context': 'sample.context',
+  'dataset.context': 'sample.context',
+  'trace.conversation_context': 'sample.context',
+  'dataset.conversation_context': 'sample.context',
+  'trace.reference': 'sample.reference',
+  'dataset.reference': 'sample.reference',
+  'trace.messages': 'sample.messages',
+  'dataset.messages': 'sample.messages',
+  'trace.history': 'sample.history',
+  'dataset.history': 'sample.history',
+  'trace.conversation': 'sample.conversation',
+  'dataset.conversation': 'sample.conversation',
+  'trace.trajectory': 'sample.trajectory',
+  'dataset.trajectory': 'sample.trajectory',
+  'trace.tool_calls': 'sample.tool_calls',
+  'dataset.tool_calls': 'sample.tool_calls',
+  'trace.tool_result': 'sample.tool_result',
+  'dataset.tool_result': 'sample.tool_result',
+  'trace.skill': 'sample.skill',
+  'dataset.skill': 'sample.skill',
+  'trace.instruction': 'sample.instruction',
+  'dataset.instruction': 'sample.instruction',
+  'trace.artifact': 'sample.artifact',
+  'dataset.artifact': 'sample.artifact',
+  'trace.policy': 'sample.policy',
+  'dataset.policy': 'sample.policy',
+  'trace.trace_id': 'sample.trace.id',
+  'trace.observation_id': 'sample.observation.id',
+  'dataset.dataset_item_id': 'sample.datasetItem.id',
+}
+
+const autoEvaluationStepItems = autoEvaluationStepLabels.map(
+  (label, index) => ({
+    title: label,
+    description:
+      index === 0
+        ? '命名任务并定义评分字段'
+        : index === 1
+          ? '选择工作流或 OpenJudge 评估器并映射变量'
+          : '设置样本来源、采样与报告',
+  })
+)
 
 export function AutoEvaluationTaskForm({
   projectId,
+  initialScenario,
   onDirtyChange,
-  onCancel,
+  onCompleted,
 }: {
   projectId: string
+  initialScenario?: EvaluationScenario | null
   onDirtyChange?: (dirty: boolean) => void
-  onCancel?: () => void
+  onCompleted?: (taskId: string, mode: 'create' | 'run') => void
 }) {
   const $api = useAPI()
   const navigate = useNavigate()
   const [step, setStep] = useState(0)
   const [form, setForm] = useState<AutoEvaluationTaskFormInput>(initialForm)
-  const [dirty, setDirty] = useState(false)
   const [error, setError] = useState('')
   const [evaluatorKeyword, setEvaluatorKeyword] = useState('')
   const [datasetKeyword, setDatasetKeyword] = useState('')
-  const [evaluators, setEvaluators] = useState<MockAutoEvaluationEvaluator[]>([])
+  const [evaluators, setEvaluators] = useState<MockAutoEvaluationEvaluator[]>(
+    []
+  )
   const [datasets, setDatasets] = useState<MockAutoEvaluationDataset[]>([])
   const [reportTemplates, setReportTemplates] = useState<
     EvaluationReportTemplateRecord[]
   >([])
+  const [traceCountState, setTraceCountState] = useState<
+    'idle' | 'loading' | 'success' | 'error'
+  >('idle')
+  const [tracePreviewOpen, setTracePreviewOpen] = useState(false)
+  const [tracePreviewLoading, setTracePreviewLoading] = useState(false)
+  const [tracePreviewError, setTracePreviewError] = useState('')
+  const [tracePreviewRows, setTracePreviewRows] = useState<TraceLogRow[]>([])
+  const [tracePreviewTotal, setTracePreviewTotal] = useState(0)
+  const [tracePreviewPage, setTracePreviewPage] = useState(1)
+  const [tracePreviewPageSize, setTracePreviewPageSize] = useState(
+    TRACE_PREVIEW_PAGE_SIZE
+  )
+  const [submittingMode, setSubmittingMode] = useState<'create' | 'run' | null>(
+    null
+  )
 
   useEffect(() => {
-    void listTaskEvaluators($api, {
-      page: 1,
-      pageSize: 50,
-      keyword: evaluatorKeyword,
-      filters: {},
-      sorting: [],
-    }).then((result) => {
-      setEvaluators(
-        result.datas
-          .filter((evaluator) => evaluator.type === 'WORKFLOW')
+    void listTaskEvaluators(
+      $api,
+      {
+        page: 1,
+        pageSize: 50,
+        keyword: evaluatorKeyword,
+        filters: {},
+        sorting: [],
+      },
+      projectId
+    ).then((result) => {
+      const nextEvaluators = result.datas
+          .filter(isAutoEvaluationSupportedEvaluator)
           .map((evaluator) => ({
             id: evaluator.id,
             name: evaluator.name,
-            type: 'WORKFLOW',
+            type: evaluator.type,
             version: evaluator.version,
+            evaluationScenario: evaluator.evaluationScenario,
             variables: evaluator.variables,
+            outputVariables: evaluator.outputVariables ?? [],
+            outputVariableMappings: evaluator.outputVariableMappings ?? [],
             description: evaluator.description,
             updatedAt: evaluator.updatedAt,
           }))
-      )
+          .sort((left, right) => {
+            if (!initialScenario) return 0
+            const leftMatched = left.evaluationScenario === initialScenario
+            const rightMatched = right.evaluationScenario === initialScenario
+            if (leftMatched === rightMatched) return 0
+            return leftMatched ? -1 : 1
+          })
+      setEvaluators(nextEvaluators)
+      setForm((current) => {
+        if (!initialScenario || current.evaluatorId) return current
+        const matchedEvaluator = nextEvaluators.find(
+          (evaluator) => evaluator.evaluationScenario === initialScenario
+        )
+        if (!matchedEvaluator) return current
+        const scoreMapping = createDefaultScoreMapping(matchedEvaluator)
+        return {
+          ...current,
+          evaluatorId: matchedEvaluator.id,
+          variableMapping: createDefaultVariableMapping(matchedEvaluator),
+          scoreMapping,
+          scoreName: getPrimaryScoreName(scoreMapping),
+        }
+      })
     })
-  }, [$api, evaluatorKeyword, projectId])
+  }, [$api, evaluatorKeyword, initialScenario, projectId])
 
   useEffect(() => {
-    void listProjectAutoEvaluationDatasets($api, projectId, datasetKeyword).then(
-      setDatasets
-    )
+    void listProjectAutoEvaluationDatasets(
+      $api,
+      projectId,
+      datasetKeyword
+    ).then(setDatasets)
   }, [$api, datasetKeyword, projectId])
 
   useEffect(() => {
-    void listProjectEvaluationReportTemplates($api, projectId).then((result) => {
-      setReportTemplates(result.datas)
-    })
+    void listProjectEvaluationReportTemplates($api, projectId).then(
+      (result) => {
+        setReportTemplates(result.datas)
+      }
+    )
   }, [$api, projectId])
 
-  const selectedEvaluator = evaluators.find((item) => item.id === form.evaluatorId)
+  const traceFilterKey =
+    form.dataSource.type === 'TRACE_FILTER'
+      ? getTraceFilterKey(form.dataSource)
+      : ''
+
+  useEffect(() => {
+    if (!traceFilterKey) {
+      return
+    }
+
+    let canceled = false
+    const traceFilter = parseTraceFilterKey(traceFilterKey)
+
+    void Promise.resolve()
+      .then(() => {
+        if (!canceled) setTraceCountState('loading')
+        return countProjectAutoEvaluationTraces($api, projectId, traceFilter)
+      })
+      .then((result) => {
+        if (canceled) return
+        setTraceCountState('success')
+        setForm((current) => {
+          if (
+            current.dataSource.type !== 'TRACE_FILTER' ||
+            getTraceFilterKey(current.dataSource) !== traceFilterKey
+          ) {
+            return current
+          }
+          return {
+            ...current,
+            dataSource: {
+              ...current.dataSource,
+              estimatedCount: result.count,
+            },
+          }
+        })
+      })
+      .catch(() => {
+        if (canceled) return
+        setTraceCountState('error')
+        setForm((current) => {
+          if (
+            current.dataSource.type !== 'TRACE_FILTER' ||
+            getTraceFilterKey(current.dataSource) !== traceFilterKey
+          ) {
+            return current
+          }
+          return {
+            ...current,
+            dataSource: { ...current.dataSource, estimatedCount: 0 },
+          }
+        })
+      })
+
+    return () => {
+      canceled = true
+    }
+  }, [$api, projectId, traceFilterKey])
+
+  useEffect(() => {
+    if (!tracePreviewOpen || !traceFilterKey) return
+
+    let canceled = false
+    const traceFilter = parseTraceFilterKey(traceFilterKey)
+
+    async function loadTracePreview() {
+      await Promise.resolve()
+      if (canceled) return
+      setTracePreviewLoading(true)
+      setTracePreviewError('')
+      setTracePreviewRows([])
+
+      const pageResult = await listProjectAutoEvaluationTracePreview(
+        $api,
+        projectId,
+        traceFilter,
+        { page: tracePreviewPage, pageSize: tracePreviewPageSize }
+      )
+
+      if (canceled) return
+      setTracePreviewRows(pageResult.datas)
+      setTracePreviewTotal(pageResult.total)
+    }
+
+    void loadTracePreview()
+      .catch(() => {
+        if (canceled) return
+        setTracePreviewRows([])
+        setTracePreviewTotal(0)
+        setTracePreviewError('Trace 数据加载失败，请稍后重试')
+      })
+      .finally(() => {
+        if (!canceled) setTracePreviewLoading(false)
+      })
+
+    return () => {
+      canceled = true
+    }
+  }, [
+    $api,
+    projectId,
+    traceFilterKey,
+    tracePreviewOpen,
+    tracePreviewPage,
+    tracePreviewPageSize,
+  ])
+
+  const selectedEvaluator = evaluators.find(
+    (item) => item.id === form.evaluatorId
+  )
   let selectedDataset: MockAutoEvaluationDataset | null = null
   if (form.dataSource.type === 'DATASET') {
     const datasetId = form.dataSource.datasetId
@@ -127,15 +424,42 @@ export function AutoEvaluationTaskForm({
   }
   const sourceSampleCount =
     form.dataSource.type === 'DATASET'
-      ? selectedDataset?.itemCount ?? 0
+      ? (selectedDataset?.itemCount ?? 0)
       : form.dataSource.estimatedCount
-  const estimatedRunCount = getEstimatedRunCount(sourceSampleCount, form.sampleRate)
+  const estimatedRunCount = getEstimatedRunCount(
+    sourceSampleCount,
+    form.sampleRate
+  )
+  const activeScenario = initialScenario
+    ? (evaluationScenarioOptions.find(
+        (scenario) => scenario.value === initialScenario
+      ) ?? null)
+    : null
+  const scenarioMatchedEvaluators = getScenarioMatchedEvaluators(
+    evaluators,
+    initialScenario
+  )
+  const scenarioOtherEvaluators = getScenarioOtherEvaluators(
+    evaluators,
+    initialScenario
+  )
+  const ActiveScenarioIcon = activeScenario?.icon
 
   const updateForm = (next: AutoEvaluationTaskFormInput) => {
     setForm(next)
-    setDirty(true)
     onDirtyChange?.(true)
     setError('')
+  }
+
+  const handleEvaluatorSelect = (evaluator: MockAutoEvaluationEvaluator) => {
+    const scoreMapping = createDefaultScoreMapping(evaluator)
+    updateForm({
+      ...form,
+      evaluatorId: evaluator.id,
+      variableMapping: createDefaultVariableMapping(evaluator),
+      scoreMapping,
+      scoreName: getPrimaryScoreName(scoreMapping),
+    })
   }
 
   const validateStep = () => {
@@ -144,25 +468,29 @@ export function AutoEvaluationTaskForm({
     return !message
   }
 
-  const handleBack = async () => {
-    if (!dirty) {
-      onCancel?.()
-      if (!onCancel) navigate(`/projects/${projectId}/evaluation/auto-evaluations`)
+  const handleStepChange = (nextStep: number) => {
+    if (nextStep <= step) {
+      setStep(nextStep)
+      setError('')
       return
     }
-    const confirmed = await confirm({
-      title: '离开新建自动评测？',
-      desc: '当前自动评测任务尚未保存，离开后已填写内容将丢失。',
-      confirmText: '离开',
-    })
-    if (confirmed) {
-      onDirtyChange?.(false)
-      onCancel?.()
-      if (!onCancel) navigate(`/projects/${projectId}/evaluation/auto-evaluations`)
+
+    for (let index = step; index < nextStep; index += 1) {
+      const message = getStepError(index, form, selectedEvaluator)
+      if (message) {
+        setStep(index)
+        setError(message)
+        return
+      }
     }
+
+    setStep(nextStep)
+    setError('')
   }
 
   const handleSubmit = async (mode: 'create' | 'run') => {
+    if (submittingMode) return
+
     const currentStep = step
     for (let index = 0; index < 3; index += 1) {
       const message = getStepError(index, form, selectedEvaluator)
@@ -173,99 +501,112 @@ export function AutoEvaluationTaskForm({
       }
     }
     setStep(currentStep)
-    const task = await createProjectAutoEvaluationTask($api, projectId, {
-      name: form.name,
-      description: form.description,
-      scoreName: form.scoreName,
-      evaluatorId: form.evaluatorId,
-      sampleRate: form.sampleRate,
-      dataSource: form.dataSource,
-      variableMapping: form.variableMapping,
-      reportTemplateId: form.reportTemplateId,
-    })
-    onDirtyChange?.(false)
-    toast.success('自动评测任务已创建并开始运行')
-    navigate(
-      mode === 'run'
-        ? `/projects/${projectId}/evaluation/auto-evaluations/${task.id}`
-        : `/projects/${projectId}/evaluation/auto-evaluations`
-    )
-  }
-
-  const estimateTrace = async () => {
-    const traceFilter =
-      form.dataSource.type === 'TRACE_FILTER'
-        ? form.dataSource
-        : {
-            type: 'TRACE_FILTER' as const,
-            timeRange: '24h',
-            environments: ['production'],
-            traceName: '',
-            userId: '',
-            sessionId: '',
-            tags: [],
-            estimatedCount: 0,
-          }
-    const result = await countProjectAutoEvaluationTraces(
-      $api,
-      projectId,
-      traceFilter
-    )
-    const count = result.count
-    updateForm({
-      ...form,
-      dataSource:
-        form.dataSource.type === 'TRACE_FILTER'
-          ? { ...traceFilter, estimatedCount: count }
-          : { ...traceFilter, estimatedCount: count },
-    })
-    toast.success(`Trace 过滤预估命中 ${count} 条`)
+    setSubmittingMode(mode)
+    try {
+      const task = await createProjectAutoEvaluationTask($api, projectId, {
+        name: form.name,
+        description: form.description,
+        scoreName: form.scoreName,
+        scoreMapping: getBoundScoreMapping(form.scoreMapping),
+        evaluatorId: form.evaluatorId,
+        sampleRate: form.sampleRate,
+        badcase: { ...form.badcase, enabled: true },
+        dataSource: form.dataSource,
+        variableMapping: form.variableMapping,
+        reportTemplateId: form.reportTemplateId,
+      })
+      onDirtyChange?.(false)
+      toast.success(
+        mode === 'run' ? '自动评测任务已创建并开始运行' : '自动评测任务已创建'
+      )
+      if (onCompleted) {
+        onCompleted(task.id, mode)
+        return
+      }
+      navigate(
+        mode === 'run'
+          ? `/projects/${projectId}/evaluation/auto-evaluations/${task.id}`
+          : `/projects/${projectId}/evaluation/auto-evaluations`
+      )
+    } catch (submitError) {
+      const message = getSubmitErrorMessage(submitError)
+      setError(message)
+      toast.error(message)
+    } finally {
+      setSubmittingMode(null)
+    }
   }
 
   return (
-    <Card>
-      <CardHeader>
-        <CardTitle>新建自动评测</CardTitle>
-      </CardHeader>
-      <CardContent className='flex flex-col gap-5'>
-        <div className='flex flex-wrap gap-2'>
-          {['基础信息', '评估器', '数据源与运行'].map((label, index) => (
-            <Button
-              key={label}
-              type='button'
-              variant={step === index ? 'default' : 'outline'}
-              size='sm'
-              onClick={() => setStep(index)}
-            >
-              {label}
-            </Button>
-          ))}
+    <div className='flex flex-col gap-5'>
+      {activeScenario && ActiveScenarioIcon ? (
+        <section className='bg-card text-card-foreground grid gap-4 rounded-lg border p-4 lg:grid-cols-[minmax(0,1fr)_minmax(280px,360px)]'>
+          <div className='flex gap-3'>
+            <div className='bg-primary/10 text-primary flex size-10 shrink-0 items-center justify-center rounded-md'>
+              <ActiveScenarioIcon className='size-5' />
+            </div>
+            <div className='grid gap-2'>
+              <div className='flex flex-wrap items-center gap-2'>
+                <h3 className='text-sm font-semibold'>
+                  {activeScenario.label}
+                </h3>
+                <Badge variant='secondary'>场景评测</Badge>
+              </div>
+              <p className='text-muted-foreground text-sm leading-6'>
+                {activeScenario.description}
+              </p>
+              <div className='text-muted-foreground text-xs leading-5'>
+                推荐数据：{activeScenario.recommendedDataShape}
+              </div>
+            </div>
+          </div>
+          <div className='grid gap-3 text-xs'>
+            <ScenarioChipGroup
+              label='推荐指标'
+              values={activeScenario.defaultMetrics}
+            />
+            <ScenarioChipGroup
+              label='自动识别字段'
+              values={activeScenario.fieldAliases}
+            />
+          </div>
+        </section>
+      ) : null}
+
+      <Stepper
+        items={autoEvaluationStepItems}
+        currentStep={step}
+        onStepChange={handleStepChange}
+      />
+
+      {error ? (
+        <div className='border-destructive/30 bg-destructive/5 text-destructive rounded-lg border px-3 py-2 text-sm'>
+          {error}
         </div>
-        {error ? <p className='text-destructive text-sm'>{error}</p> : null}
-        {step === 0 ? (
+      ) : null}
+
+      {step === 0 ? (
+        <section className='bg-card text-card-foreground rounded-lg border p-4'>
+          <div className='mb-4 flex flex-col gap-1'>
+            <h3 className='text-sm font-semibold'>基础信息</h3>
+            <p className='text-muted-foreground text-sm'>
+              基础信息会展示在任务列表和报告详情中，评分字段在评估器配置中绑定。
+            </p>
+          </div>
           <div className='grid gap-4 md:grid-cols-2'>
             <Field label='任务名称'>
               <Input
+                placeholder='例如：客服回答质量自动评测'
                 value={form.name}
                 onChange={(event) =>
                   updateForm({ ...form, name: event.target.value })
                 }
               />
             </Field>
-            <Field label='Score Name'>
-              <Input
-                value={form.scoreName}
-                onChange={(event) =>
-                  updateForm({
-                    ...form,
-                    scoreName: event.target.value,
-                    badcase: { ...form.badcase, scoreName: event.target.value },
-                  })
-                }
-              />
-            </Field>
             <Field label='任务描述' className='md:col-span-2'>
               <Textarea
+                className='min-h-28 resize-none'
+                placeholder='描述本次自动评测的目标、样本范围或执行策略'
                 value={form.description}
                 onChange={(event) =>
                   updateForm({ ...form, description: event.target.value })
@@ -273,42 +614,107 @@ export function AutoEvaluationTaskForm({
               />
             </Field>
           </div>
-        ) : null}
-        {step === 1 ? (
-          <div className='grid gap-4 lg:grid-cols-[280px_1fr]'>
-            <Field label='搜索评估器'>
-              <Input
-                value={evaluatorKeyword}
-                onChange={(event) => setEvaluatorKeyword(event.target.value)}
-              />
-            </Field>
-            <div className='flex flex-col gap-3'>
-              {evaluators.map((evaluator) => (
-                <Button
-                  key={evaluator.id}
-                  type='button'
-                  variant={form.evaluatorId === evaluator.id ? 'default' : 'outline'}
-                  className='h-auto justify-start px-4 py-3'
-                  onClick={() =>
-                    updateForm({
-                      ...form,
-                      evaluatorId: evaluator.id,
-                      variableMapping: Object.fromEntries(
-                        evaluator.variables.map((item) => [item, ''])
-                      ),
-                    })
-                  }
-                >
-                  <span className='flex flex-col items-start gap-1'>
-                    <span>{evaluator.name}</span>
-                    <span className='text-xs'>{evaluator.description}</span>
-                  </span>
-                </Button>
-              ))}
-              {selectedEvaluator ? (
-                <div className='grid gap-3 md:grid-cols-3'>
+        </section>
+      ) : null}
+
+      {step === 1 ? (
+        <section className='grid min-h-0 gap-4 lg:grid-cols-[320px_1fr]'>
+          <div className='bg-card text-card-foreground flex max-h-[min(560px,calc(100vh-320px))] min-h-[420px] flex-col gap-3 rounded-lg border p-4'>
+            <div>
+              <h3 className='text-sm font-semibold'>评估器列表</h3>
+            </div>
+            <Input
+              aria-label='搜索评估器'
+              placeholder='输入评估器名称或描述'
+              value={evaluatorKeyword}
+              onChange={(event) => setEvaluatorKeyword(event.target.value)}
+            />
+            <div className='flex min-h-0 flex-1 flex-col gap-2 overflow-y-auto pr-1'>
+              {activeScenario ? (
+                <>
+                  <EvaluatorGroup
+                    title='场景推荐评估器'
+                    evaluators={scenarioMatchedEvaluators}
+                    selectedEvaluatorId={form.evaluatorId}
+                    onSelect={handleEvaluatorSelect}
+                  />
+                  {scenarioMatchedEvaluators.length === 0 ? (
+                    <NoScenarioEvaluatorHint scenarioLabel={activeScenario.label} />
+                  ) : null}
+                  {scenarioOtherEvaluators.length ? (
+                    <EvaluatorGroup
+                      title='其他评估器'
+                      evaluators={scenarioOtherEvaluators}
+                      selectedEvaluatorId={form.evaluatorId}
+                      onSelect={handleEvaluatorSelect}
+                    />
+                  ) : null}
+                </>
+              ) : (
+                evaluators.map((evaluator) => (
+                  <EvaluatorButton
+                    key={evaluator.id}
+                    evaluator={evaluator}
+                    selected={form.evaluatorId === evaluator.id}
+                    onSelect={handleEvaluatorSelect}
+                  />
+                ))
+              )}
+              {evaluators.length === 0 ? (
+                <div className='text-muted-foreground rounded-lg border border-dashed p-4 text-sm'>
+                  暂无匹配的评估器。
+                </div>
+              ) : null}
+            </div>
+          </div>
+
+          <div className='bg-card text-card-foreground flex min-h-[420px] flex-col gap-4 rounded-lg border p-4'>
+            {selectedEvaluator ? (
+              <>
+                <div className='flex flex-col gap-1'>
+                  <h3 className='text-sm font-semibold'>
+                    {selectedEvaluator.name}
+                  </h3>
+                  <p className='text-muted-foreground text-sm leading-6'>
+                    {selectedEvaluator.description || '暂无描述'}
+                  </p>
+                </div>
+                <div className='bg-muted/40 grid gap-3 rounded-lg p-3 text-sm md:grid-cols-4'>
+                  <InfoItem label='类型' value={selectedEvaluator.type} />
+                  <InfoItem
+                    label='版本'
+                    value={`v${selectedEvaluator.version}`}
+                  />
+                  <InfoItem
+                    label='场景'
+                    value={getScenarioLabel(selectedEvaluator.evaluationScenario)}
+                  />
+                  <InfoItem
+                    label='变量数量'
+                    value={`${selectedEvaluator.variables.length} 个`}
+                  />
+                </div>
+                <div className='flex flex-col gap-3'>
+                  <div className='flex flex-col gap-1'>
+                    <h4 className='text-sm font-medium'>输入变量绑定</h4>
+                    <p className='text-muted-foreground text-sm'>
+                      将评估器输入变量绑定到评测样本字段。
+                    </p>
+                  </div>
+                  {activeScenario ? (
+                    <div className='bg-muted/40 rounded-lg border p-3'>
+                      <ScenarioChipGroup
+                        label='自动识别字段'
+                        values={activeScenario.fieldAliases}
+                      />
+                    </div>
+                  ) : null}
                   {selectedEvaluator.variables.map((variable) => (
-                    <Field key={variable} label={variable}>
+                    <div
+                      key={variable}
+                      className='bg-background grid gap-2 rounded-lg border p-3 md:grid-cols-[minmax(160px,220px)_1fr] md:items-center'
+                    >
+                      <Label className='text-sm font-medium'>{variable}</Label>
                       <Select
                         value={getMappingSelectValue(
                           form.variableMapping[variable]
@@ -329,22 +735,84 @@ export function AutoEvaluationTaskForm({
                         <SelectContent>
                           <SelectGroup>
                             {sampleFieldOptions.map((field) => (
-                                <SelectItem key={field} value={field}>
-                                  {field}
-                                </SelectItem>
-                              ))}
+                              <SelectItem key={field} value={field}>
+                                {field}
+                              </SelectItem>
+                            ))}
                           </SelectGroup>
                         </SelectContent>
                       </Select>
-                    </Field>
+                    </div>
                   ))}
                 </div>
-              ) : null}
-            </div>
+                <div className='flex flex-col gap-3'>
+                  <div className='flex flex-col gap-1'>
+                    <h4 className='text-sm font-medium'>输出变量绑定</h4>
+                    <p className='text-muted-foreground text-sm'>
+                      评分指标绑定已在评估器配置中完成，此处仅展示绑定关系。如需调整，请返回评估器页面编辑。
+                    </p>
+                  </div>
+                  {getEvaluatorOutputVariables(selectedEvaluator).length ? (
+                    getEvaluatorOutputVariables(selectedEvaluator).map(
+                      (variable) => {
+                        const mapping = form.scoreMapping[variable]
+                        return (
+                          <div
+                            key={variable}
+                            className='bg-background grid gap-2 rounded-lg border p-3 md:grid-cols-[minmax(160px,220px)_1fr] md:items-center'
+                          >
+                            <Label className='text-sm font-medium'>
+                              {variable}
+                            </Label>
+                            <div className='flex min-w-0 items-center gap-2'>
+                              <Badge
+                                variant={
+                                  mapping?.scoreConfigName
+                                    ? 'secondary'
+                                    : 'outline'
+                                }
+                                className='max-w-full truncate'
+                              >
+                                {mapping?.scoreConfigName || '未绑定评分指标'}
+                              </Badge>
+                              {!mapping?.scoreConfigName ? (
+                                <span className='text-muted-foreground text-xs'>
+                                  请先在评估器中完成输出变量绑定
+                                </span>
+                              ) : null}
+                            </div>
+                          </div>
+                        )
+                      }
+                    )
+                  ) : (
+                    <div className='text-muted-foreground rounded-lg border border-dashed p-4 text-sm'>
+                      当前评估器未定义输出变量。
+                    </div>
+                  )}
+                </div>
+              </>
+            ) : (
+              <div className='flex min-h-72 flex-col items-center justify-center gap-2 rounded-lg border border-dashed p-6 text-center'>
+                <h3 className='text-sm font-semibold'>请选择评估器</h3>
+                <p className='text-muted-foreground max-w-sm text-sm leading-6'>
+                  选择后将在这里配置评估器输入变量绑定。
+                </p>
+              </div>
+            )}
           </div>
-        ) : null}
-        {step === 2 ? (
-          <div className='flex flex-col gap-4'>
+        </section>
+      ) : null}
+
+      {step === 2 ? (
+        <section className='flex flex-col gap-4'>
+          <div className='bg-card text-card-foreground rounded-lg border p-4'>
+            <div className='mb-4 flex flex-col gap-1'>
+              <h3 className='text-sm font-semibold'>评测数据来源</h3>
+              <p className='text-muted-foreground text-sm'>
+                选择固定数据集，或通过 Trace 过滤条件动态抽样。
+              </p>
+            </div>
             <Tabs
               value={form.dataSource.type}
               onValueChange={(value) =>
@@ -353,116 +821,287 @@ export function AutoEvaluationTaskForm({
                   dataSource:
                     value === 'DATASET'
                       ? { type: 'DATASET', datasetId: '' }
-                      : {
-                          type: 'TRACE_FILTER',
-                          timeRange: '24h',
-                          environments: ['production'],
-                          traceName: '',
-                          userId: '',
-                          sessionId: '',
-                          tags: [],
-                          estimatedCount: 0,
-                        },
+                      : createDefaultTraceFilter(),
                 })
               }
             >
-              <TabsList>
-                <TabsTrigger value='DATASET'>数据集</TabsTrigger>
+              <TabsList className='mb-4'>
                 <TabsTrigger value='TRACE_FILTER'>Trace 过滤</TabsTrigger>
+                <TabsTrigger value='DATASET'>数据集</TabsTrigger>
               </TabsList>
-              <TabsContent value='DATASET' className='grid gap-4 md:grid-cols-2'>
-                <Field label='搜索数据集'>
-                  <Input
-                    value={datasetKeyword}
-                    onChange={(event) => setDatasetKeyword(event.target.value)}
-                  />
-                </Field>
-                <Field label='选择数据集'>
-                  <Select
-                    value={
-                      form.dataSource.type === 'DATASET'
-                        ? form.dataSource.datasetId
-                        : ''
-                    }
-                    onValueChange={(value) => {
-                      const dataset = datasets.find((item) => item.id === value)
-                      updateForm({
-                        ...form,
-                        dataSource: {
-                          type: 'DATASET',
-                          datasetId: value,
-                          projectId: dataset?.projectId,
-                        },
-                      })
-                    }}
-                  >
-                    <SelectTrigger className='w-full'>
-                      <SelectValue placeholder='选择数据集' />
-                    </SelectTrigger>
-                    <SelectContent>
-                      <SelectGroup>
-                        {datasets.map((dataset) => (
-                          <SelectItem key={dataset.id} value={dataset.id}>
-                            {dataset.name} · {dataset.itemCount} 条
-                            {dataset.projectName ? ` · ${dataset.projectName}` : ''}
-                          </SelectItem>
-                        ))}
-                      </SelectGroup>
-                    </SelectContent>
-                  </Select>
-                </Field>
+              <TabsContent
+                value='TRACE_FILTER'
+                className='grid gap-4 md:grid-cols-[minmax(0,1fr)_minmax(220px,280px)]'
+              >
+                <div className='grid gap-4 md:grid-cols-2'>
+                  <Field label='时间范围' className='md:col-span-2'>
+                    <div className='grid gap-3 lg:grid-cols-[minmax(0,1fr)_auto] lg:items-end'>
+                      <div className='grid gap-3 sm:grid-cols-2'>
+                        <Input
+                          type='datetime-local'
+                          aria-label='开始时间'
+                          value={
+                            form.dataSource.type === 'TRACE_FILTER'
+                              ? (form.dataSource.createdAtRange[0] ?? '')
+                              : ''
+                          }
+                          onChange={(event) => {
+                            if (form.dataSource.type !== 'TRACE_FILTER') return
+                            updateForm({
+                              ...form,
+                              dataSource: {
+                                ...form.dataSource,
+                                timeRange: '',
+                                createdAtRange: [
+                                  event.target.value,
+                                  form.dataSource.createdAtRange[1] ?? '',
+                                ],
+                              },
+                            })
+                          }}
+                        />
+                        <Input
+                          type='datetime-local'
+                          aria-label='结束时间'
+                          value={
+                            form.dataSource.type === 'TRACE_FILTER'
+                              ? (form.dataSource.createdAtRange[1] ?? '')
+                              : ''
+                          }
+                          onChange={(event) => {
+                            if (form.dataSource.type !== 'TRACE_FILTER') return
+                            updateForm({
+                              ...form,
+                              dataSource: {
+                                ...form.dataSource,
+                                timeRange: '',
+                                createdAtRange: [
+                                  form.dataSource.createdAtRange[0] ?? '',
+                                  event.target.value,
+                                ],
+                              },
+                            })
+                          }}
+                        />
+                      </div>
+                      <ToggleGroup
+                        type='single'
+                        variant='outline'
+                        size='default'
+                        value={
+                          form.dataSource.type === 'TRACE_FILTER'
+                            ? form.dataSource.timeRange
+                            : AUTO_EVALUATION_DEFAULT_TRACE_TIME_RANGE
+                        }
+                        onValueChange={(value) => {
+                          if (form.dataSource.type !== 'TRACE_FILTER' || !value)
+                            return
+                          const timeRange =
+                            value as (typeof AUTO_EVALUATION_TRACE_QUICK_TIME_RANGE_OPTIONS)[number]['value']
+                          updateForm({
+                            ...form,
+                            dataSource: {
+                              ...form.dataSource,
+                              timeRange,
+                              createdAtRange:
+                                createTraceDateTimeRange(timeRange),
+                            },
+                          })
+                        }}
+                        aria-label='快捷时间范围'
+                        className='w-fit'
+                      >
+                        {AUTO_EVALUATION_TRACE_QUICK_TIME_RANGE_OPTIONS.map(
+                          (option) => (
+                            <ToggleGroupItem
+                              key={option.value}
+                              value={option.value}
+                              aria-label={`最近 ${option.label}`}
+                            >
+                              {option.label}
+                            </ToggleGroupItem>
+                          )
+                        )}
+                      </ToggleGroup>
+                    </div>
+                  </Field>
+                  <Field label='User ID'>
+                    <Input
+                      placeholder='可选，按用户标识过滤'
+                      value={
+                        form.dataSource.type === 'TRACE_FILTER'
+                          ? form.dataSource.userId
+                          : ''
+                      }
+                      onChange={(event) =>
+                        form.dataSource.type === 'TRACE_FILTER'
+                          ? updateForm({
+                              ...form,
+                              dataSource: {
+                                ...form.dataSource,
+                                userId: event.target.value,
+                              },
+                            })
+                          : undefined
+                      }
+                    />
+                  </Field>
+                  <Field label='Session ID'>
+                    <Input
+                      placeholder='可选，按 Session ID 过滤'
+                      value={
+                        form.dataSource.type === 'TRACE_FILTER'
+                          ? form.dataSource.sessionId
+                          : ''
+                      }
+                      onChange={(event) =>
+                        form.dataSource.type === 'TRACE_FILTER'
+                          ? updateForm({
+                              ...form,
+                              dataSource: {
+                                ...form.dataSource,
+                                sessionId: event.target.value,
+                              },
+                            })
+                          : undefined
+                      }
+                    />
+                  </Field>
+                  <Field label='Tags' className='md:col-span-2'>
+                    <Input
+                      placeholder='可选，多个标签用逗号分隔'
+                      value={
+                        form.dataSource.type === 'TRACE_FILTER'
+                          ? form.dataSource.tags.join(', ')
+                          : ''
+                      }
+                      onChange={(event) =>
+                        form.dataSource.type === 'TRACE_FILTER'
+                          ? updateForm({
+                              ...form,
+                              dataSource: {
+                                ...form.dataSource,
+                                tags: parseCommaSeparatedValues(
+                                  event.target.value
+                                ),
+                              },
+                            })
+                          : undefined
+                      }
+                    />
+                  </Field>
+                </div>
+                <div className='bg-background flex flex-col justify-between gap-3 rounded-lg border p-4'>
+                  <div className='flex flex-col gap-1'>
+                    <span className='text-sm font-medium'>预估命中</span>
+                    <span className='text-muted-foreground text-sm'>
+                      运行前先统计符合过滤条件的 Trace 数量。
+                    </span>
+                    {traceCountState === 'loading' ? (
+                      <span className='text-muted-foreground text-xs'>
+                        正在统计...
+                      </span>
+                    ) : null}
+                    {traceCountState === 'error' ? (
+                      <span className='text-destructive text-xs'>
+                        统计失败，请调整条件或稍后重试。
+                      </span>
+                    ) : null}
+                  </div>
+                  <div className='flex items-end justify-between gap-3'>
+                    <span className='text-2xl font-semibold'>
+                      {form.dataSource.type === 'TRACE_FILTER'
+                        ? form.dataSource.estimatedCount
+                        : 0}
+                    </span>
+                    <Button
+                      type='button'
+                      variant='outline'
+                      size='sm'
+                      disabled={form.dataSource.type !== 'TRACE_FILTER'}
+                      onClick={() => {
+                        setTracePreviewPage(1)
+                        setTracePreviewOpen(true)
+                      }}
+                    >
+                      查看数据
+                    </Button>
+                  </div>
+                </div>
               </TabsContent>
-              <TabsContent value='TRACE_FILTER' className='grid gap-4 md:grid-cols-3'>
-                <Field label='时间范围'>
-                  <Input
-                    value={
-                      form.dataSource.type === 'TRACE_FILTER'
-                        ? form.dataSource.timeRange
-                        : '24h'
-                    }
-                    onChange={(event) =>
-                      form.dataSource.type === 'TRACE_FILTER'
-                        ? updateForm({
-                            ...form,
-                            dataSource: {
-                              ...form.dataSource,
-                              timeRange: event.target.value,
-                            },
-                          })
-                        : undefined
-                    }
-                  />
-                </Field>
-                <Field label='Trace Name'>
-                  <Input
-                    value={
-                      form.dataSource.type === 'TRACE_FILTER'
-                        ? form.dataSource.traceName
-                        : ''
-                    }
-                    onChange={(event) =>
-                      form.dataSource.type === 'TRACE_FILTER'
-                        ? updateForm({
-                            ...form,
-                            dataSource: {
-                              ...form.dataSource,
-                              traceName: event.target.value,
-                            },
-                          })
-                        : undefined
-                    }
-                  />
-                </Field>
-                <Field label='预估命中'>
-                  <Button type='button' variant='outline' onClick={() => void estimateTrace()}>
-                    {form.dataSource.type === 'TRACE_FILTER'
-                      ? `${form.dataSource.estimatedCount} 条`
-                      : '开始预估'}
-                  </Button>
-                </Field>
+              <TabsContent
+                value='DATASET'
+                className='grid gap-4 md:grid-cols-[minmax(0,1fr)_minmax(260px,320px)]'
+              >
+                <div className='grid gap-4 md:grid-cols-2'>
+                  <Field label='搜索数据集'>
+                    <Input
+                      placeholder='搜索数据集名称'
+                      value={datasetKeyword}
+                      onChange={(event) =>
+                        setDatasetKeyword(event.target.value)
+                      }
+                    />
+                  </Field>
+                  <Field label='选择数据集'>
+                    <Select
+                      value={
+                        form.dataSource.type === 'DATASET'
+                          ? form.dataSource.datasetId
+                          : ''
+                      }
+                      onValueChange={(value) => {
+                        const dataset = datasets.find(
+                          (item) => item.id === value
+                        )
+                        updateForm({
+                          ...form,
+                          dataSource: {
+                            type: 'DATASET',
+                            datasetId: value,
+                            projectId: dataset?.projectId,
+                          },
+                        })
+                      }}
+                    >
+                      <SelectTrigger className='w-full'>
+                        <SelectValue placeholder='选择数据集' />
+                      </SelectTrigger>
+                      <SelectContent>
+                        <SelectGroup>
+                          {datasets.map((dataset) => (
+                            <SelectItem key={dataset.id} value={dataset.id}>
+                              {dataset.name} · {dataset.itemCount} 条
+                              {dataset.projectName
+                                ? ` · ${dataset.projectName}`
+                                : ''}
+                            </SelectItem>
+                          ))}
+                        </SelectGroup>
+                      </SelectContent>
+                    </Select>
+                  </Field>
+                </div>
+                <SummaryPanel
+                  title='数据集摘要'
+                  items={[
+                    ['样本数', `${selectedDataset?.itemCount ?? 0} 条`],
+                    ['所属项目', selectedDataset?.projectName ?? '当前项目'],
+                    ['预计运行', `${estimatedRunCount} 条`],
+                  ]}
+                />
               </TabsContent>
             </Tabs>
-            <div className='grid gap-4 md:grid-cols-3'>
+          </div>
+
+          <div className='bg-card text-card-foreground rounded-lg border p-4'>
+            <div className='mb-4 flex flex-col gap-1'>
+              <h3 className='text-sm font-semibold'>执行配置</h3>
+              <p className='text-muted-foreground text-sm'>
+                配置报告模板、采样比例和 Badcase 阈值。
+              </p>
+            </div>
+            <div className='grid gap-4 lg:grid-cols-3'>
               <Field label='报告模板'>
                 <Select
                   value={form.reportTemplateId}
@@ -499,20 +1138,6 @@ export function AutoEvaluationTaskForm({
                   }
                 />
               </Field>
-              <Field label='Badcase'>
-                <div className='flex h-9 items-center gap-2'>
-                  <Switch
-                    checked={form.badcase.enabled}
-                    onCheckedChange={(checked) =>
-                      updateForm({
-                        ...form,
-                        badcase: { ...form.badcase, enabled: checked },
-                      })
-                    }
-                  />
-                  <span className='text-sm'>启用</span>
-                </div>
-              </Field>
               <Field label='Badcase 阈值'>
                 <Input
                   type='number'
@@ -534,64 +1159,428 @@ export function AutoEvaluationTaskForm({
               </Field>
             </div>
           </div>
-        ) : null}
-        <div className='flex flex-wrap justify-between gap-2'>
-          <Button type='button' variant='outline' onClick={() => void handleBack()}>
-            取消
+        </section>
+      ) : null}
+
+      <div className='bg-background/95 supports-[backdrop-filter]:bg-background/80 sticky bottom-0 -mx-4 -mb-4 flex flex-wrap justify-between gap-2 border-t px-4 py-4 backdrop-blur'>
+        <div className='ml-auto flex gap-2'>
+          <Button
+            type='button'
+            variant='outline'
+            disabled={step === 0}
+            onClick={() => setStep((value) => Math.max(0, value - 1))}
+          >
+            上一步
           </Button>
-          <div className='flex gap-2'>
+          {step < 2 ? (
             <Button
               type='button'
-              variant='outline'
-              disabled={step === 0}
-              onClick={() => setStep((value) => Math.max(0, value - 1))}
+              onClick={() => {
+                if (validateStep()) setStep((value) => value + 1)
+              }}
             >
-              上一步
+              下一步
             </Button>
-            {step < 2 ? (
+          ) : (
+            <>
               <Button
                 type='button'
-                onClick={() => {
-                  if (validateStep()) setStep((value) => value + 1)
-                }}
+                variant='outline'
+                disabled={submittingMode !== null}
+                onClick={() => void handleSubmit('create')}
               >
-                下一步
+                {submittingMode === 'create' ? '创建中...' : '仅创建'}
               </Button>
-            ) : (
-              <>
-                <Button
-                  type='button'
-                  variant='outline'
-                  onClick={() => void handleSubmit('create')}
-                >
-                  仅创建
-                </Button>
-                <Button type='button' onClick={() => void handleSubmit('run')}>
-                  创建并运行
-                </Button>
-              </>
-            )}
-          </div>
+              <Button
+                type='button'
+                disabled={submittingMode !== null}
+                onClick={() => void handleSubmit('run')}
+              >
+                {submittingMode === 'run' ? '创建中...' : '创建并运行'}
+              </Button>
+            </>
+          )}
         </div>
-      </CardContent>
-    </Card>
+      </div>
+      <TracePreviewDialog
+        open={tracePreviewOpen}
+        onOpenChange={setTracePreviewOpen}
+        rows={tracePreviewRows}
+        total={tracePreviewTotal}
+        page={tracePreviewPage}
+        pageSize={tracePreviewPageSize}
+        loading={tracePreviewLoading}
+        error={tracePreviewError}
+        onPageChange={setTracePreviewPage}
+        onPageSizeChange={(pageSize) => {
+          setTracePreviewPageSize(pageSize)
+          setTracePreviewPage(1)
+        }}
+      />
+    </div>
   )
 }
 
 function Field({
   label,
+  description,
+  tooltip,
   className,
   children,
 }: {
   label: string
+  description?: string
+  tooltip?: string
   className?: string
   children: React.ReactNode
 }) {
   return (
-    <div className={`flex flex-col gap-2 ${className ?? ''}`}>
-      <Label>{label}</Label>
+    <div className={cn('flex flex-col gap-2', className)}>
+      <div className='flex flex-col gap-1'>
+        <div className='flex items-center gap-1.5'>
+          <Label>{label}</Label>
+          {tooltip ? (
+            <Tooltip>
+              <TooltipTrigger asChild>
+                <button
+                  type='button'
+                  aria-label={`${label}说明`}
+                  className='text-muted-foreground hover:text-foreground focus-visible:ring-ring/50 inline-flex size-4 items-center justify-center rounded-full focus-visible:ring-[3px] focus-visible:outline-none'
+                >
+                  <Info className='size-3.5' />
+                </button>
+              </TooltipTrigger>
+              <TooltipContent side='top'>{tooltip}</TooltipContent>
+            </Tooltip>
+          ) : null}
+        </div>
+        {description ? (
+          <span className='text-muted-foreground text-xs leading-5'>
+            {description}
+          </span>
+        ) : null}
+      </div>
       {children}
     </div>
+  )
+}
+
+function InfoItem({ label, value }: { label: string; value: React.ReactNode }) {
+  return (
+    <div className='flex min-w-0 flex-col gap-1'>
+      <span className='text-muted-foreground text-xs'>{label}</span>
+      <span className='truncate font-medium'>{value}</span>
+    </div>
+  )
+}
+
+function SummaryPanel({
+  title,
+  items,
+}: {
+  title: string
+  items: [string, React.ReactNode][]
+}) {
+  return (
+    <div className='bg-background rounded-lg border p-4'>
+      <h4 className='mb-3 text-sm font-medium'>{title}</h4>
+      <dl className='flex flex-col gap-3'>
+        {items.map(([label, value]) => (
+          <div key={label} className='flex items-center justify-between gap-3'>
+            <dt className='text-muted-foreground text-sm'>{label}</dt>
+            <dd className='min-w-0 truncate text-sm font-medium'>{value}</dd>
+          </div>
+        ))}
+      </dl>
+    </div>
+  )
+}
+
+function ScenarioChipGroup({
+  label,
+  values,
+}: {
+  label: string
+  values: string[]
+}) {
+  return (
+    <div className='grid gap-2'>
+      <span className='text-muted-foreground text-xs'>{label}</span>
+      <div className='flex flex-wrap gap-1.5'>
+        {values.map((value) => (
+          <Badge key={value} variant='outline' className='text-[10px]'>
+            {value}
+          </Badge>
+        ))}
+      </div>
+    </div>
+  )
+}
+
+function EvaluatorGroup({
+  title,
+  evaluators,
+  selectedEvaluatorId,
+  onSelect,
+}: {
+  title: string
+  evaluators: MockAutoEvaluationEvaluator[]
+  selectedEvaluatorId: string
+  onSelect: (evaluator: MockAutoEvaluationEvaluator) => void
+}) {
+  if (!evaluators.length) return null
+
+  return (
+    <div className='grid gap-2'>
+      <div className='text-muted-foreground flex items-center justify-between gap-2 px-1 text-xs font-medium'>
+        <span>{title}</span>
+        <span>{evaluators.length} 个</span>
+      </div>
+      {evaluators.map((evaluator) => (
+        <EvaluatorButton
+          key={evaluator.id}
+          evaluator={evaluator}
+          selected={selectedEvaluatorId === evaluator.id}
+          onSelect={onSelect}
+        />
+      ))}
+    </div>
+  )
+}
+
+function EvaluatorButton({
+  evaluator,
+  selected,
+  onSelect,
+}: {
+  evaluator: MockAutoEvaluationEvaluator
+  selected: boolean
+  onSelect: (evaluator: MockAutoEvaluationEvaluator) => void
+}) {
+  return (
+    <button
+      type='button'
+      className={cn(
+        'bg-background rounded-lg border p-3 text-left transition-colors',
+        'hover:border-primary/50 hover:bg-accent focus-visible:ring-ring/50 focus-visible:ring-[3px] focus-visible:outline-none',
+        selected && 'border-primary bg-primary/5'
+      )}
+      onClick={() => onSelect(evaluator)}
+    >
+      <span className='flex flex-col gap-1'>
+        <span className='flex min-w-0 items-start justify-between gap-2'>
+          <span className='min-w-0 truncate font-medium'>{evaluator.name}</span>
+          <Badge variant='secondary' className='shrink-0 text-[10px]'>
+            {getScenarioLabel(evaluator.evaluationScenario)}
+          </Badge>
+        </span>
+        <span className='text-muted-foreground line-clamp-2 text-xs leading-5'>
+          {evaluator.description || '暂无描述'}
+        </span>
+        <span className='text-muted-foreground text-xs'>
+          v{evaluator.version} · {evaluator.variables.length} 个变量
+          {getEvaluatorOutputVariables(evaluator).length
+            ? ` · ${getEvaluatorOutputVariables(evaluator).length} 个输出`
+            : ''}
+        </span>
+      </span>
+    </button>
+  )
+}
+
+function NoScenarioEvaluatorHint({ scenarioLabel }: { scenarioLabel: string }) {
+  return (
+    <div className='text-muted-foreground rounded-lg border border-dashed p-4 text-sm leading-6'>
+      当前还没有匹配“{scenarioLabel}”的评估器。可以先选择其他评估器运行，也可以去评估器页面创建该场景的 OpenJudge、Dify 或 SDK 评估器。
+    </div>
+  )
+}
+
+function TracePreviewDialog({
+  open,
+  onOpenChange,
+  rows,
+  total,
+  page,
+  pageSize,
+  loading,
+  error,
+  onPageChange,
+  onPageSizeChange,
+}: {
+  open: boolean
+  onOpenChange: (open: boolean) => void
+  rows: TraceLogRow[]
+  total: number
+  page: number
+  pageSize: number
+  loading: boolean
+  error: string
+  onPageChange: (page: number) => void
+  onPageSizeChange: (pageSize: number) => void
+}) {
+  const totalPages = Math.max(1, Math.ceil(total / pageSize))
+  const currentPage = Math.min(page, totalPages)
+  const pageNumbers = getPageNumbers(currentPage, totalPages)
+
+  return (
+    <Dialog open={open} onOpenChange={onOpenChange}>
+      <DialogContent className='flex h-[50svh] max-h-[calc(100svh-2rem)] w-[50vw] max-w-[calc(100vw-2rem)] min-w-[600px] flex-col gap-0 overflow-hidden p-0 sm:max-w-[50vw]'>
+        <DialogHeader className='border-b p-6 pb-4 text-start'>
+          <DialogTitle>查看 Trace 数据</DialogTitle>
+          <DialogDescription>
+            当前过滤条件共命中 {total} 条 Trace。
+          </DialogDescription>
+        </DialogHeader>
+        <div className='min-h-0 flex-1 overflow-auto p-6'>
+          {loading ? (
+            <div className='text-muted-foreground flex min-h-40 items-center justify-center text-sm'>
+              加载 Trace 数据中...
+            </div>
+          ) : error ? (
+            <div className='text-destructive flex min-h-40 items-center justify-center text-sm'>
+              {error}
+            </div>
+          ) : rows.length ? (
+            <div className='rounded-md border'>
+              <Table className='table-fixed'>
+                <TableHeader>
+                  <TableRow>
+                    <TableHead className='w-[30%]'>Trace ID</TableHead>
+                    <TableHead className='w-[20%]'>Session ID</TableHead>
+                    <TableHead className='w-[12%]'>环境</TableHead>
+                    <TableHead className='w-[10%]'>状态</TableHead>
+                    <TableHead className='w-[16%]'>用户</TableHead>
+                    <TableHead className='w-[12%]'>创建时间</TableHead>
+                  </TableRow>
+                </TableHeader>
+                <TableBody>
+                  {rows.map((trace) => (
+                    <TableRow key={trace.traceId}>
+                      <TableCell className='font-medium break-all whitespace-normal'>
+                        {trace.traceId}
+                      </TableCell>
+                      <TableCell className='break-all whitespace-normal'>
+                        {trace.sessionId || '-'}
+                      </TableCell>
+                      <TableCell>{trace.environment || '-'}</TableCell>
+                      <TableCell>{trace.status || '-'}</TableCell>
+                      <TableCell className='break-all whitespace-normal'>
+                        {trace.userId || '-'}
+                      </TableCell>
+                      <TableCell>{formatDateTime(trace.createdAt)}</TableCell>
+                    </TableRow>
+                  ))}
+                </TableBody>
+              </Table>
+            </div>
+          ) : (
+            <div className='text-muted-foreground flex min-h-40 items-center justify-center rounded-md border border-dashed text-sm'>
+              当前过滤条件下暂无 Trace 数据。
+            </div>
+          )}
+        </div>
+        <div className='flex flex-wrap items-center justify-between gap-3 border-t px-6 py-4'>
+          <div className='flex items-center gap-2'>
+            <Select
+              value={`${pageSize}`}
+              onValueChange={(value) => onPageSizeChange(Number(value))}
+              disabled={loading}
+            >
+              <SelectTrigger className='h-8 w-[70px]'>
+                <SelectValue placeholder={pageSize} />
+              </SelectTrigger>
+              <SelectContent side='top'>
+                <SelectGroup>
+                  {TRACE_PREVIEW_PAGE_SIZE_OPTIONS.map((option) => (
+                    <SelectItem key={option} value={`${option}`}>
+                      {option}
+                    </SelectItem>
+                  ))}
+                </SelectGroup>
+              </SelectContent>
+            </Select>
+            <span className='text-sm font-medium'>每页行数</span>
+          </div>
+
+          <div className='flex flex-wrap items-center gap-3'>
+            <span className='text-muted-foreground text-sm'>
+              共 {total.toLocaleString()} 条，第 {currentPage} / {totalPages}{' '}
+              页
+            </span>
+            <div className='flex items-center gap-2'>
+              <Button
+                type='button'
+                variant='outline'
+                className='size-8 p-0'
+                disabled={loading || currentPage <= 1}
+                onClick={() => onPageChange(1)}
+              >
+                <span className='sr-only'>跳到第一页</span>
+                <DoubleArrowLeftIcon />
+              </Button>
+              <Button
+                type='button'
+                variant='outline'
+                className='size-8 p-0'
+                disabled={loading || currentPage <= 1}
+                onClick={() => onPageChange(Math.max(1, currentPage - 1))}
+              >
+                <span className='sr-only'>跳到上一页</span>
+                <ChevronLeftIcon />
+              </Button>
+              {pageNumbers.map((pageNumber, index) => (
+                <div
+                  key={`${pageNumber}-${index}`}
+                  className='flex items-center'
+                >
+                  {pageNumber === '...' ? (
+                    <span className='text-muted-foreground px-1 text-sm'>
+                      ...
+                    </span>
+                  ) : (
+                    <Button
+                      type='button'
+                      variant={
+                        currentPage === pageNumber ? 'default' : 'outline'
+                      }
+                      className='h-8 min-w-8 px-2'
+                      disabled={loading}
+                      onClick={() => onPageChange(pageNumber as number)}
+                    >
+                      <span className='sr-only'>跳到第 {pageNumber} 页</span>
+                      {pageNumber}
+                    </Button>
+                  )}
+                </div>
+              ))}
+              <Button
+                type='button'
+                variant='outline'
+                className='size-8 p-0'
+                disabled={loading || currentPage >= totalPages}
+                onClick={() =>
+                  onPageChange(Math.min(totalPages, currentPage + 1))
+                }
+              >
+                <span className='sr-only'>跳到下一页</span>
+                <ChevronRightIcon />
+              </Button>
+              <Button
+                type='button'
+                variant='outline'
+                className='size-8 p-0'
+                disabled={loading || currentPage >= totalPages}
+                onClick={() => onPageChange(totalPages)}
+              >
+                <span className='sr-only'>跳到最后一页</span>
+                <DoubleArrowRightIcon />
+              </Button>
+            </div>
+          </div>
+        </div>
+      </DialogContent>
+    </Dialog>
   )
 }
 
@@ -602,19 +1591,21 @@ function getStepError(
 ) {
   if (step === 0) {
     if (!form.name.trim()) return '任务名称不能为空'
-    if (!form.scoreName.trim()) return 'Score Name 不能为空'
-    if (!isScoreNameValid(form.scoreName)) {
-      return 'Score Name 只允许英文、数字、下划线和短横线'
-    }
   }
   if (step === 1) {
     if (!form.evaluatorId) return '请选择评估器'
     if (
-      evaluator?.variables.some((variable) => !form.variableMapping[variable]) ??
+      evaluator?.variables.some(
+        (variable) => !form.variableMapping[variable]
+      ) ??
       true
     ) {
-      return '请完成评估器变量映射'
+      return '请完成评估器输入变量绑定'
     }
+    const outputVariables = evaluator
+      ? getEvaluatorOutputVariables(evaluator)
+      : []
+    if (!outputVariables.length) return '请先为评估器定义输出变量'
   }
   if (step === 2) {
     if (form.dataSource.type === 'DATASET' && !form.dataSource.datasetId) {
@@ -630,8 +1621,8 @@ function getStepError(
       return '采样率必须在 1% 到 100% 之间'
     }
     if (
-      form.badcase.enabled &&
-      (form.badcase.threshold === null || Number.isNaN(form.badcase.threshold))
+      form.badcase.threshold === null ||
+      Number.isNaN(form.badcase.threshold)
     ) {
       return 'Badcase 阈值必须为数字'
     }
@@ -639,18 +1630,242 @@ function getStepError(
   return ''
 }
 
-function isScoreNameValid(value: string) {
-  return /^[A-Za-z0-9_-]+$/.test(value)
-}
-
 function getEstimatedRunCount(sampleCount: number, sampleRate: number) {
   return Math.ceil((sampleCount * sampleRate) / 100)
 }
 
+function isAutoEvaluationSupportedEvaluator(evaluator: {
+  type: string
+  provider: string
+}) {
+  return (
+    (evaluator.type === 'WORKFLOW' &&
+      AUTO_EVALUATION_SUPPORTED_WORKFLOW_PROVIDERS.includes(
+        evaluator.provider
+      )) ||
+    (evaluator.type === 'SDK' && evaluator.provider === 'OPENJUDGE')
+  )
+}
+
+function getScenarioMatchedEvaluators(
+  evaluators: MockAutoEvaluationEvaluator[],
+  scenario?: EvaluationScenario | null
+) {
+  if (!scenario) return evaluators
+  return evaluators.filter(
+    (evaluator) => evaluator.evaluationScenario === scenario
+  )
+}
+
+function getScenarioOtherEvaluators(
+  evaluators: MockAutoEvaluationEvaluator[],
+  scenario?: EvaluationScenario | null
+) {
+  if (!scenario) return []
+  return evaluators.filter(
+    (evaluator) => evaluator.evaluationScenario !== scenario
+  )
+}
+
+function getScenarioLabel(scenario?: EvaluationScenario | null) {
+  return scenario ? (evaluationScenarioLabels[scenario] ?? scenario) : '未分类'
+}
+
+function getEvaluatorOutputVariables(evaluator: MockAutoEvaluationEvaluator) {
+  return evaluator.outputVariables?.length
+    ? evaluator.outputVariables
+    : ['score']
+}
+
+function createDefaultScoreMapping(evaluator: MockAutoEvaluationEvaluator) {
+  return getEvaluatorScoreMapping(evaluator)
+}
+
+function getEvaluatorScoreMapping(evaluator: MockAutoEvaluationEvaluator) {
+  const outputVariables = getEvaluatorOutputVariables(evaluator)
+  const scoreMappingByVariable = new Map(
+    (evaluator.outputVariableMappings ?? [])
+      .filter((item) => item.variableName.trim())
+      .map((item) => [item.variableName, item])
+  )
+  return Object.fromEntries(
+    outputVariables.map((variable) => {
+      const mapping = scoreMappingByVariable.get(variable)
+      const scoreConfigName = mapping?.scoreConfigName.trim() ?? ''
+      return [
+        variable,
+        {
+          scoreConfigId: mapping?.scoreConfigId?.trim() || scoreConfigName,
+          scoreConfigName,
+        },
+      ]
+    })
+  )
+}
+
+function createDefaultVariableMapping(evaluator: MockAutoEvaluationEvaluator) {
+  return Object.fromEntries(
+    evaluator.variables.map((variable) => [
+      variable,
+      toMappingTemplate(findDefaultMappingField(variable)),
+    ])
+  )
+}
+
+function findDefaultMappingField(variable: string) {
+  const normalizedVariable = variable.toLowerCase()
+  const defaultField = defaultSampleMappingByVariable[normalizedVariable]
+  const matchedDefaultField = defaultField
+    ? findMappingFieldValue(defaultField)
+    : null
+
+  if (matchedDefaultField) {
+    return matchedDefaultField
+  }
+
+  return (
+    sampleFieldOptions.find(
+      (field) =>
+        field.toLowerCase() === `sample.${normalizedVariable}` ||
+        field.toLowerCase().endsWith(`.${normalizedVariable}`)
+    ) ??
+    sampleFieldOptions[0] ??
+    ''
+  )
+}
+
+function findMappingFieldValue(value: string) {
+  return sampleFieldOptions.find(
+    (field) => field.toLowerCase() === value.toLowerCase()
+  )
+}
+
+function getBoundScoreMapping(
+  scoreMapping: AutoEvaluationTaskFormInput['scoreMapping']
+) {
+  return Object.fromEntries(
+    Object.entries(scoreMapping).filter(
+      ([, mapping]) => mapping.scoreConfigId.trim() !== ''
+    )
+  )
+}
+
+function getPrimaryScoreName(
+  scoreMapping: AutoEvaluationTaskFormInput['scoreMapping']
+) {
+  return (
+    Object.values(scoreMapping).find((item) => item.scoreConfigName)
+      ?.scoreConfigName ?? 'dify_score'
+  )
+}
+
+function createDefaultTraceFilter(): Extract<
+  AutoEvaluationTaskFormInput['dataSource'],
+  { type: 'TRACE_FILTER' }
+> {
+  return {
+    type: 'TRACE_FILTER',
+    timeRange: AUTO_EVALUATION_DEFAULT_TRACE_TIME_RANGE,
+    createdAtRange: createTraceDateTimeRange(
+      AUTO_EVALUATION_DEFAULT_TRACE_TIME_RANGE
+    ),
+    environments: [],
+    userId: '',
+    sessionId: '',
+    tags: [],
+    estimatedCount: 0,
+  }
+}
+
+function getTraceFilterKey(
+  traceFilter: Extract<
+    AutoEvaluationTaskFormInput['dataSource'],
+    { type: 'TRACE_FILTER' }
+  >
+) {
+  return JSON.stringify({
+    type: 'TRACE_FILTER',
+    timeRange: traceFilter.timeRange,
+    createdAtRange: traceFilter.createdAtRange,
+    environments: traceFilter.environments,
+    userId: traceFilter.userId,
+    sessionId: traceFilter.sessionId,
+    tags: traceFilter.tags,
+  })
+}
+
+function parseTraceFilterKey(
+  key: string
+): Extract<
+  AutoEvaluationTaskFormInput['dataSource'],
+  { type: 'TRACE_FILTER' }
+> {
+  const parsed = JSON.parse(key) as Omit<
+    Extract<
+      AutoEvaluationTaskFormInput['dataSource'],
+      { type: 'TRACE_FILTER' }
+    >,
+    'estimatedCount'
+  >
+
+  return {
+    ...parsed,
+    estimatedCount: 0,
+  }
+}
+
+function createTraceDateTimeRange(
+  timeRange: (typeof AUTO_EVALUATION_TRACE_QUICK_TIME_RANGE_OPTIONS)[number]['value']
+) {
+  const days = Number(timeRange.replace('d', ''))
+  const end = new Date()
+  const start = new Date(end)
+  start.setDate(end.getDate() - days)
+  return [toDateTimeLocalValue(start), toDateTimeLocalValue(end)]
+}
+
+function toDateTimeLocalValue(date: Date) {
+  const offset = date.getTimezoneOffset()
+  const localDate = new Date(date.getTime() - offset * 60_000)
+  return localDate.toISOString().slice(0, 16)
+}
+
+function parseCommaSeparatedValues(value: string) {
+  return value
+    .split(',')
+    .map((item) => item.trim())
+    .filter(Boolean)
+}
+
+function formatDateTime(value: string) {
+  const date = new Date(value)
+  if (Number.isNaN(date.getTime())) return value
+
+  return date.toLocaleString('zh-CN', {
+    year: 'numeric',
+    month: '2-digit',
+    day: '2-digit',
+    hour: '2-digit',
+    minute: '2-digit',
+  })
+}
+
+function getSubmitErrorMessage(error: unknown) {
+  if (error && typeof error === 'object' && 'message' in error) {
+    const message = String((error as { message?: unknown }).message ?? '')
+    if (message) return message
+  }
+  if (error instanceof Error && error.message) {
+    return error.message
+  }
+  return '自动评测任务创建失败，请稍后重试'
+}
+
 function toMappingTemplate(value: string) {
-  return `{{ ${value} }}`
+  return value ? `{{ ${value} }}` : ''
 }
 
 function getMappingSelectValue(value?: string) {
-  return value?.replace(/^{{\s*/, '').replace(/\s*}}$/, '') ?? ''
+  const rawValue = value?.replace(/^{{\s*/, '').replace(/\s*}}$/, '') ?? ''
+  return legacyMappingAliases[rawValue.toLowerCase()] ?? rawValue
 }

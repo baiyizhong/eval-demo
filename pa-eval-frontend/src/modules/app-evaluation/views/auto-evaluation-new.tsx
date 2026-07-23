@@ -1,14 +1,17 @@
 import { useState } from 'react'
-import { useNavigate, useParams } from 'react-router'
+import { useNavigate, useParams, useSearchParams } from 'react-router'
 import { confirm } from '@/lib/confirm'
 import { Page } from '@/components/common/page'
 import { PageAction } from '@/components/common/page-action'
+import type { EvaluationScenario } from '../lib/evaluation-scenarios'
 import { AutoEvaluationTaskForm } from '../components/auto-evaluation-task-form'
 
 export function ProjectAutoEvaluationNew() {
   const { projectId = 'project_customer_agent' } = useParams()
   const navigate = useNavigate()
+  const [searchParams] = useSearchParams()
   const [dirty, setDirty] = useState(false)
+  const initialScenario = parseEvaluationScenario(searchParams.get('scenario'))
 
   const backToList = () =>
     navigate(`/projects/${projectId}/evaluation/auto-evaluations`)
@@ -38,10 +41,27 @@ export function ProjectAutoEvaluationNew() {
         />
         <AutoEvaluationTaskForm
           projectId={projectId}
+          initialScenario={initialScenario}
           onDirtyChange={setDirty}
           onCancel={backToList}
         />
       </div>
     </Page>
   )
+}
+
+function parseEvaluationScenario(value: string | null): EvaluationScenario | null {
+  if (
+    value === 'SINGLE_TURN' ||
+    value === 'MULTI_TURN' ||
+    value === 'TOOL_CALLING' ||
+    value === 'MULTI_TURN_TOOL_CALLING' ||
+    value === 'RAG_FACTUALITY' ||
+    value === 'SAFETY' ||
+    value === 'AGENT_SKILL' ||
+    value === 'CUSTOM'
+  ) {
+    return value
+  }
+  return null
 }

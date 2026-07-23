@@ -1,6 +1,9 @@
 from fastapi.testclient import TestClient
+import psycopg
+import pytest
 
 from app.auth_context import CurrentUserContext, get_current_user_context
+from app.config import Settings
 from app.langfuse_db import LangfuseDatabaseReader, get_langfuse_db_reader
 from app.main import app
 
@@ -10,8 +13,10 @@ class FakeDatabaseReader:
         self.user_id = None
         self.created_langfuse_payload = None
         self.created_pa_payload = None
+        self.updated_pa_payload = None
         self.detail_user_id = None
         self.deleted_pa_evaluator = None
+        self.visible_project_checks = []
 
     async def list_evaluators_for_user(self, user_id: str) -> list[dict]:
         self.user_id = user_id
@@ -55,7 +60,41 @@ class FakeDatabaseReader:
                 "usageCount": 0,
                 "updatedAt": "2026-07-03T09:00:00.000Z",
             },
+            {
+                "id": "pa-evaluator-openjudge-1",
+                "name": "OpenJudge 默认评估器",
+                "type": "SDK",
+                "version": "v1",
+                "variables": ["input", "output", "expected_output"],
+                "description": "OpenJudge SDK 评估器",
+                "provider": "OPENJUDGE",
+                "projectId": "project-1",
+                "projectName": "默认项目",
+                "usageCount": 0,
+                "updatedAt": "2026-07-04T09:00:00.000Z",
+            },
+            {
+                "id": "pa-evaluator-openjudge-2",
+                "name": "其他项目 OpenJudge",
+                "type": "SDK",
+                "version": "v1",
+                "variables": ["input", "output"],
+                "description": "OpenJudge SDK 评估器",
+                "provider": "OPENJUDGE",
+                "projectId": "project-2",
+                "projectName": "其他项目",
+                "usageCount": 0,
+                "updatedAt": "2026-07-04T08:00:00.000Z",
+            },
         ]
+
+    async def ensure_project_visible(self, project_id: str, user_id: str) -> None:
+        self.visible_project_checks.append(
+            {
+                "project_id": project_id,
+                "user_id": user_id,
+            }
+        )
 
     async def create_langfuse_evaluator(
         self,
@@ -158,6 +197,34 @@ class FakeDatabaseReader:
             "user_id": user_id,
         }
 
+    async def update_pa_evaluator_for_user(
+        self,
+        evaluator_id: str,
+        payload: dict,
+        user_id: str,
+        user_email: str,
+    ) -> dict:
+        self.updated_pa_payload = {
+            "evaluator_id": evaluator_id,
+            "payload": payload,
+            "user_id": user_id,
+            "user_email": user_email,
+        }
+        return {
+            "id": evaluator_id,
+            "name": payload["name"],
+            "type": payload["type"],
+            "version": "v2",
+            "variables": payload["variables"],
+            "outputVariables": payload["output_variables"],
+            "description": payload["description"],
+            "provider": payload["provider"],
+            "projectId": payload["project_id"],
+            "projectName": "默认项目",
+            "usageCount": 0,
+            "updatedAt": "2026-07-05T09:00:00.000Z",
+        }
+
 
 def override_reader(fake_reader: FakeDatabaseReader):
     async def _override() -> LangfuseDatabaseReader:
@@ -172,6 +239,85 @@ def override_reader(fake_reader: FakeDatabaseReader):
 
 def clear_overrides() -> None:
     app.dependency_overrides.clear()
+
+
+@pytest.mark.anyio
+async def test_pa_evaluator_list_falls_back_when_output_variables_column_missing(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    reader = LangfuseDatabaseReader(Settings())
+    calls: list[str] = []
+
+    async def fake_fetch_all(sql: str, params: dict) -> list[dict]:
+        calls.append(sql)
+        if "output_variables" in sql:
+            raise psycopg.errors.UndefinedColumn("column pe.output_variables does not exist")
+        return [
+            {
+                "id": "pa-evaluator-1",
+                "name": "Dify 客诉判断",
+                "type": "WORKFLOW",
+                "provider": "DIFY",
+                "version": 1,
+                "description": "Dify 工作流评估器",
+                "variables": ["input", "output"],
+                "project_id": "project-1",
+                "project_name": "默认项目",
+                "updated_at": "2026-07-03T09:00:00.000Z",
+            }
+        ]
+
+    monkeypatch.setattr(reader, "_fetch_all", fake_fetch_all)
+
+    evaluators = await reader._list_pa_evaluators_for_user("user-1")
+
+    assert len(calls) == 2
+    assert evaluators[0]["id"] == "pa-evaluator-1"
+    assert evaluators[0]["outputVariables"] == []
+
+
+@pytest.mark.anyio
+async def test_pa_evaluator_list_exposes_output_variable_mappings(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    reader = LangfuseDatabaseReader(Settings())
+
+    async def fake_fetch_all(sql: str, params: dict) -> list[dict]:
+        assert "pe.config" in sql
+        return [
+            {
+                "id": "pa-evaluator-1",
+                "name": "Dify 客诉判断",
+                "type": "WORKFLOW",
+                "provider": "DIFY",
+                "version": 1,
+                "description": "Dify 工作流评估器",
+                "variables": ["input", "output"],
+                "output_variables": ["quality_score"],
+                "config": {
+                    "outputVariableMappings": [
+                        {
+                            "variableName": "quality_score",
+                            "scoreConfigName": "回答质量",
+                        },
+                    ],
+                },
+                "project_id": "project-1",
+                "project_name": "默认项目",
+                "updated_at": "2026-07-03T09:00:00.000Z",
+            }
+        ]
+
+    monkeypatch.setattr(reader, "_fetch_all", fake_fetch_all)
+
+    evaluators = await reader._list_pa_evaluators_for_user("user-1")
+
+    assert evaluators[0]["outputVariableMappings"] == [
+        {
+            "variableName": "quality_score",
+            "scoreConfigName": "回答质量",
+        },
+    ]
 
 
 def test_lists_evaluators_from_langfuse_with_pa_pagination_and_keyword() -> None:
@@ -244,6 +390,106 @@ def test_filters_evaluators_by_type() -> None:
     assert response.json()["data"]["datas"][0]["id"] == "eval-template-2"
 
 
+def test_filters_openjudge_evaluators_by_current_project() -> None:
+    fake_reader = FakeDatabaseReader()
+    override_reader(fake_reader)
+
+    try:
+        response = TestClient(app).get(
+            "/api/evaluators",
+            params={"projectId": "project-1", "type": "SDK"},
+        )
+    finally:
+        clear_overrides()
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["data"]["total"] == 10
+    assert [item["id"] for item in body["data"]["datas"][:9]] == [
+        "paeval_default_openjudge",
+        "paeval_default_openjudge_relevance",
+        "paeval_default_openjudge_instruction_following",
+        "paeval_default_openjudge_hallucination",
+        "paeval_default_openjudge_harmfulness",
+        "paeval_default_openjudge_helpfulness",
+        "paeval_default_openjudge_completeness",
+        "paeval_default_openjudge_context_memory",
+        "paeval_default_openjudge_trajectory_accuracy",
+    ]
+    assert body["data"]["datas"][0]["provider"] == "OPENJUDGE"
+    assert body["data"]["datas"][0]["isBuiltin"] is True
+    assert fake_reader.visible_project_checks == [
+        {
+            "project_id": "project-1",
+            "user_id": "user-1",
+        }
+    ]
+
+
+def test_gets_default_openjudge_evaluator_for_current_project() -> None:
+    fake_reader = FakeDatabaseReader()
+    override_reader(fake_reader)
+
+    try:
+        response = TestClient(app).get(
+            "/api/evaluators/paeval_default_openjudge",
+            params={"projectId": "project-1"},
+        )
+    finally:
+        clear_overrides()
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["data"]["id"] == "paeval_default_openjudge"
+    assert body["data"]["type"] == "SDK"
+    assert body["data"]["provider"] == "OPENJUDGE"
+    assert body["data"]["config"]["sdkPackage"] == "openjudge"
+
+
+def test_gets_default_openjudge_relevance_evaluator_for_current_project() -> None:
+    fake_reader = FakeDatabaseReader()
+    override_reader(fake_reader)
+
+    try:
+        response = TestClient(app).get(
+            "/api/evaluators/paeval_default_openjudge_relevance",
+            params={"projectId": "project-1"},
+        )
+    finally:
+        clear_overrides()
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["data"]["id"] == "paeval_default_openjudge_relevance"
+    assert body["data"]["name"] == "OpenJudge 相关性评估器"
+    assert body["data"]["evaluationScenario"] == "SINGLE_TURN"
+    assert body["data"]["config"]["grader"] == "relevance"
+    assert body["data"]["config"]["evaluationScenario"] == "SINGLE_TURN"
+
+
+def test_gets_default_openjudge_trajectory_evaluator_for_current_project() -> None:
+    fake_reader = FakeDatabaseReader()
+    override_reader(fake_reader)
+
+    try:
+        response = TestClient(app).get(
+            "/api/evaluators/paeval_default_openjudge_trajectory_accuracy",
+            params={"projectId": "project-1"},
+        )
+    finally:
+        clear_overrides()
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["data"]["id"] == "paeval_default_openjudge_trajectory_accuracy"
+    assert body["data"]["name"] == "OpenJudge 工具调用轨迹评估器"
+    assert body["data"]["variables"] == ["messages", "input", "output", "context"]
+    assert body["data"]["evaluationScenario"] == "TOOL_CALLING"
+    assert body["data"]["config"]["grader"] == "trajectory_accuracy"
+    assert body["data"]["config"]["evaluationScenario"] == "TOOL_CALLING"
+    assert body["data"]["config"]["scoreScaleMax"] == 3
+
+
 def test_lists_custom_pa_evaluators_with_langfuse_evaluators() -> None:
     override_reader(FakeDatabaseReader())
 
@@ -299,6 +545,8 @@ def test_creates_langfuse_llm_as_judge_evaluator() -> None:
             "project_id": "project-1",
             "description": "检查客服回复是否准确",
             "variables": ["input", "output"],
+            "input_variables": ["input", "output"],
+            "output_variables": [],
             "prompt": "请根据 {{input}} 和 {{output}} 评分",
             "model_config": {
                 "provider": "openai",
@@ -322,11 +570,28 @@ def test_creates_workflow_evaluator_in_pa_table() -> None:
                 "provider": "DIFY",
                 "projectId": "project-1",
                 "description": "调用 Dify 工作流判断客诉风险",
+                "evaluationScenario": "TOOL_CALLING",
                 "variables": ["input", "output"],
+                "inputVariables": ["input", "output"],
+                "outputVariables": ["quality_score", "risk_score"],
+                "outputVariableMappings": [
+                    {
+                        "variableName": "quality_score",
+                        "scoreConfigName": "回答质量",
+                    },
+                    {
+                        "variableName": "risk_score",
+                        "scoreConfigName": "风险分",
+                    },
+                ],
                 "endpointUrl": "https://dify.example.com/v1/workflows/run",
                 "authType": "BEARER",
                 "authToken": "secret-token",
-                "inputMapping": {"query": "{{input}}"},
+                "inputMapping": {
+                    "query": "{{ sample.input }}",
+                    "input": "{{ sample.input }}",
+                    "output": "{{ sample.output }}",
+                },
                 "outputMapping": {"score": "$.data.score"},
             },
         )
@@ -345,14 +610,74 @@ def test_creates_workflow_evaluator_in_pa_table() -> None:
             "project_id": "project-1",
             "description": "调用 Dify 工作流判断客诉风险",
             "variables": ["input", "output"],
+            "input_variables": ["input", "output"],
+            "output_variables": ["quality_score", "risk_score"],
             "config": {
+                "evaluationScenario": "TOOL_CALLING",
                 "endpointUrl": "https://dify.example.com/v1/workflows/run",
                 "authType": "BEARER",
                 "authToken": "secret-token",
-                "inputMapping": {"query": "{{input}}"},
+                "inputMapping": {
+                    "query": "{{ sample.input }}",
+                    "input": "{{ sample.input }}",
+                    "output": "{{ sample.output }}",
+                },
                 "outputMapping": {"score": "$.data.score"},
+                "outputVariableMappings": [
+                    {
+                        "variableName": "quality_score",
+                        "scoreConfigName": "回答质量",
+                    },
+                    {
+                        "variableName": "risk_score",
+                        "scoreConfigName": "风险分",
+                    },
+                ],
             },
         },
+    }
+
+
+def test_creates_workflow_evaluator_normalizes_short_input_mapping() -> None:
+    fake_reader = FakeDatabaseReader()
+    override_reader(fake_reader)
+
+    try:
+        response = TestClient(app).post(
+            "/api/evaluators",
+            json={
+                "name": "Dify 客诉判断",
+                "type": "WORKFLOW",
+                "provider": "DIFY",
+                "projectId": "project-1",
+                "description": "调用 Dify 工作流判断客诉风险",
+                "variables": ["input", "output", "expected_output"],
+                "inputVariables": ["input", "output", "expected_output"],
+                "outputVariables": ["score"],
+                "outputVariableMappings": [
+                    {
+                        "variableName": "score",
+                        "scoreConfigName": "回答质量",
+                    }
+                ],
+                "endpointUrl": "https://dify.example.com/v1/workflows/run",
+                "authType": "NONE",
+                "inputMapping": {
+                    "input": "input.question",
+                    "output": "{output}",
+                    "expected_output": "{{ expectedOutput }}",
+                },
+                "outputMapping": {"score": "data.outputs.score"},
+            },
+        )
+    finally:
+        clear_overrides()
+
+    assert response.status_code == 200
+    assert fake_reader.created_pa_payload["payload"]["config"]["inputMapping"] == {
+        "input": "{{ sample.input.question }}",
+        "output": "{{ sample.output }}",
+        "expected_output": "{{ sample.expectedOutput }}",
     }
 
 
@@ -371,6 +696,106 @@ def test_gets_workflow_evaluator_detail() -> None:
     assert body["data"]["config"]["hasAuthToken"] is True
     assert "authToken" not in body["data"]["config"]
     assert fake_reader.detail_user_id == "user-1"
+
+
+def test_updates_pa_workflow_evaluator() -> None:
+    fake_reader = FakeDatabaseReader()
+    override_reader(fake_reader)
+
+    try:
+        response = TestClient(app).patch(
+            "/api/evaluators/pa-evaluator-1",
+            json={
+                "name": "Dify 客诉判断 v2",
+                "type": "WORKFLOW",
+                "provider": "DIFY",
+                "projectId": "project-1",
+                "description": "更新工作流配置",
+                "variables": ["input", "output"],
+                "inputVariables": ["input", "output"],
+                "outputVariables": ["quality_score"],
+                "outputVariableMappings": [
+                    {
+                        "variableName": "quality_score",
+                        "scoreConfigName": "回答质量",
+                    }
+                ],
+                "endpointUrl": "https://dify.example.com/v1/workflows/run",
+                "authType": "NONE",
+                "inputMapping": {
+                    "query": "{{ sample.input }}",
+                    "input": "{{ sample.input }}",
+                    "output": "{{ sample.output }}",
+                },
+                "outputMapping": {"score": "$.data.score"},
+            },
+        )
+    finally:
+        clear_overrides()
+
+    assert response.status_code == 200
+    assert response.json()["data"]["version"] == "v2"
+    assert fake_reader.updated_pa_payload == {
+        "evaluator_id": "pa-evaluator-1",
+        "user_id": "user-1",
+        "user_email": "admin@163.com",
+        "payload": {
+            "name": "Dify 客诉判断 v2",
+            "type": "WORKFLOW",
+            "provider": "DIFY",
+            "project_id": "project-1",
+            "description": "更新工作流配置",
+            "variables": ["input", "output"],
+            "input_variables": ["input", "output"],
+                "output_variables": ["quality_score"],
+                "config": {
+                    "evaluationScenario": "SINGLE_TURN",
+                    "endpointUrl": "https://dify.example.com/v1/workflows/run",
+                "authType": "NONE",
+                "authToken": None,
+                "inputMapping": {
+                    "query": "{{ sample.input }}",
+                    "input": "{{ sample.input }}",
+                    "output": "{{ sample.output }}",
+                },
+                "outputMapping": {"score": "$.data.score"},
+                "outputVariableMappings": [
+                    {
+                        "variableName": "quality_score",
+                        "scoreConfigName": "回答质量",
+                    }
+                ],
+            },
+        },
+    }
+
+
+def test_rejects_updating_langfuse_evaluator() -> None:
+    fake_reader = FakeDatabaseReader()
+    override_reader(fake_reader)
+
+    try:
+        response = TestClient(app).patch(
+            "/api/evaluators/eval-template-1",
+            json={
+                "name": "客服回答质量",
+                "type": "LLM_AS_JUDGE",
+                "provider": "LANGFUSE",
+                "projectId": "project-1",
+                "description": "检查客服回复",
+                "variables": ["input", "output"],
+                "inputVariables": ["input", "output"],
+                "prompt": "请评分",
+                "modelConfig": {"provider": "openai", "model": "gpt-4.1"},
+            },
+        )
+    finally:
+        clear_overrides()
+
+    assert response.status_code == 409
+    assert response.json()["code"] == 4019
+    assert response.json()["message"] == "Langfuse 原生评估器由 Langfuse 管理，请在 Langfuse 中编辑"
+    assert fake_reader.updated_pa_payload is None
 
 
 def test_deletes_pa_workflow_evaluator() -> None:
@@ -399,6 +824,7 @@ def test_rejects_deleting_langfuse_evaluator() -> None:
     finally:
         clear_overrides()
 
-    assert response.status_code == 501
-    assert response.json()["code"] == 2003
+    assert response.status_code == 409
+    assert response.json()["code"] == 4018
+    assert response.json()["message"] == "Langfuse 原生评估器由 Langfuse 管理，请在 Langfuse 中删除"
     assert fake_reader.deleted_pa_evaluator is None

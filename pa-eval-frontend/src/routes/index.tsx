@@ -13,6 +13,7 @@ import { ProjectDatasetDetail } from '@/modules/app-evaluation/views/dataset-det
 import { ProjectDatasets } from '@/modules/app-evaluation/views/datasets'
 import { ProjectEvaluationReportDetail } from '@/modules/app-evaluation/views/evaluation-report-detail'
 import { ProjectEvaluationReports } from '@/modules/app-evaluation/views/evaluation-reports'
+import { ProjectScenarioEvaluations } from '@/modules/app-evaluation/views/scenario-evaluations'
 import {
   AppObservability,
   AppObservabilityIndexRedirect,
@@ -28,7 +29,7 @@ import { GeneralError } from '@/modules/errors/general-error'
 import { MaintenanceError } from '@/modules/errors/maintenance-error'
 import { NotFoundError } from '@/modules/errors/not-found-error'
 import { UnauthorisedError } from '@/modules/errors/unauthorized-error'
-import { Login } from '@/modules/login'
+import { Login } from '@/modules/pa-eval-login'
 import { OrganizationSwitcher } from '@/modules/organization-management/components/organization-switcher'
 import { SettingsOrganizationInfo } from '@/modules/organization-management/views/info'
 import { SettingsOrganizationMembers } from '@/modules/organization-management/views/members'
@@ -183,6 +184,14 @@ export const routes = [
                   {
                     path: 'annotation-queues/:queueId/items/:itemId/annotate',
                     element: <ProjectAnnotationItemAnnotate />,
+                  },
+                  {
+                    path: 'scenario-evaluations',
+                    element: (
+                      <ProjectRouteGuard access='project:auto-evaluation:view'>
+                        <ProjectScenarioEvaluations />
+                      </ProjectRouteGuard>
+                    ),
                   },
                   {
                     path: 'auto-evaluations',

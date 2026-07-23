@@ -1,7 +1,6 @@
 import type {
   DefaultModel,
   LlmConnection,
-  ModelDefinition,
   ProjectApiKey,
   ProjectInfo,
   ProjectMember,
@@ -103,27 +102,6 @@ export const mockDefaultModel: DefaultModel = {
   model: 'gpt-4.1-mini',
   temperature: '0.2',
 }
-
-export const mockModelDefinitions: ModelDefinition[] = [
-  {
-    id: 'model_gpt_41_mini',
-    modelName: 'gpt-4.1-mini',
-    matchPattern: 'gpt-4.1-mini*',
-    unit: 'TOKENS',
-    inputPrice: '0.40 / 1M tokens',
-    outputPrice: '1.60 / 1M tokens',
-    tokenizerId: 'openai',
-  },
-  {
-    id: 'model_pa_eval_fast',
-    modelName: 'pa-eval-fast',
-    matchPattern: 'pa-eval-fast*',
-    unit: 'TOKENS',
-    inputPrice: '0.20 / 1M tokens',
-    outputPrice: '0.80 / 1M tokens',
-    tokenizerId: 'cl100k_base',
-  },
-]
 
 export const mockProjectApiKeys: ProjectApiKey[] = [
   {

@@ -2,7 +2,7 @@ from pathlib import Path
 
 
 MIGRATIONS_DIR = Path(__file__).resolve().parents[1] / "migrations" / "versions"
-AUDIT_COLUMNS = ("create_by", "create_date", "update_by", "update_date")
+AUDIT_COLUMNS = ("create_by", "update_by", "create_date", "update_date")
 PA_TABLES = (
     "pa_evaluators",
     "pa_evaluation_report_templates",
@@ -13,35 +13,217 @@ PA_TABLES = (
     "pa_evaluation_report_items",
     "pa_evaluation_report_badcases",
     "pa_evaluation_report_flowbacks",
+    "pa_project_model_settings",
+    "pa_audit_logs",
+    "pa_dataset_export_jobs",
+    "pa_scheduled_jobs",
+    "pa_scheduled_job_execution_logs",
+    "pa_annotation_queue_settings",
+    "pa_annotation_queue_item_assignments",
+    "pa_annotation_export_jobs",
+)
+DEPRECATED_MODEL_TABLES = (
+    "pa_project_llm_connections",
+    "pa_project_model_definitions",
 )
 
 
-def test_pa_schema_is_defined_by_one_final_migration() -> None:
+def test_pa_schema_migrations_are_defined_in_order() -> None:
     migration_files = sorted(
-        path
-        for path in MIGRATIONS_DIR.glob("*.py")
-        if path.name != "__init__.py"
+        path for path in MIGRATIONS_DIR.glob("*.py") if path.name != "__init__.py"
     )
 
     assert [path.name for path in migration_files] == [
-        "20260705_0001_create_pa_eval_tables.py"
+        "20260705_0001_create_pa_eval_tables.py",
+        "20260705_0002_legacy_compatibility_checkpoint.py",
+        "20260707_0002_create_project_model_settings.py",
+        "20260707_0003_align_legacy_pa_tables.py",
+        "20260707_0004_create_pa_audit_logs.py",
+        "20260707_0005_normalize_pa_audit_actions.py",
+        "20260707_0006_create_pa_dataset_export_jobs.py",
+        "20260707_0007_normalize_langfuse_score_config_categories.py",
+        "20260708_0008_align_auto_eval_compat_columns.py",
+        "20260708_0009_add_report_flowback_compat_columns.py",
+        "20260709_0010_create_scheduled_jobs.py",
+        "20260711_0011_create_annotation_assignment_tables.py",
+        "20260711_0012_create_pa_annotation_export_jobs.py",
+        "20260714_0013_add_evaluator_outputs_and_score_mapping.py",
+        "20260718_0014_deprecate_redundant_project_model_tables.py",
     ]
 
 
+def test_annotation_export_jobs_table_is_defined_with_comments() -> None:
+    migration = MIGRATIONS_DIR / "20260711_0012_create_pa_annotation_export_jobs.py"
+    content = migration.read_text(encoding="utf-8")
+    business_columns = (
+        "id",
+        "project_id",
+        "queue_id",
+        "scope",
+        "format",
+        "status",
+        "total_count",
+        "exported_count",
+        "file_name",
+        "file_path",
+        "file_size",
+        "error_message",
+        "started_at",
+        "completed_at",
+        "expires_at",
+        "metadata",
+    )
+
+    assert "pa_annotation_export_jobs" in content
+    assert "COMMENT ON TABLE pa_annotation_export_jobs" in content
+    assert "'{}'::jsonb" in content
+    assert "pa_annotation_export_jobs_scope_check" in content
+    assert "pa_annotation_export_jobs_format_check" in content
+    assert "pa_annotation_export_jobs_status_check" in content
+    assert "pa_annotation_export_jobs_project_queue_idx" in content
+    assert "pa_annotation_export_jobs_project_update_idx" in content
+
+    for column in business_columns:
+        assert f'"{column}"' in content
+
+    for column in (*AUDIT_COLUMNS, *business_columns):
+        assert f"COMMENT ON COLUMN pa_annotation_export_jobs.{column}" in content
+
+
+def test_annotation_assignment_tables_are_defined_with_comments() -> None:
+    migration = MIGRATIONS_DIR / "20260711_0011_create_annotation_assignment_tables.py"
+    content = migration.read_text(encoding="utf-8")
+
+    assert "pa_annotation_queue_settings" in content
+    assert "pa_annotation_queue_item_assignments" in content
+    assert "assignment_strategy" in content
+    assert "assignment_weights" in content
+    assert "assignee_user_id" in content
+    assert "COMMENT ON TABLE pa_annotation_queue_settings" in content
+    assert "COMMENT ON TABLE pa_annotation_queue_item_assignments" in content
+    assert (
+        "COMMENT ON COLUMN pa_annotation_queue_settings.assignment_strategy" in content
+    )
+    assert (
+        "COMMENT ON COLUMN pa_annotation_queue_item_assignments.assignee_user_id"
+        in content
+    )
+
+
+def test_audit_action_normalization_migration_is_defined() -> None:
+    migration = MIGRATIONS_DIR / "20260707_0005_normalize_pa_audit_actions.py"
+    content = migration.read_text(encoding="utf-8")
+
+    assert "UPDATE pa_audit_logs" in content
+    assert "UPPER(action)" in content
+    assert "UPPER(status)" in content
+
+
+def test_langfuse_score_config_normalization_migration_is_defined() -> None:
+    migration = (
+        MIGRATIONS_DIR / "20260707_0007_normalize_langfuse_score_config_categories.py"
+    )
+    content = migration.read_text(encoding="utf-8")
+
+    assert "UPDATE score_configs" in content
+    assert "data_type::text IN ('NUMERIC', 'TEXT')" in content
+    assert '"label":"True"' in content
+    assert "jsonb_array_elements(categories)" in content
+
+
 def test_pa_tables_use_physical_delete_and_uniform_audit_fields() -> None:
+    contents = [
+        path.read_text(encoding="utf-8")
+        for path in sorted(MIGRATIONS_DIR.glob("*.py"))
+        if path.name != "__init__.py"
+    ]
+    content = "\n".join(contents)
+
+    assert "deleted_at" not in content
+    assert "ON DELETE CASCADE" in content or 'ondelete="CASCADE"' in content
+
+    for column in AUDIT_COLUMNS:
+        assert f'"{column}"' in content
+
+    for table_name in PA_TABLES:
+        table_block = _find_table_block(contents, table_name)
+
+        assert "*_audit_columns()" in table_block
+
+
+def test_pa_tables_define_audit_columns_first() -> None:
+    contents = [
+        path.read_text(encoding="utf-8")
+        for path in sorted(MIGRATIONS_DIR.glob("*.py"))
+        if path.name != "__init__.py"
+    ]
+
+    for table_name in PA_TABLES:
+        table_block = _find_table_block(contents, table_name)
+        first_column = table_block.find("sa.Column(")
+        audit_columns = table_block.find("*_audit_columns()")
+
+        assert audit_columns != -1
+        assert audit_columns < first_column
+
+
+def test_audit_columns_keep_required_order() -> None:
+    migration = MIGRATIONS_DIR / "20260705_0001_create_pa_eval_tables.py"
+    content = migration.read_text(encoding="utf-8")
+    helper_start = content.index("def _audit_columns()")
+    helper_end = content.index("\n\ndef upgrade()", helper_start)
+    helper_block = content[helper_start:helper_end]
+
+    positions = [helper_block.index(f'"{column}"') for column in AUDIT_COLUMNS]
+
+    assert positions == sorted(positions)
+
+
+def test_project_api_keys_do_not_use_status_or_last_used_columns() -> None:
+    migration = MIGRATIONS_DIR / "20260705_0001_create_pa_eval_tables.py"
+    content = migration.read_text(encoding="utf-8")
+    table_start = content.index('op.create_table(\n            "pa_project_api_keys"')
+    next_table_start = content.find("op.create_table(", table_start + 1)
+    table_end = next_table_start if next_table_start != -1 else len(content)
+    table_block = content[table_start:table_end]
+
+    assert '"status"' not in table_block
+    assert '"last_used_at"' not in table_block
+    assert "pa_project_api_keys_project_status_idx" not in content
+
+
+def test_redundant_project_model_tables_are_deprecated_by_migration() -> None:
+    migration = (
+        MIGRATIONS_DIR
+        / "20260718_0014_deprecate_redundant_project_model_tables.py"
+    )
+    content = migration.read_text(encoding="utf-8")
+
+    assert "Langfuse LLM Connections" in content
+    assert "Langfuse models" in content
+    for table_name in DEPRECATED_MODEL_TABLES:
+        assert table_name not in PA_TABLES
+        assert f'_drop_table_if_exists("{table_name}")' in content
+        assert f'"{table_name}"' in content
+
+
+def test_final_migration_does_not_use_incremental_column_patches() -> None:
     migration = MIGRATIONS_DIR / "20260705_0001_create_pa_eval_tables.py"
     content = migration.read_text(encoding="utf-8")
 
-    assert "deleted_at" not in content
-    assert "ON DELETE CASCADE" in content or "ondelete=\"CASCADE\"" in content
+    assert "_add_column_once" not in content
+    assert "op.add_column" not in content
 
-    for column in AUDIT_COLUMNS:
-        assert f"\"{column}\"" in content
 
-    for table_name in PA_TABLES:
-        table_start = content.index(f"op.create_table(\n            \"{table_name}\"")
+def _find_table_block(contents: list[str], table_name: str) -> str:
+    for content in contents:
+        marker = f'op.create_table(\n            "{table_name}"'
+        if marker not in content:
+            marker = f'op.create_table(\n        "{table_name}"'
+        if marker not in content:
+            continue
+        table_start = content.index(marker)
         next_table_start = content.find("op.create_table(", table_start + 1)
         table_end = next_table_start if next_table_start != -1 else len(content)
-        table_block = content[table_start:table_end]
-
-        assert "*_audit_columns()" in table_block
+        return content[table_start:table_end]
+    raise AssertionError(f"table {table_name} not found in migrations")
