@@ -21,6 +21,7 @@ PA_TABLES = (
     "pa_annotation_queue_settings",
     "pa_annotation_queue_item_assignments",
     "pa_annotation_export_jobs",
+    "pa_evaluation_jobs",
 )
 DEPRECATED_MODEL_TABLES = (
     "pa_project_llm_connections",
@@ -49,7 +50,78 @@ def test_pa_schema_migrations_are_defined_in_order() -> None:
         "20260711_0012_create_pa_annotation_export_jobs.py",
         "20260714_0013_add_evaluator_outputs_and_score_mapping.py",
         "20260718_0014_deprecate_redundant_project_model_tables.py",
+        "20260723_0015_create_evaluation_jobs.py",
     ]
+
+
+def test_evaluation_jobs_migration_is_reversible_and_complete() -> None:
+    migration = MIGRATIONS_DIR / "20260723_0015_create_evaluation_jobs.py"
+    content = migration.read_text(encoding="utf-8")
+
+    assert '"pa_evaluation_jobs"' in content
+    assert "def downgrade()" in content
+    assert 'op.drop_table("pa_evaluation_jobs")' in content
+    assert "NOW()" in content
+    for column in (
+        "job_type",
+        "routing_key",
+        "idempotency_key",
+        "status",
+        "attempt_count",
+        "max_attempts",
+        "next_attempt_at",
+        "lease_owner",
+        "lease_expires_at",
+        "heartbeat_at",
+        "payload",
+        "result_summary",
+        "raw_result_object_key",
+        "error_code",
+        "error_message",
+    ):
+        assert f'"{column}"' in content
+
+
+def test_evaluation_jobs_migration_orders_upgrade_and_downgrade_operations() -> None:
+    migration = MIGRATIONS_DIR / "20260723_0015_create_evaluation_jobs.py"
+    content = migration.read_text(encoding="utf-8")
+    upgrade = content[content.index("def upgrade()") : content.index("def downgrade()")]
+    downgrade = content[content.index("def downgrade()") :]
+
+    run_columns = (
+        "config_snapshot",
+        "idempotency_key",
+        "cancel_requested_at",
+        "queued_at",
+        "sample_manifest_object_key",
+        "sample_manifest_hash",
+    )
+    assert max(upgrade.index(f'"{column}"') for column in run_columns) < upgrade.index(
+        'op.create_table(\n        "pa_evaluation_jobs"'
+    )
+    assert downgrade.index('op.drop_table("pa_evaluation_jobs")') < min(
+        downgrade.index(f'"{column}"') for column in run_columns
+    )
+    downgrade_positions = [
+        downgrade.index(f'"{column}"') for column in reversed(run_columns)
+    ]
+    assert downgrade_positions == sorted(downgrade_positions)
+
+
+def test_evaluation_jobs_migration_defines_constraints_and_indexes() -> None:
+    migration = MIGRATIONS_DIR / "20260723_0015_create_evaluation_jobs.py"
+    content = migration.read_text(encoding="utf-8")
+
+    for constraint in (
+        "pa_evaluation_jobs_job_type_check",
+        "pa_evaluation_jobs_status_check",
+        "pa_evaluation_jobs_batch_range_check",
+        "pa_evaluation_jobs_attempt_count_check",
+    ):
+        assert constraint in content
+    assert "pa_evaluation_jobs_ready_idx" in content
+    assert "pa_evaluation_jobs_running_lease_idx" in content
+    assert "status = 'RUNNING'" in content
 
 
 def test_annotation_export_jobs_table_is_defined_with_comments() -> None:
@@ -194,8 +266,7 @@ def test_project_api_keys_do_not_use_status_or_last_used_columns() -> None:
 
 def test_redundant_project_model_tables_are_deprecated_by_migration() -> None:
     migration = (
-        MIGRATIONS_DIR
-        / "20260718_0014_deprecate_redundant_project_model_tables.py"
+        MIGRATIONS_DIR / "20260718_0014_deprecate_redundant_project_model_tables.py"
     )
     content = migration.read_text(encoding="utf-8")
 
