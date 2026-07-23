@@ -4055,6 +4055,53 @@ class LangfuseDatabaseReader:
             if item_id in row_by_id
         ]
 
+    async def list_annotation_queue_item_candidates_for_user(
+        self,
+        project_id: str,
+        queue_id: str,
+        user_id: str,
+        *,
+        filters: dict[str, Any],
+        omit_facet_filters: bool = False,
+    ) -> list[dict[str, Any]]:
+        await self.get_annotation_queue_for_user(project_id, queue_id, user_id)
+        candidate_filters = {
+            **filters,
+            "keyword": "",
+            "metadata_filter": None,
+            "metadata_filters": [],
+            "input_filters": [],
+            "output_filters": [],
+        }
+        if omit_facet_filters:
+            candidate_filters.update(
+                {"status": [], "object_type": [], "assignee_ids": []}
+            )
+        filter_sql, filter_params = self._annotation_item_filter_sql(
+            candidate_filters
+        )
+        rows = await self._fetch_all(
+            "WITH annotation_items AS ("
+            + self._annotation_item_external_candidate_select_sql(
+                include_has_scores=filters.get("has_scores") is not None,
+            )
+            + f"""
+            WHERE aqi.project_id = %(project_id)s
+              AND aqi.queue_id = %(queue_id)s
+            )
+            SELECT item.*
+            FROM annotation_items item
+            WHERE {filter_sql}
+            ORDER BY item.updated_at DESC, item.created_at DESC, item.id DESC
+            """,
+            {
+                "project_id": project_id,
+                "queue_id": queue_id,
+                **filter_params,
+            },
+        )
+        return [self._to_annotation_candidate_payload(row) for row in rows]
+
     async def list_annotation_queue_items_page_for_user(
         self,
         project_id: str,
@@ -6743,6 +6790,58 @@ class LangfuseDatabaseReader:
             """
 
     @staticmethod
+    def _annotation_item_external_candidate_select_sql(
+        *,
+        include_has_scores: bool,
+    ) -> str:
+        score_expression = (
+            """EXISTS (
+                    SELECT 1
+                    FROM scores candidate_score
+                    WHERE candidate_score.project_id = aqi.project_id
+                      AND candidate_score.queue_id = aqi.queue_id
+                      AND candidate_score.source::text = 'ANNOTATION'
+                      AND (
+                        (aqi.object_type::text = 'TRACE'
+                         AND candidate_score.trace_id = aqi.object_id
+                         AND candidate_score.observation_id IS NULL)
+                        OR (aqi.object_type::text = 'OBSERVATION'
+                            AND candidate_score.observation_id = aqi.object_id)
+                        OR (aqi.object_type::text = 'SESSION'
+                            AND candidate_score.trace_id = aqi.object_id)
+                      )
+                )"""
+            if include_has_scores
+            else "FALSE"
+        )
+        return f"""
+            SELECT
+                aqi.id,
+                aqi.project_id,
+                aqi.queue_id,
+                aqi.object_id,
+                aqi.object_type::text AS object_type,
+                aqi.status::text AS status,
+                aqi.completed_at,
+                aqi.created_at,
+                aqi.updated_at,
+                aqi.annotator_user_id AS completed_by_id,
+                completed_user.name AS completed_by_name,
+                completed_user.email AS completed_by_email,
+                assignment.assignee_user_id AS assignee_id,
+                assignee_user.name AS assignee_name,
+                assignee_user.email AS assignee_email,
+                {score_expression} AS has_scores
+            FROM annotation_queue_items aqi
+            LEFT JOIN users completed_user ON completed_user.id = aqi.annotator_user_id
+            LEFT JOIN pa_annotation_queue_item_assignments assignment
+              ON assignment.project_id = aqi.project_id
+             AND assignment.queue_id = aqi.queue_id
+             AND assignment.item_id = aqi.id
+            LEFT JOIN users assignee_user ON assignee_user.id = assignment.assignee_user_id
+            """
+
+    @staticmethod
     def _append_annotation_json_filters(
         conditions: list[str],
         params: dict[str, Any],
@@ -8414,6 +8513,34 @@ class LangfuseDatabaseReader:
             "createdAt": _format_datetime(row["created_at"]),
             "updatedAt": _format_datetime(row["updated_at"]),
         }
+
+    @staticmethod
+    def _to_annotation_candidate_payload(row: dict[str, Any]) -> dict[str, Any]:
+        payload = LangfuseDatabaseReader._to_annotation_item_payload(
+            {
+                **row,
+                "source_title": row["object_id"],
+                "source_input": None,
+                "source_output": None,
+                "source_metadata": {},
+                "trace_id": row["object_id"]
+                if row["object_type"] == "TRACE"
+                else "",
+                "observation_id": row["object_id"]
+                if row["object_type"] == "OBSERVATION"
+                else "",
+                "session_id": row["object_id"]
+                if row["object_type"] == "SESSION"
+                else "",
+                "user_id": "",
+                "latency_ms": 0,
+                "cost_usd": 0,
+                "source_created_at": row["created_at"],
+                "scores": [],
+            }
+        )
+        payload.pop("source", None)
+        return payload
 
     @staticmethod
     def _redact_evaluator_config(config: dict[str, Any]) -> dict[str, Any]:

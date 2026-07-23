@@ -1,5 +1,5 @@
 import json
-from collections.abc import AsyncIterator
+from collections.abc import AsyncIterator, Iterable
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from typing import Any
@@ -14,6 +14,19 @@ from app.data_access.clickhouse import (
 )
 from app.errors import BusinessError, LangfuseUpstreamError
 from app.trace_count_cache import TraceCountCache
+
+
+ANNOTATION_CANDIDATE_EXTERNAL_STRUCTURE = ", ".join(
+    (
+        "item_id String",
+        "object_id String",
+        "object_type String",
+        "status String",
+        "assignee_id String",
+        "created_at String",
+        "updated_at String",
+    )
+)
 
 
 class LangfuseClickHouseReader:
@@ -741,6 +754,184 @@ class LangfuseClickHouseReader:
                 }
         return sources
 
+    async def list_annotation_queue_items_page(
+        self,
+        project_id: str,
+        candidates: list[dict[str, Any]],
+        *,
+        page: int,
+        page_size: int,
+        filters: dict[str, Any],
+    ) -> dict[str, Any]:
+        if not candidates:
+            return {"total": 0, "datas": []}
+        offset = (page - 1) * page_size
+        if offset > self._settings.pa_eval_annotation_advanced_filter_max_offset:
+            raise BusinessError(1026, "高级筛选分页范围过大，请缩小页码", 400)
+        source_filter_sql, source_filter_params = (
+            _build_annotation_source_filter_sql(
+                keyword=str(filters.get("keyword") or ""),
+                metadata_filters=_annotation_metadata_filters(filters),
+                input_filters=list(filters.get("input_filters") or []),
+                output_filters=list(filters.get("output_filters") or []),
+            )
+        )
+        params = {
+            "project_id": project_id,
+            "annotation_limit": page_size,
+            "annotation_window": offset + page_size,
+            "annotation_slice_start": offset + 1,
+            **source_filter_params,
+        }
+        rows = await self._query_json_each_row_with_external_table(
+            f"""
+            WITH source_candidates AS (
+                {_annotation_source_candidates_sql()}
+            )
+            SELECT
+                count() AS total,
+                arraySlice(
+                    groupArray({{annotation_window:UInt32}})(data),
+                    {{annotation_slice_start:UInt32}},
+                    {{annotation_limit:UInt32}}
+                ) AS datas
+            FROM (
+                SELECT toJSONString(map(
+                        'id', candidate_item_id,
+                        'sourceTitle', source_title,
+                        'sourceInput', source_input,
+                        'sourceOutput', source_output,
+                        'sourceMetadata', toJSONString(source_metadata),
+                        'traceId', trace_id,
+                        'observationId', observation_id,
+                        'sessionId', session_id,
+                        'userId', user_id,
+                        'sourceCreatedAt', source_created_at
+                    )) AS data
+                FROM source_candidates
+                WHERE {source_filter_sql}
+                ORDER BY candidate_updated_at DESC, candidate_created_at DESC,
+                         candidate_item_id DESC
+            ) ordered_matches
+            FORMAT JSONEachRow
+            """,
+            params,
+            table_name="annotation_candidates",
+            structure=ANNOTATION_CANDIDATE_EXTERNAL_STRUCTURE,
+            rows=_annotation_external_candidate_rows(candidates),
+        )
+        summary = rows[0] if rows else {}
+        candidate_by_id = {
+            str(candidate.get("id") or ""): candidate for candidate in candidates
+        }
+        page_items: list[dict[str, Any]] = []
+        for value in summary.get("datas") or []:
+            source_row = json.loads(str(value or "{}"))
+            candidate = candidate_by_id.get(str(source_row.get("id") or ""))
+            if candidate:
+                page_items.append(
+                    _annotation_item_from_clickhouse_external_row(
+                        source_row,
+                        candidate=candidate,
+                    )
+                )
+        return {"total": int(summary.get("total") or 0), "datas": page_items}
+
+    async def count_annotation_queue_item_filters(
+        self,
+        project_id: str,
+        candidates: list[dict[str, Any]],
+        *,
+        filters: dict[str, Any],
+    ) -> dict[str, dict[str, int]]:
+        status_counts = {"PENDING": 0, "COMPLETED": 0}
+        object_type_counts = {"TRACE": 0, "OBSERVATION": 0, "SESSION": 0}
+        assignee_counts = {
+            str((candidate.get("assignee") or {}).get("id")): 0
+            for candidate in candidates
+            if (candidate.get("assignee") or {}).get("id")
+        }
+        if not candidates:
+            return {
+                "status": status_counts,
+                "objectType": object_type_counts,
+                "assigneeIds": dict(sorted(assignee_counts.items())),
+            }
+        source_filter_sql, source_filter_params = (
+            _build_annotation_source_filter_sql(
+                keyword=str(filters.get("keyword") or ""),
+                metadata_filters=_annotation_metadata_filters(filters),
+                input_filters=list(filters.get("input_filters") or []),
+                output_filters=list(filters.get("output_filters") or []),
+            )
+        )
+        params: dict[str, Any] = {
+            "project_id": project_id,
+            **source_filter_params,
+        }
+        status_filter = _annotation_candidate_facet_filter_sql(
+            filters,
+            params,
+            omitted_filter="status",
+        )
+        object_type_filter = _annotation_candidate_facet_filter_sql(
+            filters,
+            params,
+            omitted_filter="object_type",
+        )
+        assignee_filter = _annotation_candidate_facet_filter_sql(
+            filters,
+            params,
+            omitted_filter="assignee_ids",
+        )
+        rows = await self._query_json_each_row_with_external_table(
+            f"""
+            WITH source_candidates AS (
+                {_annotation_source_candidates_sql()}
+            )
+            SELECT tupleElement(facet_tuple, 1) AS facet,
+                   tupleElement(facet_tuple, 2) AS value,
+                   count() AS total
+            FROM (
+                SELECT arrayJoin(arrayZip(
+                    ['status', 'objectType', 'assigneeIds'],
+                    [candidate_status, candidate_object_type,
+                     candidate_assignee_id],
+                    [toUInt8({status_filter}), toUInt8({object_type_filter}),
+                     toUInt8({assignee_filter})]
+                )) AS facet_tuple
+                FROM source_candidates
+                WHERE {source_filter_sql}
+            ) expanded_facets
+            WHERE tupleElement(facet_tuple, 3) = 1
+              AND (
+                  tupleElement(facet_tuple, 1) != 'assigneeIds'
+                  OR notEmpty(tupleElement(facet_tuple, 2))
+              )
+            GROUP BY tupleElement(facet_tuple, 1), tupleElement(facet_tuple, 2)
+            FORMAT JSONEachRow
+            """,
+            params,
+            table_name="annotation_candidates",
+            structure=ANNOTATION_CANDIDATE_EXTERNAL_STRUCTURE,
+            rows=_annotation_external_candidate_rows(candidates),
+        )
+        count_groups = {
+            "status": status_counts,
+            "objectType": object_type_counts,
+            "assigneeIds": assignee_counts,
+        }
+        for row in rows:
+            facet = str(row.get("facet") or "")
+            value = str(row.get("value") or "")
+            if facet in count_groups and value:
+                count_groups[facet][value] = int(row.get("total") or 0)
+        return {
+            "status": status_counts,
+            "objectType": object_type_counts,
+            "assigneeIds": dict(sorted(assignee_counts.items())),
+        }
+
     async def _fetch_trace_rows(
         self,
         project_id: str,
@@ -1205,6 +1396,57 @@ class LangfuseClickHouseReader:
         except httpx.HTTPError as exc:
             raise LangfuseUpstreamError("Langfuse ClickHouse 查询失败") from exc
 
+        lines = [line for line in response.text.splitlines() if line.strip()]
+        return [json.loads(line) for line in lines]
+
+    async def _query_json_each_row_with_external_table(
+        self,
+        query: str,
+        params: dict[str, Any],
+        *,
+        table_name: str,
+        structure: str,
+        rows: Iterable[tuple[str, ...]],
+    ) -> list[dict[str, Any]]:
+        request_params = {
+            "user": self._user,
+            "password": self._password,
+            **{f"param_{key}": value for key, value in params.items()},
+        }
+        content = _annotation_external_candidate_tsv(rows)
+        form_data = {
+            "query": query,
+            f"{table_name}_structure": structure,
+            f"{table_name}_format": "TabSeparated",
+        }
+        files = {
+            table_name: (
+                f"{table_name}.tsv",
+                content,
+                "application/octet-stream",
+            )
+        }
+        try:
+            client = get_clickhouse_http_client()
+            if client is None:
+                async with create_clickhouse_http_client(self._settings) as client:
+                    response = await client.post(
+                        self._url,
+                        params=request_params,
+                        data=form_data,
+                        files=files,
+                    )
+                    response.raise_for_status()
+            else:
+                response = await client.post(
+                    self._url,
+                    params=request_params,
+                    data=form_data,
+                    files=files,
+                )
+                response.raise_for_status()
+        except httpx.HTTPError as exc:
+            raise LangfuseUpstreamError("Langfuse ClickHouse 查询失败") from exc
         lines = [line for line in response.text.splitlines() if line.strip()]
         return [json.loads(line) for line in lines]
 
@@ -1872,6 +2114,336 @@ def _append_metadata_where_filters(
             filters.append(
                 f"position(t.metadata[{{{key_param}:String}}], {{{value_param}:String}}) > 0"
             )
+
+
+def _build_annotation_source_filter_sql(
+    *,
+    keyword: str = "",
+    metadata_filters: list[dict[str, Any]] | None,
+    input_filters: list[dict[str, Any]] | None,
+    output_filters: list[dict[str, Any]] | None,
+) -> tuple[str, dict[str, Any]]:
+    conditions: list[str] = []
+    params: dict[str, Any] = {}
+    keyword = keyword.strip()
+    if keyword:
+        params["annotation_source_keyword"] = keyword
+        conditions.append(
+            "("
+            "positionCaseInsensitiveUTF8(candidate_item_id, "
+            "{annotation_source_keyword:String}) > 0 "
+            "OR positionCaseInsensitiveUTF8(candidate_object_id, "
+            "{annotation_source_keyword:String}) > 0 "
+            "OR positionCaseInsensitiveUTF8(candidate_object_type, "
+            "{annotation_source_keyword:String}) > 0 "
+            "OR positionCaseInsensitiveUTF8(source_title, "
+            "{annotation_source_keyword:String}) > 0 "
+            "OR positionCaseInsensitiveUTF8(source_input, "
+            "{annotation_source_keyword:String}) > 0 "
+            "OR positionCaseInsensitiveUTF8(source_output, "
+            "{annotation_source_keyword:String}) > 0 "
+            "OR positionCaseInsensitiveUTF8(toString(source_metadata), "
+            "{annotation_source_keyword:String}) > 0 "
+            "OR positionCaseInsensitiveUTF8(trace_id, "
+            "{annotation_source_keyword:String}) > 0 "
+            "OR positionCaseInsensitiveUTF8(session_id, "
+            "{annotation_source_keyword:String}) > 0 "
+            "OR positionCaseInsensitiveUTF8(user_id, "
+            "{annotation_source_keyword:String}) > 0"
+            ")"
+        )
+    _append_annotation_source_filters(
+        conditions,
+        params,
+        metadata_filters or [],
+        column="source_metadata",
+        prefix="annotation_metadata",
+        metadata=True,
+    )
+    _append_annotation_source_filters(
+        conditions,
+        params,
+        input_filters or [],
+        column="source_input",
+        prefix="annotation_input",
+        metadata=False,
+    )
+    _append_annotation_source_filters(
+        conditions,
+        params,
+        output_filters or [],
+        column="source_output",
+        prefix="annotation_output",
+        metadata=False,
+    )
+    return " AND ".join(conditions) if conditions else "1 = 1", params
+
+
+def _annotation_metadata_filters(filters: dict[str, Any]) -> list[dict[str, Any]]:
+    result = list(filters.get("metadata_filters") or [])
+    metadata_filter = filters.get("metadata_filter")
+    if metadata_filter:
+        result.insert(0, metadata_filter)
+    return result
+
+
+def _annotation_source_candidates_sql() -> str:
+    return """
+        SELECT
+            c.item_id AS candidate_item_id,
+            c.object_id AS candidate_object_id,
+            c.object_type AS candidate_object_type,
+            c.status AS candidate_status,
+            c.assignee_id AS candidate_assignee_id,
+            c.created_at AS candidate_created_at,
+            c.updated_at AS candidate_updated_at,
+            if(c.object_type = 'TRACE', if(empty(t.name), t.id, t.name),
+               if(c.object_type = 'OBSERVATION', if(empty(o.name), o.id, o.name),
+                  c.object_id)) AS source_title,
+            if(c.object_type = 'TRACE', ifNull(t.input, ''),
+               if(c.object_type = 'OBSERVATION', ifNull(o.input, ''), ''))
+                AS source_input,
+            if(c.object_type = 'TRACE', ifNull(t.output, ''),
+               if(c.object_type = 'OBSERVATION', ifNull(o.output, ''), ''))
+                AS source_output,
+            if(c.object_type = 'TRACE', t.metadata,
+               if(c.object_type = 'OBSERVATION', o.metadata,
+                  CAST(map(), 'Map(String, String)'))) AS source_metadata,
+            if(c.object_type = 'TRACE', c.object_id,
+               if(c.object_type = 'OBSERVATION', o.trace_id, '')) AS trace_id,
+            if(c.object_type = 'OBSERVATION', c.object_id, '') AS observation_id,
+            if(c.object_type = 'TRACE', ifNull(t.session_id, ''),
+               if(c.object_type = 'OBSERVATION', ifNull(parent_trace.session_id, ''),
+                  if(c.object_type = 'SESSION', c.object_id, ''))) AS session_id,
+            if(c.object_type = 'TRACE', ifNull(t.user_id, ''),
+               if(c.object_type = 'OBSERVATION', ifNull(parent_trace.user_id, ''), ''))
+                AS user_id,
+            if(c.object_type = 'TRACE', toString(t.timestamp),
+               if(c.object_type = 'OBSERVATION', toString(o.start_time), c.created_at))
+                AS source_created_at
+        FROM annotation_candidates c
+        LEFT JOIN (
+            SELECT id, project_id, name, input, output, metadata, session_id,
+                   user_id, timestamp
+            FROM traces FINAL
+            WHERE project_id = {project_id:String}
+              AND is_deleted = 0
+              AND id IN (
+                  SELECT object_id
+                  FROM annotation_candidates
+                  WHERE object_type = 'TRACE'
+              )
+        ) t
+          ON c.object_type = 'TRACE' AND t.id = c.object_id
+        LEFT JOIN (
+            SELECT id, trace_id, project_id, name, input, output, metadata,
+                   start_time
+            FROM observations FINAL
+            WHERE project_id = {project_id:String}
+              AND is_deleted = 0
+              AND id IN (
+                  SELECT object_id
+                  FROM annotation_candidates
+                  WHERE object_type = 'OBSERVATION'
+              )
+        ) o
+          ON c.object_type = 'OBSERVATION' AND o.id = c.object_id
+        LEFT JOIN (
+            SELECT id, project_id, session_id, user_id
+            FROM traces FINAL
+            WHERE project_id = {project_id:String}
+              AND is_deleted = 0
+              AND id IN (
+                  SELECT trace_id
+                  FROM observations FINAL
+                  WHERE project_id = {project_id:String}
+                    AND is_deleted = 0
+                    AND id IN (
+                        SELECT object_id
+                        FROM annotation_candidates
+                        WHERE object_type = 'OBSERVATION'
+                    )
+              )
+        ) parent_trace
+          ON c.object_type = 'OBSERVATION' AND parent_trace.id = o.trace_id
+    """
+
+
+def _annotation_candidate_facet_filter_sql(
+    filters: dict[str, Any],
+    params: dict[str, Any],
+    *,
+    omitted_filter: str,
+) -> str:
+    conditions: list[str] = []
+    for filter_key, column, param_prefix in (
+        ("status", "candidate_status", "annotation_status"),
+        ("object_type", "candidate_object_type", "annotation_object_type"),
+        ("assignee_ids", "candidate_assignee_id", "annotation_assignee_id"),
+    ):
+        if filter_key == omitted_filter:
+            continue
+        values = list(filters.get(filter_key) or [])
+        if not values:
+            continue
+        placeholders: list[str] = []
+        for index, value in enumerate(values):
+            param_key = f"{param_prefix}_{index}"
+            params[param_key] = str(value)
+            placeholders.append(f"{{{param_key}:String}}")
+        conditions.append(f"{column} IN ({', '.join(placeholders)})")
+    return " AND ".join(conditions) if conditions else "1 = 1"
+
+
+def _annotation_external_candidate_rows(
+    candidates: list[dict[str, Any]],
+) -> Iterable[tuple[str, ...]]:
+    for candidate in candidates:
+        assignee = candidate.get("assignee") or {}
+        yield (
+            str(candidate.get("id") or ""),
+            str(candidate.get("objectId") or ""),
+            str(candidate.get("objectType") or ""),
+            str(candidate.get("status") or ""),
+            str(assignee.get("id") or ""),
+            str(candidate.get("createdAt") or ""),
+            str(candidate.get("updatedAt") or ""),
+        )
+
+
+def _annotation_external_candidate_tsv(rows: Iterable[tuple[str, ...]]) -> bytes:
+    content = bytearray()
+    for index, row in enumerate(rows):
+        if index:
+            content.extend(b"\n")
+        content.extend(
+            "\t".join(_clickhouse_tsv_escape(value) for value in row).encode("utf-8")
+        )
+    return bytes(content)
+
+
+def _clickhouse_tsv_escape(value: str) -> str:
+    return (
+        value.replace("\\", "\\\\")
+        .replace("\t", "\\t")
+        .replace("\n", "\\n")
+        .replace("\r", "\\r")
+    )
+
+
+def _annotation_item_from_clickhouse_external_row(
+    row: dict[str, Any],
+    *,
+    candidate: dict[str, Any],
+) -> dict[str, Any]:
+    try:
+        metadata = json.loads(row.get("sourceMetadata") or "{}")
+    except json.JSONDecodeError:
+        metadata = {}
+    return {
+        **candidate,
+        "source": {
+            "objectId": candidate["objectId"],
+            "objectType": candidate["objectType"],
+            "title": row.get("sourceTitle") or candidate["objectId"],
+            "input": _format_payload(row.get("sourceInput")),
+            "output": _format_payload(row.get("sourceOutput")),
+            "metadata": metadata if isinstance(metadata, dict) else {},
+            "traceId": row.get("traceId") or "",
+            "observationId": row.get("observationId") or "",
+            "sessionId": row.get("sessionId") or "",
+            "userId": row.get("userId") or "",
+            "latencyMs": 0,
+            "costUsd": 0,
+            "createdAt": row.get("sourceCreatedAt") or "",
+        },
+    }
+
+
+def _append_annotation_source_filters(
+    conditions: list[str],
+    params: dict[str, Any],
+    value_filters: list[dict[str, Any]],
+    *,
+    column: str,
+    prefix: str,
+    metadata: bool,
+) -> None:
+    for index, value_filter in enumerate(value_filters):
+        key = str(value_filter.get("key") or "").strip()
+        if metadata and key.startswith("metadata."):
+            key = key.removeprefix("metadata.")
+        operator = str(value_filter.get("operator") or "contains")
+        value = str(value_filter.get("value") or "")
+        key_parts = [part for part in key.split(".") if part]
+        if operator == "exists" and not key_parts:
+            continue
+        if operator != "exists" and not key_parts and not value:
+            continue
+
+        key_params: list[str] = []
+        for part_index, part in enumerate(key_parts):
+            key_param = f"{prefix}_key_{index}_{part_index}"
+            params[key_param] = part
+            key_params.append(f"{{{key_param}:String}}")
+
+        if metadata:
+            first_key = key_params[0] if key_params else ""
+            existence = f"mapContains({column}, {first_key})" if first_key else "1"
+            if len(key_params) > 1:
+                nested_keys = ", ".join(key_params[1:])
+                existence += (
+                    f" AND JSONHas({column}[{first_key}], {nested_keys})"
+                )
+                extracted = (
+                    f"coalesce(nullIf(JSON_VALUE({column}[{first_key}], "
+                    f"{{{prefix}_path_{index}:String}}), ''), "
+                    f"JSONExtractRaw({column}[{first_key}], {nested_keys}))"
+                )
+                params[f"{prefix}_path_{index}"] = _clickhouse_json_path(
+                    key_parts[1:]
+                )
+            elif first_key:
+                extracted = f"{column}[{first_key}]"
+            else:
+                extracted = f"toString({column})"
+        else:
+            payload = f"ifNull({column}, '')"
+            existence = (
+                f"JSONHas({payload}, {', '.join(key_params)})"
+                if key_params
+                else f"notEmpty({payload})"
+            )
+            if key_params:
+                params[f"{prefix}_path_{index}"] = _clickhouse_json_path(key_parts)
+                extracted = (
+                    f"coalesce(nullIf(JSON_VALUE({payload}, "
+                    f"{{{prefix}_path_{index}:String}}), ''), "
+                    f"JSONExtractRaw({payload}, {', '.join(key_params)}))"
+                )
+            else:
+                extracted = payload
+
+        if operator == "exists":
+            conditions.append(f"({existence})")
+            continue
+        value_param = f"{prefix}_value_{index}"
+        params[value_param] = value
+        if operator == "equals":
+            conditions.append(
+                f"(({existence}) AND {extracted} = {{{value_param}:String}})"
+            )
+        else:
+            conditions.append(
+                f"(({existence}) AND positionCaseInsensitiveUTF8("
+                f"{extracted}, {{{value_param}:String}}) > 0)"
+            )
+
+
+def _clickhouse_json_path(parts: list[str]) -> str:
+    return "$" + "".join(
+        f".{json.dumps(part, ensure_ascii=False)}" for part in parts
+    )
 
 
 def _format_score_value(value: Any) -> str:

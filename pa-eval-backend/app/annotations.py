@@ -1109,6 +1109,17 @@ def _annotation_filters_require_source(
     )
 
 
+def _annotation_filters_require_clickhouse_pushdown(
+    filters: AnnotationBatchFiltersPayload,
+) -> bool:
+    return bool(
+        filters.metadata_filter
+        or filters.metadata_filters
+        or filters.input_filters
+        or filters.output_filters
+    )
+
+
 def _source_independent_annotation_filters(
     filters: AnnotationBatchFiltersPayload,
 ) -> AnnotationBatchFiltersPayload:
@@ -2018,6 +2029,7 @@ async def count_annotation_queue_item_filters(
     item_ids_bracket: list[str] | None = Query(default=None, alias="itemIds[]"),
     current_user: CurrentUserContext = Depends(get_current_user_context),
     reader: LangfuseDatabaseReader = Depends(get_langfuse_db_reader),
+    trace_reader: LangfuseClickHouseReader = Depends(get_langfuse_clickhouse_reader),
 ) -> dict[str, Any]:
     effective_status = _first_non_empty_list(status, status_bracket)
     effective_object_type = _first_non_empty_list(object_type, object_type_bracket)
@@ -2053,12 +2065,26 @@ async def count_annotation_queue_item_filters(
         outputFilters=parsed_output_filters,
         itemIds=effective_item_ids or [],
     )
-    counts = await reader.count_annotation_queue_item_filters_for_user(
-        project_id,
-        queue_id,
-        current_user.user_id,
-        filters=filters_payload.model_dump(),
-    )
+    if _annotation_filters_require_clickhouse_pushdown(filters_payload):
+        candidates = await reader.list_annotation_queue_item_candidates_for_user(
+            project_id,
+            queue_id,
+            current_user.user_id,
+            filters=filters_payload.model_dump(),
+            omit_facet_filters=True,
+        )
+        counts = await trace_reader.count_annotation_queue_item_filters(
+            project_id,
+            candidates,
+            filters=filters_payload.model_dump(),
+        )
+    else:
+        counts = await reader.count_annotation_queue_item_filters_for_user(
+            project_id,
+            queue_id,
+            current_user.user_id,
+            filters=filters_payload.model_dump(),
+        )
     return success(counts)
 
 
@@ -2146,14 +2172,29 @@ async def list_annotation_queue_items(
         outputFilters=parsed_output_filters,
         itemIds=effective_item_ids or [],
     )
-    paginated = await reader.list_annotation_queue_items_page_for_user(
-        project_id,
-        queue_id,
-        current_user.user_id,
-        page=page,
-        page_size=page_size,
-        filters=filters_payload.model_dump(),
-    )
+    if _annotation_filters_require_clickhouse_pushdown(filters_payload):
+        candidates = await reader.list_annotation_queue_item_candidates_for_user(
+            project_id,
+            queue_id,
+            current_user.user_id,
+            filters=filters_payload.model_dump(),
+        )
+        paginated = await trace_reader.list_annotation_queue_items_page(
+            project_id,
+            candidates,
+            page=page,
+            page_size=page_size,
+            filters=filters_payload.model_dump(),
+        )
+    else:
+        paginated = await reader.list_annotation_queue_items_page_for_user(
+            project_id,
+            queue_id,
+            current_user.user_id,
+            page=page,
+            page_size=page_size,
+            filters=filters_payload.model_dump(),
+        )
     paginated["datas"] = await _enrich_annotation_items_with_clickhouse_scores(
         project_id,
         queue_id,

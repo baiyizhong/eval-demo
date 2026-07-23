@@ -11,7 +11,11 @@ from app import langfuse_db
 from app.auth_context import CurrentUserContext, get_current_user_context
 from app.config import Settings, get_settings
 from app.errors import BusinessError
-from app.langfuse_clickhouse import LangfuseClickHouseScoreWriter
+from app.langfuse_clickhouse import (
+    LangfuseClickHouseReader,
+    LangfuseClickHouseScoreWriter,
+    _build_annotation_source_filter_sql,
+)
 from app.langfuse_clickhouse import get_langfuse_clickhouse_reader
 from app.langfuse_clickhouse import get_langfuse_clickhouse_score_writer
 from app.langfuse_client import get_langfuse_client
@@ -623,6 +627,40 @@ class FakeAnnotationDatabaseReader:
         start = (page - 1) * page_size
         return {"total": len(filtered), "datas": filtered[start : start + page_size]}
 
+    async def list_annotation_queue_item_candidates_for_user(
+        self,
+        project_id: str,
+        queue_id: str,
+        user_id: str,
+        *,
+        filters: dict,
+        omit_facet_filters: bool = False,
+    ) -> list[dict]:
+        self.calls.append(
+            (
+                "list_item_candidates",
+                (
+                    project_id,
+                    queue_id,
+                    user_id,
+                    filters,
+                    omit_facet_filters,
+                ),
+            )
+        )
+        items = await self.list_annotation_queue_items_for_user(
+            project_id,
+            queue_id,
+            user_id,
+        )
+        payload = AnnotationBatchFiltersPayload.model_validate(filters)
+        payload = annotations_module._source_independent_annotation_filters(payload)
+        if omit_facet_filters:
+            payload = payload.model_copy(
+                update={"status": [], "object_type": [], "assignee_ids": []}
+            )
+        return _filter_annotation_items(items, payload)
+
     async def count_annotation_queue_item_filters_for_user(
         self,
         project_id: str,
@@ -715,6 +753,7 @@ class FakeAnnotationTraceReader:
         self.score_calls: list[tuple[str, str, str | None]] = []
         self.scores_by_queue: dict[str, list[dict]] = {}
         self.scores_by_trace: dict[str, list[dict]] = {}
+        self.annotation_filter_calls: list[tuple[str, int, dict]] = []
 
     async def get_trace(self, project_id: str, trace_id: str) -> dict:
         self.calls.append((project_id, trace_id))
@@ -795,6 +834,63 @@ class FakeAnnotationTraceReader:
                 }
             )
         return sources
+
+    async def list_annotation_queue_items_page(
+        self,
+        project_id: str,
+        candidates: list[dict],
+        *,
+        page: int,
+        page_size: int,
+        filters: dict,
+    ) -> dict:
+        self.annotation_filter_calls.append(
+            (project_id, len(candidates), {"type": "page", **filters})
+        )
+        enriched = [self._annotation_candidate_source(item) for item in candidates]
+        filtered = _filter_annotation_items(
+            enriched,
+            AnnotationBatchFiltersPayload.model_validate(filters),
+        )
+        start = (page - 1) * page_size
+        return {"total": len(filtered), "datas": filtered[start : start + page_size]}
+
+    async def count_annotation_queue_item_filters(
+        self,
+        project_id: str,
+        candidates: list[dict],
+        *,
+        filters: dict,
+    ) -> dict:
+        self.annotation_filter_calls.append(
+            (project_id, len(candidates), {"type": "counts", **filters})
+        )
+        enriched = [self._annotation_candidate_source(item) for item in candidates]
+        return _annotation_item_filter_counts(
+            enriched,
+            AnnotationBatchFiltersPayload.model_validate(filters),
+        )
+
+    @staticmethod
+    def _annotation_candidate_source(item: dict) -> dict:
+        trace_id = str(item.get("objectId") or "")
+        trace_number = trace_id.removeprefix("trace-")
+        source = item.get("source") or {}
+        return {
+            **item,
+            "source": {
+                **source,
+                "input": source.get("input") or {"question": f"问题 {trace_id}"},
+                "output": source.get("output") or {"answer": f"回答 {trace_id}"},
+                "metadata": source.get("metadata")
+                or {
+                    "app_id": (
+                        "target-app" if trace_number == "0999" else "other-app"
+                    )
+                },
+                "traceId": trace_id,
+            },
+        }
 
     async def list_scores_by_queue(
         self,
@@ -955,6 +1051,284 @@ def override_reader_and_trace_reader(
 
 def clear_overrides() -> None:
     app.dependency_overrides.clear()
+
+
+def test_builds_parameterized_clickhouse_annotation_source_filters() -> None:
+    filter_sql, params = _build_annotation_source_filter_sql(
+        metadata_filters=[
+            {"key": "channel", "operator": "equals", "value": "web"},
+            {"key": "context.region", "operator": "exists", "value": ""},
+        ],
+        input_filters=[
+            {"key": "question.text", "operator": "contains", "value": "退款"},
+        ],
+        output_filters=[
+            {"key": "", "operator": "contains", "value": "已处理"},
+        ],
+    )
+
+    assert "mapContains(source_metadata" in filter_sql
+    assert "JSONHas(source_metadata[" in filter_sql
+    assert "JSONHas(ifNull(source_input, '')" in filter_sql
+    assert "ifNull(source_output, '')" in filter_sql
+    assert "channel" not in filter_sql
+    assert "退款" not in filter_sql
+    assert params["annotation_metadata_key_0_0"] == "channel"
+    assert params["annotation_metadata_value_0"] == "web"
+    assert params["annotation_input_key_0_0"] == "question"
+    assert params["annotation_input_value_0"] == "退款"
+    assert params["annotation_output_value_0"] == "已处理"
+
+
+def test_clickhouse_annotation_source_filter_ignores_empty_conditions() -> None:
+    filter_sql, params = _build_annotation_source_filter_sql(
+        metadata_filters=[{"key": "", "operator": "exists", "value": ""}],
+        input_filters=[{"key": "", "operator": "contains", "value": ""}],
+        output_filters=[],
+    )
+
+    assert filter_sql == "1 = 1"
+    assert params == {}
+
+
+def test_clickhouse_annotation_source_filter_preserves_keyed_empty_values() -> None:
+    filter_sql, params = _build_annotation_source_filter_sql(
+        keyword="TRACE",
+        metadata_filters=[
+            {"key": "channel", "operator": "equals", "value": ""}
+        ],
+        input_filters=[
+            {"key": "question", "operator": "contains", "value": ""}
+        ],
+        output_filters=[],
+    )
+
+    assert "mapContains(source_metadata" in filter_sql
+    assert "JSONHas(ifNull(source_input, '')" in filter_sql
+    assert "candidate_object_type" in filter_sql
+    assert "trace_id" in filter_sql
+    assert "session_id" in filter_sql
+    assert "user_id" in filter_sql
+    assert params["annotation_metadata_value_0"] == ""
+    assert params["annotation_input_value_0"] == ""
+
+
+def test_clickhouse_annotation_page_filters_external_candidates_once(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    reader = LangfuseClickHouseReader(Settings())
+    captured: dict[str, object] = {}
+
+    async def query_external(
+        query: str,
+        params: dict,
+        *,
+        table_name: str,
+        structure: str,
+        rows: list[dict],
+    ) -> list[dict]:
+        captured.update(
+            query=query,
+            params=params,
+            table_name=table_name,
+            structure=structure,
+            rows=rows,
+        )
+        return [
+            {
+                "total": 1,
+                "datas": [
+                    json.dumps(
+                        {
+                            "id": "item-2",
+                            "projectId": "project-1",
+                            "queueId": "queue-1",
+                            "objectId": "trace-2",
+                            "objectType": "TRACE",
+                            "status": "PENDING",
+                            "completedAt": "",
+                            "completedById": "",
+                            "completedByName": "",
+                            "completedByEmail": "",
+                            "assigneeId": "",
+                            "assigneeName": "",
+                            "assigneeEmail": "",
+                            "createdAt": "2026-07-01T00:00:00Z",
+                            "updatedAt": "2026-07-02T00:00:00Z",
+                            "sourceTitle": "trace-2",
+                            "sourceInput": '{"question":"退款"}',
+                            "sourceOutput": '{"answer":"已处理"}',
+                            "sourceMetadata": '{"channel":"web"}',
+                            "traceId": "trace-2",
+                            "observationId": "",
+                            "sessionId": "",
+                            "userId": "user-1",
+                            "sourceCreatedAt": "2026-07-01T00:00:00Z",
+                        },
+                        ensure_ascii=False,
+                    )
+                ],
+            },
+        ]
+
+    monkeypatch.setattr(
+        reader,
+        "_query_json_each_row_with_external_table",
+        query_external,
+    )
+    candidates = [
+        {
+            "id": "item-2",
+            "projectId": "project-1",
+            "queueId": "queue-1",
+            "objectId": "trace-2",
+            "objectType": "TRACE",
+            "status": "PENDING",
+            "completedAt": "",
+            "completedBy": None,
+            "assignee": None,
+            "createdAt": "2026-07-01T00:00:00Z",
+            "updatedAt": "2026-07-02T00:00:00Z",
+        }
+    ]
+
+    async def run_query() -> dict:
+        return await reader.list_annotation_queue_items_page(
+            "project-1",
+            candidates,
+            page=1,
+            page_size=10,
+            filters={
+                "metadata_filters": [
+                    {"key": "channel", "operator": "equals", "value": "web"}
+                ],
+                "input_filters": [
+                    {"key": "question", "operator": "contains", "value": "退款"}
+                ],
+                "output_filters": [
+                    {"key": "answer", "operator": "exists", "value": ""}
+                ],
+            },
+        )
+
+    result = anyio.run(run_query)
+
+    assert result["total"] == 1
+    assert result["datas"][0]["source"]["metadata"] == {"channel": "web"}
+    assert captured["table_name"] == "annotation_candidates"
+    assert len(list(captured["rows"])) == 1
+    sql = str(captured["query"])
+    assert "FROM traces FINAL" in sql
+    assert "FROM observations FINAL" in sql
+    assert "source_metadata" in sql
+    assert "groupArray({annotation_window:UInt32})" in sql
+    assert captured["params"]["annotation_limit"] == 10
+    assert captured["params"]["annotation_slice_start"] == 1
+
+
+def test_clickhouse_annotation_filter_counts_aggregate_external_candidates_once(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    reader = LangfuseClickHouseReader(Settings())
+    captured: dict[str, object] = {}
+
+    async def query_external(
+        query: str,
+        params: dict,
+        *,
+        table_name: str,
+        structure: str,
+        rows: list[dict],
+    ) -> list[dict]:
+        captured.update(query=query, params=params, rows=rows)
+        return [
+            {"facet": "status", "value": "PENDING", "total": 2},
+            {"facet": "status", "value": "COMPLETED", "total": 1},
+            {"facet": "objectType", "value": "TRACE", "total": 3},
+            {"facet": "assigneeIds", "value": "user-1", "total": 2},
+        ]
+
+    monkeypatch.setattr(
+        reader,
+        "_query_json_each_row_with_external_table",
+        query_external,
+    )
+    candidates = [
+        {
+            "id": "item-1",
+            "projectId": "project-1",
+            "queueId": "queue-1",
+            "objectId": "trace-1",
+            "objectType": "TRACE",
+            "status": "PENDING",
+            "completedAt": "",
+            "completedBy": None,
+            "assignee": {"id": "user-1", "name": "A", "email": ""},
+            "createdAt": "2026-07-01T00:00:00Z",
+            "updatedAt": "2026-07-01T00:00:00Z",
+        }
+    ]
+
+    async def run_query() -> dict:
+        return await reader.count_annotation_queue_item_filters(
+            "project-1",
+            candidates,
+            filters={
+                "status": ["PENDING"],
+                "object_type": ["TRACE"],
+                "assignee_ids": ["user-1"],
+                "metadata_filters": [
+                    {"key": "channel", "operator": "equals", "value": "web"}
+                ],
+            },
+        )
+
+    result = anyio.run(run_query)
+
+    assert result == {
+        "status": {"PENDING": 2, "COMPLETED": 1},
+        "objectType": {"TRACE": 3, "OBSERVATION": 0, "SESSION": 0},
+        "assigneeIds": {"user-1": 2},
+    }
+    sql = str(captured["query"])
+    assert sql.count("FROM source_candidates") == 1
+    assert "annotation_status_0" in str(captured["params"])
+    assert "annotation_object_type_0" in str(captured["params"])
+    assert "annotation_assignee_id_0" in str(captured["params"])
+
+
+def test_clickhouse_annotation_page_rejects_excessive_offset() -> None:
+    reader = LangfuseClickHouseReader(
+        Settings(pa_eval_annotation_advanced_filter_max_offset=100)
+    )
+    candidate = {
+        "id": "item-1",
+        "projectId": "project-1",
+        "queueId": "queue-1",
+        "objectId": "trace-1",
+        "objectType": "TRACE",
+        "status": "PENDING",
+        "completedAt": "",
+        "completedBy": None,
+        "assignee": None,
+        "createdAt": "2026-07-01T00:00:00Z",
+        "updatedAt": "2026-07-01T00:00:00Z",
+    }
+
+    async def run_query() -> None:
+        await reader.list_annotation_queue_items_page(
+            "project-1",
+            [candidate],
+            page=12,
+            page_size=10,
+            filters={"metadata_filters": [{"key": "channel", "operator": "exists"}]},
+        )
+
+    with pytest.raises(BusinessError) as exc_info:
+        anyio.run(run_query)
+
+    assert exc_info.value.code == 1026
+    assert exc_info.value.status_code == 400
 
 
 def test_lists_project_annotation_queues_with_filters() -> None:
@@ -2377,6 +2751,89 @@ def test_lists_annotation_items_with_input_and_output_filters() -> None:
     assert [item["id"] for item in body["datas"]] == ["item-2"]
 
 
+def test_lists_annotation_items_filters_against_clickhouse_trace_sources() -> None:
+    class EmptyPostgresSourceReader(FakeAnnotationDatabaseReader):
+        async def list_annotation_queue_items_for_user(
+            self,
+            project_id: str,
+            queue_id: str,
+            user_id: str,
+        ) -> list[dict]:
+            items = await super().list_annotation_queue_items_for_user(
+                project_id,
+                queue_id,
+                user_id,
+            )
+            return [
+                {
+                    **item,
+                    "source": {
+                        **item["source"],
+                        "input": {},
+                        "output": {},
+                        "metadata": {},
+                    },
+                }
+                if item["id"] == "item-2"
+                else item
+                for item in items
+            ]
+
+    fake_reader = EmptyPostgresSourceReader()
+    fake_trace_reader = FakeAnnotationTraceReader()
+    override_reader_and_trace_reader(fake_reader, fake_trace_reader)
+
+    try:
+        response = TestClient(app).get(
+            "/api/projects/project-1/annotation-queues/queue-1/items",
+            params={
+                "status": "PENDING",
+                "metadataFilters": (
+                    '[{"key":"app_id","operator":"equals","value":"other-app"}]'
+                ),
+                "inputFilters": (
+                    '[{"key":"question","operator":"contains","value":"问题 trace-2"}]'
+                ),
+                "outputFilters": (
+                    '[{"key":"answer","operator":"contains","value":"回答 trace-2"}]'
+                ),
+            },
+        )
+        counts_response = TestClient(app).get(
+            "/api/projects/project-1/annotation-queues/queue-1/items/filter-counts",
+            params={
+                "status": "PENDING",
+                "metadataFilters": (
+                    '[{"key":"app_id","operator":"equals","value":"other-app"}]'
+                ),
+                "inputFilters": (
+                    '[{"key":"question","operator":"contains","value":"问题 trace-2"}]'
+                ),
+                "outputFilters": (
+                    '[{"key":"answer","operator":"contains","value":"回答 trace-2"}]'
+                ),
+            },
+        )
+    finally:
+        clear_overrides()
+
+    assert response.status_code == 200
+    body = response.json()["data"]
+    assert body["total"] == 1
+    assert [item["id"] for item in body["datas"]] == ["item-2"]
+    assert body["datas"][0]["source"]["metadata"] == {"app_id": "other-app"}
+    assert counts_response.status_code == 200
+    assert counts_response.json()["data"]["status"] == {
+        "PENDING": 1,
+        "COMPLETED": 0,
+    }
+    assert [call[2]["type"] for call in fake_trace_reader.annotation_filter_calls] == [
+        "page",
+        "counts",
+    ]
+    assert fake_trace_reader.source_calls == []
+
+
 def test_lists_annotation_items_enriches_empty_trace_source() -> None:
     fake_reader = FakeAnnotationDatabaseReader()
     override_reader(fake_reader)
@@ -2731,6 +3188,9 @@ def test_lists_large_annotation_queue_with_metadata_filter_uses_batch_trace_sour
     assert body["total"] == 1
     assert [item["id"] for item in body["datas"]] == ["item-0999"]
     assert fake_trace_reader.source_calls == []
+    assert len(fake_trace_reader.annotation_filter_calls) == 1
+    assert fake_trace_reader.annotation_filter_calls[0][1] == 1000
+    assert fake_trace_reader.annotation_filter_calls[0][2]["type"] == "page"
     assert fake_trace_reader.calls == []
 
 
@@ -2798,6 +3258,9 @@ def test_counts_large_annotation_queue_with_metadata_filter_uses_batch_trace_sou
     assert response.json()["data"]["status"] == {"PENDING": 0, "COMPLETED": 1}
     assert fake_trace_reader.calls == []
     assert fake_trace_reader.source_calls == []
+    assert len(fake_trace_reader.annotation_filter_calls) == 1
+    assert fake_trace_reader.annotation_filter_calls[0][1] == 1000
+    assert fake_trace_reader.annotation_filter_calls[0][2]["type"] == "counts"
 
 
 def test_previews_large_annotation_batch_enriches_only_preview_samples() -> None:
@@ -3561,3 +4024,45 @@ def test_annotation_page_uses_light_candidates_then_current_page_details(
     detail_sql, detail_params = queries[2]
     assert "aqi.id = ANY(%(page_item_ids)s)" in detail_sql
     assert detail_params["page_item_ids"] == ["item-2", "item-1"]
+
+
+def test_annotation_advanced_filter_candidates_do_not_join_trace_tables(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    reader = LangfuseDatabaseReader(Settings())
+    captured: dict[str, object] = {}
+
+    async def get_queue(*_args: object) -> dict:
+        return {"id": "queue-1"}
+
+    async def fetch(sql: str, params: dict) -> list[dict]:
+        captured["sql"] = sql
+        captured["params"] = params
+        return []
+
+    monkeypatch.setattr(reader, "get_annotation_queue_for_user", get_queue)
+    monkeypatch.setattr(reader, "_fetch_all", fetch)
+
+    async def run_query() -> list[dict]:
+        return await reader.list_annotation_queue_item_candidates_for_user(
+            "project-1",
+            "queue-1",
+            "user-1",
+            filters={
+                "status": ["PENDING"],
+                "metadata_filters": [
+                    {"key": "channel", "operator": "equals", "value": "web"}
+                ],
+            },
+        )
+
+    assert anyio.run(run_query) == []
+    sql = str(captured["sql"])
+    assert "FROM annotation_queue_items aqi" in sql
+    assert "pa_annotation_queue_item_assignments" in sql
+    assert "LEFT JOIN traces" not in sql
+    assert "LEFT JOIN observations" not in sql
+    assert "LEFT JOIN trace_sessions" not in sql
+    assert "source_input" not in sql
+    assert "item.status = ANY(%(annotation_statuses)s)" in sql
+    assert captured["params"]["annotation_statuses"] == ["PENDING"]
