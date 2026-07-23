@@ -119,6 +119,7 @@ def test_evaluation_jobs_migration_defines_constraints_and_indexes() -> None:
         "pa_evaluation_jobs_attempt_count_check",
     ):
         assert constraint in content
+    assert "batch_start IS NOT NULL AND batch_end IS NOT NULL" in content
     assert "pa_evaluation_jobs_ready_idx" in content
     assert "pa_evaluation_jobs_running_lease_idx" in content
     assert "status = 'RUNNING'" in content

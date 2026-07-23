@@ -133,7 +133,8 @@ def upgrade() -> None:
         ),
         sa.CheckConstraint(
             "(batch_start IS NULL AND batch_end IS NULL) OR "
-            "(batch_start >= 0 AND batch_end > batch_start)",
+            "(batch_start IS NOT NULL AND batch_end IS NOT NULL "
+            "AND batch_start >= 0 AND batch_end > batch_start)",
             name="pa_evaluation_jobs_batch_range_check",
         ),
         sa.CheckConstraint(
