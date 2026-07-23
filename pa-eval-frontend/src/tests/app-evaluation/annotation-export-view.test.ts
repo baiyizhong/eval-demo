@@ -3,6 +3,7 @@ import { readFileSync } from 'node:fs'
 import { test } from 'node:test'
 
 import {
+  buildAnnotationBatchFilters,
   createProjectAnnotationExportJob,
   downloadProjectAnnotationExportJob,
   pollAnnotationExportJob,
@@ -177,14 +178,41 @@ test('annotation export dialog shows summary metrics preview and config controls
   assert.match(dialogSource, /创建导出任务/)
 })
 
-test('annotation queue detail uses refresh action and selected export dialog', () => {
+test('annotation export preview does not refetch for format or metadata display changes', () => {
+  const queryKeySource = dialogSource.slice(
+    dialogSource.indexOf('queryKey:'),
+    dialogSource.indexOf('queryFn:')
+  )
+  assert.doesNotMatch(queryKeySource, /format/)
+  assert.doesNotMatch(queryKeySource, /splitMetadata/)
+  assert.match(dialogSource, /deriveAnnotationExportPreview/)
+  assert.match(dialogSource, /format: 'xlsx'/)
+  assert.match(dialogSource, /splitMetadata: false/)
+})
+
+test('annotation export job can be created before preview finishes', () => {
+  const disabledSource = dialogSource.slice(
+    dialogSource.indexOf('const exportDisabled'),
+    dialogSource.indexOf('const handleCreateExport')
+  )
+  assert.doesNotMatch(disabledSource, /previewQuery\.isLoading/)
+  assert.doesNotMatch(disabledSource, /!preview(?:\s|\|)/)
+  assert.doesNotMatch(disabledSource, /preview\.metrics\.total/)
+  assert.doesNotMatch(dialogSource, /if \(exportDisabled \|\| !previewInput \|\| !preview\)/)
+})
+
+test('annotation queue detail reuses filtered export for cross-page selection', () => {
   assert.match(detailSource, /id: 'refresh'/)
   assert.match(detailSource, /label: '刷新'/)
   assert.match(detailSource, /icon: RefreshCw/)
   assert.doesNotMatch(detailSource, /id: 'export-data'/)
-  assert.doesNotMatch(detailSource, /scope='filtered'/)
   assert.match(detailSource, /AnnotationExportDialog/)
-  assert.match(detailSource, /scope='selected'/)
+  assert.match(detailSource, /exportSelection\?\.scope/)
+  assert.match(detailSource, /exportSelection\?\.filters/)
+  assert.match(bulkSource, /selection\.isAllMatchingRowsSelected/)
+  assert.match(bulkSource, /buildAnnotationBatchFilters/)
+  assert.match(bulkSource, /scope: 'filtered'/)
+  assert.match(bulkSource, /scope: 'selected'/)
   assert.match(queueListSource, /AnnotationExportDialog/)
   assert.match(queueListSource, /exportingQueue/)
   assert.doesNotMatch(queueListSource, /downloadJson/)
@@ -192,6 +220,26 @@ test('annotation queue detail uses refresh action and selected export dialog', (
   assert.match(bulkSource, /导出选中/)
   assert.match(bulkSource, /onExportSelected/)
   assert.doesNotMatch(bulkSource, /downloadJson/)
+})
+
+test('annotation filtered export preserves assignee filter snapshot', () => {
+  assert.deepEqual(
+    buildAnnotationBatchFilters({
+      page: 2,
+      pageSize: 10,
+      keyword: '客服',
+      filters: {
+        status: ['PENDING'],
+        assigneeIds: ['user-1'],
+      },
+      sorting: [],
+    }),
+    {
+      keyword: '客服',
+      status: ['PENDING'],
+      assigneeIds: ['user-1'],
+    }
+  )
 })
 
 test('preview helper sends exact path and body casing', async () => {

@@ -67,7 +67,8 @@ test('dataset item mutations call project-scoped real endpoints', async () => {
     api as never,
     'project-1',
     'dataset-1',
-    'xlsx'
+    'xlsx',
+    { keyword: '退款', status: ['ACTIVE'] }
   )
   await getProjectDatasetExportJob(
     api as never,
@@ -119,7 +120,11 @@ test('dataset item mutations call project-scoped real endpoints', async () => {
       'create-export-job',
       {
         path: { projectId: 'project-1', datasetId: 'dataset-1' },
-        body: { format: 'xlsx' },
+        body: {
+          format: 'xlsx',
+          keyword: '退款',
+          status: ['ACTIVE'],
+        },
       },
     ],
     [

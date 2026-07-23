@@ -48,6 +48,8 @@ class DatasetItemPayload(BaseModel):
 
 class DatasetExportJobPayload(BaseModel):
     format: DatasetExportFormat
+    keyword: str | None = None
+    status: list[DatasetItemStatus] = Field(default_factory=list)
 
 
 def _to_public_export_job(job: dict[str, Any]) -> dict[str, Any]:
@@ -107,6 +109,8 @@ async def create_dataset_export_job(
         user_id=current_user.user_id,
         export_format=payload.format,
         storage_dir=settings.pa_eval_export_storage_dir,
+        keyword=(payload.keyword or "").strip() or None,
+        status=payload.status or None,
     )
     return success(_to_public_export_job(job))
 

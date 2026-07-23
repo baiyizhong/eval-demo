@@ -1204,31 +1204,40 @@ class LangfuseClickHouseReader:
             "queue_id": queue_id,
             "run_id": run_id or "",
         }
-        scope_conditions: list[str] = []
-        for field, values, prefix in (
-            ("trace_id", trace_ids, "queue_trace_id"),
-            ("observation_id", observation_ids, "queue_observation_id"),
-            ("session_id", session_ids, "queue_session_id"),
-        ):
-            placeholders = []
-            for index, value in enumerate(dict.fromkeys(values or [])):
-                param_key = f"{prefix}_{index}"
-                placeholders.append(f"{{{param_key}:String}}")
-                params[param_key] = value
-            if placeholders:
-                scope_conditions.append(f"{field} IN ({', '.join(placeholders)})")
-        item_placeholders = []
-        for index, item_id in enumerate(dict.fromkeys(annotation_item_ids or [])):
-            param_key = f"queue_annotation_item_id_{index}"
-            item_placeholders.append(f"{{{param_key}:String}}")
-            params[param_key] = item_id
-        if item_placeholders:
-            scope_conditions.append(
-                f"metadata['annotationItemId'] IN ({', '.join(item_placeholders)})"
+        scope_rows = [
+            (object_type, object_id)
+            for object_type, object_ids in (
+                ("TRACE", trace_ids),
+                ("OBSERVATION", observation_ids),
+                ("SESSION", session_ids),
+                ("ITEM", annotation_item_ids),
             )
-        scope_sql = f"AND ({' OR '.join(scope_conditions)})" if scope_conditions else ""
-        rows = await self._query_json_each_row(
-            f"""
+            for object_id in dict.fromkeys(object_ids or [])
+            if object_id
+        ]
+        scope_sql = ""
+        if scope_rows:
+            scope_sql = """
+              AND (
+                  trace_id IN (
+                      SELECT object_id FROM annotation_score_scope
+                      WHERE object_type = 'TRACE'
+                  )
+                  OR observation_id IN (
+                      SELECT object_id FROM annotation_score_scope
+                      WHERE object_type = 'OBSERVATION'
+                  )
+                  OR session_id IN (
+                      SELECT object_id FROM annotation_score_scope
+                      WHERE object_type = 'SESSION'
+                  )
+                  OR metadata['annotationItemId'] IN (
+                      SELECT object_id FROM annotation_score_scope
+                      WHERE object_type = 'ITEM'
+                  )
+              )
+            """
+        query = f"""
             SELECT
                 id,
                 trace_id AS traceId,
@@ -1255,9 +1264,17 @@ class LangfuseClickHouseReader:
               {scope_sql}
             ORDER BY created_at DESC, id DESC
             FORMAT JSONEachRow
-            """,
-            params,
-        )
+            """
+        if scope_rows:
+            rows = await self._query_json_each_row_with_external_table(
+                query,
+                params,
+                table_name="annotation_score_scope",
+                structure="object_type String, object_id String",
+                rows=scope_rows,
+            )
+        else:
+            rows = await self._query_json_each_row(query, params)
         return [_format_score(row) for row in rows]
 
     async def _fetch_scores_by_trace(

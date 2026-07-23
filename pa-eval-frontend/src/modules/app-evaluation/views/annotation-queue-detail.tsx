@@ -25,7 +25,10 @@ import {
   listProjectAnnotationUsers,
 } from '../api/annotation-api'
 import { AnnotationExportDialog } from '../components/annotation-export-dialog'
-import { AnnotationQueueItemBulkActions } from '../components/annotation-queue-item-bulk-actions'
+import {
+  AnnotationQueueItemBulkActions,
+  type AnnotationQueueItemExportSelection,
+} from '../components/annotation-queue-item-bulk-actions'
 import { createAnnotationQueueItemColumns } from '../components/annotation-queue-item-columns'
 import { formatDateTime } from '../components/format'
 import { SessionTraceDialog } from '../components/session-trace-dialog'
@@ -50,11 +53,8 @@ export function ProjectAnnotationQueueDetail() {
   const { projectId = 'project_customer_agent', queueId = '' } = useParams()
   const { can } = usePermission({ type: 'project', projectId })
   const canEditAnnotation = can('project:annotation:edit')
-  const [selectedExportDialogOpen, setSelectedExportDialogOpen] =
-    useState(false)
-  const [selectedExportItemIds, setSelectedExportItemIds] = useState<string[]>(
-    []
-  )
+  const [exportSelection, setExportSelection] =
+    useState<AnnotationQueueItemExportSelection | null>(null)
   const [selectedSessionTrace, setSelectedSessionTrace] =
     useState<SelectedSessionTrace | null>(null)
 
@@ -290,19 +290,17 @@ export function ProjectAnnotationQueueDetail() {
                 assignee: false
               }
             }}
-            bulkActions={(table) => (
+            bulkActions={(table, selection) => (
               <AnnotationQueueItemBulkActions
                 table={table}
+                selection={selection}
                 api={$api}
                 projectId={projectId}
                 queueId={queueId}
                 users={usersQuery.data ?? []}
                 canEdit={canEditAnnotation}
                 onChanged={invalidateDetail}
-                onExportSelected={(ids) => {
-                  setSelectedExportItemIds(ids)
-                  setSelectedExportDialogOpen(true)
-                }}
+                onExportSelected={setExportSelection}
               />
             )}
             loadingText={
@@ -325,17 +323,20 @@ export function ProjectAnnotationQueueDetail() {
           }}
         />
         <AnnotationExportDialog
-          open={selectedExportDialogOpen}
+          open={Boolean(exportSelection)}
           onOpenChange={(open) => {
-            setSelectedExportDialogOpen(open)
-            if (!open) setSelectedExportItemIds([])
+            if (!open) setExportSelection(null)
           }}
           api={$api}
           projectId={projectId}
           queueId={queueId}
-          scope='selected'
-          filters={{ itemIds: selectedExportItemIds }}
-          itemIds={selectedExportItemIds}
+          scope={exportSelection?.scope ?? 'selected'}
+          filters={exportSelection?.filters ?? {}}
+          itemIds={
+            exportSelection?.scope === 'selected'
+              ? exportSelection.itemIds
+              : undefined
+          }
         />
       </div>
     </Page>

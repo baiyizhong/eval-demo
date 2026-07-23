@@ -16,12 +16,15 @@ import { Page } from '@/components/common/page'
 import { PageAction } from '@/components/common/page-action'
 import {
   archiveProjectDatasetItem,
+  createProjectDatasetExportJob,
   createProjectDatasetItem,
   deleteProjectDatasetItem,
+  downloadProjectDatasetExportJob,
   getProjectDataset,
   getProjectDatasetItemStatusCounts,
   getProjectDatasetMetricSummary,
   listProjectDatasetItems,
+  pollDatasetExportJob,
   updateProjectDatasetItem,
 } from '../api/dataset-api'
 import { DatasetItemBulkActions } from '../components/dataset-item-bulk-actions'
@@ -31,8 +34,13 @@ import {
   type DatasetItemDrawerIntent,
 } from '../components/dataset-item-form-drawer'
 import { DatasetTypeBadge } from '../components/dataset-type-badge'
-import { formatDateTime } from '../components/format'
-import type { DatasetItemFormInput, DatasetItemRecord } from '../types'
+import { downloadBlob, formatDateTime } from '../components/format'
+import { getDatasetExportFileName } from '../lib/dataset-item-export'
+import type {
+  DatasetItemFormInput,
+  DatasetItemRecord,
+  DatasetRecord,
+} from '../types'
 
 const itemUrlFilters: DataTableFilterBinding[] = [
   { fieldId: 'status', type: 'array' },
@@ -51,6 +59,7 @@ export function ProjectDatasetDetail() {
   const [selectedItem, setSelectedItem] = useState<DatasetItemRecord | null>(
     null
   )
+  const [isExportingSelection, setIsExportingSelection] = useState(false)
   const itemKeyword = searchParams.get('keyword') ?? ''
 
   const datasetQuery = useQuery({
@@ -225,6 +234,57 @@ export function ProjectDatasetDetail() {
     [$api, navigate, projectId]
   )
 
+  const handleExportAllMatching = useCallback(
+    async (
+      dataset: DatasetRecord,
+      query: Parameters<typeof listProjectDatasetItems>[3]
+    ) => {
+      if (isExportingSelection) {
+        throw new Error('已有数据集导出任务正在处理中')
+      }
+
+      const statuses = query.filters.status as
+        | DatasetItemRecord['status'][]
+        | undefined
+      setIsExportingSelection(true)
+      try {
+        const job = await createProjectDatasetExportJob(
+          $api,
+          projectId,
+          dataset.id,
+          'xlsx',
+          { keyword: query.keyword, status: statuses }
+        )
+        toast.info('导出任务已创建，正在生成文件')
+        const completedJob = await pollDatasetExportJob(
+          $api,
+          projectId,
+          dataset.id,
+          job.id
+        )
+
+        if (completedJob.status === 'FAILED') {
+          throw new Error(completedJob.errorMessage || '数据集导出失败')
+        }
+
+        const blob = await downloadProjectDatasetExportJob(
+          $api,
+          projectId,
+          dataset.id,
+          completedJob.id
+        )
+        downloadBlob(
+          blob,
+          completedJob.fileName || getDatasetExportFileName(dataset, 'xlsx')
+        )
+        toast.success(`已导出 ${completedJob.exportedCount} 条数据项`)
+      } finally {
+        setIsExportingSelection(false)
+      }
+    },
+    [$api, isExportingSelection, projectId]
+  )
+
   const dataset = datasetQuery.data
   const metrics = metricQuery.data
 
@@ -362,10 +422,14 @@ export function ProjectDatasetDetail() {
             }}
             bulkActions={
               canEditDataset && dataset
-                ? (table) => (
+                ? (table, selection) => (
                     <DatasetItemBulkActions
                       table={table}
+                      selection={selection}
                       dataset={dataset}
+                      onExportAllMatching={(query) =>
+                        handleExportAllMatching(dataset, query)
+                      }
                     />
                   )
                 : undefined

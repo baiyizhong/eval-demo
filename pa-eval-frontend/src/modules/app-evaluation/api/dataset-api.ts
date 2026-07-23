@@ -6,6 +6,7 @@ import type {
 import type {
   DatasetFormInput,
   DatasetExportFormat,
+  DatasetExportFiltersInput,
   DatasetExportJobRecord,
   DatasetItemFormInput,
   DatasetItemRecord,
@@ -170,11 +171,18 @@ export function createProjectDatasetExportJob(
   api: DatasetApiClient,
   projectId: string,
   datasetId: string,
-  format: DatasetExportFormat
+  format: DatasetExportFormat,
+  filters: DatasetExportFiltersInput = {}
 ) {
+  const keyword = filters.keyword?.trim()
+
   return api.createProjectDatasetExportJob<DatasetExportJobRecord>({
     path: { projectId, datasetId },
-    body: { format },
+    body: {
+      format,
+      ...(keyword ? { keyword } : {}),
+      ...(filters.status?.length ? { status: filters.status } : {}),
+    },
   })
 }
 

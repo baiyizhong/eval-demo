@@ -1838,20 +1838,51 @@ async def test_clickhouse_reader_lists_latest_queue_score_versions(monkeypatch) 
     captured = {}
 
     async def fake_query(query: str, params: dict):
+        raise AssertionError("有范围的队列评分查询不应把 ID 放入 URL 参数")
+
+    async def fake_external_query(
+        query: str,
+        params: dict,
+        *,
+        table_name: str,
+        structure: str,
+        rows,
+    ):
         captured["query"] = query
         captured["params"] = params
+        captured["table_name"] = table_name
+        captured["structure"] = structure
+        captured["rows"] = list(rows)
         return []
 
     monkeypatch.setattr(reader, "_query_json_each_row", fake_query)
+    monkeypatch.setattr(
+        reader,
+        "_query_json_each_row_with_external_table",
+        fake_external_query,
+    )
 
     await reader.list_scores_by_queue(
         "project-1",
         "queue-1",
-        trace_ids=["trace-1"],
+        trace_ids=[f"trace-{index}" for index in range(30_000)],
+        observation_ids=["observation-1"],
+        session_ids=["session-1"],
+        annotation_item_ids=["item-1"],
     )
 
     assert "FROM scores FINAL" in captured["query"]
     assert "AND is_deleted = 0" in captured["query"]
+    assert captured["params"] == {
+        "project_id": "project-1",
+        "queue_id": "queue-1",
+        "run_id": "",
+    }
+    assert captured["table_name"] == "annotation_score_scope"
+    assert captured["structure"] == "object_type String, object_id String"
+    assert len(captured["rows"]) == 30_003
+    assert captured["rows"][0] == ("TRACE", "trace-0")
+    assert captured["rows"][-1] == ("ITEM", "item-1")
 
 
 @pytest.mark.anyio

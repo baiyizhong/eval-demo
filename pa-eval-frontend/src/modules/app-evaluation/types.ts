@@ -58,6 +58,11 @@ export type DatasetExportJobRecord = {
   expiresAt: string
 }
 
+export type DatasetExportFiltersInput = {
+  keyword?: string
+  status?: DatasetItemStatus[]
+}
+
 export type DatasetFormInput = {
   name: string
   type: DatasetType
@@ -307,6 +312,7 @@ export type AnnotationBatchFiltersInput = {
   status?: AnnotationItemStatus[]
   objectType?: AnnotationObjectType[]
   completedBy?: string[]
+  assigneeIds?: string[]
   createdAtFrom?: string
   createdAtTo?: string
   completedAtFrom?: string

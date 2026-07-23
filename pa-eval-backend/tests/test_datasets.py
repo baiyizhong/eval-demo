@@ -186,6 +186,8 @@ class FakeDatabaseReader:
         user_id: str,
         *,
         batch_size: int = 1000,
+        keyword: str | None = None,
+        status: list[str] | None = None,
     ):
         self.project_id = project_id
         self.user_id = user_id
@@ -196,6 +198,8 @@ class FakeDatabaseReader:
             user_id,
             page=1,
             page_size=batch_size,
+            keyword=keyword,
+            status=status,
         )
         yield result["datas"]
 
@@ -853,6 +857,50 @@ def test_dataset_export_streams_items_in_batches(tmp_path: Path) -> None:
     assert fake_reader.export_item_batches == [1000]
     file_path = Path(fake_reader.export_job["filePath"])
     assert file_path.read_text(encoding="utf-8").count("\n") == 4
+
+
+def test_dataset_export_passes_selection_filter_snapshot(tmp_path: Path) -> None:
+    class FilteredExportReader(FakeDatabaseReader):
+        export_filters: dict | None = None
+
+        async def iter_dataset_items_for_export(
+            self,
+            project_id: str,
+            dataset_id: str,
+            user_id: str,
+            *,
+            batch_size: int = 1000,
+            keyword: str | None = None,
+            status: list[str] | None = None,
+        ):
+            self.export_filters = {"keyword": keyword, "status": status}
+            yield []
+
+    fake_reader = FilteredExportReader()
+    asyncio.run(
+        fake_reader.create_dataset_export_job_for_user(
+            "project-1", "dataset-1", "user-1", "xlsx"
+        )
+    )
+
+    asyncio.run(
+        dataset_exports.generate_dataset_export_file(
+            reader=fake_reader,  # type: ignore[arg-type]
+            project_id="project-1",
+            dataset_id="dataset-1",
+            job_id="export-job-1",
+            user_id="user-1",
+            export_format="xlsx",
+            storage_dir=str(tmp_path),
+            keyword="退款",
+            status=["ACTIVE"],
+        )
+    )
+
+    assert fake_reader.export_filters == {
+        "keyword": "退款",
+        "status": ["ACTIVE"],
+    }
 
 
 def test_dataset_export_reader_uses_keyset_without_count_or_offset(

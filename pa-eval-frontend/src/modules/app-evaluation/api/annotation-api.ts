@@ -719,6 +719,7 @@ export function buildAnnotationBatchFilters(
   const status = query.filters.status as string[] | undefined
   const objectType = query.filters.objectType as string[] | undefined
   const completedBy = query.filters.completedBy as string[] | undefined
+  const assigneeIds = query.filters.assigneeIds as string[] | undefined
   const createdAtFrom = query.filters.createdAtFrom as string | undefined
   const createdAtTo = query.filters.createdAtTo as string | undefined
   const completedAtFrom = query.filters.completedAtFrom as string | undefined
@@ -746,6 +747,7 @@ export function buildAnnotationBatchFilters(
       ? { objectType: objectType as AnnotationBatchFiltersInput['objectType'] }
       : {}),
     ...(completedBy?.length ? { completedBy } : {}),
+    ...(assigneeIds?.length ? { assigneeIds } : {}),
     ...(createdAtFrom ? { createdAtFrom } : {}),
     ...(createdAtTo ? { createdAtTo } : {}),
     ...(completedAtFrom ? { completedAtFrom } : {}),

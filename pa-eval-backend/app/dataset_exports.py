@@ -38,6 +38,8 @@ async def generate_dataset_export_file(
     user_id: str,
     export_format: str,
     storage_dir: str,
+    keyword: str | None = None,
+    status: list[str] | None = None,
 ) -> None:
     try:
         await reader.mark_dataset_export_job_running(project_id, dataset_id, job_id)
@@ -61,6 +63,8 @@ async def generate_dataset_export_file(
             project_id,
             dataset_id,
             user_id,
+            keyword=keyword,
+            status=status,
         )
         if export_format == "csv":
             total_count = await _write_csv(file_path, batches)
@@ -95,11 +99,18 @@ async def _iter_export_item_batches(
     project_id: str,
     dataset_id: str,
     user_id: str,
+    *,
+    keyword: str | None = None,
+    status: list[str] | None = None,
 ) -> AsyncIterator[list[dict[str, Any]]]:
+    export_filters: dict[str, Any] = {}
+    if keyword:
+        export_filters["keyword"] = keyword
+    if status:
+        export_filters["status"] = status
+
     async for batch in reader.iter_dataset_items_for_export(
-        project_id,
-        dataset_id,
-        user_id,
+        project_id, dataset_id, user_id, **export_filters
     ):
         yield batch
 

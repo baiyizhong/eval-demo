@@ -22,26 +22,49 @@ import {
   SelectTrigger,
   SelectValue,
 } from '@/components/ui/select'
-import { DataTableBulkActions } from '@/components/common/data-table'
 import {
+  DataTableBulkActions,
+  type DataTableSelectionState,
+} from '@/components/common/data-table'
+import {
+  buildAnnotationBatchFilters,
   deleteProjectAnnotationQueueItems,
+  listProjectAnnotationQueueItems,
   updateProjectAnnotationQueueItemAssignees,
 } from '../api/annotation-api'
-import type { AnnotationQueueItemRecord, ProjectUserRecord } from '../types'
+import { resolveAnnotationQueueSelectedItems } from '../lib/annotation-queue-selection'
+import type {
+  AnnotationBatchFiltersInput,
+  AnnotationQueueItemRecord,
+  ProjectUserRecord,
+} from '../types'
+
+export type AnnotationQueueItemExportSelection =
+  | {
+      scope: 'selected'
+      filters: AnnotationBatchFiltersInput
+      itemIds: string[]
+    }
+  | {
+      scope: 'filtered'
+      filters: AnnotationBatchFiltersInput
+    }
 
 type AnnotationQueueItemBulkActionsProps = {
   table: Table<AnnotationQueueItemRecord>
+  selection: DataTableSelectionState<AnnotationQueueItemRecord>
   api: Parameters<typeof deleteProjectAnnotationQueueItems>[0]
   projectId: string
   queueId: string
   users: ProjectUserRecord[]
   canEdit?: boolean
   onChanged: () => Promise<unknown>
-  onExportSelected?: (itemIds: string[]) => void
+  onExportSelected?: (selection: AnnotationQueueItemExportSelection) => void
 }
 
 export function AnnotationQueueItemBulkActions({
   table,
+  selection,
   api,
   projectId,
   queueId,
@@ -52,19 +75,44 @@ export function AnnotationQueueItemBulkActions({
 }: AnnotationQueueItemBulkActionsProps) {
   const [assigneeDialogOpen, setAssigneeDialogOpen] = useState(false)
   const [assigneeUserId, setAssigneeUserId] = useState('')
+  const [assigneeItems, setAssigneeItems] = useState<
+    AnnotationQueueItemRecord[]
+  >([])
+  const [isResolvingSelection, setIsResolvingSelection] = useState(false)
   const [isUpdatingAssignee, setIsUpdatingAssignee] = useState(false)
   const selectedRows = table.getFilteredSelectedRowModel().rows
   const selectedItems = selectedRows.map((row) => row.original)
-  const itemIds = selectedItems.map((item) => item.id)
+  const selectedCount = selection.selectedRowCount
   const assignableUsers = users.filter((user) => user.status !== 'pending')
-  const completedCount = selectedItems.filter(
+  const completedCount = assigneeItems.filter(
     (item) => item.status === 'COMPLETED'
   ).length
-  const pendingCount = selectedItems.length - completedCount
+  const pendingCount = assigneeItems.length - completedCount
   const canUpdateAssignee = Boolean(canEdit && assignableUsers.length)
 
+  const resolveSelectedItems = () =>
+    resolveAnnotationQueueSelectedItems({
+      selectedItems,
+      selection,
+      fetchPage: (query) =>
+        listProjectAnnotationQueueItems(api, projectId, queueId, query),
+    })
+
   const handleExport = () => {
-    onExportSelected?.(itemIds)
+    if (selection.isAllMatchingRowsSelected) {
+      onExportSelected?.({
+        scope: 'filtered',
+        filters: buildAnnotationBatchFilters(selection.queryState),
+      })
+      return
+    }
+
+    const itemIds = selectedItems.map((item) => item.id)
+    onExportSelected?.({
+      scope: 'selected',
+      filters: { itemIds },
+      itemIds,
+    })
   }
 
   const handleDelete = async () => {
@@ -72,22 +120,36 @@ export function AnnotationQueueItemBulkActions({
 
     const confirmed = await confirm({
       title: '删除选中标注数据',
-      desc: `将仅移除 ${itemIds.length} 条队列数据，不删除源对象、历史评分或数据集项。确定继续吗？`,
+      desc: `将仅移除 ${selectedCount} 条队列数据，不删除源对象、历史评分或数据集项。确定继续吗？`,
       confirmText: '删除',
       destructive: true,
     })
 
     if (!confirmed) return
 
-    await deleteProjectAnnotationQueueItems(api, projectId, queueId, itemIds)
-    await onChanged()
-    table.resetRowSelection()
-    toast.success(`已删除 ${itemIds.length} 条标注数据`)
+    setIsResolvingSelection(true)
+    try {
+      const items = await resolveSelectedItems()
+      const itemIds = items.map((item) => item.id)
+      await deleteProjectAnnotationQueueItems(api, projectId, queueId, itemIds)
+      await onChanged()
+      selection.clearSelection()
+      toast.success(`已删除 ${itemIds.length} 条标注数据`)
+    } finally {
+      setIsResolvingSelection(false)
+    }
   }
 
-  const handleOpenAssigneeDialog = () => {
-    setAssigneeUserId(assignableUsers[0]?.id ?? '')
-    setAssigneeDialogOpen(true)
+  const handleOpenAssigneeDialog = async () => {
+    setIsResolvingSelection(true)
+    try {
+      const items = await resolveSelectedItems()
+      setAssigneeItems(items)
+      setAssigneeUserId(assignableUsers[0]?.id ?? '')
+      setAssigneeDialogOpen(true)
+    } finally {
+      setIsResolvingSelection(false)
+    }
   }
 
   const handleUpdateAssignee = async () => {
@@ -95,6 +157,7 @@ export function AnnotationQueueItemBulkActions({
 
     setIsUpdatingAssignee(true)
     try {
+      const itemIds = assigneeItems.map((item) => item.id)
       const result = await updateProjectAnnotationQueueItemAssignees(
         api,
         projectId,
@@ -103,8 +166,9 @@ export function AnnotationQueueItemBulkActions({
         assigneeUserId
       )
       await onChanged()
-      table.resetRowSelection()
+      selection.clearSelection()
       setAssigneeDialogOpen(false)
+      setAssigneeItems([])
       if (result.updatedCount > 0) {
         toast.success(
           `已修改 ${result.updatedCount} 条处理人，跳过 ${result.skippedCount} 条已完成数据`
@@ -119,11 +183,16 @@ export function AnnotationQueueItemBulkActions({
 
   return (
     <>
-      <DataTableBulkActions table={table} entityName='标注数据'>
+      <DataTableBulkActions
+        table={table}
+        selection={selection}
+        entityName='标注数据'
+      >
         <Button
           type='button'
           size='sm'
           variant='outline'
+          disabled={isResolvingSelection}
           onClick={() => {
             handleExport()
           }}
@@ -137,8 +206,10 @@ export function AnnotationQueueItemBulkActions({
               type='button'
               size='sm'
               variant='outline'
-              disabled={!canUpdateAssignee}
-              onClick={handleOpenAssigneeDialog}
+              disabled={!canUpdateAssignee || isResolvingSelection}
+              onClick={() => {
+                void handleOpenAssigneeDialog()
+              }}
             >
               <UserPen data-icon='inline-start' />
               修改处理人
@@ -147,6 +218,7 @@ export function AnnotationQueueItemBulkActions({
               type='button'
               size='sm'
               variant='destructive'
+              disabled={isResolvingSelection}
               onClick={() => {
                 void handleDelete()
               }}
@@ -158,7 +230,13 @@ export function AnnotationQueueItemBulkActions({
         ) : null}
       </DataTableBulkActions>
 
-      <Dialog open={assigneeDialogOpen} onOpenChange={setAssigneeDialogOpen}>
+      <Dialog
+        open={assigneeDialogOpen}
+        onOpenChange={(open) => {
+          setAssigneeDialogOpen(open)
+          if (!open) setAssigneeItems([])
+        }}
+      >
         <DialogContent>
           <DialogHeader>
             <DialogTitle>修改处理人</DialogTitle>
@@ -177,7 +255,7 @@ export function AnnotationQueueItemBulkActions({
             </Alert>
 
             <div className='text-muted-foreground text-sm'>
-              已选 {itemIds.length} 条，其中 {pendingCount} 条待处理、
+              已选 {assigneeItems.length} 条，其中 {pendingCount} 条待处理、
               {completedCount} 条已完成。
             </div>
 

@@ -114,11 +114,9 @@ export function AnnotationExportDialog({
         scope,
         filters,
         itemIds: selectedItemIds,
-        format,
-        splitMetadata,
         previewLimit: 5,
       }),
-    [filters, format, scope, selectedItemIds, splitMetadata]
+    [filters, scope, selectedItemIds]
   )
 
   const previewQuery = useQuery({
@@ -130,8 +128,6 @@ export function AnnotationExportDialog({
       scope,
       filters,
       selectedItemIds,
-      format,
-      splitMetadata,
       previewInput,
     ],
     queryFn: () => {
@@ -143,7 +139,10 @@ export function AnnotationExportDialog({
     enabled: open && Boolean(queueId) && Boolean(previewInput),
   })
 
-  const preview = previewQuery.data
+  const preview = useMemo(
+    () => deriveAnnotationExportPreview(previewQuery.data, splitMetadata),
+    [previewQuery.data, splitMetadata]
+  )
   const previewColumns = useMemo(() => buildPreviewColumns(preview), [preview])
   const defaultFileName = useMemo(
     () => (preview ? buildDefaultExportFileName(preview) : ''),
@@ -159,16 +158,15 @@ export function AnnotationExportDialog({
     onOpenChange(nextOpen)
   }
 
+  const normalizedFileName = normalizeExportFileName(fileName)
+  const hasInvalidCustomFileName = Boolean(
+    customFileName?.trim() && !normalizedFileName
+  )
   const exportDisabled =
-    isExporting ||
-    previewQuery.isLoading ||
-    !preview ||
-    preview.metrics.total <= 0 ||
-    !previewInput ||
-    !normalizeExportFileName(fileName)
+    isExporting || !previewInput || hasInvalidCustomFileName
 
   const handleCreateExport = async () => {
-    if (exportDisabled || !previewInput || !preview) return
+    if (exportDisabled || !previewInput) return
 
     setIsExporting(true)
     try {
@@ -180,7 +178,7 @@ export function AnnotationExportDialog({
               filters,
               itemIds: previewInput.itemIds,
               splitMetadata,
-              fileName: normalizeExportFileName(fileName),
+              fileName: normalizedFileName,
             }
           : {
               scope: 'filtered',
@@ -188,7 +186,7 @@ export function AnnotationExportDialog({
               filters,
               itemIds: previewInput.itemIds,
               splitMetadata,
-              fileName: normalizeExportFileName(fileName),
+              fileName: normalizedFileName,
             }
       const job = await createProjectAnnotationExportJob(
         api,
@@ -420,37 +418,74 @@ function buildAnnotationExportInput({
   scope,
   filters,
   itemIds,
-  format,
-  splitMetadata,
   previewLimit,
 }: {
   scope: AnnotationExportScope
   filters: AnnotationBatchFiltersInput
   itemIds: string[]
-  format: AnnotationExportFormat
-  splitMetadata: boolean
   previewLimit: number
 }): AnnotationExportPreviewInput | null {
   if (scope === 'selected') {
     if (itemIds.length === 0) return null
     return {
       scope: 'selected',
-      format,
+      format: 'xlsx',
       filters,
       itemIds: itemIds as NonEmptyStringArray,
       previewLimit,
-      splitMetadata,
+      splitMetadata: false,
     }
   }
 
   return {
     scope: 'filtered',
-    format,
+    format: 'xlsx',
     filters,
     itemIds,
     previewLimit,
-    splitMetadata,
+    splitMetadata: false,
   }
+}
+
+function deriveAnnotationExportPreview(
+  preview: AnnotationExportPreview | undefined,
+  splitMetadata: boolean
+) {
+  if (!preview || !splitMetadata) return preview
+
+  const metadataByRow = preview.previewItems.map((row) =>
+    parsePreviewMetadata(row.metadata)
+  )
+  const metadataKeys = Array.from(
+    new Set(metadataByRow.flatMap((metadata) => Object.keys(metadata)))
+  ).sort()
+  const previewItems = preview.previewItems.map((row, index) => {
+    const { metadata: _metadata, ...values } = row
+    const metadata = metadataByRow[index] ?? {}
+    for (const key of metadataKeys) {
+      values[`metadata.${key}`] = formatPreviewMetadataValue(metadata[key])
+    }
+    return values
+  })
+
+  return { ...preview, metadataKeys, previewItems }
+}
+
+function parsePreviewMetadata(value: string | undefined) {
+  if (!value) return {} as Record<string, unknown>
+  try {
+    const parsed = JSON.parse(value) as unknown
+    return parsed && typeof parsed === 'object' && !Array.isArray(parsed)
+      ? (parsed as Record<string, unknown>)
+      : {}
+  } catch {
+    return {}
+  }
+}
+
+function formatPreviewMetadataValue(value: unknown) {
+  if (value === undefined || value === null) return ''
+  return typeof value === 'string' ? value : (JSON.stringify(value) ?? '')
 }
 
 function buildPreviewColumns(preview?: AnnotationExportPreview) {

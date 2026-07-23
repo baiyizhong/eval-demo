@@ -1865,16 +1865,20 @@ class LangfuseDatabaseReader:
         user_id: str,
         *,
         batch_size: int = 1000,
+        keyword: str | None = None,
+        status: list[str] | None = None,
     ):
         await self._ensure_project_visible(project_id, user_id)
         await self._ensure_dataset_visible(project_id, dataset_id)
+        where_sql, base_params = self._build_dataset_item_filters(
+            project_id,
+            dataset_id,
+            keyword=keyword,
+            status=status,
+        )
         cursor: dict[str, Any] = {}
         while True:
-            params: dict[str, Any] = {
-                "project_id": project_id,
-                "dataset_id": dataset_id,
-                "limit": batch_size,
-            }
+            params: dict[str, Any] = {**base_params, "limit": batch_size}
             cursor_sql = ""
             if cursor:
                 params.update(
@@ -1907,9 +1911,7 @@ class LangfuseDatabaseReader:
                     di.created_at,
                     di.updated_at
                 FROM dataset_items di
-                WHERE di.project_id = %(project_id)s
-                  AND di.dataset_id = %(dataset_id)s
-                  AND di.valid_to IS NULL
+                WHERE {where_sql}
                   {cursor_sql}
                 ORDER BY di.updated_at DESC, di.created_at DESC, di.id DESC
                 LIMIT %(limit)s

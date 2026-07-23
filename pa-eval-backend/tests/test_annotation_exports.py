@@ -629,13 +629,8 @@ def test_previews_annotation_export_uses_latest_clickhouse_scores() -> None:
 
 def test_previews_large_annotation_export_enriches_only_preview_items() -> None:
     class LargeAnnotationExportReader(FakeAnnotationExportReader):
-        async def list_annotation_queue_items_for_user(
-            self,
-            project_id: str,
-            queue_id: str,
-            user_id: str,
-        ) -> list[dict]:
-            self.calls.append("list_items")
+        @staticmethod
+        def _items(project_id: str, queue_id: str) -> list[dict]:
             return [
                 {
                     **_item(f"item-{index:04d}", metadata={}, input_value={}),
@@ -661,8 +656,53 @@ def test_previews_large_annotation_export_enriches_only_preview_items() -> None:
                     "createdAt": "2026-07-11T08:00:00.000Z",
                     "updatedAt": "2026-07-11T08:00:00.000Z",
                 }
-                for index in range(1000)
+                for index in range(5)
             ]
+
+        async def list_annotation_queue_items_for_user(
+            self,
+            project_id: str,
+            queue_id: str,
+            user_id: str,
+        ) -> list[dict]:
+            raise AssertionError("导出预览不应加载全量标注详情")
+
+        async def iter_annotation_queue_items_for_user(self, *args, **kwargs):
+            raise AssertionError("导出预览不应扫描全量标注详情")
+            yield []
+
+        async def list_annotation_queue_items_page_for_user(
+            self,
+            project_id: str,
+            queue_id: str,
+            user_id: str,
+            *,
+            page: int,
+            page_size: int,
+            filters: dict,
+        ) -> dict:
+            self.calls.append("list_preview_page")
+            assert page == 1
+            assert page_size == 5
+            return {
+                "total": 30_000,
+                "datas": self._items(project_id, queue_id)[:page_size],
+            }
+
+        async def count_annotation_queue_item_filters_for_user(
+            self,
+            project_id: str,
+            queue_id: str,
+            user_id: str,
+            *,
+            filters: dict,
+        ) -> dict:
+            self.calls.append("count_preview_statuses")
+            return {
+                "status": {"PENDING": 0, "COMPLETED": 30_000},
+                "objectType": {"TRACE": 30_000},
+                "assigneeIds": {},
+            }
 
     fake_reader = LargeAnnotationExportReader()
     fake_trace_reader = FakeAnnotationExportTraceReader()
@@ -682,13 +722,23 @@ def test_previews_large_annotation_export_enriches_only_preview_items() -> None:
 
     assert response.status_code == 200
     data = response.json()["data"]
-    assert data["metrics"] == {"total": 1000, "completed": 1000, "pending": 0}
+    assert data["metrics"] == {
+        "total": 30_000,
+        "completed": 30_000,
+        "pending": 0,
+    }
     assert [item["id"] for item in data["previewItems"]] == [
         f"item-{index:04d}" for index in range(5)
     ]
     assert fake_trace_reader.calls == []
     assert fake_trace_reader.source_calls == [
         ("project-1", [f"trace-{index:04d}" for index in range(5)])
+    ]
+    assert len(fake_trace_reader.score_calls) == 1
+    assert fake_reader.calls == [
+        "get_queue",
+        "list_preview_page",
+        "count_preview_statuses",
     ]
 
 
@@ -969,6 +1019,22 @@ def test_downloads_completed_annotation_export_zip_inside_root(tmp_path: Path) -
     assert response.content == zip_bytes
 
 
+def _filter_fake_annotation_export_items(
+    items: list[dict],
+    filters: dict,
+) -> list[dict]:
+    item_ids = set(filters.get("item_ids") or [])
+    statuses = set(filters.get("status") or [])
+    object_types = set(filters.get("object_type") or [])
+    return [
+        item
+        for item in items
+        if (not item_ids or item.get("id") in item_ids)
+        and (not statuses or item.get("status") in statuses)
+        and (not object_types or item.get("objectType") in object_types)
+    ]
+
+
 class FakeAnnotationExportReader:
     def __init__(self) -> None:
         self.export_job: dict | None = None
@@ -1029,6 +1095,52 @@ class FakeAnnotationExportReader:
                 "updatedAt": "2026-07-11T08:01:00.000Z",
             },
         ]
+
+    async def list_annotation_queue_items_page_for_user(
+        self,
+        project_id: str,
+        queue_id: str,
+        user_id: str,
+        *,
+        page: int,
+        page_size: int,
+        filters: dict,
+    ) -> dict:
+        items = await self.list_annotation_queue_items_for_user(
+            project_id,
+            queue_id,
+            user_id,
+        )
+        filtered = _filter_fake_annotation_export_items(items, filters)
+        start = (page - 1) * page_size
+        return {
+            "total": len(filtered),
+            "datas": filtered[start : start + page_size],
+        }
+
+    async def count_annotation_queue_item_filters_for_user(
+        self,
+        project_id: str,
+        queue_id: str,
+        user_id: str,
+        *,
+        filters: dict,
+    ) -> dict:
+        items = await self.list_annotation_queue_items_for_user(
+            project_id,
+            queue_id,
+            user_id,
+        )
+        without_status = {**filters, "status": []}
+        filtered = _filter_fake_annotation_export_items(items, without_status)
+        return {
+            "status": {
+                status: sum(item.get("status") == status for item in filtered)
+                for status in ("PENDING", "COMPLETED")
+            },
+            "objectType": {},
+            "assigneeIds": {},
+        }
 
     async def create_annotation_export_job_for_user(
         self,
