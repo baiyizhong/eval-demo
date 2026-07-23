@@ -125,6 +125,134 @@ def test_stream_routing_uses_prefix_and_routing_key() -> None:
     assert broker.stream_name("tenant-a") == "pa-eval:jobs:tenant-a"
 
 
+@pytest.mark.parametrize(
+    "field_name,field_value",
+    [
+        ("stream_prefix", ""),
+        ("stream_prefix", "pa eval"),
+        ("stream_prefix", "pa-eval\n"),
+        ("stream_prefix", "pa-eval:{jobs}"),
+        ("stream_prefix", "x" * 129),
+        ("consumer_group", ""),
+        ("consumer_group", "pa workers"),
+        ("consumer_group", "pa-workers\x00"),
+        ("consumer_group", "pa-{workers}"),
+        ("consumer_group", "x" * 129),
+    ],
+)
+def test_broker_rejects_invalid_names_without_echoing_values(
+    field_name: str,
+    field_value: str,
+) -> None:
+    kwargs = {
+        "client": FakeRedis(),
+        "stream_prefix": "pa-eval:jobs",
+        "consumer_group": "pa-eval-workers",
+        "response_error": FakeResponseError,
+        field_name: field_value,
+    }
+
+    with pytest.raises(ValueError) as exc_info:
+        RedisJobBroker(**kwargs)
+
+    assert field_name in str(exc_info.value)
+    if field_value:
+        assert field_value not in str(exc_info.value)
+
+
+def test_broker_accepts_name_and_routing_key_boundaries() -> None:
+    broker = RedisJobBroker(
+        client=FakeRedis(),
+        stream_prefix="p" * 128,
+        consumer_group="g" * 128,
+        response_error=FakeResponseError,
+    )
+    routing_key = "A" + ("z" * 127)
+
+    assert broker.stream_name(routing_key) == f"{'p' * 128}:{routing_key}"
+
+
+@pytest.mark.parametrize(
+    "routing_key",
+    [
+        "",
+        " tenant-a",
+        "tenant a",
+        "tenant:a",
+        "tenant{a}",
+        "tenant\n",
+        "_tenant",
+        "x" * 129,
+    ],
+)
+def test_all_broker_routing_entrypoints_reject_invalid_keys(
+    routing_key: str,
+) -> None:
+    client = FakeRedis()
+    broker = _broker(client)
+
+    with pytest.raises(ValueError, match="routing_key"):
+        broker.stream_name(routing_key)
+    with pytest.raises(ValueError, match="routing_key"):
+        asyncio.run(broker.publish(routing_key, "job-1"))
+    with pytest.raises(ValueError, match="routing_key"):
+        asyncio.run(
+            broker.read(routing_key, "worker-a", count=1, block_ms=1)
+        )
+    with pytest.raises(ValueError, match="routing_key"):
+        asyncio.run(broker.ack(routing_key, "1-0"))
+
+    assert client.xadd_calls == []
+    assert client.xreadgroup_calls == []
+    assert client.xack_calls == []
+
+
+def test_read_returns_malformed_and_valid_messages_and_malformed_can_be_acked() -> (
+    None
+):
+    client = FakeRedis()
+    broker = _broker(client)
+    stream = broker.stream_name("shared")
+    client.messages[stream] = [
+        (b"1-0", {b"payload": b"missing-job-id"}),
+        (b"2-0", {b"jobId": b"  "}),
+        (b"3-0", {b"jobId": 123}),
+        (b"4-0", {b"jobId": b"job-valid"}),
+    ]
+
+    async def scenario() -> list[Any]:
+        await broker.ensure_group("shared")
+        messages = await broker.read("shared", "worker-a", count=4, block_ms=1)
+        assert await broker.pending_count("shared") == 4
+        for message in messages[:3]:
+            assert await broker.ack("shared", message.message_id) == 1
+        assert await broker.pending_count("shared") == 1
+        return messages
+
+    messages = asyncio.run(scenario())
+
+    assert [message.message_id for message in messages] == [
+        "1-0",
+        "2-0",
+        "3-0",
+        "4-0",
+    ]
+    assert all(message.stream == stream for message in messages)
+    assert all(message.routing_key == "shared" for message in messages)
+    assert [message.job_id for message in messages] == [
+        None,
+        None,
+        None,
+        "job-valid",
+    ]
+    assert [message.error_code for message in messages] == [
+        "MALFORMED_JOB_MESSAGE",
+        "MALFORMED_JOB_MESSAGE",
+        "MALFORMED_JOB_MESSAGE",
+        None,
+    ]
+
+
 def test_read_initializes_missing_group_and_existing_group_is_idempotent() -> None:
     client = FakeRedis()
     broker = _broker(client)

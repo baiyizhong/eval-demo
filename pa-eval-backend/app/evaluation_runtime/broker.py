@@ -1,13 +1,25 @@
 from dataclasses import dataclass
+import re
 from typing import Any
+import unicodedata
 
 from redis.exceptions import ResponseError
 
 
+_MAX_REDIS_NAME_LENGTH = 128
+_ROUTING_KEY_PATTERN = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]{0,127}\Z")
+
+
 @dataclass(frozen=True, slots=True)
-class JobMessage:
+class BrokerMessage:
     message_id: str
-    job_id: str
+    stream: str
+    routing_key: str
+    job_id: str | None
+    error_code: str | None = None
+
+
+JobMessage = BrokerMessage
 
 
 class RedisJobBroker:
@@ -19,12 +31,17 @@ class RedisJobBroker:
         consumer_group: str,
         response_error: type[Exception] = ResponseError,
     ) -> None:
+        _validate_redis_name(stream_prefix, "stream_prefix")
+        normalized_prefix = stream_prefix.rstrip(":")
+        _validate_redis_name(normalized_prefix, "stream_prefix")
+        _validate_redis_name(consumer_group, "consumer_group")
         self._client = client
-        self._stream_prefix = stream_prefix.rstrip(":")
+        self._stream_prefix = normalized_prefix
         self._consumer_group = consumer_group
         self._response_error = response_error
 
     def stream_name(self, routing_key: str) -> str:
+        _validate_routing_key(routing_key)
         return f"{self._stream_prefix}:{routing_key}"
 
     async def publish(self, routing_key: str, job_id: str) -> str:
@@ -53,7 +70,7 @@ class RedisJobBroker:
         *,
         count: int,
         block_ms: int,
-    ) -> list[JobMessage]:
+    ) -> list[BrokerMessage]:
         if count <= 0:
             raise ValueError("count must be positive")
         if block_ms < 0:
@@ -77,18 +94,22 @@ class RedisJobBroker:
                 block_ms=block_ms,
             )
 
-        messages: list[JobMessage] = []
+        messages: list[BrokerMessage] = []
         for _, stream_messages in response:
             for message_id, fields in stream_messages:
                 raw_job_id = fields.get("jobId")
                 if raw_job_id is None:
                     raw_job_id = fields.get(b"jobId")
-                if raw_job_id is None:
-                    continue
+                job_id = _job_id(raw_job_id)
                 messages.append(
-                    JobMessage(
+                    BrokerMessage(
                         message_id=_decode(message_id),
-                        job_id=_decode(raw_job_id),
+                        stream=stream,
+                        routing_key=routing_key,
+                        job_id=job_id,
+                        error_code=(
+                            "MALFORMED_JOB_MESSAGE" if job_id is None else None
+                        ),
                     )
                 )
         return messages
@@ -136,3 +157,36 @@ class RedisJobBroker:
 
 def _decode(value: bytes | str) -> str:
     return value.decode("utf-8") if isinstance(value, bytes) else value
+
+
+def _job_id(value: Any) -> str | None:
+    if isinstance(value, bytes):
+        try:
+            decoded = value.decode("utf-8")
+        except UnicodeDecodeError:
+            return None
+    elif isinstance(value, str):
+        decoded = value
+    else:
+        return None
+    return decoded if decoded.strip() else None
+
+
+def _validate_redis_name(value: Any, field_name: str) -> None:
+    if (
+        not isinstance(value, str)
+        or not value
+        or len(value) > _MAX_REDIS_NAME_LENGTH
+        or any(
+            char.isspace()
+            or char in "{}"
+            or unicodedata.category(char) == "Cc"
+            for char in value
+        )
+    ):
+        raise ValueError(f"{field_name} is invalid")
+
+
+def _validate_routing_key(value: Any) -> None:
+    if not isinstance(value, str) or _ROUTING_KEY_PATTERN.fullmatch(value) is None:
+        raise ValueError("routing_key is invalid")

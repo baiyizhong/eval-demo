@@ -115,14 +115,36 @@ class JobRepository:
             raise ValueError("limit must be positive")
         rows = await self._fetchall(
             """
-            WITH expired_jobs AS MATERIALIZED (
-                SELECT id
-                FROM pa_evaluation_jobs
-                WHERE status = 'RUNNING'
-                  AND lease_expires_at < NOW()
-                ORDER BY lease_expires_at, id
+            WITH candidate_jobs AS MATERIALIZED (
+                SELECT job.id AS job_id, job.run_id
+                FROM pa_evaluation_jobs AS job
+                WHERE job.status = 'RUNNING'
+                  AND job.lease_expires_at < NOW()
+                ORDER BY job.lease_expires_at, job.id
                 LIMIT %(limit)s
-                FOR UPDATE SKIP LOCKED
+            ),
+            locked_runs AS MATERIALIZED (
+                SELECT run.id
+                FROM pa_auto_evaluation_runs AS run
+                JOIN (
+                    SELECT DISTINCT run_id
+                    FROM candidate_jobs
+                ) AS candidate_runs
+                  ON candidate_runs.run_id = run.id
+                ORDER BY run.id
+                FOR UPDATE OF run
+            ),
+            locked_jobs AS MATERIALIZED (
+                SELECT job.id
+                FROM pa_evaluation_jobs AS job
+                JOIN candidate_jobs AS candidate
+                  ON candidate.job_id = job.id
+                JOIN locked_runs AS locked_run
+                  ON locked_run.id = job.run_id
+                WHERE job.status = 'RUNNING'
+                  AND job.lease_expires_at < NOW()
+                ORDER BY job.id
+                FOR UPDATE OF job
             ),
             requeued AS (
                 UPDATE pa_evaluation_jobs AS job
@@ -150,8 +172,8 @@ class JobRepository:
                     error_message = 'Job lease expired',
                     update_by = %(actor)s,
                     update_date = NOW()
-                FROM expired_jobs AS expired
-                WHERE job.id = expired.id
+                FROM locked_jobs AS locked_job
+                WHERE job.id = locked_job.id
                   AND job.status = 'RUNNING'
                   AND job.lease_expires_at < NOW()
                 RETURNING job.*

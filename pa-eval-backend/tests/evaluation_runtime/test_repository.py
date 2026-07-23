@@ -517,8 +517,34 @@ def test_requeue_expired_leases_retries_or_dead_letters_and_touches_runs() -> No
     sql, params = cursor.executions[0]
     assert "status = 'RUNNING'" in sql
     assert "lease_expires_at < NOW()" in sql
-    assert "FOR UPDATE SKIP LOCKED" in sql
-    assert "LIMIT %(limit)s\n                FOR UPDATE SKIP LOCKED" in sql
+    assert "locked_runs AS MATERIALIZED" in sql
+    assert "locked_jobs AS MATERIALIZED" in sql
+    candidate_sql, after_candidates = sql.split(
+        "locked_runs AS MATERIALIZED", maxsplit=1
+    )
+    locked_runs_sql, locked_jobs_sql = after_candidates.split(
+        "locked_jobs AS MATERIALIZED", maxsplit=1
+    )
+    locked_jobs_only, _ = locked_jobs_sql.split("requeued AS", maxsplit=1)
+    assert "FOR UPDATE" not in candidate_sql
+    assert "SELECT job.id AS job_id, job.run_id" in candidate_sql
+    assert "LIMIT %(limit)s" in candidate_sql
+    assert "ORDER BY run.id" in locked_runs_sql
+    assert "FOR UPDATE OF run" in locked_runs_sql
+    assert locked_runs_sql.index("ORDER BY run.id") < locked_runs_sql.index(
+        "FOR UPDATE OF run"
+    )
+    assert "JOIN locked_runs" in locked_jobs_only
+    assert "ORDER BY job.id" in locked_jobs_only
+    assert "FOR UPDATE OF job" in locked_jobs_only
+    assert locked_jobs_only.index("ORDER BY job.id") < locked_jobs_only.index(
+        "FOR UPDATE OF job"
+    )
+    assert "job.status = 'RUNNING'" in locked_jobs_only
+    assert "job.lease_expires_at < NOW()" in locked_jobs_only
+    assert sql.index("locked_runs AS MATERIALIZED") < sql.index(
+        "locked_jobs AS MATERIALIZED"
+    ) < sql.index("requeued AS")
     assert "WHEN job.attempt_count >= job.max_attempts THEN 'DEAD_LETTER'" in sql
     assert "ELSE 'RETRY_WAIT'" in sql
     assert "next_attempt_at" in sql
