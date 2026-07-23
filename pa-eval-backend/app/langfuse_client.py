@@ -1,3 +1,5 @@
+from datetime import datetime, timezone
+from email.utils import parsedate_to_datetime
 from typing import Any
 
 import httpx
@@ -5,6 +7,16 @@ from fastapi import Depends
 
 from app.config import Settings, get_settings
 from app.errors import BusinessError, LangfuseConfigError, LangfuseUpstreamError
+
+
+class LangfuseRateLimitError(LangfuseUpstreamError):
+    retryable = True
+    error_code = "PROVIDER_RATE_LIMIT"
+
+    def __init__(self, *, retry_after_seconds: float) -> None:
+        super().__init__(message="Langfuse 服务请求过于频繁", status_code=429)
+        self.retry_after_seconds = max(0.0, retry_after_seconds)
+        self.response = httpx.Response(429)
 
 
 class LangfuseAdminClient:
@@ -132,6 +144,22 @@ class LangfuseProjectApiClient:
         )
         return {"id": connection_id}
 
+    async def create_score(
+        self,
+        project_id: str,
+        payload: dict[str, Any],
+    ) -> dict[str, Any]:
+        score_id = payload.get("id")
+        if not isinstance(score_id, str) or not score_id:
+            raise ValueError("score payload id is required")
+        return await self._request(
+            "POST",
+            "/api/public/scores",
+            project_id=project_id,
+            json=payload,
+            duplicate_id=score_id,
+        )
+
     async def _request(
         self,
         method: str,
@@ -139,6 +167,7 @@ class LangfuseProjectApiClient:
         project_id: str,
         json: dict[str, Any] | None = None,
         params: dict[str, Any] | None = None,
+        duplicate_id: str | None = None,
     ) -> dict[str, Any]:
         if not self._admin_api_key:
             raise LangfuseConfigError()
@@ -165,6 +194,24 @@ class LangfuseProjectApiClient:
                     return response.json()
                 return {}
         except httpx.HTTPStatusError as exc:
+            if exc.response.status_code == 409 and duplicate_id is not None:
+                try:
+                    duplicate_payload = exc.response.json()
+                except ValueError:
+                    duplicate_payload = {}
+                remote_id = (
+                    duplicate_payload.get("id")
+                    if isinstance(duplicate_payload, dict)
+                    else None
+                )
+                return {
+                    "id": remote_id if isinstance(remote_id, str) else duplicate_id,
+                    "duplicate": True,
+                }
+            if exc.response.status_code == 429:
+                raise LangfuseRateLimitError(
+                    retry_after_seconds=_retry_after_seconds(exc.response)
+                ) from exc
             message = LangfuseAdminClient._extract_error_message(exc.response)
             raise LangfuseUpstreamError(message=message, status_code=502) from exc
         except httpx.HTTPError as exc:
@@ -182,6 +229,20 @@ class LangfuseProjectApiClient:
             "customModels": custom_models if isinstance(custom_models, list) else [],
             "withDefaultModels": bool(row.get("withDefaultModels")),
         }
+
+
+def _retry_after_seconds(response: httpx.Response) -> float:
+    value = response.headers.get("Retry-After", "").strip()
+    try:
+        return max(0.0, float(value))
+    except ValueError:
+        try:
+            retry_at = parsedate_to_datetime(value)
+        except (TypeError, ValueError, OverflowError):
+            return 1.0
+        if retry_at.tzinfo is None:
+            retry_at = retry_at.replace(tzinfo=timezone.utc)
+        return max(0.0, (retry_at - datetime.now(timezone.utc)).total_seconds())
 
 
 async def get_langfuse_client(

@@ -635,6 +635,11 @@ class JobRepository:
                         """,
                         {"jobs": Jsonb(followups)},
                     )
+                await self._enqueue_report_if_terminal(
+                    cursor,
+                    job=job,
+                    worker_id=worker_id,
+                )
         return _evaluation_job(row)
 
     async def schedule_retry(
@@ -649,37 +654,57 @@ class JobRepository:
         cap: float = 300.0,
     ) -> EvaluationJob | None:
         delay_seconds = retry_delay_seconds(attempt, base=base, cap=cap)
-        row = await self._fetchone(
-            """
-            UPDATE pa_evaluation_jobs
-            SET status = CASE
-                    WHEN attempt_count >= max_attempts THEN 'DEAD_LETTER'
-                    ELSE 'RETRY_WAIT'
-                END,
-                next_attempt_at = CASE
-                    WHEN attempt_count >= max_attempts THEN next_attempt_at
-                    ELSE NOW() + make_interval(secs => %(delay_seconds)s)
-                END,
-                lease_owner = NULL,
-                lease_expires_at = NULL,
-                heartbeat_at = NULL,
-                error_code = %(error_code)s,
-                error_message = %(error_message)s,
-                update_by = %(worker_id)s,
-                update_date = NOW()
-            WHERE id = %(job_id)s
-              AND status = 'RUNNING'
-              AND lease_owner = %(worker_id)s
-            RETURNING *
-            """,
-            {
-                "job_id": job_id,
-                "worker_id": worker_id,
-                "delay_seconds": delay_seconds,
-                "error_code": error_code,
-                "error_message": error_message,
-            },
-        )
+        connection = await self._connection_factory()
+        async with connection as active_connection:
+            async with active_connection.cursor() as cursor:
+                await cursor.execute(
+                    """
+                    WITH locked_run AS MATERIALIZED (
+                        SELECT run.id
+                        FROM pa_auto_evaluation_runs AS run
+                        JOIN pa_evaluation_jobs AS candidate_job
+                          ON candidate_job.run_id = run.id
+                        WHERE candidate_job.id = %(job_id)s
+                        FOR UPDATE OF run
+                    )
+                    UPDATE pa_evaluation_jobs AS job
+                    SET status = CASE
+                            WHEN attempt_count >= max_attempts THEN 'DEAD_LETTER'
+                            ELSE 'RETRY_WAIT'
+                        END,
+                        next_attempt_at = CASE
+                            WHEN attempt_count >= max_attempts THEN next_attempt_at
+                            ELSE NOW() + make_interval(secs => %(delay_seconds)s)
+                        END,
+                        lease_owner = NULL,
+                        lease_expires_at = NULL,
+                        heartbeat_at = NULL,
+                        error_code = %(error_code)s,
+                        error_message = %(error_message)s,
+                        update_by = %(worker_id)s,
+                        update_date = NOW()
+                    FROM locked_run
+                    WHERE job.id = %(job_id)s
+                      AND job.run_id = locked_run.id
+                      AND job.status = 'RUNNING'
+                      AND job.lease_owner = %(worker_id)s
+                    RETURNING job.*
+                    """,
+                    {
+                        "job_id": job_id,
+                        "worker_id": worker_id,
+                        "delay_seconds": delay_seconds,
+                        "error_code": error_code,
+                        "error_message": error_message,
+                    },
+                )
+                row = await cursor.fetchone()
+                if row is not None and row.get("status") == JobStatus.DEAD_LETTER.value:
+                    await self._enqueue_report_if_terminal(
+                        cursor,
+                        job=row,
+                        worker_id=worker_id,
+                    )
         return _evaluation_job(row) if row is not None else None
 
     async def mark_dead_letter(
@@ -701,29 +726,49 @@ class JobRepository:
                 error_message=error_message,
                 failed_count=failed_count,
             )
-        row = await self._fetchone(
-            """
-            UPDATE pa_evaluation_jobs
-            SET status = 'DEAD_LETTER',
-                lease_owner = NULL,
-                lease_expires_at = NULL,
-                heartbeat_at = NULL,
-                error_code = %(error_code)s,
-                error_message = %(error_message)s,
-                update_by = %(worker_id)s,
-                update_date = NOW()
-            WHERE id = %(job_id)s
-              AND status = 'RUNNING'
-              AND lease_owner = %(worker_id)s
-            RETURNING *
-            """,
-            {
-                "job_id": job_id,
-                "worker_id": worker_id,
-                "error_code": error_code,
-                "error_message": error_message,
-            },
-        )
+        connection = await self._connection_factory()
+        async with connection as active_connection:
+            async with active_connection.cursor() as cursor:
+                await cursor.execute(
+                    """
+                    WITH locked_run AS MATERIALIZED (
+                        SELECT run.id
+                        FROM pa_auto_evaluation_runs AS run
+                        JOIN pa_evaluation_jobs AS candidate_job
+                          ON candidate_job.run_id = run.id
+                        WHERE candidate_job.id = %(job_id)s
+                        FOR UPDATE OF run
+                    )
+                    UPDATE pa_evaluation_jobs AS job
+                    SET status = 'DEAD_LETTER',
+                        lease_owner = NULL,
+                        lease_expires_at = NULL,
+                        heartbeat_at = NULL,
+                        error_code = %(error_code)s,
+                        error_message = %(error_message)s,
+                        update_by = %(worker_id)s,
+                        update_date = NOW()
+                    FROM locked_run
+                    WHERE job.id = %(job_id)s
+                      AND job.run_id = locked_run.id
+                      AND job.status = 'RUNNING'
+                      AND job.lease_owner = %(worker_id)s
+                    RETURNING job.*
+                    """,
+                    {
+                        "job_id": job_id,
+                        "worker_id": worker_id,
+                        "error_code": error_code,
+                        "error_message": error_message,
+                    },
+                )
+                row = await cursor.fetchone()
+                if row is not None:
+                    await self._enqueue_report_if_terminal(
+                        cursor,
+                        job=row,
+                        worker_id=worker_id,
+                    )
         return _evaluation_job(row) if row is not None else None
 
     async def _mark_dead_letter_with_run_count(
@@ -788,7 +833,87 @@ class JobRepository:
                         "failed_count": failed_count,
                     },
                 )
+                await self._enqueue_report_if_terminal(
+                    cursor,
+                    job=row,
+                    worker_id=worker_id,
+                )
         return _evaluation_job(row)
+
+    async def _enqueue_report_if_terminal(
+        self,
+        cursor: Any,
+        *,
+        job: EvaluationJob | Mapping[str, Any],
+        worker_id: str,
+    ) -> None:
+        raw_job_type = (
+            job.job_type if isinstance(job, EvaluationJob) else job.get("job_type")
+        )
+        job_type = (
+            raw_job_type
+            if isinstance(raw_job_type, JobType)
+            else JobType(raw_job_type)
+        )
+        if job_type not in {JobType.EVALUATE_BATCH, JobType.SYNC_SCORE_BATCH}:
+            return
+        values = (
+            {
+                "id": job.id,
+                "project_id": job.project_id,
+                "task_id": job.task_id,
+                "run_id": job.run_id,
+                "routing_key": job.routing_key,
+                "priority": job.priority,
+                "max_attempts": job.max_attempts,
+            }
+            if isinstance(job, EvaluationJob)
+            else job
+        )
+        report_key = job_idempotency_key(
+            str(values["run_id"]),
+            JobType.GENERATE_REPORT,
+        )
+        await cursor.execute(
+            """
+            INSERT INTO pa_evaluation_jobs (
+                create_by, update_by, id, project_id, task_id,
+                run_id, parent_job_id, job_type, routing_key,
+                batch_start, batch_end, idempotency_key, status,
+                priority, max_attempts, payload
+            )
+            SELECT
+                %(worker_id)s, %(worker_id)s, %(report_job_id)s,
+                %(project_id)s, %(task_id)s, %(run_id)s,
+                %(parent_job_id)s, 'GENERATE_REPORT', %(routing_key)s,
+                NULL, NULL, %(idempotency_key)s, 'PENDING',
+                %(priority)s, %(max_attempts)s, '{}'::jsonb
+            WHERE NOT EXISTS (
+                SELECT 1
+                FROM pa_evaluation_jobs AS dependency
+                WHERE dependency.run_id = %(run_id)s
+                  AND dependency.job_type IN (
+                      'EVALUATE_BATCH', 'SYNC_SCORE_BATCH'
+                  )
+                  AND dependency.status NOT IN (
+                      'SUCCEEDED', 'DEAD_LETTER', 'CANCELLED'
+                  )
+            )
+            ON CONFLICT (idempotency_key) DO NOTHING
+            """,
+            {
+                "worker_id": worker_id,
+                "report_job_id": f"pa-job-{stable_hash(report_key)[:32]}",
+                "project_id": values["project_id"],
+                "task_id": values["task_id"],
+                "run_id": values["run_id"],
+                "parent_job_id": values["id"],
+                "routing_key": values["routing_key"],
+                "idempotency_key": report_key,
+                "priority": values["priority"],
+                "max_attempts": values["max_attempts"],
+            },
+        )
 
     async def mark_cancelled(self, job_id: str, worker_id: str) -> bool:
         row = await self._fetchone(

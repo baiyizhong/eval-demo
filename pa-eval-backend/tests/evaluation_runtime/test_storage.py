@@ -146,6 +146,17 @@ def test_manifest_uploads_all_shards_before_lightweight_index() -> None:
     assert len(index_body) < 2_000
 
 
+def test_result_round_trip_validates_hash_and_returns_mapping() -> None:
+    client = FakeObjectStoreClient()
+    storage = ManifestStorage(bucket="test-bucket", client=client)
+    document = {"results": [{"sampleId": "sample-1", "scores": []}]}
+
+    key = asyncio.run(storage.put_result("project-1", "run-1", "job-1", document))
+
+    assert asyncio.run(storage.read_result(key)) == document
+    assert client.get_bodies[-1].closed is True
+
+
 def test_same_content_with_different_batch_layout_has_distinct_manifest_identity() -> (
     None
 ):

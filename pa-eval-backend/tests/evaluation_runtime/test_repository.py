@@ -305,6 +305,32 @@ def test_schedule_retry_moves_exhausted_job_to_dead_letter_atomically() -> None:
     assert "ELSE 'RETRY_WAIT'" in sql
 
 
+def test_exhausted_sync_retry_enqueues_partial_report_when_run_is_terminal() -> None:
+    dead_row = _job_row(
+        status="DEAD_LETTER",
+        attempt_count=5,
+        max_attempts=5,
+        job_type="SYNC_SCORE_BATCH",
+    )
+    repository, _, cursor = _repository([dead_row])
+
+    result = asyncio.run(
+        repository.schedule_retry(
+            "job-1",
+            "worker-a",
+            attempt=5,
+            error_code="PROVIDER_TIMEOUT",
+            error_message="upstream unavailable",
+        )
+    )
+
+    assert result is not None
+    assert result.status is JobStatus.DEAD_LETTER
+    assert "WITH locked_run AS MATERIALIZED" in cursor.executions[0][0]
+    assert "FOR UPDATE OF run" in cursor.executions[0][0]
+    assert "GENERATE_REPORT" in cursor.executions[-1][0]
+
+
 def test_mark_dead_letter_only_updates_running_owner() -> None:
     dead_row = _job_row(
         status="DEAD_LETTER",
@@ -695,7 +721,7 @@ def test_complete_with_followups_atomically_finishes_and_bulk_inserts_once() -> 
 
     assert result is not None
     assert connection.entered == connection.exited == 1
-    assert len(cursor.executions) == 3
+    assert len(cursor.executions) == 4
     finish_sql, finish_params = cursor.executions[0]
     run_sql, run_params = cursor.executions[1]
     insert_sql, insert_params = cursor.executions[2]
@@ -719,6 +745,88 @@ def test_complete_with_followups_atomically_finishes_and_bulk_inserts_once() -> 
     assert followups[0]["job_type"] == "SYNC_SCORE_BATCH"
     assert followups[0]["routing_key"] == job.routing_key
     assert followups[0]["priority"] == job.priority
+
+
+def test_final_sync_inserts_one_report_only_after_followups_and_all_dependencies_terminal() -> None:
+    succeeded = _job_row(
+        status="SUCCEEDED",
+        lease_owner=None,
+        job_type="SYNC_SCORE_BATCH",
+    )
+    repository, _, cursor = _repository([succeeded])
+    job = _job(
+        status="RUNNING",
+        lease_owner="worker-a",
+        job_type="SYNC_SCORE_BATCH",
+    )
+
+    result = asyncio.run(
+        repository.complete_with_followups(
+            job,
+            ExecutionOutcome({"status": "synced"}),
+            "worker-a",
+        )
+    )
+
+    assert result is not None
+    assert "WITH locked_run AS MATERIALIZED" in cursor.executions[0][0]
+    assert "FOR UPDATE OF run" in cursor.executions[0][0]
+    report_sql, report_params = cursor.executions[-1]
+    assert "INSERT INTO pa_evaluation_jobs" in report_sql
+    assert "GENERATE_REPORT" in report_sql
+    assert "NOT EXISTS" in report_sql
+    assert "EVALUATE_BATCH" in report_sql
+    assert "SYNC_SCORE_BATCH" in report_sql
+    assert "SUCCEEDED" in report_sql
+    assert "DEAD_LETTER" in report_sql
+    assert "CANCELLED" in report_sql
+    assert "ON CONFLICT (idempotency_key) DO NOTHING" in report_sql
+    assert report_params["run_id"] == job.run_id
+
+
+def test_partial_sync_followup_is_inserted_before_report_terminal_gate() -> None:
+    succeeded = _job_row(
+        status="SUCCEEDED",
+        lease_owner=None,
+        job_type="SYNC_SCORE_BATCH",
+    )
+    repository, _, cursor = _repository([succeeded])
+    job = _job(
+        status="RUNNING",
+        lease_owner="worker-a",
+        job_type="SYNC_SCORE_BATCH",
+    )
+    pending = FollowupJobSpec(
+        JobType.SYNC_SCORE_BATCH,
+        60,
+        100,
+        {
+            "rawResultObjectKey": "results/key",
+            "pendingScoreIds": ["score-60"],
+        },
+    )
+
+    asyncio.run(
+        repository.complete_with_followups(
+            job,
+            ExecutionOutcome({"confirmedCount": 60}, followups=(pending,)),
+            "worker-a",
+        )
+    )
+
+    followup_index = next(
+        index
+        for index, (sql, _) in enumerate(cursor.executions)
+        if "jsonb_to_recordset" in sql
+    )
+    report_index = next(
+        index
+        for index, (sql, _) in enumerate(cursor.executions)
+        if "GENERATE_REPORT" in sql
+    )
+    assert followup_index < report_index
+    inserted = _jsonb_value(cursor.executions[followup_index][1]["jobs"])
+    assert inserted[0]["payload"]["pendingScoreIds"] == ["score-60"]
 
 
 def test_complete_with_followups_duplicate_owner_failure_inserts_nothing() -> None:
@@ -758,13 +866,39 @@ def test_split_followup_keys_are_stable_and_parent_does_not_increment_counts() -
         )
     )
 
-    assert len(cursor.executions) == 2
+    assert len(cursor.executions) == 3
     inserted = _jsonb_value(cursor.executions[1][1]["jobs"])
     assert inserted[0]["idempotency_key"] != inserted[1]["idempotency_key"]
     assert all(item["parent_job_id"] == job.id for item in inserted)
     assert all(item["routing_key"] == job.routing_key for item in inserted)
     assert all(item["priority"] == job.priority for item in inserted)
     assert all(item["payload"] == job.payload for item in inserted)
+
+
+def test_sync_dead_letter_still_enqueues_partial_report_when_all_jobs_terminal() -> None:
+    dead = _job_row(
+        status="DEAD_LETTER",
+        lease_owner=None,
+        job_type="SYNC_SCORE_BATCH",
+    )
+    repository, _, cursor = _repository([dead])
+
+    result = asyncio.run(
+        repository.mark_dead_letter(
+            "job-1",
+            "worker-a",
+            error_code="PROVIDER_REQUEST_REJECTED",
+            error_message="Evaluation job failed",
+        )
+    )
+
+    assert result is not None
+    assert "WITH locked_run AS MATERIALIZED" in cursor.executions[0][0]
+    assert "FOR UPDATE OF run" in cursor.executions[0][0]
+    report_sql, report_params = cursor.executions[-1]
+    assert "GENERATE_REPORT" in report_sql
+    assert "NOT EXISTS" in report_sql
+    assert report_params["run_id"] == "run-1"
 
 
 def test_single_sample_dead_letter_increments_failed_count_in_same_transaction() -> None:
@@ -783,7 +917,7 @@ def test_single_sample_dead_letter_increments_failed_count_in_same_transaction()
 
     assert result is not None
     assert connection.entered == connection.exited == 1
-    assert len(cursor.executions) == 2
+    assert len(cursor.executions) == 3
     assert "status = 'RUNNING'" in cursor.executions[0][0]
     assert "WITH locked_run AS MATERIALIZED" in cursor.executions[0][0]
     assert "FOR UPDATE OF run" in cursor.executions[0][0]

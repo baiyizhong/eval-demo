@@ -60,6 +60,11 @@ _SHARD_KEY = re.compile(
     r"(?P<hash>[0-9a-f]{64})\.jsonl\.gz\Z"
 )
 _SHA256 = re.compile(r"[0-9a-f]{64}\Z")
+_RESULT_KEY = re.compile(
+    rf"results/(?P<project>{_KEY_COMPONENT_PATTERN})/"
+    rf"(?P<run>{_KEY_COMPONENT_PATTERN})/(?P<job>{_KEY_COMPONENT_PATTERN})/"
+    r"(?P<hash>[0-9a-f]{64})\.json\.gz\Z"
+)
 
 
 def _validate_key_component(value: str, name: str) -> None:
@@ -323,6 +328,35 @@ class ManifestStorage:
             metadata={"sha256": result_hash},
         )
         return object_key
+
+    async def read_result(self, object_key: str) -> Mapping[str, Any]:
+        match = _RESULT_KEY.fullmatch(object_key)
+        if match is None:
+            raise ValueError("invalid result object key")
+        expected_hash = match.group("hash")
+        try:
+            metadata, compressed = await asyncio.to_thread(
+                self._get_object_bytes,
+                object_key,
+            )
+            canonical_bytes = gzip.decompress(compressed)
+        except (KeyError, OSError, EOFError) as error:
+            raise ObjectIntegrityError(
+                "object content hash validation failed"
+            ) from error
+        if metadata.get("sha256") != expected_hash:
+            raise ObjectIntegrityError("object metadata hash mismatch")
+        if hashlib.sha256(canonical_bytes).hexdigest() != expected_hash:
+            raise ObjectIntegrityError("object content hash mismatch")
+        try:
+            result = json.loads(canonical_bytes)
+        except (UnicodeDecodeError, json.JSONDecodeError) as error:
+            raise ObjectIntegrityError(
+                "object content hash validation failed"
+            ) from error
+        if not isinstance(result, Mapping):
+            raise ObjectIntegrityError("result object must be a mapping")
+        return result
 
     def _get_object_bytes(self, key: str) -> tuple[Mapping[str, str], bytes]:
         response = self._client.get_object(Bucket=self._bucket, Key=key)
