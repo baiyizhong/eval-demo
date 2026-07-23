@@ -171,6 +171,7 @@ class EvaluationWorkerRunner:
         count: int,
         block_ms: int,
         stale_idle_ms: int,
+        stale_poll_interval_seconds: float,
     ) -> None:
         if count <= 0:
             raise ValueError("count must be positive")
@@ -178,6 +179,8 @@ class EvaluationWorkerRunner:
             raise ValueError("block_ms must be non-negative")
         if stale_idle_ms < 0:
             raise ValueError("stale_idle_ms must be non-negative")
+        if stale_poll_interval_seconds <= 0:
+            raise ValueError("stale_poll_interval_seconds must be positive")
         self._worker = worker
         self._broker = broker
         self._routing_key = routing_key
@@ -186,32 +189,109 @@ class EvaluationWorkerRunner:
         self._block_ms = block_ms
         self._stale_idle_ms = stale_idle_ms
         self._stale_cursor = "0-0"
+        self._stale_poll_interval_seconds = stale_poll_interval_seconds
 
-    async def run_once(self) -> int:
-        stale_page, new_messages = await asyncio.gather(
-            self._broker.claim_stale(
+    async def run_once(self, stop_event: asyncio.Event | None = None) -> int:
+        fetch_tasks: dict[asyncio.Task[Any], str] = {
+            asyncio.create_task(
+                self._broker.claim_stale(
+                    self._routing_key,
+                    self._consumer_name,
+                    min_idle_ms=self._stale_idle_ms,
+                    count=self._count,
+                    cursor=self._stale_cursor,
+                )
+            ): "stale",
+            asyncio.create_task(
+                self._broker.read(
+                    self._routing_key,
+                    self._consumer_name,
+                    count=self._count,
+                    block_ms=self._block_ms,
+                )
+            ): "new",
+        }
+        stop_task = (
+            asyncio.create_task(stop_event.wait())
+            if stop_event is not None
+            else None
+        )
+        processed = 0
+        try:
+            while fetch_tasks:
+                waiters = set(fetch_tasks)
+                if stop_task is not None:
+                    waiters.add(stop_task)
+                completed, _ = await asyncio.wait(
+                    waiters,
+                    return_when=asyncio.FIRST_COMPLETED,
+                )
+                for task in completed:
+                    source = fetch_tasks.pop(task, None)
+                    if source is None:
+                        continue
+                    if source == "stale":
+                        self._stale_cursor, messages = task.result()
+                    else:
+                        messages = task.result()
+                    for message in messages:
+                        await self._worker.handle_message(message)
+                    processed += len(messages)
+                if stop_task is not None and stop_task in completed:
+                    break
+            return processed
+        finally:
+            cleanup_tasks = list(fetch_tasks)
+            if stop_task is not None:
+                cleanup_tasks.append(stop_task)
+            for task in cleanup_tasks:
+                task.cancel()
+            if cleanup_tasks:
+                await asyncio.gather(*cleanup_tasks, return_exceptions=True)
+
+    async def run(self, stop_event: asyncio.Event) -> None:
+        consumer_tasks = {
+            asyncio.create_task(self._consume_new_messages(stop_event)),
+            asyncio.create_task(self._consume_stale_messages(stop_event)),
+        }
+        stop_task = asyncio.create_task(stop_event.wait())
+        tasks = {*consumer_tasks, stop_task}
+        try:
+            completed, _ = await asyncio.wait(
+                tasks,
+                return_when=asyncio.FIRST_COMPLETED,
+            )
+            for task in completed & consumer_tasks:
+                task.result()
+        finally:
+            for task in tasks:
+                task.cancel()
+            await asyncio.gather(*tasks, return_exceptions=True)
+
+    async def _consume_new_messages(self, stop_event: asyncio.Event) -> None:
+        while not stop_event.is_set():
+            messages = await self._broker.read(
+                self._routing_key,
+                self._consumer_name,
+                count=self._count,
+                block_ms=self._block_ms,
+            )
+            for message in messages:
+                await self._worker.handle_message(message)
+
+    async def _consume_stale_messages(self, stop_event: asyncio.Event) -> None:
+        while not stop_event.is_set():
+            self._stale_cursor, messages = await self._broker.claim_stale(
                 self._routing_key,
                 self._consumer_name,
                 min_idle_ms=self._stale_idle_ms,
                 count=self._count,
                 cursor=self._stale_cursor,
-            ),
-            self._broker.read(
-                self._routing_key,
-                self._consumer_name,
-                count=self._count,
-                block_ms=self._block_ms,
-            ),
-        )
-        self._stale_cursor, stale_messages = stale_page
-        messages = [*stale_messages, *new_messages]
-        for message in messages:
-            await self._worker.handle_message(message)
-        return len(messages)
-
-    async def run(self, stop_event: asyncio.Event) -> None:
-        while not stop_event.is_set():
-            await self.run_once()
+            )
+            for message in messages:
+                await self._worker.handle_message(message)
+            if self._stale_cursor == "0-0":
+                await asyncio.sleep(self._stale_poll_interval_seconds)
 
 
 class EvaluationWorker:

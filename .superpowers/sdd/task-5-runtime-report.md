@@ -113,3 +113,33 @@
 - `git diff --check`：通过
 - runtime 核心禁导入 `auto_evaluations`：通过
 - 真实 Redis、PostgreSQL、对象存储仍未配置，相关测试按既有条件 skip，未连接业务设施。
+
+## 第二轮独立审查修复追加（2026-07-24）
+
+### 阻塞根因与修复
+
+- 根因：`EvaluationWorkerRunner.run_once()` 使用 `asyncio.gather()` 等待 `claim_stale()` 和 `read()` 全部结束后才处理结果。Redis `block_ms=0` 表示永久阻塞，因此即使 PEL 已经回收成功，stale 消息也无法进入 `handle_message()` / ACK；较大的 block 同样会人为延迟 PEL。
+- 第一层修复：`run_once()` 为两条 fetch 路径分别创建 task，并通过 `asyncio.wait(..., FIRST_COMPLETED)` 逐个处理已完成结果。stale cursor 在对应 task 完成时立即推进，消息立即交给 Worker，不再等待阻塞 read。
+- 复审发现仅解除单页栅栏仍不完整：第一页 `claim_stale()` 完成后，下一页 cursor 仍需等同一次 `read()` 返回，永久阻塞 read 会让 PEL 停在第一页。
+- 最终修复：生产 `run()` 拆为独立的新消息消费者和 PEL 消费者；PEL 消费者连续推进非终态 cursor，回到 `0-0` 后按注入的 `stale_poll_interval_seconds` 等待再扫描，既不受 read 阻塞，也不形成空轮询。
+- 停止与取消：`run()` 同时监听两个消费者和 `stop_event`；停止、外部取消、任一消费者异常都会进入 `finally`，取消并 `gather(return_exceptions=True)` 回收全部任务。`run_once()` 的临时 fetch task 同样完整清理。
+- 保留 `block_ms=0` 合法语义，没有通过参数限制规避永久阻塞场景。
+
+### 本轮 TDD 证据
+
+- RED：可控 Broker 让 `claim_stale()` 立即返回终态 Job、`read(block_ms=0)` 永久阻塞；旧实现中 `stale_acked` 在 `0.2s` 内超时，证明 PEL 被 gather 栅栏阻塞。
+- 第二个 RED：第一页返回 cursor `7-0` 并 ACK 后，第二页 `second_stale_acked` 在 `0.2s` 内超时，证明单次 `FIRST_COMPLETED` 仍无法在阻塞 read 下继续翻页。
+- 连续扫描 RED：测试要求 cursor 已回到 `0-0` 后按注入间隔再次扫描，旧构造接口因缺少 `stale_poll_interval_seconds` 失败；补齐后两轮终态页均完成 ACK。
+- GREEN：相同场景下 stale 多页在有限时间内完成 ACK；随后设置 stop，阻塞 read 收到 `CancelledError`，`active_reads == 0`。
+- 取消清理：外部直接取消 runner task 后，阻塞 read 同样被取消，`active_reads == 0`，没有 pending fetch task 泄漏。
+- 可选真实 Redis 合约增加 `claim_stale(min_idle_ms=0)` 校验；未配置 `PA_EVAL_TEST_REDIS_URL` 时继续显式 skip。
+
+### 本轮完整验证结果
+
+- Worker：`36 passed in 0.14s`
+- Task 5 聚焦集：`108 passed, 2 skipped in 0.18s`
+- `tests/evaluation_runtime` 全组：`155 passed, 3 skipped in 0.24s`
+- Ruff：`All checks passed!`
+- `git diff --check`：通过
+- runtime 核心禁导入 `auto_evaluations`：通过
+- 未连接真实 Redis、PostgreSQL 或对象存储业务设施。

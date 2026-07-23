@@ -373,6 +373,16 @@ def test_real_redis_contract() -> None:
             assert [(item.message_id, item.job_id) for item in messages] == [
                 (message_id, "job-real")
             ]
+            cursor, claimed = await broker.claim_stale(
+                "shared",
+                "pytest-recovery-worker",
+                min_idle_ms=0,
+                count=10,
+            )
+            assert cursor == "0-0"
+            assert [(item.message_id, item.job_id) for item in claimed] == [
+                (message_id, "job-real")
+            ]
             await broker.ack("shared", message_id)
             assert await broker.pending_count("shared") == 0
         finally:

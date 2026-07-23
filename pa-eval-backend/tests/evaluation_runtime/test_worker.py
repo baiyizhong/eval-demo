@@ -1,4 +1,5 @@
 import asyncio
+from contextlib import suppress
 from dataclasses import replace
 from datetime import datetime, timezone
 from typing import Any
@@ -127,6 +128,35 @@ class StoppingRunnerBroker(RunnerBroker):
         messages = await super().read(*args, **kwargs)
         self.stop_event.set()
         return messages
+
+
+class BlockingReadRunnerBroker(RunnerBroker):
+    def __init__(self, *args: Any, **kwargs: Any) -> None:
+        super().__init__(*args, **kwargs)
+        self.read_started = asyncio.Event()
+        self.read_cancelled = asyncio.Event()
+        self.stale_acked = asyncio.Event()
+        self.second_stale_acked = asyncio.Event()
+        self.active_reads = 0
+
+    async def read(self, *args: Any, **kwargs: Any) -> list[BrokerMessage]:
+        self.read_calls += 1
+        self.active_reads += 1
+        self.read_started.set()
+        try:
+            await asyncio.Event().wait()
+        except asyncio.CancelledError:
+            self.read_cancelled.set()
+            raise
+        finally:
+            self.active_reads -= 1
+
+    async def ack(self, routing_key: str, message_id: str) -> int:
+        result = await super().ack(routing_key, message_id)
+        self.stale_acked.set()
+        if self.ack_calls >= 2:
+            self.second_stale_acked.set()
+        return result
 
 
 class FakeRepository:
@@ -309,6 +339,7 @@ def test_runner_pages_stale_cursor_and_acks_terminal_replays_without_model() -> 
         count=10,
         block_ms=1,
         stale_idle_ms=60_000,
+        stale_poll_interval_seconds=0.01,
     )
 
     async def scenario() -> tuple[int, int]:
@@ -343,12 +374,182 @@ def test_runner_loop_stops_after_signaled_iteration() -> None:
             count=10,
             block_ms=1,
             stale_idle_ms=60_000,
+            stale_poll_interval_seconds=0.01,
         )
 
         await runner.run(stop_event)
         return broker.read_calls, broker.ack_calls
 
     assert asyncio.run(scenario()) == (1, 1)
+
+
+def test_runner_handles_stale_while_new_read_blocks_and_stops_cleanly() -> None:
+    async def scenario() -> tuple[int, bool, int]:
+        events: list[str] = []
+        stop_event = asyncio.Event()
+        stale = BrokerMessage("old-1", MESSAGE.stream, "shared", "job-1")
+        broker = BlockingReadRunnerBroker(
+            events,
+            stale_pages=[("0-0", [stale])],
+            new_pages=[],
+        )
+        repository = FakeRepository(events)
+        repository.state = JobStatus.SUCCEEDED
+        executors = FakeExecutors(events, ExecutionOutcome({}))
+        runner = worker_module.EvaluationWorkerRunner(
+            worker=_worker(repository, broker, executors),
+            broker=broker,
+            routing_key="shared",
+            consumer_name="worker-1",
+            count=10,
+            block_ms=0,
+            stale_idle_ms=60_000,
+            stale_poll_interval_seconds=0.01,
+        )
+        runner_task = asyncio.create_task(runner.run(stop_event))
+        try:
+            await asyncio.wait_for(broker.read_started.wait(), timeout=0.2)
+            await asyncio.wait_for(broker.stale_acked.wait(), timeout=0.2)
+            stop_event.set()
+            await asyncio.wait_for(runner_task, timeout=0.2)
+        finally:
+            if not runner_task.done():
+                runner_task.cancel()
+            with suppress(asyncio.CancelledError):
+                await runner_task
+        return broker.ack_calls, broker.read_cancelled.is_set(), broker.active_reads
+
+    assert asyncio.run(scenario()) == (1, True, 0)
+
+
+def test_runner_pages_stale_cursor_while_new_read_remains_blocked() -> None:
+    async def scenario() -> tuple[list[str], int, bool]:
+        events: list[str] = []
+        stop_event = asyncio.Event()
+        broker = BlockingReadRunnerBroker(
+            events,
+            stale_pages=[
+                (
+                    "7-0",
+                    [BrokerMessage("old-1", MESSAGE.stream, "shared", "job-1")],
+                ),
+                (
+                    "0-0",
+                    [BrokerMessage("old-2", MESSAGE.stream, "shared", "job-1")],
+                ),
+            ],
+            new_pages=[],
+        )
+        repository = FakeRepository(events)
+        repository.state = JobStatus.SUCCEEDED
+        runner = worker_module.EvaluationWorkerRunner(
+            worker=_worker(
+                repository,
+                broker,
+                FakeExecutors(events, ExecutionOutcome({})),
+            ),
+            broker=broker,
+            routing_key="shared",
+            consumer_name="worker-1",
+            count=1,
+            block_ms=0,
+            stale_idle_ms=60_000,
+            stale_poll_interval_seconds=0.01,
+        )
+        runner_task = asyncio.create_task(runner.run(stop_event))
+        try:
+            await asyncio.wait_for(broker.second_stale_acked.wait(), timeout=0.2)
+            stop_event.set()
+            await asyncio.wait_for(runner_task, timeout=0.2)
+        finally:
+            if not runner_task.done():
+                runner_task.cancel()
+            with suppress(asyncio.CancelledError):
+                await runner_task
+        return broker.claim_cursors, broker.ack_calls, broker.read_cancelled.is_set()
+
+    assert asyncio.run(scenario()) == (["0-0", "7-0"], 2, True)
+
+
+def test_runner_rechecks_stale_after_completed_scan() -> None:
+    async def scenario() -> tuple[list[str], int]:
+        events: list[str] = []
+        stop_event = asyncio.Event()
+        broker = BlockingReadRunnerBroker(
+            events,
+            stale_pages=[
+                (
+                    "0-0",
+                    [BrokerMessage("old-1", MESSAGE.stream, "shared", "job-1")],
+                ),
+                (
+                    "0-0",
+                    [BrokerMessage("old-2", MESSAGE.stream, "shared", "job-1")],
+                ),
+            ],
+            new_pages=[],
+        )
+        repository = FakeRepository(events)
+        repository.state = JobStatus.SUCCEEDED
+        runner = worker_module.EvaluationWorkerRunner(
+            worker=_worker(
+                repository,
+                broker,
+                FakeExecutors(events, ExecutionOutcome({})),
+            ),
+            broker=broker,
+            routing_key="shared",
+            consumer_name="worker-1",
+            count=1,
+            block_ms=0,
+            stale_idle_ms=60_000,
+            stale_poll_interval_seconds=0.01,
+        )
+        runner_task = asyncio.create_task(runner.run(stop_event))
+        try:
+            await asyncio.wait_for(broker.second_stale_acked.wait(), timeout=0.2)
+            stop_event.set()
+            await asyncio.wait_for(runner_task, timeout=0.2)
+        finally:
+            if not runner_task.done():
+                runner_task.cancel()
+            with suppress(asyncio.CancelledError):
+                await runner_task
+        return broker.claim_cursors, broker.ack_calls
+
+    assert asyncio.run(scenario()) == (["0-0", "0-0"], 2)
+
+
+def test_runner_cancellation_cleans_blocking_new_read() -> None:
+    async def scenario() -> tuple[bool, int]:
+        events: list[str] = []
+        broker = BlockingReadRunnerBroker(
+            events,
+            stale_pages=[("0-0", [])],
+            new_pages=[],
+        )
+        runner = worker_module.EvaluationWorkerRunner(
+            worker=_worker(
+                FakeRepository(events),
+                broker,
+                FakeExecutors(events, ExecutionOutcome({})),
+            ),
+            broker=broker,
+            routing_key="shared",
+            consumer_name="worker-1",
+            count=10,
+            block_ms=0,
+            stale_idle_ms=60_000,
+            stale_poll_interval_seconds=0.01,
+        )
+        runner_task = asyncio.create_task(runner.run(asyncio.Event()))
+        await asyncio.wait_for(broker.read_started.wait(), timeout=0.2)
+        runner_task.cancel()
+        with suppress(asyncio.CancelledError):
+            await runner_task
+        return broker.read_cancelled.is_set(), broker.active_reads
+
+    assert asyncio.run(scenario()) == (True, 0)
 
 
 def test_concurrent_workers_claim_once_and_execute_model_once() -> None:
