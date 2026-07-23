@@ -4,6 +4,7 @@ from typing import Any
 
 from psycopg.types.json import Jsonb
 
+from app.evaluation_runtime.executors import ExecutionOutcome
 from app.evaluation_runtime.idempotency import job_idempotency_key, stable_hash
 from app.evaluation_runtime.models import EvaluationJob, JobStatus, JobType
 from app.evaluation_runtime.storage import StoredManifest
@@ -74,6 +75,8 @@ class JobRepository:
                 "shardHash": shard.shard_hash,
                 "start": shard.start,
                 "end": shard.end,
+                "shardStart": shard.start,
+                "shardEnd": shard.end,
                 "contentHash": manifest.content_hash,
                 "manifestHash": manifest.manifest_hash,
             }
@@ -501,6 +504,139 @@ class JobRepository:
         )
         return _evaluation_job(row) if row is not None else None
 
+    async def complete_with_followups(
+        self,
+        job: EvaluationJob,
+        outcome: ExecutionOutcome,
+        worker_id: str,
+    ) -> EvaluationJob | None:
+        followups = []
+        for followup in outcome.followups:
+            payload = dict(followup.payload)
+            idempotency_key = job_idempotency_key(
+                job.run_id,
+                followup.job_type,
+                batch_start=followup.batch_start,
+                batch_end=followup.batch_end,
+                payload=payload,
+            )
+            followups.append(
+                {
+                    "actor": worker_id,
+                    "id": f"pa-job-{stable_hash(idempotency_key)[:32]}",
+                    "project_id": job.project_id,
+                    "task_id": job.task_id,
+                    "run_id": job.run_id,
+                    "parent_job_id": job.id,
+                    "job_type": followup.job_type.value,
+                    "routing_key": job.routing_key,
+                    "batch_start": followup.batch_start,
+                    "batch_end": followup.batch_end,
+                    "idempotency_key": idempotency_key,
+                    "status": JobStatus.PENDING.value,
+                    "priority": job.priority,
+                    "max_attempts": job.max_attempts,
+                    "payload": payload,
+                }
+            )
+
+        connection = await self._connection_factory()
+        async with connection as active_connection:
+            async with active_connection.cursor() as cursor:
+                await cursor.execute(
+                    """
+                    WITH locked_run AS MATERIALIZED (
+                        SELECT run.id
+                        FROM pa_auto_evaluation_runs AS run
+                        WHERE run.id = %(run_id)s
+                        FOR UPDATE OF run
+                    )
+                    UPDATE pa_evaluation_jobs AS job
+                    SET status = 'SUCCEEDED',
+                        result_summary = %(result_summary)s,
+                        raw_result_object_key = %(raw_result_object_key)s,
+                        lease_owner = NULL,
+                        lease_expires_at = NULL,
+                        heartbeat_at = NULL,
+                        error_code = NULL,
+                        error_message = NULL,
+                        update_by = %(worker_id)s,
+                        update_date = NOW()
+                    FROM locked_run
+                    WHERE job.id = %(job_id)s
+                      AND job.run_id = locked_run.id
+                      AND job.status = 'RUNNING'
+                      AND job.lease_owner = %(worker_id)s
+                    RETURNING job.*
+                    """,
+                    {
+                        "job_id": job.id,
+                        "run_id": job.run_id,
+                        "worker_id": worker_id,
+                        "result_summary": Jsonb(dict(outcome.result_summary)),
+                        "raw_result_object_key": outcome.raw_result_object_key,
+                    },
+                )
+                row = await cursor.fetchone()
+                if row is None:
+                    return None
+
+                if outcome.completed_count or outcome.failed_count:
+                    await cursor.execute(
+                        """
+                        UPDATE pa_auto_evaluation_runs
+                        SET completed_count = completed_count + %(completed_count)s,
+                            failed_count = failed_count + %(failed_count)s,
+                            update_by = %(worker_id)s,
+                            update_date = NOW()
+                        WHERE id = %(run_id)s
+                        """,
+                        {
+                            "run_id": job.run_id,
+                            "worker_id": worker_id,
+                            "completed_count": outcome.completed_count,
+                            "failed_count": outcome.failed_count,
+                        },
+                    )
+
+                if followups:
+                    await cursor.execute(
+                        """
+                        INSERT INTO pa_evaluation_jobs (
+                            create_by, update_by, id, project_id, task_id,
+                            run_id, parent_job_id, job_type, routing_key,
+                            batch_start, batch_end, idempotency_key, status,
+                            priority, max_attempts, payload
+                        )
+                        SELECT
+                            item.actor, item.actor, item.id, item.project_id,
+                            item.task_id, item.run_id, item.parent_job_id,
+                            item.job_type, item.routing_key, item.batch_start,
+                            item.batch_end, item.idempotency_key, item.status,
+                            item.priority, item.max_attempts, item.payload
+                        FROM jsonb_to_recordset(%(jobs)s::jsonb) AS item(
+                            actor text,
+                            id text,
+                            project_id text,
+                            task_id text,
+                            run_id text,
+                            parent_job_id text,
+                            job_type text,
+                            routing_key text,
+                            batch_start integer,
+                            batch_end integer,
+                            idempotency_key text,
+                            status text,
+                            priority integer,
+                            max_attempts integer,
+                            payload jsonb
+                        )
+                        ON CONFLICT (idempotency_key) DO NOTHING
+                        """,
+                        {"jobs": Jsonb(followups)},
+                    )
+        return _evaluation_job(row)
+
     async def schedule_retry(
         self,
         job_id: str,
@@ -553,7 +689,18 @@ class JobRepository:
         *,
         error_code: str,
         error_message: str,
+        failed_count: int = 0,
     ) -> EvaluationJob | None:
+        if failed_count < 0:
+            raise ValueError("failed_count must be non-negative")
+        if failed_count:
+            return await self._mark_dead_letter_with_run_count(
+                job_id,
+                worker_id,
+                error_code=error_code,
+                error_message=error_message,
+                failed_count=failed_count,
+            )
         row = await self._fetchone(
             """
             UPDATE pa_evaluation_jobs
@@ -578,6 +725,70 @@ class JobRepository:
             },
         )
         return _evaluation_job(row) if row is not None else None
+
+    async def _mark_dead_letter_with_run_count(
+        self,
+        job_id: str,
+        worker_id: str,
+        *,
+        error_code: str,
+        error_message: str,
+        failed_count: int,
+    ) -> EvaluationJob | None:
+        connection = await self._connection_factory()
+        async with connection as active_connection:
+            async with active_connection.cursor() as cursor:
+                await cursor.execute(
+                    """
+                    WITH locked_run AS MATERIALIZED (
+                        SELECT run.id
+                        FROM pa_auto_evaluation_runs AS run
+                        JOIN pa_evaluation_jobs AS candidate_job
+                          ON candidate_job.run_id = run.id
+                        WHERE candidate_job.id = %(job_id)s
+                        FOR UPDATE OF run
+                    )
+                    UPDATE pa_evaluation_jobs AS job
+                    SET status = 'DEAD_LETTER',
+                        lease_owner = NULL,
+                        lease_expires_at = NULL,
+                        heartbeat_at = NULL,
+                        error_code = %(error_code)s,
+                        error_message = %(error_message)s,
+                        update_by = %(worker_id)s,
+                        update_date = NOW()
+                    FROM locked_run
+                    WHERE job.id = %(job_id)s
+                      AND job.run_id = locked_run.id
+                      AND job.status = 'RUNNING'
+                      AND job.lease_owner = %(worker_id)s
+                    RETURNING job.*
+                    """,
+                    {
+                        "job_id": job_id,
+                        "worker_id": worker_id,
+                        "error_code": error_code,
+                        "error_message": error_message,
+                    },
+                )
+                row = await cursor.fetchone()
+                if row is None:
+                    return None
+                await cursor.execute(
+                    """
+                    UPDATE pa_auto_evaluation_runs
+                    SET failed_count = failed_count + %(failed_count)s,
+                        update_by = %(worker_id)s,
+                        update_date = NOW()
+                    WHERE id = %(run_id)s
+                    """,
+                    {
+                        "run_id": row["run_id"],
+                        "worker_id": worker_id,
+                        "failed_count": failed_count,
+                    },
+                )
+        return _evaluation_job(row)
 
     async def mark_cancelled(self, job_id: str, worker_id: str) -> bool:
         row = await self._fetchone(

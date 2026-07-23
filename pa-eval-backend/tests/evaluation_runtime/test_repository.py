@@ -10,6 +10,7 @@ from psycopg.rows import dict_row
 from psycopg.types.json import Jsonb
 
 from app.evaluation_runtime.models import EvaluationJob, JobStatus, JobType
+from app.evaluation_runtime.executors import ExecutionOutcome, FollowupJobSpec
 from app.evaluation_runtime.repository import JobRepository, retry_delay_seconds
 from app.evaluation_runtime.storage import ShardDescriptor, StoredManifest
 
@@ -654,6 +655,8 @@ def test_finalize_prepared_run_updates_run_and_bulk_inserts_in_one_transaction()
         "shardHash": manifest.shards[0].shard_hash,
         "start": 0,
         "end": 100,
+        "shardStart": 0,
+        "shardEnd": 100,
         "contentHash": manifest.content_hash,
         "manifestHash": manifest.manifest_hash,
     }
@@ -661,6 +664,131 @@ def test_finalize_prepared_run_updates_run_and_bulk_inserts_in_one_transaction()
     assert jobs[1]["batch_end"] == 150
     assert jobs[0]["idempotency_key"] != jobs[1]["idempotency_key"]
     assert jobs_params == {"jobs": jobs_params["jobs"]}
+
+
+def test_complete_with_followups_atomically_finishes_and_bulk_inserts_once() -> None:
+    succeeded = _job_row(
+        status="SUCCEEDED",
+        lease_owner=None,
+        result_summary={"status": "evaluated"},
+        raw_result_object_key="results/project-1/run-1/job-1/hash.json.gz",
+    )
+    repository, connection, cursor = _repository([succeeded])
+    job = _job(status="RUNNING", lease_owner="worker-a")
+    outcome = ExecutionOutcome(
+        result_summary={"status": "evaluated"},
+        raw_result_object_key="results/project-1/run-1/job-1/hash.json.gz",
+        followups=(
+            FollowupJobSpec(
+                job_type=JobType.SYNC_SCORE_BATCH,
+                batch_start=0,
+                batch_end=10,
+                payload={"rawResultObjectKey": "results/key"},
+            ),
+        ),
+        completed_count=10,
+    )
+
+    result = asyncio.run(
+        repository.complete_with_followups(job, outcome, "worker-a")
+    )
+
+    assert result is not None
+    assert connection.entered == connection.exited == 1
+    assert len(cursor.executions) == 3
+    finish_sql, finish_params = cursor.executions[0]
+    run_sql, run_params = cursor.executions[1]
+    insert_sql, insert_params = cursor.executions[2]
+    assert "SET status = 'SUCCEEDED'" in finish_sql
+    assert "WITH locked_run AS MATERIALIZED" in finish_sql
+    assert "FOR UPDATE OF run" in finish_sql
+    assert "job.run_id = locked_run.id" in finish_sql
+    assert "status = 'RUNNING'" in finish_sql
+    assert "lease_owner = %(worker_id)s" in finish_sql
+    assert "lease_owner = NULL" in finish_sql
+    assert _jsonb_value(finish_params["result_summary"]) == {"status": "evaluated"}
+    assert "completed_count = completed_count + %(completed_count)s" in run_sql
+    assert "failed_count = failed_count + %(failed_count)s" in run_sql
+    assert run_params["completed_count"] == 10
+    assert insert_sql.count("INSERT INTO pa_evaluation_jobs") == 1
+    assert "jsonb_to_recordset" in insert_sql
+    assert "ON CONFLICT (idempotency_key) DO NOTHING" in insert_sql
+    followups = _jsonb_value(insert_params["jobs"])
+    assert len(followups) == 1
+    assert followups[0]["parent_job_id"] == "job-1"
+    assert followups[0]["job_type"] == "SYNC_SCORE_BATCH"
+    assert followups[0]["routing_key"] == job.routing_key
+    assert followups[0]["priority"] == job.priority
+
+
+def test_complete_with_followups_duplicate_owner_failure_inserts_nothing() -> None:
+    repository, _, cursor = _repository([None])
+    outcome = ExecutionOutcome(
+        {"status": "evaluated"},
+        followups=(
+            FollowupJobSpec(JobType.SYNC_SCORE_BATCH, 0, 10, {"key": "value"}),
+        ),
+    )
+
+    result = asyncio.run(
+        repository.complete_with_followups(
+            _job(status="RUNNING", lease_owner="worker-a"), outcome, "worker-b"
+        )
+    )
+
+    assert result is None
+    assert len(cursor.executions) == 1
+    assert "INSERT INTO pa_evaluation_jobs" not in cursor.executions[0][0]
+
+
+def test_split_followup_keys_are_stable_and_parent_does_not_increment_counts() -> None:
+    succeeded = _job_row(status="SUCCEEDED", lease_owner=None)
+    repository, _, cursor = _repository([succeeded])
+    job = _job(status="RUNNING", lease_owner="worker-a", batch_start=0, batch_end=10)
+    children = (
+        FollowupJobSpec(JobType.EVALUATE_BATCH, 0, 5, dict(job.payload)),
+        FollowupJobSpec(JobType.EVALUATE_BATCH, 5, 10, dict(job.payload)),
+    )
+
+    asyncio.run(
+        repository.complete_with_followups(
+            job,
+            ExecutionOutcome({"status": "split"}, followups=children),
+            "worker-a",
+        )
+    )
+
+    assert len(cursor.executions) == 2
+    inserted = _jsonb_value(cursor.executions[1][1]["jobs"])
+    assert inserted[0]["idempotency_key"] != inserted[1]["idempotency_key"]
+    assert all(item["parent_job_id"] == job.id for item in inserted)
+    assert all(item["routing_key"] == job.routing_key for item in inserted)
+    assert all(item["priority"] == job.priority for item in inserted)
+    assert all(item["payload"] == job.payload for item in inserted)
+
+
+def test_single_sample_dead_letter_increments_failed_count_in_same_transaction() -> None:
+    dead = _job_row(status="DEAD_LETTER", lease_owner=None)
+    repository, connection, cursor = _repository([dead])
+
+    result = asyncio.run(
+        repository.mark_dead_letter(
+            "job-1",
+            "worker-a",
+            error_code="BAD_SAMPLE",
+            error_message="Evaluation batch failed",
+            failed_count=1,
+        )
+    )
+
+    assert result is not None
+    assert connection.entered == connection.exited == 1
+    assert len(cursor.executions) == 2
+    assert "status = 'RUNNING'" in cursor.executions[0][0]
+    assert "WITH locked_run AS MATERIALIZED" in cursor.executions[0][0]
+    assert "FOR UPDATE OF run" in cursor.executions[0][0]
+    assert "failed_count = failed_count + %(failed_count)s" in cursor.executions[1][0]
+    assert cursor.executions[1][1]["failed_count"] == 1
 
 
 def test_finalize_prepared_run_duplicate_manifest_never_overwrites_existing_jobs() -> (

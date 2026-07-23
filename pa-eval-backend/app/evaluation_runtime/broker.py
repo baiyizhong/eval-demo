@@ -121,6 +121,55 @@ class RedisJobBroker:
             message_id,
         )
 
+    async def claim_stale(
+        self,
+        routing_key: str,
+        consumer_name: str,
+        *,
+        min_idle_ms: int,
+        count: int,
+        cursor: str = "0-0",
+    ) -> tuple[str, list[BrokerMessage]]:
+        if min_idle_ms < 0:
+            raise ValueError("min_idle_ms must be non-negative")
+        if count <= 0:
+            raise ValueError("count must be positive")
+        stream = self.stream_name(routing_key)
+        try:
+            response = await self._client.xautoclaim(
+                name=stream,
+                groupname=self._consumer_group,
+                consumername=consumer_name,
+                min_idle_time=min_idle_ms,
+                start_id=cursor,
+                count=count,
+            )
+        except self._response_error as exc:
+            if "NOGROUP" not in str(exc):
+                raise
+            await self.ensure_group(routing_key)
+            return cursor, []
+
+        next_cursor, stream_messages = response[:2]
+        messages: list[BrokerMessage] = []
+        for message_id, fields in stream_messages:
+            raw_job_id = fields.get("jobId")
+            if raw_job_id is None:
+                raw_job_id = fields.get(b"jobId")
+            job_id = _job_id(raw_job_id)
+            messages.append(
+                BrokerMessage(
+                    message_id=_decode(message_id),
+                    stream=stream,
+                    routing_key=routing_key,
+                    job_id=job_id,
+                    error_code=(
+                        "MALFORMED_JOB_MESSAGE" if job_id is None else None
+                    ),
+                )
+            )
+        return _decode(next_cursor), messages
+
     async def pending_count(self, routing_key: str) -> int:
         try:
             summary = await self._client.xpending(

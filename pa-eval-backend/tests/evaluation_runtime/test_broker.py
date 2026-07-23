@@ -20,7 +20,9 @@ class FakeRedis:
         self.pending: dict[tuple[str, str], set[bytes | str]] = {}
         self.xadd_calls: list[tuple[str, dict[str, str]]] = []
         self.xreadgroup_calls: list[dict[str, Any]] = []
+        self.xautoclaim_calls: list[dict[str, Any]] = []
         self.xack_calls: list[tuple[str, str, bytes | str]] = []
+        self.xautoclaim_response: Any = None
 
     async def xgroup_create(
         self,
@@ -78,6 +80,12 @@ class FakeRedis:
             pending.remove(stored_message_id)
             return 1
         return 0
+
+    async def xautoclaim(self, **kwargs: Any) -> Any:
+        self.xautoclaim_calls.append(kwargs)
+        if self.xautoclaim_response is not None:
+            return self.xautoclaim_response
+        return (b"0-0", [], [])
 
     async def xpending(self, stream: str, group: str) -> dict[str, int]:
         return {"pending": len(self.pending.get((stream, group), set()))}
@@ -266,6 +274,78 @@ def test_read_initializes_missing_group_and_existing_group_is_idempotent() -> No
     asyncio.run(scenario())
 
     assert ("pa-eval:jobs:shared", "pa-eval-workers") in client.groups
+
+
+@pytest.mark.parametrize("three_element", [False, True])
+@pytest.mark.parametrize("encoded", [False, True])
+def test_claim_stale_decodes_cursor_and_keeps_malformed_messages(
+    three_element: bool,
+    encoded: bool,
+) -> None:
+    client = FakeRedis()
+    broker = _broker(client)
+    cursor_value: bytes | str = b"7-0" if encoded else "7-0"
+    first_id: bytes | str = b"1-0" if encoded else "1-0"
+    second_id: bytes | str = b"2-0" if encoded else "2-0"
+    missing_fields = (
+        {b"payload": b"missing-job-id"}
+        if encoded
+        else {"payload": "missing-job-id"}
+    )
+    valid_fields = {b"jobId": b"job-2"} if encoded else {"jobId": "job-2"}
+    messages = [
+        (first_id, missing_fields),
+        (second_id, valid_fields),
+    ]
+    response: Any = [cursor_value, messages]
+    if three_element:
+        response.append([b"deleted-1"])
+    client.xautoclaim_response = response
+
+    cursor, claimed = asyncio.run(
+        broker.claim_stale(
+            "shared",
+            "worker-b",
+            min_idle_ms=60_000,
+            count=10,
+            cursor="0-0",
+        )
+    )
+
+    assert cursor == "7-0"
+    assert [item.job_id for item in claimed] == [None, "job-2"]
+    assert claimed[0].error_code == "MALFORMED_JOB_MESSAGE"
+    assert all(item.routing_key == "shared" for item in claimed)
+    assert client.xautoclaim_calls == [
+        {
+            "name": "pa-eval:jobs:shared",
+            "groupname": "pa-eval-workers",
+            "consumername": "worker-b",
+            "min_idle_time": 60_000,
+            "start_id": "0-0",
+            "count": 10,
+        }
+    ]
+
+
+def test_claim_stale_validates_limits_before_redis_call() -> None:
+    client = FakeRedis()
+    broker = _broker(client)
+
+    with pytest.raises(ValueError, match="min_idle_ms"):
+        asyncio.run(
+            broker.claim_stale(
+                "shared", "worker", min_idle_ms=-1, count=1
+            )
+        )
+    with pytest.raises(ValueError, match="count"):
+        asyncio.run(
+            broker.claim_stale(
+                "shared", "worker", min_idle_ms=1, count=0
+            )
+        )
+
+    assert client.xautoclaim_calls == []
 
 
 @pytest.mark.skipif(
