@@ -129,6 +129,7 @@ def test_prepare_run_streams_snapshot_then_finalizes_after_index_upload() -> Non
     assert outcome.result_summary == {
         "sampleCount": 150,
         "batchCount": 2,
+        "contentHash": finalize["manifest"].content_hash,
         "manifestHash": finalize["manifest"].manifest_hash,
     }
     assert outcome.raw_result_object_key == finalize["manifest"].index_object_key

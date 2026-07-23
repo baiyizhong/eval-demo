@@ -2,6 +2,7 @@ import asyncio
 import gzip
 import hashlib
 import json
+import re
 from collections.abc import AsyncIterable, AsyncIterator, Iterable, Mapping
 from dataclasses import dataclass
 from typing import Any
@@ -34,6 +35,7 @@ class ShardDescriptor:
 @dataclass(frozen=True, slots=True)
 class StoredManifest:
     index_object_key: str
+    content_hash: str
     manifest_hash: str
     total_count: int
     batch_size: int
@@ -41,11 +43,54 @@ class StoredManifest:
 
     def as_dict(self) -> dict[str, Any]:
         return {
+            "version": 1,
             "totalCount": self.total_count,
             "batchSize": self.batch_size,
-            "manifestHash": self.manifest_hash,
+            "contentHash": self.content_hash,
             "shards": [shard.as_dict() for shard in self.shards],
         }
+
+
+_KEY_COMPONENT_PATTERN = r"[A-Za-z0-9][A-Za-z0-9._-]{0,127}"
+_KEY_COMPONENT = re.compile(rf"{_KEY_COMPONENT_PATTERN}\Z")
+_SHARD_KEY = re.compile(
+    rf"manifests/(?P<project>{_KEY_COMPONENT_PATTERN})/"
+    rf"(?P<run>{_KEY_COMPONENT_PATTERN})/batches/"
+    r"(?P<start>0|[1-9][0-9]*)-(?P<end>[1-9][0-9]*)-"
+    r"(?P<hash>[0-9a-f]{64})\.jsonl\.gz\Z"
+)
+_SHA256 = re.compile(r"[0-9a-f]{64}\Z")
+
+
+def _validate_key_component(value: str, name: str) -> None:
+    if not isinstance(value, str) or _KEY_COMPONENT.fullmatch(value) is None:
+        raise ValueError(f"invalid {name}")
+
+
+def _validate_shard_descriptor(shard: ShardDescriptor) -> None:
+    if not isinstance(shard, ShardDescriptor) or not isinstance(
+        shard.object_key, str
+    ):
+        raise ValueError("invalid shard descriptor")
+    match = _SHARD_KEY.fullmatch(shard.object_key)
+    if (
+        isinstance(shard.start, bool)
+        or isinstance(shard.end, bool)
+        or not isinstance(shard.start, int)
+        or not isinstance(shard.end, int)
+        or shard.start < 0
+        or shard.end <= shard.start
+        or not isinstance(shard.shard_hash, str)
+        or _SHA256.fullmatch(shard.shard_hash) is None
+        or match is None
+    ):
+        raise ValueError("invalid shard descriptor")
+    expected_key = (
+        f"manifests/{match.group('project')}/{match.group('run')}/batches/"
+        f"{shard.start}-{shard.end}-{shard.shard_hash}.jsonl.gz"
+    )
+    if shard.object_key != expected_key:
+        raise ValueError("invalid shard descriptor")
 
 
 def build_batch_ranges(*, total: int, batch_size: int) -> list[tuple[int, int]]:
@@ -128,6 +173,8 @@ class ManifestStorage:
         *,
         batch_size: int = 100,
     ) -> StoredManifest:
+        _validate_key_component(project_id, "project_id")
+        _validate_key_component(run_id, "run_id")
         if batch_size <= 0:
             raise ValueError("batch_size must be positive")
 
@@ -162,12 +209,23 @@ class ManifestStorage:
         if total_count == 0:
             raise EmptyManifestError("sample manifest is empty")
 
-        manifest_hash = full_hasher.hexdigest()
+        content_hash = full_hasher.hexdigest()
+        stored = StoredManifest(
+            index_object_key="",
+            content_hash=content_hash,
+            manifest_hash="",
+            total_count=total_count,
+            batch_size=batch_size,
+            shards=tuple(shards),
+        )
+        index_body = _canonical_json_bytes(stored.as_dict())
+        manifest_hash = hashlib.sha256(index_body).hexdigest()
         index_object_key = (
             f"manifests/{project_id}/{run_id}/{manifest_hash}/index.json"
         )
         stored = StoredManifest(
             index_object_key=index_object_key,
+            content_hash=content_hash,
             manifest_hash=manifest_hash,
             total_count=total_count,
             batch_size=batch_size,
@@ -175,7 +233,7 @@ class ManifestStorage:
         )
         await self._put_object(
             key=index_object_key,
-            body=_canonical_json_bytes(stored.as_dict()),
+            body=index_body,
             content_type="application/json",
             metadata={"sha256": manifest_hash},
         )
@@ -215,18 +273,20 @@ class ManifestStorage:
     async def read_shard(
         self, shard: ShardDescriptor
     ) -> list[Mapping[str, Any]]:
-        response = await asyncio.to_thread(
-            self._client.get_object,
-            Bucket=self._bucket,
-            Key=shard.object_key,
-        )
-        metadata_hash = response.get("Metadata", {}).get("sha256")
+        _validate_shard_descriptor(shard)
+        try:
+            metadata, compressed = await asyncio.to_thread(
+                self._get_object_bytes,
+                shard.object_key,
+            )
+        except (KeyError, OSError, EOFError) as error:
+            raise ObjectIntegrityError("object content hash validation failed") from error
+        metadata_hash = metadata.get("sha256")
         if metadata_hash != shard.shard_hash:
             raise ObjectIntegrityError("object metadata hash mismatch")
         try:
-            compressed = await asyncio.to_thread(response["Body"].read)
             canonical_bytes = gzip.decompress(compressed)
-        except (KeyError, OSError, EOFError) as error:
+        except (OSError, EOFError) as error:
             raise ObjectIntegrityError("object content hash validation failed") from error
         content_hash = hashlib.sha256(canonical_bytes).hexdigest()
         if content_hash != shard.shard_hash:
@@ -250,6 +310,9 @@ class ManifestStorage:
         job_id: str,
         result: Any,
     ) -> str:
+        _validate_key_component(project_id, "project_id")
+        _validate_key_component(run_id, "run_id")
+        _validate_key_component(job_id, "job_id")
         canonical_bytes = _canonical_json_bytes(result)
         result_hash = hashlib.sha256(canonical_bytes).hexdigest()
         object_key = f"results/{project_id}/{run_id}/{job_id}/{result_hash}.json.gz"
@@ -260,6 +323,15 @@ class ManifestStorage:
             metadata={"sha256": result_hash},
         )
         return object_key
+
+    def _get_object_bytes(self, key: str) -> tuple[Mapping[str, str], bytes]:
+        response = self._client.get_object(Bucket=self._bucket, Key=key)
+        body = response["Body"]
+        try:
+            metadata = response.get("Metadata", {})
+            return metadata, body.read()
+        finally:
+            body.close()
 
     async def _put_object(
         self,

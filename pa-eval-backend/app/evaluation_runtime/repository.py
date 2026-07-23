@@ -74,6 +74,7 @@ class JobRepository:
                 "shardHash": shard.shard_hash,
                 "start": shard.start,
                 "end": shard.end,
+                "contentHash": manifest.content_hash,
                 "manifestHash": manifest.manifest_hash,
             }
             idempotency_key = job_idempotency_key(

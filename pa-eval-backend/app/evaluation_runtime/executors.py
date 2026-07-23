@@ -102,6 +102,7 @@ class PrepareRunExecutor:
             result_summary={
                 "sampleCount": manifest.total_count,
                 "batchCount": len(manifest.shards),
+                "contentHash": manifest.content_hash,
                 "manifestHash": manifest.manifest_hash,
             },
             raw_result_object_key=manifest.index_object_key,

@@ -571,6 +571,7 @@ def _stored_manifest() -> StoredManifest:
         index_object_key=(
             "manifests/project-1/run-1/manifest-hash/index.json"
         ),
+        content_hash="content-hash",
         manifest_hash="manifest-hash",
         total_count=150,
         batch_size=100,
@@ -653,6 +654,7 @@ def test_finalize_prepared_run_updates_run_and_bulk_inserts_in_one_transaction()
         "shardHash": manifest.shards[0].shard_hash,
         "start": 0,
         "end": 100,
+        "contentHash": manifest.content_hash,
         "manifestHash": manifest.manifest_hash,
     }
     assert jobs[1]["batch_start"] == 100
@@ -685,6 +687,40 @@ def test_finalize_prepared_run_duplicate_manifest_never_overwrites_existing_jobs
     assert len(bulk_sql) == 2
     assert all("ON CONFLICT (idempotency_key) DO NOTHING" in sql for sql in bulk_sql)
     assert all("DO UPDATE" not in sql for sql in bulk_sql)
+
+
+def test_finalize_prepared_run_rejects_different_layout_after_first_manifest() -> None:
+    repository, _, cursor = _repository([{"id": "run-1"}, None])
+    first = _stored_manifest()
+    different_layout = StoredManifest(
+        index_object_key="manifests/project-1/run-1/other-hash/index.json",
+        content_hash=first.content_hash,
+        manifest_hash="other-hash",
+        total_count=first.total_count,
+        batch_size=50,
+        shards=first.shards,
+    )
+    base = {
+        "run_id": "run-1",
+        "project_id": "project-1",
+        "task_id": "task-1",
+        "parent_job_id": "prepare-job-1",
+        "actor": "worker-1",
+    }
+
+    assert asyncio.run(
+        repository.finalize_prepared_run(**base, manifest=first)
+    ) is True
+    assert asyncio.run(
+        repository.finalize_prepared_run(**base, manifest=different_layout)
+    ) is False
+
+    bulk_sql = [
+        sql
+        for sql, _ in cursor.executions
+        if "INSERT INTO pa_evaluation_jobs" in sql
+    ]
+    assert len(bulk_sql) == 1
 
 
 def test_finalize_prepared_run_cancel_gate_skips_bulk_insert() -> None:
