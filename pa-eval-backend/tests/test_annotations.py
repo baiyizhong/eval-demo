@@ -2232,6 +2232,26 @@ def test_resumes_claimed_dataset_import_job_from_persisted_cursor() -> None:
     assert fake_reader.trace_bulk_jobs[job["id"]]["completedCount"] == 3
 
 
+def test_normalizes_trace_input_output_filter_snapshot() -> None:
+    normalized = annotations_module._normalize_trace_filter_snapshot(
+        {
+            "inputFilters": (
+                '[{"key":"question","operator":"contains","value":"发票"}]'
+            ),
+            "outputFilters": [
+                {"key": "answer", "operator": "exists", "value": ""}
+            ],
+        }
+    )
+
+    assert normalized["input_filters"] == [
+        {"key": "question", "operator": "contains", "value": "发票"}
+    ]
+    assert normalized["output_filters"] == [
+        {"key": "answer", "operator": "exists", "value": ""}
+    ]
+
+
 def test_creates_dataset_import_job_from_trace_filter_snapshot() -> None:
     class FilterTraceReader:
         def __init__(self) -> None:

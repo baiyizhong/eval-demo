@@ -316,6 +316,35 @@ def test_lists_project_traces_passes_multiple_metadata_filters() -> None:
     assert body["data"]["datas"][0]["traceId"] == "trace-1"
 
 
+def test_lists_project_traces_passes_input_output_filters() -> None:
+    fake_db = FakeDatabaseReader()
+    fake_trace = FakeTraceReader()
+    override_readers(fake_db, fake_trace)
+
+    try:
+        response = TestClient(app).get(
+            "/api/projects/project-1/traces",
+            params={
+                "inputFilters": (
+                    '[{"key":"question","operator":"contains","value":"发票"}]'
+                ),
+                "outputFilters": (
+                    '[{"key":"answer","operator":"exists","value":""}]'
+                ),
+            },
+        )
+    finally:
+        clear_overrides()
+
+    assert response.status_code == 200
+    assert fake_trace.list_kwargs["input_filters"] == [
+        {"key": "question", "operator": "contains", "value": "发票"}
+    ]
+    assert fake_trace.list_kwargs["output_filters"] == [
+        {"key": "answer", "operator": "exists", "value": ""}
+    ]
+
+
 def test_lists_project_traces_passes_business_id_filter() -> None:
     fake_db = FakeDatabaseReader()
     fake_trace = FakeTraceReader()
@@ -1035,6 +1064,81 @@ def test_aggregate_trace_filter_limits_observations_and_scores_to_candidates() -
     assert "s.name IN" in trace_filter.cte_sql
 
 
+def test_trace_filter_builds_parameterized_input_output_json_conditions() -> None:
+    trace_filter = _build_trace_filter(
+        "project-1",
+        input_filters=[
+            {"key": "question", "operator": "contains", "value": "发票"}
+        ],
+        output_filters=[
+            {"key": "answer", "operator": "exists", "value": ""}
+        ],
+    )
+
+    assert (
+        "JSONHas(ifNull(t.input, ''), {trace_input_filter_key_0:String})"
+        in trace_filter.cte_sql
+    )
+    assert (
+        "JSONHas(ifNull(t.output, ''), {trace_output_filter_key_0:String})"
+        in trace_filter.cte_sql
+    )
+    assert "position(" in trace_filter.cte_sql
+    assert "question" not in trace_filter.cte_sql
+    assert "发票" not in trace_filter.cte_sql
+    assert trace_filter.params["trace_input_filter_key_0"] == "question"
+    assert trace_filter.params["trace_input_filter_value_0"] == "发票"
+    assert trace_filter.params["trace_output_filter_key_0"] == "answer"
+
+
+def test_matches_trace_input_output_filters_require_json_object_keys() -> None:
+    base_kwargs = {
+        "keyword": None,
+        "statuses": None,
+        "environments": None,
+        "session_id": None,
+        "user_id": None,
+        "business_id": None,
+        "latency_min": None,
+        "latency_max": None,
+        "score_queue_id": None,
+        "metadata_key": None,
+        "metadata_value": None,
+        "metadata_filters": None,
+        "categorical_score_filters": None,
+        "numeric_score_filters": None,
+    }
+    filters = {
+        "input_filters": [
+            {"key": "question", "operator": "contains", "value": "发票"}
+        ],
+        "output_filters": [
+            {"key": "answer", "operator": "exists", "value": ""}
+        ],
+    }
+
+    assert _matches_trace(
+        {
+            "traceId": "trace-1",
+            "metadata": {},
+            "input": '{"question":"如何开发票"}',
+            "output": {"answer": "已开具"},
+        },
+        **base_kwargs,
+        **filters,
+    )
+    assert not _matches_trace(
+        {
+            "traceId": "trace-2",
+            "metadata": {},
+            "input": "如何开发票",
+            "output": {"answer": "已开具"},
+        },
+        **base_kwargs,
+        **filters,
+    )
+
+
 @pytest.mark.anyio
 async def test_trace_list_keyset_cursor_avoids_offset_and_returns_next_cursor(
     monkeypatch,
@@ -1125,6 +1229,58 @@ async def test_trace_list_reuses_exact_count_for_same_semantic_filters(
         assert result["total"] == 100_000
 
     assert count_calls == 1
+
+
+@pytest.mark.anyio
+async def test_trace_list_count_cache_separates_input_output_filters(
+    monkeypatch,
+) -> None:
+    reader = LangfuseClickHouseReader(
+        Settings(
+            pa_eval_trace_count_cache_ttl_seconds=30,
+            pa_eval_trace_count_cache_max_entries=100,
+        )
+    )
+    count_calls = 0
+
+    async def fake_query(query: str, params: dict):
+        nonlocal count_calls
+        if "SELECT count() AS total" in query:
+            count_calls += 1
+            return [{"total": 1}]
+        return []
+
+    monkeypatch.setattr(reader, "_query_json_each_row", fake_query)
+
+    input_filters = [
+        {"key": "question", "operator": "contains", "value": "发票"}
+    ]
+    output_filters = [
+        {"key": "answer", "operator": "contains", "value": "发票"}
+    ]
+    await reader.list_traces(
+        "project-1",
+        page=1,
+        page_size=10,
+        input_filters=input_filters,
+        time_range="1d",
+    )
+    await reader.list_traces(
+        "project-1",
+        page=1,
+        page_size=10,
+        output_filters=output_filters,
+        time_range="1d",
+    )
+    await reader.list_traces(
+        "project-1",
+        page=2,
+        page_size=10,
+        input_filters=input_filters,
+        time_range="1d",
+    )
+
+    assert count_calls == 2
 
 
 @pytest.mark.anyio

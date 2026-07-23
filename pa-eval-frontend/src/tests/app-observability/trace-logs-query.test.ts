@@ -116,6 +116,36 @@ test('trace logs query serializes multiple metadata filters as API JSON', () => 
   ])
 })
 
+test('trace logs query serializes input and output object filters', () => {
+  const query = buildTraceListQuery(
+    {
+      ...baseState,
+      filters: {
+        inputFilters: [
+          { key: 'question', operator: 'contains', value: '发票' },
+          { key: ' ', operator: 'equals', value: 'ignored' },
+        ],
+        outputFilters: [
+          { key: 'answer', operator: 'equals', value: '已开具' },
+          { key: 'reason', operator: 'invalid', value: '缺少参数' },
+        ],
+      },
+    },
+    'project-1'
+  )
+
+  assert.ok(query.inputFilters)
+  assert.ok(query.outputFilters)
+  assert.deepEqual(JSON.parse(query.inputFilters), [
+    { key: 'question', operator: 'contains', value: '发票' },
+  ])
+  assert.deepEqual(JSON.parse(query.outputFilters), [
+    { key: 'answer', operator: 'equals', value: '已开具' },
+    { key: 'reason', operator: 'contains', value: '缺少参数' },
+  ])
+  assert.equal(query.timeRange, undefined)
+})
+
 test('trace logs query serializes score filters as API JSON', () => {
   const query = buildTraceListQuery(
     {

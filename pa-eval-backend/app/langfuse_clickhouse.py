@@ -62,6 +62,8 @@ class LangfuseClickHouseReader:
         metadata_key: str | None = None,
         metadata_value: str | None = None,
         metadata_filters: list[dict[str, Any]] | None = None,
+        input_filters: list[dict[str, Any]] | None = None,
+        output_filters: list[dict[str, Any]] | None = None,
         categorical_score_filters: list[dict[str, Any]] | None = None,
         numeric_score_filters: list[dict[str, Any]] | None = None,
         created_at_range: list[str] | None = None,
@@ -83,6 +85,8 @@ class LangfuseClickHouseReader:
             metadata_key=metadata_key,
             metadata_value=metadata_value,
             metadata_filters=metadata_filters,
+            input_filters=input_filters,
+            output_filters=output_filters,
             keyword=keyword,
             statuses=statuses,
             tags=tags,
@@ -111,6 +115,8 @@ class LangfuseClickHouseReader:
             metadata_key=metadata_key,
             metadata_value=metadata_value,
             metadata_filters=metadata_filters,
+            input_filters=input_filters,
+            output_filters=output_filters,
             categorical_score_filters=categorical_score_filters,
             numeric_score_filters=numeric_score_filters,
         )
@@ -233,6 +239,8 @@ class LangfuseClickHouseReader:
         metadata_key: str | None = None,
         metadata_value: str | None = None,
         metadata_filters: list[dict[str, Any]] | None = None,
+        input_filters: list[dict[str, Any]] | None = None,
+        output_filters: list[dict[str, Any]] | None = None,
         categorical_score_filters: list[dict[str, Any]] | None = None,
         numeric_score_filters: list[dict[str, Any]] | None = None,
         created_at_range: list[str] | None = None,
@@ -251,6 +259,8 @@ class LangfuseClickHouseReader:
             metadata_key=metadata_key,
             metadata_value=metadata_value,
             metadata_filters=metadata_filters,
+            input_filters=input_filters,
+            output_filters=output_filters,
             keyword=keyword,
             statuses=statuses,
             tags=tags,
@@ -286,6 +296,8 @@ class LangfuseClickHouseReader:
             metadata_key=filters.get("metadata_key"),
             metadata_value=filters.get("metadata_value"),
             metadata_filters=filters.get("metadata_filters"),
+            input_filters=filters.get("input_filters"),
+            output_filters=filters.get("output_filters"),
             keyword=filters.get("keyword"),
             statuses=filters.get("statuses"),
             tags=filters.get("tags"),
@@ -1713,6 +1725,8 @@ def _build_trace_filter(
     metadata_key: str | None = None,
     metadata_value: str | None = None,
     metadata_filters: list[dict[str, Any]] | None = None,
+    input_filters: list[dict[str, Any]] | None = None,
+    output_filters: list[dict[str, Any]] | None = None,
     keyword: str | None = None,
     statuses: list[str] | None = None,
     tags: list[str] | None = None,
@@ -1762,6 +1776,20 @@ def _build_trace_filter(
         metadata_key=metadata_key,
         metadata_value=metadata_value,
         metadata_filters=metadata_filters,
+    )
+    _append_trace_payload_where_filters(
+        trace_filters,
+        params,
+        column="t.input",
+        prefix="trace_input_filter",
+        value_filters=input_filters,
+    )
+    _append_trace_payload_where_filters(
+        trace_filters,
+        params,
+        column="t.output",
+        prefix="trace_output_filter",
+        value_filters=output_filters,
     )
 
     keyword_value = (keyword or "").strip()
@@ -2113,6 +2141,47 @@ def _append_metadata_where_filters(
         else:
             filters.append(
                 f"position(t.metadata[{{{key_param}:String}}], {{{value_param}:String}}) > 0"
+            )
+
+
+def _append_trace_payload_where_filters(
+    filters: list[str],
+    params: dict[str, Any],
+    *,
+    column: str,
+    prefix: str,
+    value_filters: list[dict[str, Any]] | None,
+) -> None:
+    payload = f"ifNull({column}, '')"
+    for index, value_filter in enumerate(value_filters or []):
+        key = str(value_filter.get("key") or "").strip()
+        if not key:
+            continue
+        operator = str(value_filter.get("operator") or "contains")
+        value = str(value_filter.get("value") or "")
+        key_param = f"{prefix}_key_{index}"
+        path_param = f"{prefix}_path_{index}"
+        value_param = f"{prefix}_value_{index}"
+        params[key_param] = key
+        params[path_param] = _clickhouse_json_path([key])
+        existence = f"JSONHas({payload}, {{{key_param}:String}})"
+        if operator == "exists":
+            filters.append(existence)
+            continue
+        params[value_param] = value
+        extracted = (
+            f"coalesce(nullIf(JSON_VALUE({payload}, "
+            f"{{{path_param}:String}}), ''), "
+            f"JSONExtractRaw({payload}, {{{key_param}:String}}))"
+        )
+        if operator == "equals":
+            filters.append(
+                f"({existence} AND {extracted} = {{{value_param}:String}})"
+            )
+        else:
+            filters.append(
+                f"({existence} AND position({extracted}, "
+                f"{{{value_param}:String}}) > 0)"
             )
 
 
@@ -2489,6 +2558,8 @@ def _trace_count_cache_key(
     metadata_key: str | None,
     metadata_value: str | None,
     metadata_filters: list[dict[str, Any]] | None,
+    input_filters: list[dict[str, Any]] | None,
+    output_filters: list[dict[str, Any]] | None,
     categorical_score_filters: list[dict[str, Any]] | None,
     numeric_score_filters: list[dict[str, Any]] | None,
 ) -> str:
@@ -2525,6 +2596,8 @@ def _trace_count_cache_key(
         "metadataKey": text(metadata_key),
         "metadataValue": text(metadata_value),
         "metadataFilters": object_filters(metadata_filters),
+        "inputFilters": object_filters(input_filters),
+        "outputFilters": object_filters(output_filters),
         "categoricalScoreFilters": object_filters(categorical_score_filters),
         "numericScoreFilters": object_filters(numeric_score_filters),
     }
@@ -2569,6 +2642,8 @@ def _matches_trace(
     metadata_filters: list[dict[str, Any]] | None = None,
     categorical_score_filters: list[dict[str, Any]] | None = None,
     numeric_score_filters: list[dict[str, Any]] | None = None,
+    input_filters: list[dict[str, Any]] | None = None,
+    output_filters: list[dict[str, Any]] | None = None,
 ) -> bool:
     metadata = row.get("metadata") or {}
     needle = (keyword or "").strip().lower()
@@ -2622,11 +2697,47 @@ def _matches_trace(
             return False
         if operator == "contains" and value not in actual:
             return False
+    if not _matches_trace_payload_filters(row.get("input"), input_filters):
+        return False
+    if not _matches_trace_payload_filters(row.get("output"), output_filters):
+        return False
     for score_filter in categorical_score_filters or []:
         if not _matches_categorical_score(row.get("scores") or [], score_filter):
             return False
     for score_filter in numeric_score_filters or []:
         if not _matches_numeric_score(row.get("scores") or [], score_filter):
+            return False
+    return True
+
+
+def _matches_trace_payload_filters(
+    payload: Any,
+    value_filters: list[dict[str, Any]] | None,
+) -> bool:
+    if not value_filters:
+        return True
+    value_object = _payload_to_object(payload)
+    if not isinstance(value_object, dict):
+        return False
+    for value_filter in value_filters:
+        key = str(value_filter.get("key") or "").strip()
+        if not key:
+            continue
+        if key not in value_object:
+            return False
+        operator = str(value_filter.get("operator") or "contains")
+        if operator == "exists":
+            continue
+        actual_value = value_object[key]
+        actual = (
+            actual_value
+            if isinstance(actual_value, str)
+            else json.dumps(actual_value, ensure_ascii=False, separators=(",", ":"))
+        )
+        expected = str(value_filter.get("value") or "")
+        if operator == "equals" and actual != expected:
+            return False
+        if operator == "contains" and expected not in actual:
             return False
     return True
 

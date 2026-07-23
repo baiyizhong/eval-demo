@@ -74,6 +74,8 @@ async def list_traces(
     metadata_key: str | None = Query(default=None, alias="metadataKey"),
     metadata_value: str | None = Query(default=None, alias="metadataValue"),
     metadata_filters: str | None = Query(default=None, alias="metadataFilters"),
+    input_filters: str | None = Query(default=None, alias="inputFilters"),
+    output_filters: str | None = Query(default=None, alias="outputFilters"),
     categorical_score_filters: str | None = Query(
         default=None,
         alias="categoricalScoreFilters",
@@ -103,6 +105,8 @@ async def list_traces(
         created_at_range_bracket,
     )
     parsed_metadata_filters = _parse_metadata_filters(metadata_filters)
+    parsed_input_filters = _parse_metadata_filters(input_filters)
+    parsed_output_filters = _parse_metadata_filters(output_filters)
     parsed_categorical_score_filters = _parse_categorical_score_filters(
         categorical_score_filters,
     )
@@ -146,6 +150,8 @@ async def list_traces(
             metadata_key=metadata_key,
             metadata_value=metadata_value,
             metadata_filters=parsed_metadata_filters,
+            input_filters=parsed_input_filters,
+            output_filters=parsed_output_filters,
             categorical_score_filters=parsed_categorical_score_filters,
             numeric_score_filters=parsed_numeric_score_filters,
             fields=fields,

@@ -139,6 +139,8 @@ export type TraceListQuery = {
   metadataKey?: string
   metadataValue?: string
   metadataFilters?: string
+  inputFilters?: string
+  outputFilters?: string
   categoricalScoreFilters?: string
   numericScoreFilters?: string
   scoreQueueId?: string
@@ -148,13 +150,16 @@ export type TraceListQuery = {
   cursorTraceId?: string
 }
 
-export type TraceMetadataFilterOperator = 'equals' | 'contains' | 'exists'
+export type TraceObjectFilterOperator = 'equals' | 'contains' | 'exists'
 
-export type TraceMetadataFilter = {
+export type TraceObjectFilter = {
   key: string
-  operator: TraceMetadataFilterOperator
+  operator: TraceObjectFilterOperator
   value?: string
 }
+
+export type TraceMetadataFilterOperator = TraceObjectFilterOperator
+export type TraceMetadataFilter = TraceObjectFilter
 
 export type TraceCategoricalScoreFilterOperator =
   'equals' | 'contains' | 'exists'

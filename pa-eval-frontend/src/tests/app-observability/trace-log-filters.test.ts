@@ -55,16 +55,27 @@ test('trace log score filters load score configs for typed score selectors', () 
   assert.match(source, /scoreConfigs=\{scoreConfigs\}/)
 })
 
-test('trace log metadata filters use IME-safe text inputs', () => {
-  assert.match(source, /function MetadataTextInput/)
-  assert.match(source, /onCompositionStart=\{\(\) => setIsComposing\(true\)\}/)
+test('trace log object filters use IME-safe text inputs', () => {
+  assert.match(source, /function ObjectFilterTextInput/)
+  assert.match(source, /onCompositionStart=\{\(event\) =>/)
   assert.match(source, /onCompositionEnd=\{\(event\) =>/)
   assert.match(source, /if \(!isComposing\)/)
-  assert.match(source, /<MetadataTextInput[\s\S]*value=\{filter\.key\}/)
+  assert.match(source, /value=\{isComposing \? draftValue : value\}/)
+  assert.match(source, /<ObjectFilterTextInput[\s\S]*value=\{filter\.key\}/)
   assert.match(
     source,
-    /<MetadataTextInput[\s\S]*value=\{filter\.value \?\? ''\}/
+    /<ObjectFilterTextInput[\s\S]*value=\{filter\.value \?\? ''\}/
   )
+})
+
+test('trace log advanced filters expose sibling metadata input output editors', () => {
+  assert.match(source, /fieldId:\s*'inputFilters'/)
+  assert.match(source, /fieldId:\s*'outputFilters'/)
+  assert.match(source, /id:\s*'metadataFilters'[\s\S]*label:\s*'Metadata'/)
+  assert.match(source, /id:\s*'inputFilters'[\s\S]*label:\s*'Input'/)
+  assert.match(source, /id:\s*'outputFilters'[\s\S]*label:\s*'Output'/)
+  assert.match(source, /function ObjectFilterEditor/)
+  assert.match(source, /添加 \{label\} 条件/)
 })
 
 test('trace log score filters use IME-safe text inputs', () => {

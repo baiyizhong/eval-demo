@@ -3002,6 +3002,8 @@ def _normalize_trace_filter_snapshot(filters: dict[str, Any]) -> dict[str, Any]:
 
     for source_key, target_key in (
         ("metadataFilters", "metadata_filters"),
+        ("inputFilters", "input_filters"),
+        ("outputFilters", "output_filters"),
         ("categoricalScoreFilters", "categorical_score_filters"),
         ("numericScoreFilters", "numeric_score_filters"),
     ):

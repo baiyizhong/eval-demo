@@ -7,8 +7,8 @@ import {
 import type {
   TraceCategoricalScoreFilter,
   TraceListQuery,
-  TraceMetadataFilter,
   TraceNumericScoreFilter,
+  TraceObjectFilter,
 } from '../types'
 
 const DEFAULT_TRACE_LOG_TIME_RANGE: NonNullable<TraceListQuery['timeRange']> =
@@ -25,9 +25,9 @@ export function buildTraceListQuery(
   projectId: string
 ): TraceListQuery {
   const createdAtRange = state.filters.createdAtRange as string[] | undefined
-  const metadataFilters = normalizeMetadataFilters(
-    state.filters.metadataFilters
-  )
+  const metadataFilters = normalizeObjectFilters(state.filters.metadataFilters)
+  const inputFilters = normalizeObjectFilters(state.filters.inputFilters)
+  const outputFilters = normalizeObjectFilters(state.filters.outputFilters)
   const categoricalScoreFilters = normalizeCategoricalScoreFilters(
     state.filters.categoricalScoreFilters
   )
@@ -38,6 +38,8 @@ export function buildTraceListQuery(
     ...state.filters,
     keyword: state.keyword,
     metadataFilters,
+    inputFilters,
+    outputFilters,
     categoricalScoreFilters,
     numericScoreFilters,
   }
@@ -67,6 +69,8 @@ export function buildTraceListQuery(
     metadataKey: optionalString(state.filters.metadataKey),
     metadataValue: optionalString(state.filters.metadataValue),
     metadataFilters: serializeJsonFilter(metadataFilters),
+    inputFilters: serializeJsonFilter(inputFilters),
+    outputFilters: serializeJsonFilter(outputFilters),
     categoricalScoreFilters: categoricalScoreFilters.length
       ? JSON.stringify(categoricalScoreFilters)
       : undefined,
@@ -102,12 +106,12 @@ function resolveTraceLogTimeRange({
     : DEFAULT_TRACE_LOG_TIME_RANGE
 }
 
-function normalizeMetadataFilters(value: unknown): TraceMetadataFilter[] {
+function normalizeObjectFilters(value: unknown): TraceObjectFilter[] {
   if (!Array.isArray(value)) {
     return []
   }
 
-  const filters: TraceMetadataFilter[] = []
+  const filters: TraceObjectFilter[] = []
   value.forEach((item) => {
     if (!item || typeof item !== 'object') {
       return

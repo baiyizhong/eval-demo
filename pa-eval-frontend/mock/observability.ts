@@ -29,6 +29,61 @@ function normalizeQueryList(value: unknown) {
   return []
 }
 
+function parseObjectFilters(value: unknown) {
+  let parsed = value
+  if (typeof value === 'string') {
+    try {
+      parsed = JSON.parse(value)
+    } catch {
+      return []
+    }
+  }
+  if (!Array.isArray(parsed)) return []
+  return parsed.filter(
+    (item): item is Record<string, unknown> =>
+      Boolean(item) &&
+      typeof item === 'object' &&
+      !Array.isArray(item) &&
+      Boolean(String((item as Record<string, unknown>).key ?? '').trim())
+  )
+}
+
+function payloadObject(value: unknown): Record<string, unknown> | null {
+  let parsed = value
+  if (typeof value === 'string') {
+    try {
+      parsed = JSON.parse(value)
+    } catch {
+      return null
+    }
+  }
+  return parsed && typeof parsed === 'object' && !Array.isArray(parsed)
+    ? (parsed as Record<string, unknown>)
+    : null
+}
+
+function matchesObjectFilters(payload: unknown, value: unknown) {
+  const filters = parseObjectFilters(value)
+  if (!filters.length) return true
+  const object = payloadObject(payload)
+  if (!object) return false
+
+  return filters.every((filter) => {
+    const key = String(filter.key ?? '').trim()
+    if (!Object.prototype.hasOwnProperty.call(object, key)) return false
+    if (filter.operator === 'exists') return true
+    const actualValue = object[key]
+    const actual =
+      typeof actualValue === 'string'
+        ? actualValue
+        : JSON.stringify(actualValue) ?? String(actualValue ?? '')
+    const expected = String(filter.value ?? '')
+    return filter.operator === 'equals'
+      ? actual === expected
+      : actual.includes(expected)
+  })
+}
+
 function parseFilterDateTime(value: unknown) {
   if (!value) return null
   const text = String(value).trim().replace(' ', 'T')
@@ -187,6 +242,15 @@ export default [
           traces()
             .filter((trace) => trace.projectId === projectId(req))
             .filter((trace) => matchesCreatedAtRange(trace, req.query))
+            .filter((trace) =>
+              matchesObjectFilters(trace.metadata, req.query?.metadataFilters)
+            )
+            .filter((trace) =>
+              matchesObjectFilters(trace.input, req.query?.inputFilters)
+            )
+            .filter((trace) =>
+              matchesObjectFilters(trace.output, req.query?.outputFilters)
+            )
             .filter((trace) => !req.query?.sessionId || trace.sessionId === req.query?.sessionId)
             .filter((trace) => keywordIncludes(trace, req.query?.keyword)),
           req.query,

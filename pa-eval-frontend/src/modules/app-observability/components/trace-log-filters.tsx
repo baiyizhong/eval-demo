@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react'
+import { useState } from 'react'
 import {
   Circle,
   CircleCheck,
@@ -25,7 +25,7 @@ import {
   getTraceQuickTimeRangeToolbarDefault,
   TRACE_QUICK_TIME_RANGE_OPTIONS,
 } from '../trace-time-ranges'
-import type { TraceMetadataFilter, TraceScoreConfigOption } from '../types'
+import type { TraceObjectFilter, TraceScoreConfigOption } from '../types'
 import {
   CategoricalScoreFilterEditor,
   NumericScoreFilterEditor,
@@ -46,6 +46,8 @@ export const traceLogUrlFilters: DataTableFilterBinding[] = [
   { fieldId: 'metadataKey', type: 'string' },
   { fieldId: 'metadataValue', type: 'string' },
   { fieldId: 'metadataFilters', type: 'json' },
+  { fieldId: 'inputFilters', type: 'json' },
+  { fieldId: 'outputFilters', type: 'json' },
   { fieldId: 'categoricalScoreFilters', type: 'json' },
   { fieldId: 'numericScoreFilters', type: 'json' },
 ]
@@ -94,9 +96,34 @@ export function buildTraceLogFilterGroups(
           type: 'custom',
           label: 'Metadata',
           render: ({ value, setValue }) => (
-            <MetadataFilterEditor
+            <ObjectFilterEditor
+              label='Metadata'
               value={value}
               onChange={(nextValue) => setValue(nextValue, 'metadataFilters')}
+            />
+          ),
+        },
+        {
+          id: 'inputFilters',
+          type: 'custom',
+          label: 'Input',
+          render: ({ value, setValue }) => (
+            <ObjectFilterEditor
+              label='Input'
+              value={value}
+              onChange={(nextValue) => setValue(nextValue, 'inputFilters')}
+            />
+          ),
+        },
+        {
+          id: 'outputFilters',
+          type: 'custom',
+          label: 'Output',
+          render: ({ value, setValue }) => (
+            <ObjectFilterEditor
+              label='Output'
+              value={value}
+              onChange={(nextValue) => setValue(nextValue, 'outputFilters')}
             />
           ),
         },
@@ -178,15 +205,17 @@ export function buildTraceLogFilterGroups(
 
 export const traceLogFilterGroups: FilterGroup[] = buildTraceLogFilterGroups()
 
-function MetadataFilterEditor({
+function ObjectFilterEditor({
+  label,
   value,
   onChange,
 }: {
+  label: string
   value: unknown
-  onChange: (nextValue: TraceMetadataFilter[]) => void
+  onChange: (nextValue: TraceObjectFilter[]) => void
 }) {
-  const filters = Array.isArray(value) ? (value as TraceMetadataFilter[]) : []
-  const updateFilter = (index: number, patch: Partial<TraceMetadataFilter>) => {
+  const filters = Array.isArray(value) ? (value as TraceObjectFilter[]) : []
+  const updateFilter = (index: number, patch: Partial<TraceObjectFilter>) => {
     onChange(
       filters.map((filter, currentIndex) =>
         currentIndex === index ? { ...filter, ...patch } : filter
@@ -199,7 +228,7 @@ function MetadataFilterEditor({
       {filters.map((filter, index) => (
         <div key={index} className='flex flex-col gap-2 rounded-md border p-2'>
           <div className='grid grid-cols-[minmax(0,1fr)_auto] gap-2'>
-            <MetadataTextInput
+            <ObjectFilterTextInput
               value={filter.key}
               onValueChange={(value) => updateFilter(index, { key: value })}
               placeholder='key'
@@ -223,7 +252,7 @@ function MetadataFilterEditor({
               value={filter.operator}
               onValueChange={(operator) =>
                 updateFilter(index, {
-                  operator: operator as TraceMetadataFilter['operator'],
+                  operator: operator as TraceObjectFilter['operator'],
                 })
               }
             >
@@ -236,7 +265,7 @@ function MetadataFilterEditor({
                 <SelectItem value='exists'>存在</SelectItem>
               </SelectContent>
             </Select>
-            <MetadataTextInput
+            <ObjectFilterTextInput
               value={filter.value ?? ''}
               disabled={filter.operator === 'exists'}
               onValueChange={(value) => updateFilter(index, { value })}
@@ -254,13 +283,13 @@ function MetadataFilterEditor({
         }
       >
         <Plus data-icon='inline-start' />
-        添加 Metadata 条件
+        添加 {label} 条件
       </Button>
     </div>
   )
 }
 
-function MetadataTextInput({
+function ObjectFilterTextInput({
   value,
   onValueChange,
   disabled,
@@ -274,18 +303,15 @@ function MetadataTextInput({
   const [draftValue, setDraftValue] = useState(value)
   const [isComposing, setIsComposing] = useState(false)
 
-  useEffect(() => {
-    if (!isComposing) {
-      setDraftValue(value)
-    }
-  }, [isComposing, value])
-
   return (
     <Input
-      value={draftValue}
+      value={isComposing ? draftValue : value}
       disabled={disabled}
       placeholder={placeholder}
-      onCompositionStart={() => setIsComposing(true)}
+      onCompositionStart={(event) => {
+        setDraftValue(event.currentTarget.value)
+        setIsComposing(true)
+      }}
       onCompositionEnd={(event) => {
         const nextValue = event.currentTarget.value
         setIsComposing(false)
