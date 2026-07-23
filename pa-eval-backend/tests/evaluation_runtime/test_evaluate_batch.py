@@ -10,7 +10,7 @@ from app.evaluation_runtime.executors import (
     NonRetryableExecutionError,
 )
 from app.evaluation_runtime.models import EvaluationJob, JobStatus, JobType
-from app.evaluation_runtime.storage import ManifestStorage
+from app.evaluation_runtime.storage import ManifestStorage, ObjectIntegrityError
 
 from tests.evaluation_runtime.test_storage import FakeObjectStoreClient
 
@@ -235,32 +235,78 @@ def test_evaluate_batch_rejects_non_standard_or_misaligned_adapter_results(
     executor, job, adapter, guard, _ = _executor_fixture()
     adapter.results = results
 
-    with pytest.raises(BatchSplitExecutionError) as captured:
+    with pytest.raises(NonRetryableExecutionError) as captured:
         asyncio.run(executor.execute(job, guard))
 
-    assert captured.value.error_code == "INVALID_EVALUATION_RESULT"
+    assert not isinstance(captured.value, BatchSplitExecutionError)
+    assert captured.value.error_code == "EVALUATOR_CONTRACT_ERROR"
 
 
-def test_evaluate_batch_rejects_job_range_outside_shard_as_mapping_error() -> None:
+def test_evaluate_batch_rejects_job_range_outside_shard_without_split() -> None:
     executor, job, _, guard, _ = _executor_fixture()
     invalid = _job(batch_start=0, batch_end=5, payload=job.payload)
 
-    with pytest.raises(BatchSplitExecutionError) as captured:
+    with pytest.raises(NonRetryableExecutionError) as captured:
         asyncio.run(executor.execute(invalid, guard))
 
-    assert captured.value.error_code == "INVALID_BATCH_MAPPING"
+    assert not isinstance(captured.value, BatchSplitExecutionError)
+    assert captured.value.error_code == "INVALID_BATCH_RANGE"
 
 
-def test_evaluate_batch_rejects_invalid_shard_descriptor_as_mapping_error() -> None:
+def test_evaluate_batch_rejects_invalid_shard_descriptor_without_split() -> None:
     executor, job, _, guard, client = _executor_fixture()
     invalid_payload = dict(job.payload)
     invalid_payload["shardHash"] = "b" * 64
 
-    with pytest.raises(BatchSplitExecutionError) as captured:
+    with pytest.raises(NonRetryableExecutionError) as captured:
         asyncio.run(executor.execute(_job(payload=invalid_payload), guard))
 
-    assert captured.value.error_code == "INVALID_BATCH_MAPPING"
+    assert not isinstance(captured.value, BatchSplitExecutionError)
+    assert captured.value.error_code == "INVALID_SHARD_DESCRIPTOR"
     assert client.get_bodies == []
+
+
+def test_evaluate_batch_does_not_wrap_shard_metadata_corruption_as_split() -> None:
+    executor, job, _, guard, client = _executor_fixture()
+    object_key = job.payload["shardObjectKey"]
+    client.objects[object_key]["metadata"]["sha256"] = "0" * 64
+
+    with pytest.raises(ObjectIntegrityError):
+        asyncio.run(executor.execute(job, guard))
+
+
+def test_evaluate_batch_missing_sample_id_is_localizable_split_error() -> None:
+    events: list[str] = []
+    client = FakeObjectStoreClient()
+    storage = RecordingStorage(client, events)
+    manifest = asyncio.run(
+        storage.put_manifest(
+            "project-1",
+            "run-1",
+            [{"sampleId": "sample-0", "text": "ok"}, {"text": "bad"}],
+        )
+    )
+    shard = manifest.shards[0]
+    executor = EvaluateBatchExecutor(
+        ConfigRepository({"evaluatorType": "llm"}),
+        storage,
+        {"llm": RecordingAdapter(events)},
+    )
+    job = _job(
+        batch_start=0,
+        batch_end=2,
+        payload={
+            "shardObjectKey": shard.object_key,
+            "shardHash": shard.shard_hash,
+            "shardStart": 0,
+            "shardEnd": 2,
+        },
+    )
+
+    with pytest.raises(BatchSplitExecutionError) as captured:
+        asyncio.run(executor.execute(job, RecordingGuard(events)))
+
+    assert captured.value.error_code == "INVALID_SAMPLE_MAPPING"
 
 
 def test_evaluate_batch_counts_only_succeeded_results_as_completed() -> None:

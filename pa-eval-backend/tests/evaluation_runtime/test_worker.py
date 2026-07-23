@@ -3,8 +3,10 @@ from dataclasses import replace
 from datetime import datetime, timezone
 from typing import Any
 
+import httpx
 import pytest
 
+import app.evaluation_runtime.worker as worker_module
 from app.evaluation_runtime.broker import BrokerMessage
 from app.evaluation_runtime.executors import (
     BatchSplitExecutionError,
@@ -78,6 +80,55 @@ class FakeBroker:
         return 1
 
 
+class RunnerBroker(FakeBroker):
+    def __init__(
+        self,
+        events: list[str],
+        *,
+        stale_pages: list[tuple[str, list[BrokerMessage]]],
+        new_pages: list[list[BrokerMessage]],
+    ) -> None:
+        super().__init__(events)
+        self.stale_pages = list(stale_pages)
+        self.new_pages = list(new_pages)
+        self.claim_cursors: list[str] = []
+        self.read_calls = 0
+
+    async def claim_stale(
+        self,
+        routing_key: str,
+        consumer_name: str,
+        *,
+        min_idle_ms: int,
+        count: int,
+        cursor: str,
+    ) -> tuple[str, list[BrokerMessage]]:
+        self.claim_cursors.append(cursor)
+        return self.stale_pages.pop(0)
+
+    async def read(
+        self,
+        routing_key: str,
+        consumer_name: str,
+        *,
+        count: int,
+        block_ms: int,
+    ) -> list[BrokerMessage]:
+        self.read_calls += 1
+        return self.new_pages.pop(0)
+
+
+class StoppingRunnerBroker(RunnerBroker):
+    def __init__(self, *args: Any, stop_event: asyncio.Event, **kwargs: Any) -> None:
+        super().__init__(*args, **kwargs)
+        self.stop_event = stop_event
+
+    async def read(self, *args: Any, **kwargs: Any) -> list[BrokerMessage]:
+        messages = await super().read(*args, **kwargs)
+        self.stop_event.set()
+        return messages
+
+
 class FakeRepository:
     def __init__(
         self,
@@ -137,6 +188,28 @@ class FakeRepository:
         return replace(self.job, status=JobStatus.DEAD_LETTER, lease_owner=None)
 
 
+class ConcurrentClaimRepository(FakeRepository):
+    def __init__(self, events: list[str]) -> None:
+        super().__init__(events)
+        self._claim_lock = asyncio.Lock()
+        self._both_started = asyncio.Event()
+        self._claim_waiters = 0
+
+    async def claim_job(
+        self, job_id: str, worker_id: str, *, lease_seconds: int
+    ) -> EvaluationJob | None:
+        self.events.append("claim")
+        self._claim_waiters += 1
+        if self._claim_waiters == 2:
+            self._both_started.set()
+        await self._both_started.wait()
+        async with self._claim_lock:
+            if self.state is not JobStatus.ENQUEUED:
+                return None
+            self.state = JobStatus.RUNNING
+            return replace(self.job, lease_owner=worker_id)
+
+
 class FakeExecutors:
     def __init__(self, events: list[str], result: Any) -> None:
         self.events = events
@@ -165,12 +238,14 @@ def _worker(
     repository: FakeRepository,
     broker: FakeBroker,
     executors: FakeExecutors,
+    *,
+    worker_id: str = "worker-1",
 ) -> EvaluationWorker:
     return EvaluationWorker(
         repository=repository,
         broker=broker,
         executors=executors,
-        worker_id="worker-1",
+        worker_id=worker_id,
         lease_seconds=30,
         heartbeat_seconds=10,
     )
@@ -206,6 +281,91 @@ def test_ack_failure_leaves_message_replay_safe_without_second_execution() -> No
     with pytest.raises(OSError, match="redis unavailable"):
         asyncio.run(worker.handle_message(MESSAGE))
     asyncio.run(worker.handle_message(MESSAGE))
+
+    assert executors.calls == 1
+    assert broker.ack_calls == 2
+    assert repository.state is JobStatus.SUCCEEDED
+
+
+def test_runner_pages_stale_cursor_and_acks_terminal_replays_without_model() -> None:
+    events: list[str] = []
+    stale_one = BrokerMessage("old-1", MESSAGE.stream, "shared", "job-1")
+    stale_two = BrokerMessage("old-2", MESSAGE.stream, "shared", "job-1")
+    new_duplicate = BrokerMessage("new-1", MESSAGE.stream, "shared", "job-1")
+    broker = RunnerBroker(
+        events,
+        stale_pages=[("7-0", [stale_one]), ("0-0", [stale_two])],
+        new_pages=[[new_duplicate], []],
+    )
+    repository = FakeRepository(events)
+    repository.state = JobStatus.SUCCEEDED
+    executors = FakeExecutors(events, ExecutionOutcome({}))
+    worker = _worker(repository, broker, executors)
+    runner = worker_module.EvaluationWorkerRunner(
+        worker=worker,
+        broker=broker,
+        routing_key="shared",
+        consumer_name="worker-1",
+        count=10,
+        block_ms=1,
+        stale_idle_ms=60_000,
+    )
+
+    async def scenario() -> tuple[int, int]:
+        return await runner.run_once(), await runner.run_once()
+
+    processed = asyncio.run(scenario())
+
+    assert processed == (2, 1)
+    assert broker.claim_cursors == ["0-0", "7-0"]
+    assert broker.read_calls == 2
+    assert broker.ack_calls == 3
+    assert executors.calls == 0
+
+
+def test_runner_loop_stops_after_signaled_iteration() -> None:
+    async def scenario() -> tuple[int, int]:
+        events: list[str] = []
+        stop_event = asyncio.Event()
+        broker = StoppingRunnerBroker(
+            events,
+            stop_event=stop_event,
+            stale_pages=[("0-0", [])],
+            new_pages=[[BrokerMessage("new-1", MESSAGE.stream, "shared", None)]],
+        )
+        repository = FakeRepository(events)
+        executors = FakeExecutors(events, ExecutionOutcome({}))
+        runner = worker_module.EvaluationWorkerRunner(
+            worker=_worker(repository, broker, executors),
+            broker=broker,
+            routing_key="shared",
+            consumer_name="worker-1",
+            count=10,
+            block_ms=1,
+            stale_idle_ms=60_000,
+        )
+
+        await runner.run(stop_event)
+        return broker.read_calls, broker.ack_calls
+
+    assert asyncio.run(scenario()) == (1, 1)
+
+
+def test_concurrent_workers_claim_once_and_execute_model_once() -> None:
+    events: list[str] = []
+    repository = ConcurrentClaimRepository(events)
+    broker = FakeBroker(events)
+    executors = FakeExecutors(events, ExecutionOutcome({"sampleCount": 4}))
+    first = _worker(repository, broker, executors, worker_id="worker-a")
+    second = _worker(repository, broker, executors, worker_id="worker-b")
+
+    async def scenario() -> None:
+        await asyncio.gather(
+            first.handle_message(MESSAGE),
+            second.handle_message(MESSAGE),
+        )
+
+    asyncio.run(scenario())
 
     assert executors.calls == 1
     assert broker.ack_calls == 2
@@ -278,8 +438,22 @@ def test_single_sample_mapping_error_dead_letters_and_counts_failure() -> None:
     assert events[-1] == "ack"
 
 
-@pytest.mark.parametrize("error", [TimeoutError("secret"), ConnectionError("token")])
-def test_provider_failures_retry_without_split(error: Exception) -> None:
+@pytest.mark.parametrize(
+    ("error", "expected_code"),
+    [
+        (TimeoutError("secret"), "PROVIDER_TIMEOUT"),
+        (ConnectionError("token"), "PROVIDER_UNAVAILABLE"),
+        (
+            httpx.ConnectError("connection contains credential"),
+            "PROVIDER_UNAVAILABLE",
+        ),
+        (httpx.ReadTimeout("timeout contains credential"), "PROVIDER_TIMEOUT"),
+    ],
+)
+def test_provider_failures_retry_without_split(
+    error: Exception,
+    expected_code: str,
+) -> None:
     events: list[str] = []
     repository = FakeRepository(events)
     broker = FakeBroker(events)
@@ -289,6 +463,7 @@ def test_provider_failures_retry_without_split(error: Exception) -> None:
 
     assert repository.completed == []
     assert len(repository.retries) == 1
+    assert repository.retries[0]["error_code"] == expected_code
     assert "secret" not in repository.retries[0]["error_message"]
     assert "token" not in repository.retries[0]["error_message"]
     assert events[-1] == "ack"
@@ -317,7 +492,45 @@ def test_provider_http_failures_retry_without_split(
     )
 
 
-def test_provider_error_code_is_sanitized_before_persistence() -> None:
+@pytest.mark.parametrize(
+    ("status_code", "expected_code"),
+    [
+        (400, "PROVIDER_REQUEST_REJECTED"),
+        (401, "PROVIDER_AUTHENTICATION_FAILED"),
+        (403, "PROVIDER_AUTHENTICATION_FAILED"),
+        (404, "PROVIDER_REQUEST_REJECTED"),
+    ],
+)
+def test_deterministic_provider_http_failures_dead_letter_without_retry(
+    status_code: int,
+    expected_code: str,
+) -> None:
+    events: list[str] = []
+    repository = FakeRepository(events)
+    broker = FakeBroker(events)
+    executors = FakeExecutors(events, ProviderHTTPError(status_code))
+
+    asyncio.run(_worker(repository, broker, executors).handle_message(MESSAGE))
+
+    assert repository.completed == []
+    assert repository.retries == []
+    assert repository.dead_letters[0]["error_code"] == expected_code
+    assert repository.dead_letters[0]["error_message"] == "Evaluation job failed"
+
+
+def test_unclassified_execution_error_dead_letters_instead_of_retry() -> None:
+    events: list[str] = []
+    repository = FakeRepository(events)
+    broker = FakeBroker(events)
+    executors = FakeExecutors(events, ValueError("programming error with token"))
+
+    asyncio.run(_worker(repository, broker, executors).handle_message(MESSAGE))
+
+    assert repository.retries == []
+    assert repository.dead_letters[0]["error_code"] == "NON_RETRYABLE_EXECUTION"
+
+
+def test_unclassified_provider_error_code_is_sanitized_before_persistence() -> None:
     events: list[str] = []
     repository = FakeRepository(events)
     broker = FakeBroker(events)
@@ -325,8 +538,9 @@ def test_provider_error_code_is_sanitized_before_persistence() -> None:
 
     asyncio.run(_worker(repository, broker, executors).handle_message(MESSAGE))
 
-    assert repository.retries[0]["error_code"] == "PROVIDER_UNAVAILABLE"
-    assert "secret" not in repository.retries[0]["error_message"]
+    assert repository.retries == []
+    assert repository.dead_letters[0]["error_code"] == "NON_RETRYABLE_EXECUTION"
+    assert "secret" not in repository.dead_letters[0]["error_message"]
 
 
 def test_non_retryable_config_error_dead_letters_without_split() -> None:
@@ -344,6 +558,27 @@ def test_non_retryable_config_error_dead_letters_without_split() -> None:
     assert repository.retries == []
     assert repository.dead_letters[0]["error_code"] == "INVALID_CONFIG"
     assert repository.dead_letters[0]["error_message"] == "Evaluation job failed"
+
+
+@pytest.mark.parametrize(
+    "error_code",
+    ["EVALUATOR_CONTRACT_ERROR", "INVALID_SHARD_DESCRIPTOR", "INVALID_BATCH_RANGE"],
+)
+def test_global_execution_errors_never_create_split_tree(error_code: str) -> None:
+    events: list[str] = []
+    repository = FakeRepository(events)
+    broker = FakeBroker(events)
+    executors = FakeExecutors(
+        events,
+        NonRetryableExecutionError("global secret", error_code=error_code),
+    )
+
+    asyncio.run(_worker(repository, broker, executors).handle_message(MESSAGE))
+
+    assert repository.completed == []
+    assert repository.retries == []
+    assert len(repository.dead_letters) == 1
+    assert repository.dead_letters[0]["error_code"] == error_code
 
 
 @pytest.mark.parametrize(
@@ -401,7 +636,7 @@ def test_heartbeat_false_marks_lease_lost_and_context_cleans_task() -> None:
 
 def test_two_consecutive_heartbeat_network_errors_lose_lease_but_one_recovers() -> None:
     async def scenario() -> None:
-        failing = HeartbeatRepository([OSError("one"), OSError("two")])
+        failing = HeartbeatRepository([ConnectionError("one"), ConnectionError("two")])
         async with HeartbeatGuard(
             failing, "job-1", "worker-1", 0.001, lease_seconds=1
         ) as guard:
@@ -409,12 +644,35 @@ def test_two_consecutive_heartbeat_network_errors_lose_lease_but_one_recovers() 
             with pytest.raises(LeaseLostError):
                 await guard.checkpoint()
 
-        recovering = HeartbeatRepository([OSError("one"), True, True])
+        recovering = HeartbeatRepository([ConnectionError("one"), True, True])
         async with HeartbeatGuard(
             recovering, "job-2", "worker-1", 0.001, lease_seconds=1
         ) as guard:
             await asyncio.sleep(0.006)
             await guard.checkpoint()
+
+    asyncio.run(scenario())
+
+
+def test_heartbeat_unexpected_error_propagates_instead_of_becoming_lease_loss() -> (
+    None
+):
+    repository = HeartbeatRepository([ValueError("heartbeat programming error")])
+
+    async def scenario() -> None:
+        checkpoint_returned = False
+        with pytest.raises(ValueError, match="heartbeat programming error"):
+            async with HeartbeatGuard(
+                repository,
+                "job-1",
+                "worker-1",
+                0.001,
+                lease_seconds=1,
+            ) as guard:
+                await asyncio.sleep(0.005)
+                await guard.checkpoint()
+                checkpoint_returned = True
+        assert checkpoint_returned is False
 
     asyncio.run(scenario())
 

@@ -76,3 +76,40 @@
 - `pa-eval-backend/tests/evaluation_runtime/test_repository.py`
 - `pa-eval-backend/tests/evaluation_runtime/test_worker.py`
 - `.superpowers/sdd/task-5-runtime-report.md`
+
+## 独立审查修复追加（2026-07-23）
+
+### 修复内容
+
+1. 新增 `EvaluationWorkerRunner`：
+   - `run_once()` 使用 `asyncio.gather()` 同时读取 Redis Stream 新消息和 `XAUTOCLAIM` PEL 消息。
+   - 保存并推进 XAUTOCLAIM cursor，支持跨迭代分页和回到 `0-0`。
+   - `run(stop_event)` 提供可停止的生产消费循环，测试可只执行单次迭代。
+   - PEL 中已终态 Job 直接 ACK，不重复执行模型。
+2. 收紧二分拆批边界：
+   - 仅缺少稳定 `sampleId` 等明确、可定位的样本映射错误产生 `BatchSplitExecutionError`。
+   - 适配器结果数量/字段/样本对齐错误统一为 `EVALUATOR_CONTRACT_ERROR`。
+   - 无效 shard descriptor、越界 batch range、对象元数据完整性错误均作为全局非重试错误，不创建拆分树。
+3. 精确区分 Provider 错误：
+   - built-in/httpx timeout、connection、HTTP 429、HTTP 5xx 才进入退避重试。
+   - HTTP 400/404 为 `PROVIDER_REQUEST_REJECTED`，401/403 为 `PROVIDER_AUTHENTICATION_FAILED`，未知异常为 `NON_RETRYABLE_EXECUTION`，均进入死信且不重试。
+4. Heartbeat 仅吞并明确瞬时连接异常：built-in connection/timeout 与 psycopg `OperationalError`；其他异常通过 checkpoint 立即传播。
+5. 新增受控并发领取测试：两个 Worker 同时到达 claim 屏障后竞争原子状态，仅一个获得 Job 并调用模型，两个消息最终各自 ACK。
+
+### 审查修复 TDD 证据
+
+- Runner 缺失 RED：`AttributeError: EvaluationWorkerRunner`；补 runner 后 cursor/终态重投与并发测试 `2 passed`。
+- 全局错误边界 RED：`5 failed, 6 passed`，证明契约、范围、descriptor 被错误包装为 split；修复后 EvaluateBatch `11 passed`。
+- Provider 确定性错误 RED：400/401/403/404 和未知异常共 `5 failed`，均被错误 retry；修复后 Worker 分类全绿。
+- httpx 临时错误 RED：`2 failed, 2 passed`，ConnectError/ReadTimeout 未进入 retry；补明确类型后 `4 passed`。
+- Heartbeat 捕获面 RED：未知 `ValueError` 未传播；收紧捕获类型并让 checkpoint 检查后台任务异常后通过。
+- 生产循环 RED：缺少 `run(stop_event)`；实现后单迭代停止测试通过。
+
+### 完整验证结果
+
+- 聚焦测试：`104 passed, 2 skipped in 0.19s`
+- `tests/evaluation_runtime` 全组：`151 passed, 3 skipped in 0.29s`
+- Ruff：`All checks passed!`
+- `git diff --check`：通过
+- runtime 核心禁导入 `auto_evaluations`：通过
+- 真实 Redis、PostgreSQL、对象存储仍未配置，相关测试按既有条件 skip，未连接业务设施。

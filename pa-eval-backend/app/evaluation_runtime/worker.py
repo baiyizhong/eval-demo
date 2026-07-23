@@ -3,6 +3,9 @@ from contextlib import suppress
 import re
 from typing import Any, Protocol
 
+from httpx import ConnectError, TimeoutException
+from psycopg import OperationalError
+
 from app.evaluation_runtime.broker import BrokerMessage
 from app.evaluation_runtime.executors import (
     BatchSplitExecutionError,
@@ -66,6 +69,10 @@ class HeartbeatGuard:
         return None
 
     async def checkpoint(self) -> None:
+        if self._task is not None and self._task.done() and not self._task.cancelled():
+            error = self._task.exception()
+            if error is not None:
+                raise error
         if self._lost:
             raise LeaseLostError("evaluation job lease was lost")
 
@@ -81,7 +88,7 @@ class HeartbeatGuard:
                 )
             except asyncio.CancelledError:
                 raise
-            except Exception:
+            except (ConnectionError, TimeoutError, OperationalError):
                 consecutive_errors += 1
                 if consecutive_errors >= 2:
                     self._lost = True
@@ -120,12 +127,91 @@ class WorkerBroker(Protocol):
     async def ack(self, routing_key: str, message_id: str) -> int: ...
 
 
+class WorkerRunnerBroker(Protocol):
+    async def read(
+        self,
+        routing_key: str,
+        consumer_name: str,
+        *,
+        count: int,
+        block_ms: int,
+    ) -> list[BrokerMessage]: ...
+
+    async def claim_stale(
+        self,
+        routing_key: str,
+        consumer_name: str,
+        *,
+        min_idle_ms: int,
+        count: int,
+        cursor: str,
+    ) -> tuple[str, list[BrokerMessage]]: ...
+
+
+class MessageHandler(Protocol):
+    async def handle_message(self, message: BrokerMessage) -> None: ...
+
+
 class JobExecutors(Protocol):
     async def execute(
         self,
         job: EvaluationJob,
         guard: HeartbeatGuard,
     ) -> ExecutionOutcome: ...
+
+
+class EvaluationWorkerRunner:
+    def __init__(
+        self,
+        *,
+        worker: MessageHandler,
+        broker: WorkerRunnerBroker,
+        routing_key: str,
+        consumer_name: str,
+        count: int,
+        block_ms: int,
+        stale_idle_ms: int,
+    ) -> None:
+        if count <= 0:
+            raise ValueError("count must be positive")
+        if block_ms < 0:
+            raise ValueError("block_ms must be non-negative")
+        if stale_idle_ms < 0:
+            raise ValueError("stale_idle_ms must be non-negative")
+        self._worker = worker
+        self._broker = broker
+        self._routing_key = routing_key
+        self._consumer_name = consumer_name
+        self._count = count
+        self._block_ms = block_ms
+        self._stale_idle_ms = stale_idle_ms
+        self._stale_cursor = "0-0"
+
+    async def run_once(self) -> int:
+        stale_page, new_messages = await asyncio.gather(
+            self._broker.claim_stale(
+                self._routing_key,
+                self._consumer_name,
+                min_idle_ms=self._stale_idle_ms,
+                count=self._count,
+                cursor=self._stale_cursor,
+            ),
+            self._broker.read(
+                self._routing_key,
+                self._consumer_name,
+                count=self._count,
+                block_ms=self._block_ms,
+            ),
+        )
+        self._stale_cursor, stale_messages = stale_page
+        messages = [*stale_messages, *new_messages]
+        for message in messages:
+            await self._worker.handle_message(message)
+        return len(messages)
+
+    async def run(self, stop_event: asyncio.Event) -> None:
+        while not stop_event.is_set():
+            await self.run_once()
 
 
 class EvaluationWorker:
@@ -192,8 +278,14 @@ class EvaluationWorker:
                         _error_code(error, default="NON_RETRYABLE_EXECUTION"),
                         guard,
                     )
-                else:
+                elif _is_transient_provider_error(error):
                     await self._retry(job, error, guard)
+                else:
+                    await self._dead_letter(
+                        job,
+                        _permanent_error_code(error),
+                        guard,
+                    )
             else:
                 await guard.checkpoint()
                 completed = await self._repository.complete_with_followups(
@@ -308,14 +400,39 @@ def _error_code(error: Exception, *, default: str) -> str:
     explicit = getattr(error, "error_code", None)
     if isinstance(explicit, str):
         return _safe_error_code(explicit, default=default)
-    status_code = getattr(getattr(error, "response", None), "status_code", None)
+    status_code = _http_status(error)
     if status_code == 429:
         return "PROVIDER_RATE_LIMIT"
-    if isinstance(status_code, int) and status_code >= 500:
+    if isinstance(status_code, int) and 500 <= status_code < 600:
         return "PROVIDER_UNAVAILABLE"
-    if isinstance(error, TimeoutError):
+    if isinstance(error, (TimeoutError, TimeoutException)):
         return "PROVIDER_TIMEOUT"
     return default
+
+
+def _is_transient_provider_error(error: Exception) -> bool:
+    if isinstance(
+        error,
+        (TimeoutError, ConnectionError, ConnectError, TimeoutException),
+    ):
+        return True
+    status_code = _http_status(error)
+    return status_code == 429 or (
+        isinstance(status_code, int) and 500 <= status_code < 600
+    )
+
+
+def _permanent_error_code(error: Exception) -> str:
+    status_code = _http_status(error)
+    if status_code in {401, 403}:
+        return "PROVIDER_AUTHENTICATION_FAILED"
+    if isinstance(status_code, int) and 400 <= status_code < 500:
+        return "PROVIDER_REQUEST_REJECTED"
+    return _error_code(error, default="NON_RETRYABLE_EXECUTION")
+
+
+def _http_status(error: Exception) -> Any:
+    return getattr(getattr(error, "response", None), "status_code", None)
 
 
 def _safe_error_code(value: str, *, default: str) -> str:

@@ -105,9 +105,9 @@ class EvaluateBatchExecutor:
         try:
             shard_samples = await self._storage.read_shard(shard)
         except ValueError as error:
-            raise BatchSplitExecutionError(
-                "evaluation shard mapping is invalid",
-                error_code="INVALID_BATCH_MAPPING",
+            raise NonRetryableExecutionError(
+                "evaluation shard descriptor is invalid",
+                error_code="INVALID_SHARD_DESCRIPTOR",
             ) from error
         batch_start, batch_end = _job_batch_range(job, shard)
         relative_start = batch_start - shard.start
@@ -163,10 +163,10 @@ class EvaluateBatchExecutor:
         )
 
 
-def _mapping_error() -> BatchSplitExecutionError:
+def _sample_mapping_error() -> BatchSplitExecutionError:
     return BatchSplitExecutionError(
-        "evaluation batch mapping is invalid",
-        error_code="INVALID_BATCH_MAPPING",
+        "evaluation sample mapping is invalid",
+        error_code="INVALID_SAMPLE_MAPPING",
     )
 
 
@@ -184,7 +184,10 @@ def _job_shard(job: EvaluationJob) -> ShardDescriptor:
         or not isinstance(object_key, str)
         or not isinstance(shard_hash, str)
     ):
-        raise _mapping_error()
+        raise NonRetryableExecutionError(
+            "evaluation shard descriptor is invalid",
+            error_code="INVALID_SHARD_DESCRIPTOR",
+        )
     return ShardDescriptor(
         start=shard_start,
         end=shard_end,
@@ -208,7 +211,10 @@ def _job_batch_range(
         or end > shard.end
         or end <= start
     ):
-        raise _mapping_error()
+        raise NonRetryableExecutionError(
+            "evaluation batch range is invalid",
+            error_code="INVALID_BATCH_RANGE",
+        )
     return start, end
 
 
@@ -220,10 +226,10 @@ def _adapter_samples(
     samples: list[Mapping[str, Any]] = []
     for offset, raw_sample in enumerate(shard_samples):
         if not isinstance(raw_sample, Mapping):
-            raise _mapping_error()
+            raise _sample_mapping_error()
         sample_id = raw_sample.get("sampleId")
         if not isinstance(sample_id, str) or not sample_id.strip():
-            raise _mapping_error()
+            raise _sample_mapping_error()
         samples.append({**raw_sample, "globalIndex": batch_start + offset})
     return samples
 
@@ -235,9 +241,9 @@ def _standard_results(
     if not isinstance(raw_results, (list, tuple)) or len(raw_results) != len(
         samples
     ):
-        raise BatchSplitExecutionError(
+        raise NonRetryableExecutionError(
             "evaluator result shape is invalid",
-            error_code="INVALID_EVALUATION_RESULT",
+            error_code="EVALUATOR_CONTRACT_ERROR",
         )
     required = {"sampleId", "status", "outputs", "scores", "error"}
     results: list[Mapping[str, Any]] = []
@@ -248,9 +254,9 @@ def _standard_results(
             or result.get("sampleId") != sample["sampleId"]
             or not isinstance(result.get("status"), str)
         ):
-            raise BatchSplitExecutionError(
+            raise NonRetryableExecutionError(
                 "evaluator result shape is invalid",
-                error_code="INVALID_EVALUATION_RESULT",
+                error_code="EVALUATOR_CONTRACT_ERROR",
             )
         results.append({key: result[key] for key in required})
     return results
