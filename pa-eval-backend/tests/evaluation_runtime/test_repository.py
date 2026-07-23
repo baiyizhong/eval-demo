@@ -122,6 +122,7 @@ def test_create_job_uses_idempotent_insert_without_overwriting_existing_row() ->
 
     created = asyncio.run(repository.create_job(_job()))
 
+    assert created is not None
     assert created.id == "job-1"
     sql, params = cursor.executions[0]
     conflict_clause = sql.split("ON CONFLICT", maxsplit=1)[1]
@@ -130,8 +131,23 @@ def test_create_job_uses_idempotent_insert_without_overwriting_existing_row() ->
     assert "payload =" not in conflict_clause
     assert "status =" not in conflict_clause
     assert "idem-secret-value" not in sql
+    assert "FROM pa_auto_evaluation_runs" in sql
+    assert "status IN ('QUEUED', 'RUNNING')" in sql
+    assert "FOR UPDATE" in sql
     assert params["idempotency_key"] == "idem-secret-value"
     assert _jsonb_value(params["payload"]) == {"sample_ids": ["sample-1"]}
+
+
+def test_create_job_returns_none_when_run_is_cancelling() -> None:
+    repository, _, cursor = _repository([None])
+
+    created = asyncio.run(repository.create_job(_job()))
+
+    assert created is None
+    sql, params = cursor.executions[0]
+    assert "status IN ('QUEUED', 'RUNNING')" in sql
+    assert "CANCELLING" not in sql
+    assert params["run_id"] == "run-1"
 
 
 def test_claim_job_is_one_conditional_update_and_increments_attempt_only_on_claim() -> (
@@ -322,13 +338,47 @@ def test_request_run_cancel_updates_run_and_cancellable_jobs_in_one_transaction(
     run_sql, run_params = cursor.executions[0]
     jobs_sql, jobs_params = cursor.executions[1]
     assert "UPDATE pa_auto_evaluation_runs" in run_sql
-    assert "cancel_requested_at = NOW()" in run_sql
-    assert "status IN ('PENDING', 'RUNNING')" in run_sql
+    assert "SET status = 'CANCELLING'" in run_sql
+    assert "cancel_requested_at = COALESCE(cancel_requested_at, NOW())" in run_sql
+    assert "status IN ('QUEUED', 'RUNNING', 'CANCELLING')" in run_sql
     assert "UPDATE pa_evaluation_jobs" in jobs_sql
     assert "WHEN status = 'RUNNING' THEN 'CANCELLING'" in jobs_sql
     assert "ELSE 'CANCELLED'" in jobs_sql
     assert "SUCCEEDED" not in jobs_sql
     assert run_params == jobs_params == {"run_id": "run-1", "actor": "user-9"}
+
+
+def test_request_run_cancel_is_idempotent_while_run_is_cancelling() -> None:
+    repository, _, cursor = _repository([{"id": "run-1"}, {"id": "run-1"}])
+
+    first = asyncio.run(repository.request_run_cancel("run-1", "user-9"))
+    second = asyncio.run(repository.request_run_cancel("run-1", "user-9"))
+
+    assert first is True
+    assert second is True
+    assert len(cursor.executions) == 4
+    assert all(
+        "status IN ('QUEUED', 'RUNNING', 'CANCELLING')" in sql
+        for sql, _ in cursor.executions[::2]
+    )
+
+
+def test_mark_cancelled_requires_cancelling_owner_and_clears_lease() -> None:
+    repository, _, cursor = _repository([{"id": "job-1"}, None])
+
+    cancelled = asyncio.run(repository.mark_cancelled("job-1", "worker-a"))
+    rejected = asyncio.run(repository.mark_cancelled("job-1", "worker-b"))
+
+    assert cancelled is True
+    assert rejected is False
+    sql, params = cursor.executions[0]
+    assert "status = 'CANCELLED'" in sql
+    assert "status = 'CANCELLING'" in sql
+    assert "lease_owner = %(worker_id)s" in sql
+    assert "lease_owner = NULL" in sql
+    assert "lease_expires_at = NULL" in sql
+    assert "heartbeat_at = NULL" in sql
+    assert params == {"job_id": "job-1", "worker_id": "worker-a"}
 
 
 def test_request_run_cancel_does_not_touch_jobs_for_terminal_run() -> None:
@@ -352,6 +402,7 @@ def test_repository_uses_connection_returned_by_pool_wrapper() -> None:
 
     created = asyncio.run(repository.create_job(_job()))
 
+    assert created is not None
     assert created.id == "job-1"
 
 
@@ -370,7 +421,19 @@ def test_requeue_dead_letter_resets_attempts_and_clears_error_and_lease() -> Non
     assert "heartbeat_at = NULL" in sql
     assert "error_code = NULL" in sql
     assert "error_message = NULL" in sql
+    assert "pa_auto_evaluation_runs" in sql
+    assert "status IN ('QUEUED', 'RUNNING')" in sql
     assert params == {"job_id": "job-1", "actor": "operator-1"}
+
+
+def test_requeue_dead_letter_returns_none_when_run_is_cancelling() -> None:
+    repository, _, cursor = _repository([None])
+
+    result = asyncio.run(repository.requeue_dead_letter("job-1", "operator-1"))
+
+    assert result is None
+    sql, _ = cursor.executions[0]
+    assert "status IN ('QUEUED', 'RUNNING')" in sql
 
 
 @pytest.mark.skipif(

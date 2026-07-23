@@ -31,7 +31,7 @@ class JobRepository:
     def __init__(self, connection_factory: ConnectionFactory) -> None:
         self._connection_factory = connection_factory
 
-    async def create_job(self, job: EvaluationJob) -> EvaluationJob:
+    async def create_job(self, job: EvaluationJob) -> EvaluationJob | None:
         sql = """
             INSERT INTO pa_evaluation_jobs (
                 create_by, update_by, create_date, update_date,
@@ -41,7 +41,7 @@ class JobRepository:
                 lease_owner, lease_expires_at, heartbeat_at, payload,
                 result_summary, raw_result_object_key, error_code, error_message
             )
-            VALUES (
+            SELECT
                 %(create_by)s, %(update_by)s, %(create_date)s, %(update_date)s,
                 %(id)s, %(project_id)s, %(task_id)s, %(run_id)s,
                 %(parent_job_id)s, %(job_type)s, %(routing_key)s,
@@ -50,7 +50,10 @@ class JobRepository:
                 %(next_attempt_at)s, %(lease_owner)s, %(lease_expires_at)s,
                 %(heartbeat_at)s, %(payload)s, %(result_summary)s,
                 %(raw_result_object_key)s, %(error_code)s, %(error_message)s
-            )
+            FROM pa_auto_evaluation_runs AS active_run
+            WHERE active_run.id = %(run_id)s
+              AND active_run.status IN ('QUEUED', 'RUNNING')
+            FOR UPDATE OF active_run
             ON CONFLICT (idempotency_key) DO UPDATE
             SET idempotency_key = pa_evaluation_jobs.idempotency_key
             RETURNING *
@@ -85,9 +88,7 @@ class JobRepository:
             "error_message": job.error_message,
         }
         row = await self._fetchone(sql, params)
-        if row is None:
-            raise RuntimeError("create_job did not return a row")
-        return _evaluation_job(row)
+        return _evaluation_job(row) if row is not None else None
 
     async def claim_job(
         self,
@@ -268,6 +269,25 @@ class JobRepository:
         )
         return _evaluation_job(row) if row is not None else None
 
+    async def mark_cancelled(self, job_id: str, worker_id: str) -> bool:
+        row = await self._fetchone(
+            """
+            UPDATE pa_evaluation_jobs
+            SET status = 'CANCELLED',
+                lease_owner = NULL,
+                lease_expires_at = NULL,
+                heartbeat_at = NULL,
+                update_by = %(worker_id)s,
+                update_date = NOW()
+            WHERE id = %(job_id)s
+              AND status = 'CANCELLING'
+              AND lease_owner = %(worker_id)s
+            RETURNING id
+            """,
+            {"job_id": job_id, "worker_id": worker_id},
+        )
+        return row is not None
+
     async def request_run_cancel(self, run_id: str, actor: str) -> bool:
         connection = await self._connection_factory()
         async with connection as active_connection:
@@ -276,14 +296,12 @@ class JobRepository:
                 await cursor.execute(
                     """
                     UPDATE pa_auto_evaluation_runs
-                    SET status = 'CANCELLED',
-                        cancel_requested_at = NOW(),
-                        ended_at = COALESCE(ended_at, NOW()),
-                        duration_text = '已取消',
+                    SET status = 'CANCELLING',
+                        cancel_requested_at = COALESCE(cancel_requested_at, NOW()),
                         update_by = %(actor)s,
                         update_date = NOW()
                     WHERE id = %(run_id)s
-                      AND status IN ('PENDING', 'RUNNING')
+                      AND status IN ('QUEUED', 'RUNNING', 'CANCELLING')
                     RETURNING id
                     """,
                     params,
@@ -329,7 +347,16 @@ class JobRepository:
     ) -> EvaluationJob | None:
         row = await self._fetchone(
             """
-            UPDATE pa_evaluation_jobs
+            WITH active_run AS MATERIALIZED (
+                SELECT run.id
+                FROM pa_auto_evaluation_runs AS run
+                JOIN pa_evaluation_jobs AS candidate_job
+                  ON candidate_job.run_id = run.id
+                WHERE candidate_job.id = %(job_id)s
+                  AND run.status IN ('QUEUED', 'RUNNING')
+                FOR UPDATE OF run
+            )
+            UPDATE pa_evaluation_jobs AS job
             SET status = 'PENDING',
                 attempt_count = 0,
                 next_attempt_at = NOW(),
@@ -340,9 +367,11 @@ class JobRepository:
                 error_message = NULL,
                 update_by = %(actor)s,
                 update_date = NOW()
-            WHERE id = %(job_id)s
-              AND status = 'DEAD_LETTER'
-            RETURNING *
+            FROM active_run
+            WHERE job.id = %(job_id)s
+              AND job.status = 'DEAD_LETTER'
+              AND job.run_id = active_run.id
+            RETURNING job.*
             """,
             {"job_id": job_id, "actor": actor},
         )
