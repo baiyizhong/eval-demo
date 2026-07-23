@@ -10,7 +10,9 @@ from app.config import Settings, get_settings
 from app.errors import (
     BusinessError,
     LangfuseConfigError,
+    LangfuseProjectAuthenticationError,
     LangfuseProjectCredentialsError,
+    LangfuseTransientUpstreamError,
     LangfuseUpstreamError,
 )
 
@@ -20,7 +22,11 @@ class LangfuseRateLimitError(LangfuseUpstreamError):
     error_code = "PROVIDER_RATE_LIMIT"
 
     def __init__(self, *, retry_after_seconds: float) -> None:
-        super().__init__(message="Langfuse 服务请求过于频繁", status_code=429)
+        super().__init__(
+            message="Langfuse 服务请求过于频繁",
+            status_code=429,
+            upstream_status_code=429,
+        )
         self.retry_after_seconds = _safe_retry_after_seconds(retry_after_seconds)
         self.response = httpx.Response(429)
 
@@ -181,6 +187,12 @@ class LangfuseProjectApiClient:
                     public_key=public_key,
                     secret_key=secret_key,
                 )
+            except (
+                LangfuseRateLimitError,
+                LangfuseTransientUpstreamError,
+                LangfuseProjectAuthenticationError,
+            ):
+                raise
             except (LangfuseUpstreamError, _LangfuseConflictError) as error:
                 raise LangfuseUpstreamError(
                     message="Langfuse Score 冲突无法确认",
@@ -256,16 +268,38 @@ class LangfuseProjectApiClient:
                     return response.json()
                 return {}
         except httpx.HTTPStatusError as exc:
-            if exc.response.status_code == 409:
+            upstream_status = exc.response.status_code
+            if upstream_status == 409:
                 raise _LangfuseConflictError("Langfuse Score conflict") from exc
-            if exc.response.status_code == 429:
+            if upstream_status == 429:
                 raise LangfuseRateLimitError(
                     retry_after_seconds=_retry_after_seconds(exc.response)
                 ) from exc
-            message = LangfuseAdminClient._extract_error_message(exc.response)
-            raise LangfuseUpstreamError(message=message, status_code=502) from exc
+            if upstream_status in {401, 403}:
+                raise LangfuseProjectAuthenticationError(
+                    upstream_status_code=upstream_status
+                ) from exc
+            if 500 <= upstream_status < 600:
+                raise LangfuseTransientUpstreamError(
+                    error_code="PROVIDER_UNAVAILABLE",
+                    upstream_status_code=upstream_status,
+                ) from exc
+            raise LangfuseUpstreamError(
+                message="Langfuse Score 请求被拒绝",
+                upstream_status_code=upstream_status,
+            ) from exc
+        except httpx.TimeoutException as exc:
+            raise LangfuseTransientUpstreamError(
+                error_code="PROVIDER_TIMEOUT"
+            ) from exc
+        except httpx.ConnectError as exc:
+            raise LangfuseTransientUpstreamError(
+                error_code="PROVIDER_UNAVAILABLE"
+            ) from exc
         except httpx.HTTPError as exc:
-            raise LangfuseUpstreamError(message="Langfuse 服务暂不可用") from exc
+            raise LangfuseUpstreamError(
+                message="Langfuse Score 请求失败"
+            ) from exc
 
     @staticmethod
     def _to_llm_connection_payload(row: dict[str, Any]) -> dict[str, Any]:

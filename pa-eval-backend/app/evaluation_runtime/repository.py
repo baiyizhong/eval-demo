@@ -955,7 +955,11 @@ class JobRepository:
             },
         )
 
-    async def mark_cancelled(self, job_id: str, worker_id: str) -> bool:
+    async def mark_cancelled(
+        self,
+        job_id: str,
+        worker_id: str,
+    ) -> EvaluationJob | None:
         connection = await self._connection_factory()
         async with connection as active_connection:
             async with active_connection.cursor() as cursor:
@@ -992,7 +996,7 @@ class JobRepository:
                         job=row,
                         worker_id=worker_id,
                     )
-        return row is not None
+        return _evaluation_job(row) if row is not None else None
 
     async def request_run_cancel(self, run_id: str, actor: str) -> bool:
         connection = await self._connection_factory()

@@ -18,12 +18,47 @@ class LangfuseConfigError(BusinessError):
 
 
 class LangfuseUpstreamError(BusinessError):
-    def __init__(self, message: str, status_code: int = 502) -> None:
+    def __init__(
+        self,
+        message: str,
+        status_code: int = 502,
+        *,
+        upstream_status_code: int | None = None,
+    ) -> None:
         super().__init__(code=2002, message=message, status_code=status_code)
+        self.upstream_status_code = upstream_status_code
+
+
+class LangfuseTransientUpstreamError(LangfuseUpstreamError):
+    retryable = True
+
+    def __init__(
+        self,
+        *,
+        error_code: str,
+        upstream_status_code: int | None = None,
+    ) -> None:
+        super().__init__(
+            message="Langfuse 服务暂不可用",
+            upstream_status_code=upstream_status_code,
+        )
+        self.error_code = error_code
+
+
+class LangfuseProjectAuthenticationError(LangfuseUpstreamError):
+    retryable = False
+    error_code = "PROVIDER_AUTHENTICATION_FAILED"
+
+    def __init__(self, *, upstream_status_code: int) -> None:
+        super().__init__(
+            message="Langfuse 项目 API 凭据认证失败",
+            upstream_status_code=upstream_status_code,
+        )
 
 
 class LangfuseProjectCredentialsError(BusinessError):
     retryable = False
+    error_code = "PROVIDER_AUTHENTICATION_FAILED"
 
     def __init__(self) -> None:
         super().__init__(

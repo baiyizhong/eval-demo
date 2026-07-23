@@ -8,11 +8,14 @@ import httpx
 import pytest
 
 import app.evaluation_runtime.worker as worker_module
+from app.config import Settings
 from app.evaluation_runtime.broker import BrokerMessage
 from app.evaluation_runtime.executors import (
     BatchSplitExecutionError,
     ExecutionOutcome,
     NonRetryableExecutionError,
+    ProjectApiCredentials,
+    SyncScoreBatchExecutor,
 )
 from app.evaluation_runtime.models import EvaluationJob, JobStatus, JobType
 from app.evaluation_runtime.worker import (
@@ -20,6 +23,7 @@ from app.evaluation_runtime.worker import (
     HeartbeatGuard,
     LeaseLostError,
 )
+from app.langfuse_client import LangfuseProjectApiClient
 
 
 def _job(**overrides: Any) -> EvaluationJob:
@@ -174,6 +178,10 @@ class FakeRepository:
         self.completed: list[ExecutionOutcome] = []
         self.retries: list[dict[str, Any]] = []
         self.dead_letters: list[dict[str, Any]] = []
+        self.cancel_attempts = 0
+        self.report_count = 0
+        self.lease_owner: str | None = None
+        self.heartbeat_rejected = asyncio.Event()
 
     async def claim_job(
         self, job_id: str, worker_id: str, *, lease_seconds: int
@@ -182,12 +190,41 @@ class FakeRepository:
         if self.state is not JobStatus.ENQUEUED:
             return None
         self.state = JobStatus.RUNNING
+        self.lease_owner = worker_id
         return self.job
 
     async def heartbeat(
         self, job_id: str, worker_id: str, *, lease_seconds: int
     ) -> bool:
-        return self.state is JobStatus.RUNNING
+        renewed = (
+            self.state is JobStatus.RUNNING and self.lease_owner == worker_id
+        )
+        if not renewed:
+            self.heartbeat_rejected.set()
+        return renewed
+
+    async def request_run_cancel(self) -> None:
+        self.events.append("request-cancel")
+        if self.state is JobStatus.RUNNING:
+            self.state = JobStatus.CANCELLING
+
+    async def mark_cancelled(
+        self,
+        job_id: str,
+        worker_id: str,
+    ) -> EvaluationJob | None:
+        self.events.append("mark-cancelled")
+        self.cancel_attempts += 1
+        if (
+            self.state is not JobStatus.CANCELLING
+            or self.lease_owner != worker_id
+            or self.reject_transition
+        ):
+            return None
+        self.state = JobStatus.CANCELLED
+        self.lease_owner = None
+        self.report_count += 1
+        return replace(self.job, status=JobStatus.CANCELLED, lease_owner=None)
 
     async def complete_with_followups(
         self, job: EvaluationJob, outcome: ExecutionOutcome, worker_id: str
@@ -270,6 +307,7 @@ def _worker(
     executors: FakeExecutors,
     *,
     worker_id: str = "worker-1",
+    heartbeat_seconds: float = 10,
 ) -> EvaluationWorker:
     return EvaluationWorker(
         repository=repository,
@@ -277,7 +315,7 @@ def _worker(
         executors=executors,
         worker_id=worker_id,
         lease_seconds=30,
-        heartbeat_seconds=10,
+        heartbeat_seconds=heartbeat_seconds,
     )
 
 
@@ -693,6 +731,173 @@ def test_provider_http_failures_retry_without_split(
     )
 
 
+class ScoreResultStorage:
+    async def read_result(
+        self,
+        key: str,
+        *,
+        project_id: str,
+        run_id: str,
+        producer_job_id: str,
+    ) -> dict[str, Any]:
+        return {
+            "results": [
+                {
+                    "sampleId": "sample-1",
+                    "status": "SUCCEEDED",
+                    "scores": [{"name": "quality", "value": 1}],
+                }
+            ]
+        }
+
+
+class ScoreCredentialProvider:
+    async def get_project_credentials(
+        self,
+        project_id: str,
+    ) -> ProjectApiCredentials:
+        return ProjectApiCredentials("pk-project-1", "sk-project-1")
+
+
+def _sync_score_job() -> EvaluationJob:
+    return _job(
+        job_type=JobType.SYNC_SCORE_BATCH,
+        batch_end=1,
+        parent_job_id="evaluate-job-1",
+        payload={
+            "rawResultObjectKey": "results/key.json.gz",
+            "resultProducerJobId": "evaluate-job-1",
+        },
+    )
+
+
+@pytest.mark.parametrize(
+    ("failure", "expected_code"),
+    [
+        ("timeout", "PROVIDER_TIMEOUT"),
+        ("connect", "PROVIDER_UNAVAILABLE"),
+        ("server", "PROVIDER_UNAVAILABLE"),
+        ("confirm_rate_limit", "PROVIDER_RATE_LIMIT"),
+    ],
+)
+def test_real_score_client_transient_failures_flow_through_executor_to_worker_retry(
+    monkeypatch: pytest.MonkeyPatch,
+    failure: str,
+    expected_code: str,
+) -> None:
+    request_count = 0
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        nonlocal request_count
+        request_count += 1
+        if failure == "timeout":
+            raise httpx.ReadTimeout(
+                "timeout contains credential",
+                request=request,
+            )
+        if failure == "connect":
+            raise httpx.ConnectError(
+                "connect contains credential",
+                request=request,
+            )
+        if failure == "server":
+            return httpx.Response(
+                503,
+                json={"message": "response contains credential"},
+            )
+        if request_count == 1:
+            return httpx.Response(409, json={"message": "conflict"})
+        return httpx.Response(
+            429,
+            headers={"Retry-After": "0"},
+            json={"message": "response contains credential"},
+        )
+
+    real_async_client = httpx.AsyncClient
+
+    def client_factory(**kwargs: Any) -> httpx.AsyncClient:
+        return real_async_client(
+            transport=httpx.MockTransport(handler),
+            **kwargs,
+        )
+
+    monkeypatch.setattr(
+        "app.langfuse_client.httpx.AsyncClient",
+        client_factory,
+    )
+
+    async def no_sleep(delay: float) -> None:
+        return None
+
+    events: list[str] = []
+    job = _sync_score_job()
+    repository = FakeRepository(events, job)
+    broker = FakeBroker(events)
+    executor = SyncScoreBatchExecutor(
+        ScoreResultStorage(),
+        LangfuseProjectApiClient(
+            Settings(langfuse_base_url="http://langfuse.local")
+        ),
+        ScoreCredentialProvider(),
+        max_rate_limit_retries=0,
+        sleep=no_sleep,
+    )
+
+    asyncio.run(_worker(repository, broker, executor).handle_message(MESSAGE))
+
+    assert repository.dead_letters == []
+    assert repository.retries[0]["error_code"] == expected_code
+    assert repository.retries[0]["error_message"] == (
+        "Evaluation provider temporarily unavailable"
+    )
+    assert broker.ack_calls == 1
+
+
+@pytest.mark.parametrize("status_code", [401, 403])
+def test_real_score_client_auth_failures_dead_letter_without_retry(
+    monkeypatch: pytest.MonkeyPatch,
+    status_code: int,
+) -> None:
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(
+            status_code,
+            json={"message": "response contains credential"},
+        )
+
+    real_async_client = httpx.AsyncClient
+
+    def client_factory(**kwargs: Any) -> httpx.AsyncClient:
+        return real_async_client(
+            transport=httpx.MockTransport(handler),
+            **kwargs,
+        )
+
+    monkeypatch.setattr(
+        "app.langfuse_client.httpx.AsyncClient",
+        client_factory,
+    )
+    events: list[str] = []
+    job = _sync_score_job()
+    repository = FakeRepository(events, job)
+    broker = FakeBroker(events)
+    executor = SyncScoreBatchExecutor(
+        ScoreResultStorage(),
+        LangfuseProjectApiClient(
+            Settings(langfuse_base_url="http://langfuse.local")
+        ),
+        ScoreCredentialProvider(),
+        max_rate_limit_retries=0,
+    )
+
+    asyncio.run(_worker(repository, broker, executor).handle_message(MESSAGE))
+
+    assert repository.retries == []
+    assert repository.dead_letters[0]["error_code"] == (
+        "PROVIDER_AUTHENTICATION_FAILED"
+    )
+    assert broker.ack_calls == 1
+
+
 @pytest.mark.parametrize(
     ("status_code", "expected_code"),
     [
@@ -878,6 +1083,48 @@ def test_heartbeat_unexpected_error_propagates_instead_of_becoming_lease_loss() 
     asyncio.run(scenario())
 
 
+class RequestCancellationExecutors:
+    def __init__(self, repository: FakeRepository, events: list[str]) -> None:
+        self.repository = repository
+        self.events = events
+
+    async def execute(
+        self,
+        job: EvaluationJob,
+        guard: HeartbeatGuard,
+    ) -> ExecutionOutcome:
+        self.events.extend(["start-heartbeat", "execute"])
+        await self.repository.request_run_cancel()
+        await asyncio.wait_for(
+            self.repository.heartbeat_rejected.wait(),
+            timeout=0.2,
+        )
+        await guard.checkpoint()
+        raise AssertionError("cancelled checkpoint unexpectedly returned")
+
+
+def test_running_cancel_closes_job_then_acks_and_allows_final_report() -> None:
+    events: list[str] = []
+    repository = FakeRepository(events)
+    broker = FakeBroker(events)
+    executors = RequestCancellationExecutors(repository, events)
+
+    asyncio.run(
+        _worker(
+            repository,
+            broker,
+            executors,  # type: ignore[arg-type]
+            heartbeat_seconds=0.001,
+        ).handle_message(MESSAGE)
+    )
+
+    assert repository.state is JobStatus.CANCELLED
+    assert repository.cancel_attempts == 1
+    assert repository.report_count == 1
+    assert broker.ack_calls == 1
+    assert events[-2:] == ["mark-cancelled", "ack"]
+
+
 def test_lease_lost_never_acks_or_transitions_business_state() -> None:
     events: list[str] = []
     repository = FakeRepository(events)
@@ -888,6 +1135,8 @@ def test_lease_lost_never_acks_or_transitions_business_state() -> None:
         asyncio.run(_worker(repository, broker, executors).handle_message(MESSAGE))
 
     assert broker.ack_calls == 0
+    assert repository.cancel_attempts == 1
+    assert events[-1] == "mark-cancelled"
     assert repository.completed == []
     assert repository.retries == []
     assert repository.dead_letters == []

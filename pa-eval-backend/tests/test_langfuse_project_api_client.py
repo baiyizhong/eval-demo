@@ -10,7 +10,7 @@ from app.langfuse_client import LangfuseProjectApiClient, LangfuseRateLimitError
 
 class FakeAsyncClient:
     requests: list[dict[str, Any]] = []
-    responses: list[httpx.Response] = []
+    responses: list[httpx.Response | Exception] = []
 
     def __init__(self, **kwargs: Any) -> None:
         self.kwargs = kwargs
@@ -37,6 +37,8 @@ class FakeAsyncClient:
         )
         if self.responses:
             response = self.responses.pop(0)
+            if isinstance(response, Exception):
+                raise response
             response.request = httpx.Request(method, path)
             return response
         payload: dict[str, Any] = {
@@ -259,6 +261,116 @@ async def test_create_score_keeps_conflict_pending_when_confirmation_conflicts(
             "sk-project-1",
             {"id": "score-1", "name": "quality", "value": 1},
         )
+
+
+@pytest.mark.anyio
+async def test_create_score_preserves_rate_limit_from_duplicate_confirmation(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    FakeAsyncClient.requests = []
+    FakeAsyncClient.responses = [
+        httpx.Response(409, json={"message": "create conflict"}),
+        httpx.Response(
+            429,
+            headers={"Retry-After": "7"},
+            json={"message": "credential-shaped-sensitive-response"},
+        ),
+    ]
+    monkeypatch.setattr("app.langfuse_client.httpx.AsyncClient", FakeAsyncClient)
+    client = LangfuseProjectApiClient(
+        Settings(langfuse_base_url="http://langfuse.local")
+    )
+
+    with pytest.raises(LangfuseRateLimitError) as captured:
+        await client.create_score(
+            "pk-project-1",
+            "sk-project-1",
+            {"id": "score-1", "name": "quality", "value": 1},
+        )
+
+    assert captured.value.retry_after_seconds == 7
+    assert "credential-shaped" not in captured.value.message
+
+
+@pytest.mark.anyio
+@pytest.mark.parametrize(
+    ("failure", "expected_error_code", "expected_status"),
+    [
+        (
+            httpx.ReadTimeout("timeout contains credential"),
+            "PROVIDER_TIMEOUT",
+            None,
+        ),
+        (
+            httpx.ConnectError("connect contains credential"),
+            "PROVIDER_UNAVAILABLE",
+            None,
+        ),
+        (
+            httpx.Response(
+                503,
+                json={"message": "upstream response contains credential"},
+            ),
+            "PROVIDER_UNAVAILABLE",
+            503,
+        ),
+    ],
+)
+async def test_create_score_classifies_only_transient_upstream_failures_as_retryable(
+    monkeypatch: pytest.MonkeyPatch,
+    failure: httpx.Response | Exception,
+    expected_error_code: str,
+    expected_status: int | None,
+) -> None:
+    FakeAsyncClient.requests = []
+    FakeAsyncClient.responses = [failure]
+    monkeypatch.setattr("app.langfuse_client.httpx.AsyncClient", FakeAsyncClient)
+    client = LangfuseProjectApiClient(
+        Settings(langfuse_base_url="http://langfuse.local")
+    )
+
+    with pytest.raises(LangfuseUpstreamError) as captured:
+        await client.create_score(
+            "pk-project-1",
+            "sk-project-1",
+            {"id": "score-1", "name": "quality", "value": 1},
+        )
+
+    assert captured.value.retryable is True
+    assert captured.value.error_code == expected_error_code
+    assert captured.value.upstream_status_code == expected_status
+    assert "credential" not in captured.value.message
+
+
+@pytest.mark.anyio
+@pytest.mark.parametrize("status_code", [401, 403])
+async def test_create_score_classifies_invalid_project_credentials_as_non_retryable(
+    monkeypatch: pytest.MonkeyPatch,
+    status_code: int,
+) -> None:
+    FakeAsyncClient.requests = []
+    FakeAsyncClient.responses = [
+        httpx.Response(
+            status_code,
+            json={"message": "credential-shaped-sensitive-response"},
+        )
+    ]
+    monkeypatch.setattr("app.langfuse_client.httpx.AsyncClient", FakeAsyncClient)
+    client = LangfuseProjectApiClient(
+        Settings(langfuse_base_url="http://langfuse.local")
+    )
+
+    with pytest.raises(LangfuseUpstreamError) as captured:
+        await client.create_score(
+            "pk-project-1",
+            "sk-project-1",
+            {"id": "score-1", "name": "quality", "value": 1},
+        )
+
+    assert captured.value.retryable is False
+    assert captured.value.error_code == "PROVIDER_AUTHENTICATION_FAILED"
+    assert captured.value.upstream_status_code == status_code
+    assert "credential-shaped" not in captured.value.message
 
 
 @pytest.mark.anyio

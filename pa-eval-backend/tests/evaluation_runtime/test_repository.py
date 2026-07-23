@@ -426,8 +426,9 @@ def test_mark_cancelled_requires_cancelling_owner_and_clears_lease() -> None:
     cancelled = asyncio.run(repository.mark_cancelled("job-1", "worker-a"))
     rejected = asyncio.run(repository.mark_cancelled("job-1", "worker-b"))
 
-    assert cancelled is True
-    assert rejected is False
+    assert cancelled is not None
+    assert cancelled.status is JobStatus.CANCELLED
+    assert rejected is None
     sql, params = cursor.executions[0]
     assert "status = 'CANCELLED'" in sql
     assert "status = 'CANCELLING'" in sql
@@ -529,7 +530,9 @@ def test_cancel_state_model_suppresses_pending_then_inserts_report_once() -> Non
     assert cursor.jobs["sync-pending"]["status"] == "CANCELLED"
     assert cursor.reports == set()
 
-    assert asyncio.run(repository.mark_cancelled("sync-running", "worker-a")) is True
+    cancelled = asyncio.run(repository.mark_cancelled("sync-running", "worker-a"))
+    assert cancelled is not None
+    assert cancelled.status is JobStatus.CANCELLED
     assert len(cursor.reports) == 1
 
     assert asyncio.run(repository.request_run_cancel("run-1", "user-1")) is True

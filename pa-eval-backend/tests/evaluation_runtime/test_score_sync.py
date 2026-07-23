@@ -5,6 +5,7 @@ from typing import Any, Mapping
 import pytest
 
 from app.evaluation_runtime.executors import (
+    ExecutionOutcome,
     ProjectApiCredentials,
     SyncScoreBatchExecutor,
     build_score_payload,
@@ -317,7 +318,52 @@ def test_consecutive_rate_limits_use_latest_delay_and_stop_at_bound() -> None:
         asyncio.run(executor.execute(_job(batch_end=1), RecordingGuard()))
 
     assert client.calls == 3
-    assert sleeps == [1.0, 2.0]
+    assert sleeps == [1.0, 2.0, 3.0]
+
+
+def test_partial_success_waits_for_final_rate_limit_before_creating_followup() -> None:
+    events: list[str] = []
+
+    class PartialRateLimitedClient:
+        def __init__(self) -> None:
+            self.rate_limit_calls = 0
+
+        async def create_score(
+            self,
+            public_key: str,
+            secret_key: str,
+            payload: dict[str, Any],
+        ) -> dict[str, Any]:
+            if payload["id"] == deterministic_score_id(
+                "run-1", "sample-0", "quality"
+            ):
+                return {"id": payload["id"]}
+            self.rate_limit_calls += 1
+            raise LangfuseRateLimitError(
+                retry_after_seconds=float(self.rate_limit_calls)
+            )
+
+    async def fake_sleep(delay: float) -> None:
+        events.append(f"sleep:{delay}")
+
+    async def scenario() -> ExecutionOutcome:
+        outcome = await SyncScoreBatchExecutor(
+            ResultStorage(_results(2)),
+            PartialRateLimitedClient(),
+            CredentialProvider(),
+            max_concurrency=1,
+            max_rate_limit_retries=1,
+            sleep=fake_sleep,
+        ).execute(_job(batch_end=2), RecordingGuard())
+        events.append("followup-created")
+        return outcome
+
+    outcome = asyncio.run(scenario())
+
+    assert events == ["sleep:1.0", "sleep:2.0", "followup-created"]
+    assert outcome.result_summary["confirmedCount"] == 1
+    assert outcome.result_summary["pendingCount"] == 1
+    assert len(outcome.followups) == 1
 
 
 def test_missing_credentials_fail_without_calling_langfuse() -> None:

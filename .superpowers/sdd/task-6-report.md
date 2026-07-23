@@ -157,3 +157,59 @@
 - `pa-eval-backend/tests/evaluation_runtime/test_storage.py`
 - `pa-eval-backend/tests/test_langfuse_project_api_client.py`
 - `.superpowers/sdd/task-6-report.md`
+
+---
+
+## 第二轮正式复审修复追加（2026-07-24）
+
+### 根因与接口决策
+
+- Public Score 请求原先把 timeout、connect 和 HTTP 5xx 都包装成缺少上游分类的普通 `LangfuseUpstreamError`。Worker 无法从该异常恢复原始状态，因此把瞬态故障错误地送入 deadletter。
+- duplicate-confirm GET 的 `except LangfuseUpstreamError` 同时捕获其子类 `LangfuseRateLimitError`，导致 GET 429 丢失 `Retry-After` 与可重试分类。
+- 429 内联重试在达到次数上限时先抛异常、后等待，遗漏了最后一次安全 `Retry-After`。
+- Worker 对所有 `LeaseLostError` 直接传播，无法区分 Run 取消导致的协作心跳失败和真正的 lease 被抢；Repository 已有 `CANCELLING + owner` 条件更新，但 Worker 未使用这一判定闭环。
+
+对应接口决策：
+
+- 新增显式 `LangfuseTransientUpstreamError`，仅用于 timeout、connect 和 HTTP 5xx，携带安全的 `retryable`、`error_code`、`upstream_status_code`，消息不包含上游响应正文。
+- 新增不可重试的 `LangfuseProjectAuthenticationError`，401/403 统一为 `PROVIDER_AUTHENTICATION_FAILED`；未配置项目凭据也使用同一安全 Worker 错误分类。
+- duplicate-confirm GET 按具体性排列 `except`：429、transient、auth 原样传播，只有确定性的其他冲突确认失败才包装为普通不可重试错误。
+- 每次 429 均先等待当前安全 `Retry-After`，再判断是否继续请求；达到上限后不再发请求，但会完成最后一次等待后抛出，确保请求次数仍有界。
+- `JobRepository.mark_cancelled()` 返回 `EvaluationJob | None`。Worker 在 HeartbeatGuard 外层捕获任意 `LeaseLostError`，尝试该条件转换；只有 Repository 确认当前 Job 为同一 owner 的 `CANCELLING` 并成功转为 `CANCELLED` 后才 ACK，否则原异常继续传播且不 ACK。报告门控仍在同一 Run→Job 锁事务中执行。
+
+### 第二轮 RED / GREEN
+
+#### RED
+
+命令：
+
+`cd pa-eval-backend && uv run pytest tests/test_langfuse_project_api_client.py tests/evaluation_runtime/test_score_sync.py tests/evaluation_runtime/test_worker.py tests/evaluation_runtime/test_repository.py -q`
+
+结果：`18 failed, 94 passed, 1 skipped in 0.46s`。
+
+失败覆盖：
+
+- duplicate-confirm GET 429 被普通错误包装；
+- timeout/connect/5xx 缺少 retryable、error code 与上游状态分类；
+- 401/403 未映射为不可重试项目鉴权错误；
+- 真实 `LangfuseProjectApiClient` 经 fake transport、`SyncScoreBatchExecutor` 到 Worker 后错误进入 deadletter；
+- 最后一次 429 未等待，部分成功 followup 提前产生；
+- 协作取消未调用 `mark_cancelled`，真正 lease lost 也没有进行安全条件判定；
+- Repository 仍返回 bool，无法向 Worker 提供已转换 Job / `None` 语义。
+
+#### GREEN
+
+同一四文件聚焦命令修复后首次结果：`112 passed, 1 skipped in 0.27s`。
+
+其中真实 client fake transport 链路覆盖 timeout、connect、HTTP 503、duplicate-confirm GET 429 均进入 Worker retry；HTTP 401/403 均直接 deadletter 为 `PROVIDER_AUTHENTICATION_FAILED`。运行中取消覆盖 request cancel→heartbeat false→条件式 mark cancelled→ACK→最终报告，真实 lease lost 覆盖 `None`→不 ACK。
+
+### 第二轮最终验证
+
+1. Task 6 四文件聚焦：`112 passed, 1 skipped in 0.34s`。
+2. `cd pa-eval-backend && uv run pytest tests/evaluation_runtime -q`
+   - 结果：`185 passed, 3 skipped in 0.38s`。
+3. `uv run ruff check` 覆盖本轮所有改动 Python 文件。
+   - 结果：`All checks passed!`。
+4. `git diff --check`
+   - 结果：通过，无 whitespace error。
+5. 边界复核：`langfuse/` 无改动；Score 同步仍只使用 Public API，不包含 ClickHouse writer、Langfuse DB 连接或 Score 写 SQL；测试仅使用 fake transport、fake storage、fake broker/repository，未连接真实业务设施。

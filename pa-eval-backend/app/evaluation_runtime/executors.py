@@ -286,9 +286,9 @@ class SyncScoreBatchExecutor:
                         payload,
                     )
                 except LangfuseRateLimitError as error:
+                    await self._sleep(error.retry_after_seconds)
                     if retry_count >= self._max_rate_limit_retries:
                         raise
-                    await self._sleep(error.retry_after_seconds)
         raise RuntimeError("score rate limit retry loop exhausted")
 
 

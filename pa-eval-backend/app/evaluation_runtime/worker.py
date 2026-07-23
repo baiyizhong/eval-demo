@@ -122,6 +122,12 @@ class WorkerRepository(HeartbeatRepository, Protocol):
         self, *args: Any, **kwargs: Any
     ) -> EvaluationJob | None: ...
 
+    async def mark_cancelled(
+        self,
+        job_id: str,
+        worker_id: str,
+    ) -> EvaluationJob | None: ...
+
 
 class WorkerBroker(Protocol):
     async def ack(self, routing_key: str, message_id: str) -> int: ...
@@ -329,51 +335,59 @@ class EvaluationWorker:
             await self._broker.ack(message.routing_key, message.message_id)
             return
 
-        async with HeartbeatGuard(
-            self._repository,
-            job.id,
-            self._worker_id,
-            self._heartbeat_seconds,
-            lease_seconds=self._lease_seconds,
-        ) as guard:
-            try:
-                outcome = await self._executors.execute(job, guard)
-            except LeaseLostError:
-                raise
-            except BatchSplitExecutionError as error:
-                await self._handle_split_error(job, error, guard)
-            except NonRetryableExecutionError as error:
-                await self._dead_letter(
-                    job,
-                    _safe_error_code(
-                        error.error_code,
-                        default="NON_RETRYABLE_EXECUTION",
-                    ),
-                    guard,
-                )
-            except Exception as error:
-                if getattr(error, "retryable", True) is False:
+        try:
+            async with HeartbeatGuard(
+                self._repository,
+                job.id,
+                self._worker_id,
+                self._heartbeat_seconds,
+                lease_seconds=self._lease_seconds,
+            ) as guard:
+                try:
+                    outcome = await self._executors.execute(job, guard)
+                except LeaseLostError:
+                    raise
+                except BatchSplitExecutionError as error:
+                    await self._handle_split_error(job, error, guard)
+                except NonRetryableExecutionError as error:
                     await self._dead_letter(
                         job,
-                        _error_code(error, default="NON_RETRYABLE_EXECUTION"),
+                        _safe_error_code(
+                            error.error_code,
+                            default="NON_RETRYABLE_EXECUTION",
+                        ),
                         guard,
                     )
-                elif _is_transient_provider_error(error):
-                    await self._retry(job, error, guard)
+                except Exception as error:
+                    if getattr(error, "retryable", True) is False:
+                        await self._dead_letter(
+                            job,
+                            _error_code(error, default="NON_RETRYABLE_EXECUTION"),
+                            guard,
+                        )
+                    elif _is_transient_provider_error(error):
+                        await self._retry(job, error, guard)
+                    else:
+                        await self._dead_letter(
+                            job,
+                            _permanent_error_code(error),
+                            guard,
+                        )
                 else:
-                    await self._dead_letter(
+                    await guard.checkpoint()
+                    completed = await self._repository.complete_with_followups(
                         job,
-                        _permanent_error_code(error),
-                        guard,
+                        outcome,
+                        self._worker_id,
                     )
-            else:
-                await guard.checkpoint()
-                completed = await self._repository.complete_with_followups(
-                    job,
-                    outcome,
-                    self._worker_id,
-                )
-                _require_transition(completed)
+                    _require_transition(completed)
+        except LeaseLostError:
+            cancelled = await self._repository.mark_cancelled(
+                job.id,
+                self._worker_id,
+            )
+            if cancelled is None:
+                raise
         await self._broker.ack(message.routing_key, message.message_id)
 
     async def _handle_split_error(
@@ -491,6 +505,8 @@ def _error_code(error: Exception, *, default: str) -> str:
 
 
 def _is_transient_provider_error(error: Exception) -> bool:
+    if getattr(error, "retryable", None) is True:
+        return True
     if isinstance(
         error,
         (TimeoutError, ConnectionError, ConnectError, TimeoutException),
@@ -512,7 +528,10 @@ def _permanent_error_code(error: Exception) -> str:
 
 
 def _http_status(error: Exception) -> Any:
-    return getattr(getattr(error, "response", None), "status_code", None)
+    response_status = getattr(getattr(error, "response", None), "status_code", None)
+    if response_status is not None:
+        return response_status
+    return getattr(error, "upstream_status_code", None)
 
 
 def _safe_error_code(value: str, *, default: str) -> str:
