@@ -1,0 +1,2 @@
+﻿id,status,input,expectedOutput,metadata,sourceTraceId,sourceObservationId,createdAt,updatedAt
+item-1,ACTIVE,"{""question"": ""怎么退款？""}","{""answer"": ""在订单详情申请退款""}",{},,,2026-07-02T08:10:00.000Z,2026-07-02T08:10:00.000Z
