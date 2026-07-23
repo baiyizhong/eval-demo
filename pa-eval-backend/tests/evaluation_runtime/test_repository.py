@@ -11,6 +11,7 @@ from psycopg.types.json import Jsonb
 
 from app.evaluation_runtime.models import EvaluationJob, JobStatus, JobType
 from app.evaluation_runtime.repository import JobRepository, retry_delay_seconds
+from app.evaluation_runtime.storage import ShardDescriptor, StoredManifest
 
 
 class FakeCursor:
@@ -563,6 +564,149 @@ def test_requeue_expired_leases_rejects_invalid_limit() -> None:
         asyncio.run(repository.requeue_expired_leases(limit=0, actor="reaper"))
 
     assert cursor.executions == []
+
+
+def _stored_manifest() -> StoredManifest:
+    return StoredManifest(
+        index_object_key=(
+            "manifests/project-1/run-1/manifest-hash/index.json"
+        ),
+        manifest_hash="manifest-hash",
+        total_count=150,
+        batch_size=100,
+        shards=(
+            ShardDescriptor(
+                start=0,
+                end=100,
+                object_key="manifests/project-1/run-1/batches/0-100-a.jsonl.gz",
+                shard_hash="a" * 64,
+            ),
+            ShardDescriptor(
+                start=100,
+                end=150,
+                object_key=(
+                    "manifests/project-1/run-1/batches/100-150-b.jsonl.gz"
+                ),
+                shard_hash="b" * 64,
+            ),
+        ),
+    )
+
+
+def test_get_run_config_snapshot_uses_parameterized_read() -> None:
+    snapshot = {"dataSource": {"type": "DATASET"}}
+    repository, _, cursor = _repository([{"config_snapshot": snapshot}])
+
+    result = asyncio.run(repository.get_run_config_snapshot("run-1"))
+
+    assert result == snapshot
+    sql, params = cursor.executions[0]
+    assert "SELECT config_snapshot" in sql
+    assert "FROM pa_auto_evaluation_runs" in sql
+    assert "run-1" not in sql
+    assert params == {"run_id": "run-1"}
+
+
+def test_finalize_prepared_run_updates_run_and_bulk_inserts_in_one_transaction() -> (
+    None
+):
+    repository, connection, cursor = _repository([{"id": "run-1"}])
+    manifest = _stored_manifest()
+
+    finalized = asyncio.run(
+        repository.finalize_prepared_run(
+            run_id="run-1",
+            project_id="project-1",
+            task_id="task-1",
+            parent_job_id="prepare-job-1",
+            actor="worker-1",
+            manifest=manifest,
+        )
+    )
+
+    assert finalized is True
+    assert connection.entered == connection.exited == 1
+    assert len(cursor.executions) == 2
+    run_sql, run_params = cursor.executions[0]
+    jobs_sql, jobs_params = cursor.executions[1]
+    assert "UPDATE pa_auto_evaluation_runs" in run_sql
+    assert "status = 'RUNNING'" in run_sql
+    assert "sample_manifest_object_key = %(manifest_object_key)s" in run_sql
+    assert "sample_manifest_hash = %(manifest_hash)s" in run_sql
+    assert "sample_count = %(sample_count)s" in run_sql
+    assert "status IN ('QUEUED', 'RUNNING')" in run_sql
+    assert "cancel_requested_at IS NULL" in run_sql
+    assert "sample_manifest_hash IS NULL" in run_sql
+    assert "sample_manifest_hash = %(manifest_hash)s" in run_sql
+    assert run_params["manifest_object_key"] == manifest.index_object_key
+    assert run_params["manifest_hash"] == manifest.manifest_hash
+    assert run_params["sample_count"] == 150
+
+    assert jobs_sql.count("INSERT INTO pa_evaluation_jobs") == 1
+    assert "jsonb_to_recordset" in jobs_sql
+    assert "ON CONFLICT (idempotency_key) DO NOTHING" in jobs_sql
+    assert "DO UPDATE" not in jobs_sql
+    jobs = _jsonb_value(jobs_params["jobs"])
+    assert len(jobs) == 2
+    assert jobs[0]["payload"] == {
+        "shardObjectKey": manifest.shards[0].object_key,
+        "shardHash": manifest.shards[0].shard_hash,
+        "start": 0,
+        "end": 100,
+        "manifestHash": manifest.manifest_hash,
+    }
+    assert jobs[1]["batch_start"] == 100
+    assert jobs[1]["batch_end"] == 150
+    assert jobs[0]["idempotency_key"] != jobs[1]["idempotency_key"]
+    assert jobs_params == {"jobs": jobs_params["jobs"]}
+
+
+def test_finalize_prepared_run_duplicate_manifest_never_overwrites_existing_jobs() -> (
+    None
+):
+    repository, _, cursor = _repository([{"id": "run-1"}, {"id": "run-1"}])
+    kwargs = {
+        "run_id": "run-1",
+        "project_id": "project-1",
+        "task_id": "task-1",
+        "parent_job_id": "prepare-job-1",
+        "actor": "worker-1",
+        "manifest": _stored_manifest(),
+    }
+
+    assert asyncio.run(repository.finalize_prepared_run(**kwargs)) is True
+    assert asyncio.run(repository.finalize_prepared_run(**kwargs)) is True
+
+    bulk_sql = [
+        sql
+        for sql, _ in cursor.executions
+        if "INSERT INTO pa_evaluation_jobs" in sql
+    ]
+    assert len(bulk_sql) == 2
+    assert all("ON CONFLICT (idempotency_key) DO NOTHING" in sql for sql in bulk_sql)
+    assert all("DO UPDATE" not in sql for sql in bulk_sql)
+
+
+def test_finalize_prepared_run_cancel_gate_skips_bulk_insert() -> None:
+    repository, connection, cursor = _repository([None])
+
+    finalized = asyncio.run(
+        repository.finalize_prepared_run(
+            run_id="run-1",
+            project_id="project-1",
+            task_id="task-1",
+            parent_job_id="prepare-job-1",
+            actor="worker-1",
+            manifest=_stored_manifest(),
+        )
+    )
+
+    assert finalized is False
+    assert connection.entered == connection.exited == 1
+    assert len(cursor.executions) == 1
+    sql, _ = cursor.executions[0]
+    assert "status IN ('QUEUED', 'RUNNING')" in sql
+    assert "cancel_requested_at IS NULL" in sql
 
 
 @pytest.mark.skipif(

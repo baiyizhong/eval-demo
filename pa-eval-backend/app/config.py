@@ -42,6 +42,12 @@ class Settings(BaseSettings):
     pa_eval_job_lease_seconds: int = Field(default=120, ge=30)
     pa_eval_job_heartbeat_seconds: int = Field(default=30, ge=5)
     pa_eval_dispatch_visibility_seconds: int = Field(default=30, ge=5)
+    pa_eval_object_store_endpoint: str = Field(default="")
+    pa_eval_object_store_region: str = Field(default="us-east-1")
+    pa_eval_object_store_bucket: str = Field(default="")
+    pa_eval_object_store_access_key: str = Field(default="")
+    pa_eval_object_store_secret_key: str = Field(default="")
+    pa_eval_object_store_secure: bool = Field(default=True)
     pa_eval_scheduler_instance_id: str = Field(
         default_factory=lambda: f"pa-eval-scheduler-{uuid4().hex}"
     )

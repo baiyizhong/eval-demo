@@ -4,7 +4,9 @@ from typing import Any
 
 from psycopg.types.json import Jsonb
 
+from app.evaluation_runtime.idempotency import job_idempotency_key, stable_hash
 from app.evaluation_runtime.models import EvaluationJob, JobStatus, JobType
+from app.evaluation_runtime.storage import StoredManifest
 
 
 ConnectionFactory = Callable[[], Awaitable[Any]]
@@ -38,6 +40,144 @@ class JobRepository:
             raise ValueError("dispatch_visibility_seconds must be positive")
         self._connection_factory = connection_factory
         self._dispatch_visibility_seconds = dispatch_visibility_seconds
+
+    async def get_run_config_snapshot(
+        self, run_id: str
+    ) -> Mapping[str, Any] | None:
+        row = await self._fetchone(
+            """
+            SELECT config_snapshot
+            FROM pa_auto_evaluation_runs
+            WHERE id = %(run_id)s
+            """,
+            {"run_id": run_id},
+        )
+        if row is None:
+            return None
+        snapshot = row.get("config_snapshot")
+        return snapshot if isinstance(snapshot, Mapping) else None
+
+    async def finalize_prepared_run(
+        self,
+        *,
+        run_id: str,
+        project_id: str,
+        task_id: str,
+        parent_job_id: str,
+        actor: str,
+        manifest: StoredManifest,
+    ) -> bool:
+        jobs = []
+        for shard in manifest.shards:
+            payload = {
+                "shardObjectKey": shard.object_key,
+                "shardHash": shard.shard_hash,
+                "start": shard.start,
+                "end": shard.end,
+                "manifestHash": manifest.manifest_hash,
+            }
+            idempotency_key = job_idempotency_key(
+                run_id,
+                JobType.EVALUATE_BATCH,
+                batch_start=shard.start,
+                batch_end=shard.end,
+                payload=payload,
+            )
+            jobs.append(
+                {
+                    "id": f"pa-job-{stable_hash(idempotency_key)[:32]}",
+                    "project_id": project_id,
+                    "task_id": task_id,
+                    "run_id": run_id,
+                    "parent_job_id": parent_job_id,
+                    "job_type": JobType.EVALUATE_BATCH.value,
+                    "routing_key": "shared",
+                    "batch_start": shard.start,
+                    "batch_end": shard.end,
+                    "idempotency_key": idempotency_key,
+                    "status": JobStatus.PENDING.value,
+                    "priority": 0,
+                    "max_attempts": 5,
+                    "payload": payload,
+                    "actor": actor,
+                }
+            )
+
+        connection = await self._connection_factory()
+        async with connection as active_connection:
+            async with active_connection.cursor() as cursor:
+                await cursor.execute(
+                    """
+                    UPDATE pa_auto_evaluation_runs
+                    SET sample_manifest_object_key = %(manifest_object_key)s,
+                        sample_manifest_hash = %(manifest_hash)s,
+                        sample_count = %(sample_count)s,
+                        status = 'RUNNING',
+                        started_at = COALESCE(started_at, NOW()),
+                        update_by = %(actor)s,
+                        update_date = NOW()
+                    WHERE id = %(run_id)s
+                      AND project_id = %(project_id)s
+                      AND task_id = %(task_id)s
+                      AND status IN ('QUEUED', 'RUNNING')
+                      AND cancel_requested_at IS NULL
+                      AND (
+                          sample_manifest_hash IS NULL
+                          OR (
+                              sample_manifest_hash = %(manifest_hash)s
+                              AND sample_manifest_object_key = %(manifest_object_key)s
+                          )
+                      )
+                    RETURNING id
+                    """,
+                    {
+                        "run_id": run_id,
+                        "project_id": project_id,
+                        "task_id": task_id,
+                        "manifest_object_key": manifest.index_object_key,
+                        "manifest_hash": manifest.manifest_hash,
+                        "sample_count": manifest.total_count,
+                        "actor": actor,
+                    },
+                )
+                if await cursor.fetchone() is None:
+                    return False
+                await cursor.execute(
+                    """
+                    INSERT INTO pa_evaluation_jobs (
+                        create_by, update_by, id, project_id, task_id, run_id,
+                        parent_job_id, job_type, routing_key, batch_start,
+                        batch_end, idempotency_key, status, priority,
+                        max_attempts, payload
+                    )
+                    SELECT
+                        item.actor, item.actor, item.id, item.project_id,
+                        item.task_id, item.run_id, item.parent_job_id,
+                        item.job_type, item.routing_key, item.batch_start,
+                        item.batch_end, item.idempotency_key, item.status,
+                        item.priority, item.max_attempts, item.payload
+                    FROM jsonb_to_recordset(%(jobs)s::jsonb) AS item(
+                        actor text,
+                        id text,
+                        project_id text,
+                        task_id text,
+                        run_id text,
+                        parent_job_id text,
+                        job_type text,
+                        routing_key text,
+                        batch_start integer,
+                        batch_end integer,
+                        idempotency_key text,
+                        status text,
+                        priority integer,
+                        max_attempts integer,
+                        payload jsonb
+                    )
+                    ON CONFLICT (idempotency_key) DO NOTHING
+                    """,
+                    {"jobs": Jsonb(jobs)},
+                )
+        return True
 
     async def list_dispatchable(self, *, limit: int) -> list[EvaluationJob]:
         if limit <= 0:
