@@ -213,3 +213,54 @@
 4. `git diff --check`
    - 结果：通过，无 whitespace error。
 5. 边界复核：`langfuse/` 无改动；Score 同步仍只使用 Public API，不包含 ClickHouse writer、Langfuse DB 连接或 Score 写 SQL；测试仅使用 fake transport、fake storage、fake broker/repository，未连接真实业务设施。
+
+---
+
+## 第三轮正式复审修复追加（2026-07-24）
+
+### 根因与修复
+
+- `request_run_cancel()` 会把运行中的 Job 转为 `CANCELLING` 并保留 owner/lease，供原 Worker 协作完成取消；但 lease reaper 的候选集、Job 锁后二次校验和最终 UPDATE 都只接受 `RUNNING`。若 owner 在回调 `mark_cancelled()` 前崩溃，过期 Job 永远不会再进入终态，stale 消息又因无法 claim 而直接 ACK，报告门控也无法满足。
+- Reaper 现在在候选、Run→Job 加锁和最终条件更新三个位置统一接受 `RUNNING` / `CANCELLING`，且仍严格要求 `lease_expires_at < NOW()`。过期 `CANCELLING` 直接转为 `CANCELLED`，不重试、不增加 attempt，清理 lease/heartbeat 和错误字段；lease 尚有效时保持原状态，继续留给原 Worker 协作取消。
+- Reaper 继续在同一事务内按 Run→Job 顺序锁定并更新 Run 审计字段；返回的 `CANCELLED` EVALUATE/SYNC Job 与 deadletter 一样执行幂等报告门控。第二次 reaper 不再命中终态 Job，稳定报告 idempotency key 保证只有一个 `GENERATE_REPORT`。
+- Public Score client 进一步把 `httpx.NetworkError`（含常见 Read/Write/Close 网络错误）与 `RemoteProtocolError` 映射为安全的 retryable transient；`UnsupportedProtocol` 及其他明显配置/本地协议错误仍由普通不可重试分支处理，不扩大为无限泛化的 transport retry。
+
+### 第三轮 RED / GREEN
+
+#### RED
+
+命令：
+
+`cd pa-eval-backend && uv run pytest tests/evaluation_runtime/test_repository.py tests/test_langfuse_project_api_client.py tests/evaluation_runtime/test_worker.py tests/evaluation_runtime/test_score_sync.py -q`
+
+结果：`6 failed, 113 passed, 1 skipped in 0.38s`。
+
+失败覆盖：
+
+- Reaper SQL 三层条件不接受 `CANCELLING`；
+- request cancel→owner crash→lease 过期后仍未转 `CANCELLED`；
+- `ReadError`、`WriteError`、`RemoteProtocolError` 缺少 retryable transient 分类；
+- 真实 client fake transport 的 `ReadError` 经 Sync executor 到 Worker 后错误进入 deadletter。
+
+#### GREEN
+
+最小修复后原四文件命令结果：`119 passed, 1 skipped in 0.28s`。
+
+补充 `CANCELLED` stale replay ACK 与 broker 回归后，Task 6 聚焦命令：
+
+`uv run pytest tests/evaluation_runtime/test_repository.py tests/test_langfuse_project_api_client.py tests/evaluation_runtime/test_worker.py tests/evaluation_runtime/test_score_sync.py tests/evaluation_runtime/test_broker.py -q`
+
+结果：`150 passed, 2 skipped in 0.33s`。
+
+状态化测试完整覆盖 request cancel→owner 无回调→过期 reaper→`CANCELLED`→唯一报告，以及 reaper 重跑仍唯一、未过期 lease 不处理；Worker 测试覆盖随后 stale/terminal replay 的 claim None→ACK。
+
+### 第三轮最终验证
+
+1. Task 6 聚焦：`150 passed, 2 skipped in 0.37s`。
+2. `cd pa-eval-backend && uv run pytest tests/evaluation_runtime -q`
+   - 结果：`190 passed, 3 skipped in 0.39s`。
+3. `uv run ruff check` 覆盖本轮全部改动 Python 文件。
+   - 结果：`All checks passed!`。
+4. `git diff --check`
+   - 结果：通过，无 whitespace error。
+5. 边界复核：`langfuse/` 无改动；`executors.py` 不包含 ClickHouse writer、Langfuse DB 连接或 Score 写 SQL；测试未连接真实业务设施。

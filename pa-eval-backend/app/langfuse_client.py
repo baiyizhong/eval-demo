@@ -296,6 +296,10 @@ class LangfuseProjectApiClient:
             raise LangfuseTransientUpstreamError(
                 error_code="PROVIDER_UNAVAILABLE"
             ) from exc
+        except (httpx.NetworkError, httpx.RemoteProtocolError) as exc:
+            raise LangfuseTransientUpstreamError(
+                error_code="PROVIDER_UNAVAILABLE"
+            ) from exc
         except httpx.HTTPError as exc:
             raise LangfuseUpstreamError(
                 message="Langfuse Score 请求失败"

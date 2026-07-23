@@ -307,6 +307,21 @@ async def test_create_score_preserves_rate_limit_from_duplicate_confirmation(
             None,
         ),
         (
+            httpx.ReadError("read contains credential"),
+            "PROVIDER_UNAVAILABLE",
+            None,
+        ),
+        (
+            httpx.WriteError("write contains credential"),
+            "PROVIDER_UNAVAILABLE",
+            None,
+        ),
+        (
+            httpx.RemoteProtocolError("protocol contains credential"),
+            "PROVIDER_UNAVAILABLE",
+            None,
+        ),
+        (
             httpx.Response(
                 503,
                 json={"message": "upstream response contains credential"},
@@ -339,6 +354,30 @@ async def test_create_score_classifies_only_transient_upstream_failures_as_retry
     assert captured.value.retryable is True
     assert captured.value.error_code == expected_error_code
     assert captured.value.upstream_status_code == expected_status
+    assert "credential" not in captured.value.message
+
+
+@pytest.mark.anyio
+async def test_create_score_does_not_retry_unsupported_protocol_configuration(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    FakeAsyncClient.requests = []
+    FakeAsyncClient.responses = [
+        httpx.UnsupportedProtocol("unsupported protocol contains credential")
+    ]
+    monkeypatch.setattr("app.langfuse_client.httpx.AsyncClient", FakeAsyncClient)
+    client = LangfuseProjectApiClient(
+        Settings(langfuse_base_url="http://langfuse.local")
+    )
+
+    with pytest.raises(LangfuseUpstreamError) as captured:
+        await client.create_score(
+            "pk-project-1",
+            "sk-project-1",
+            {"id": "score-1", "name": "quality", "value": 1},
+        )
+
+    assert getattr(captured.value, "retryable", False) is False
     assert "credential" not in captured.value.message
 
 

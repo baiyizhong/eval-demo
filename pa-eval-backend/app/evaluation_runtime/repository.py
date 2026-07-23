@@ -261,7 +261,7 @@ class JobRepository:
             WITH candidate_jobs AS MATERIALIZED (
                 SELECT job.id AS job_id, job.run_id
                 FROM pa_evaluation_jobs AS job
-                WHERE job.status = 'RUNNING'
+                WHERE job.status IN ('RUNNING', 'CANCELLING')
                   AND job.lease_expires_at < NOW()
                 ORDER BY job.lease_expires_at, job.id
                 LIMIT %(limit)s
@@ -284,7 +284,7 @@ class JobRepository:
                   ON candidate.job_id = job.id
                 JOIN locked_runs AS locked_run
                   ON locked_run.id = job.run_id
-                WHERE job.status = 'RUNNING'
+                WHERE job.status IN ('RUNNING', 'CANCELLING')
                   AND job.lease_expires_at < NOW()
                 ORDER BY job.id
                 FOR UPDATE OF job
@@ -292,10 +292,13 @@ class JobRepository:
             requeued AS (
                 UPDATE pa_evaluation_jobs AS job
                 SET status = CASE
+                        WHEN job.status = 'CANCELLING' THEN 'CANCELLED'
                         WHEN job.attempt_count >= job.max_attempts THEN 'DEAD_LETTER'
                         ELSE 'RETRY_WAIT'
                     END,
                     next_attempt_at = CASE
+                        WHEN job.status = 'CANCELLING'
+                            THEN job.next_attempt_at
                         WHEN job.attempt_count >= job.max_attempts
                             THEN job.next_attempt_at
                         ELSE NOW() + make_interval(
@@ -311,13 +314,19 @@ class JobRepository:
                     lease_owner = NULL,
                     lease_expires_at = NULL,
                     heartbeat_at = NULL,
-                    error_code = 'LEASE_EXPIRED',
-                    error_message = 'Job lease expired',
+                    error_code = CASE
+                        WHEN job.status = 'CANCELLING' THEN NULL
+                        ELSE 'LEASE_EXPIRED'
+                    END,
+                    error_message = CASE
+                        WHEN job.status = 'CANCELLING' THEN NULL
+                        ELSE 'Job lease expired'
+                    END,
                     update_by = %(actor)s,
                     update_date = NOW()
                 FROM locked_jobs AS locked_job
                 WHERE job.id = locked_job.id
-                  AND job.status = 'RUNNING'
+                  AND job.status IN ('RUNNING', 'CANCELLING')
                   AND job.lease_expires_at < NOW()
                 RETURNING job.*
             ),
@@ -347,7 +356,11 @@ class JobRepository:
                 report_runs: set[str] = set()
                 for row in rows:
                     if (
-                        row.get("status") != JobStatus.DEAD_LETTER.value
+                        row.get("status")
+                        not in {
+                            JobStatus.DEAD_LETTER.value,
+                            JobStatus.CANCELLED.value,
+                        }
                         or row.get("job_type")
                         not in {
                             JobType.EVALUATE_BATCH.value,

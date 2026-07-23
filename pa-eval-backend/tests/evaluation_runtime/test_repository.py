@@ -1,7 +1,7 @@
 import asyncio
 import os
 import uuid
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from typing import Any
 
 import psycopg
@@ -668,7 +668,7 @@ def test_requeue_expired_leases_retries_or_dead_letters_and_touches_runs() -> No
         JobStatus.DEAD_LETTER,
     ]
     sql, params = cursor.executions[0]
-    assert "status = 'RUNNING'" in sql
+    assert "status IN ('RUNNING', 'CANCELLING')" in sql
     assert "lease_expires_at < NOW()" in sql
     assert "locked_runs AS MATERIALIZED" in sql
     assert "locked_jobs AS MATERIALIZED" in sql
@@ -693,12 +693,13 @@ def test_requeue_expired_leases_retries_or_dead_letters_and_touches_runs() -> No
     assert locked_jobs_only.index("ORDER BY job.id") < locked_jobs_only.index(
         "FOR UPDATE OF job"
     )
-    assert "job.status = 'RUNNING'" in locked_jobs_only
+    assert "job.status IN ('RUNNING', 'CANCELLING')" in locked_jobs_only
     assert "job.lease_expires_at < NOW()" in locked_jobs_only
     assert sql.index("locked_runs AS MATERIALIZED") < sql.index(
         "locked_jobs AS MATERIALIZED"
     ) < sql.index("requeued AS")
     assert "WHEN job.attempt_count >= job.max_attempts THEN 'DEAD_LETTER'" in sql
+    assert "WHEN job.status = 'CANCELLING' THEN 'CANCELLED'" in sql
     assert "ELSE 'RETRY_WAIT'" in sql
     assert "next_attempt_at" in sql
     assert "lease_owner = NULL" in sql
@@ -707,6 +708,124 @@ def test_requeue_expired_leases_retries_or_dead_letters_and_touches_runs() -> No
     assert "UPDATE pa_auto_evaluation_runs" in sql
     assert "update_date = NOW()" in sql
     assert params == {"limit": 50, "actor": "lease-reaper"}
+
+
+class StatefulExpiredCancellationCursor(StatefulReportCursor):
+    def __init__(self, jobs: list[dict[str, Any]]) -> None:
+        super().__init__(jobs)
+        self._rows: list[dict[str, Any]] = []
+
+    async def execute(self, sql: str, params: dict[str, Any]) -> None:
+        if "candidate_jobs AS MATERIALIZED" not in sql:
+            await super().execute(sql, params)
+            return
+        self.executions.append((sql, params))
+        self._row = None
+        self._rows = []
+        supports_cancelling = (
+            "job.status IN ('RUNNING', 'CANCELLING')" in sql
+            and "WHEN job.status = 'CANCELLING' THEN 'CANCELLED'" in sql
+        )
+        if not supports_cancelling:
+            return
+        now = datetime.now(timezone.utc)
+        candidates = sorted(
+            (
+                job
+                for job in self.jobs.values()
+                if job["status"] in {"RUNNING", "CANCELLING"}
+                and job["lease_expires_at"] is not None
+                and job["lease_expires_at"] < now
+            ),
+            key=lambda job: (job["lease_expires_at"], job["id"]),
+        )[: int(params["limit"])]
+        for job in candidates:
+            if job["status"] == "CANCELLING":
+                job["status"] = "CANCELLED"
+                job["error_code"] = None
+                job["error_message"] = None
+            elif job["attempt_count"] >= job["max_attempts"]:
+                job["status"] = "DEAD_LETTER"
+                job["error_code"] = "LEASE_EXPIRED"
+                job["error_message"] = "Job lease expired"
+            else:
+                job["status"] = "RETRY_WAIT"
+                job["error_code"] = "LEASE_EXPIRED"
+                job["error_message"] = "Job lease expired"
+            job["lease_owner"] = None
+            job["lease_expires_at"] = None
+            job["heartbeat_at"] = None
+            self._rows.append(dict(job))
+
+    async def fetchall(self) -> list[dict[str, Any]]:
+        rows = self._rows
+        self._rows = []
+        return rows
+
+
+def test_expired_cancelling_lease_is_finalized_once_and_enqueues_one_report() -> None:
+    cancelling = _job_row(
+        id="sync-cancelling",
+        status="RUNNING",
+        lease_owner="worker-crashed",
+        lease_expires_at=datetime.now(timezone.utc) - timedelta(seconds=1),
+        heartbeat_at=datetime.now(timezone.utc) - timedelta(seconds=2),
+        attempt_count=3,
+        job_type="SYNC_SCORE_BATCH",
+    )
+    cursor = StatefulExpiredCancellationCursor([cancelling])
+    connection = FakeConnection(cursor)  # type: ignore[arg-type]
+
+    async def connection_factory() -> FakeConnection:
+        return connection
+
+    repository = JobRepository(connection_factory)
+
+    assert asyncio.run(repository.request_run_cancel("run-1", "user-1")) is True
+    assert cursor.jobs["sync-cancelling"]["status"] == "CANCELLING"
+    assert cursor.reports == set()
+
+    first = asyncio.run(
+        repository.requeue_expired_leases(limit=10, actor="lease-reaper")
+    )
+    second = asyncio.run(
+        repository.requeue_expired_leases(limit=10, actor="lease-reaper")
+    )
+
+    assert [job.status for job in first] == [JobStatus.CANCELLED]
+    assert first[0].attempt_count == 3
+    assert first[0].lease_owner is None
+    assert first[0].lease_expires_at is None
+    assert second == []
+    assert len(cursor.reports) == 1
+
+
+def test_reaper_leaves_unexpired_cancelling_lease_for_cooperative_worker() -> None:
+    running = _job_row(
+        id="sync-running",
+        status="RUNNING",
+        lease_owner="worker-live",
+        lease_expires_at=datetime.now(timezone.utc) + timedelta(minutes=5),
+        heartbeat_at=datetime.now(timezone.utc),
+        job_type="SYNC_SCORE_BATCH",
+    )
+    cursor = StatefulExpiredCancellationCursor([running])
+    connection = FakeConnection(cursor)  # type: ignore[arg-type]
+
+    async def connection_factory() -> FakeConnection:
+        return connection
+
+    repository = JobRepository(connection_factory)
+
+    assert asyncio.run(repository.request_run_cancel("run-1", "user-1")) is True
+    jobs = asyncio.run(
+        repository.requeue_expired_leases(limit=10, actor="lease-reaper")
+    )
+
+    assert jobs == []
+    assert cursor.jobs["sync-running"]["status"] == "CANCELLING"
+    assert cursor.jobs["sync-running"]["lease_owner"] == "worker-live"
+    assert cursor.reports == set()
 
 
 def test_expired_final_sync_lease_enqueues_partial_report_in_same_run_lock() -> None:

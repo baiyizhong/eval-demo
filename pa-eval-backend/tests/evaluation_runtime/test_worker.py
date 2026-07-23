@@ -611,10 +611,16 @@ def test_concurrent_workers_claim_once_and_execute_model_once() -> None:
     assert repository.state is JobStatus.SUCCEEDED
 
 
-def test_terminal_duplicate_is_acked_without_execution() -> None:
+@pytest.mark.parametrize(
+    "terminal_status",
+    [JobStatus.SUCCEEDED, JobStatus.DEAD_LETTER, JobStatus.CANCELLED],
+)
+def test_terminal_duplicate_is_acked_without_execution(
+    terminal_status: JobStatus,
+) -> None:
     events: list[str] = []
     repository = FakeRepository(events)
-    repository.state = JobStatus.SUCCEEDED
+    repository.state = terminal_status
     broker = FakeBroker(events)
     executors = FakeExecutors(events, ExecutionOutcome({}))
 
@@ -776,6 +782,7 @@ def _sync_score_job() -> EvaluationJob:
     [
         ("timeout", "PROVIDER_TIMEOUT"),
         ("connect", "PROVIDER_UNAVAILABLE"),
+        ("read", "PROVIDER_UNAVAILABLE"),
         ("server", "PROVIDER_UNAVAILABLE"),
         ("confirm_rate_limit", "PROVIDER_RATE_LIMIT"),
     ],
@@ -798,6 +805,11 @@ def test_real_score_client_transient_failures_flow_through_executor_to_worker_re
         if failure == "connect":
             raise httpx.ConnectError(
                 "connect contains credential",
+                request=request,
+            )
+        if failure == "read":
+            raise httpx.ReadError(
+                "read contains credential",
                 request=request,
             )
         if failure == "server":
