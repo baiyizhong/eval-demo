@@ -237,6 +237,9 @@ def test_mark_succeeded_requires_running_owner_and_clears_lease() -> None:
     assert "lease_owner = %(worker_id)s" in sql
     assert "lease_owner = NULL" in sql
     assert _jsonb_value(params["result_summary"]) == {"scores": 10}
+    assert "WITH locked_run AS MATERIALIZED" in sql
+    assert "FOR UPDATE OF run" in sql
+    assert "GENERATE_REPORT" in cursor.executions[-1][0]
 
 
 def test_retry_delay_uses_bounded_full_jitter(
@@ -360,14 +363,17 @@ def test_mark_dead_letter_only_updates_running_owner() -> None:
 def test_request_run_cancel_updates_run_and_cancellable_jobs_in_one_transaction() -> (
     None
 ):
-    repository, connection, cursor = _repository([{"id": "run-1"}])
+    dependency = _job_row(status="CANCELLED", lease_owner=None)
+    repository, connection, cursor = _repository(
+        [{"id": "run-1"}, dependency]
+    )
 
     updated = asyncio.run(repository.request_run_cancel("run-1", "user-9"))
 
     assert updated is True
     assert connection.entered == 1
     assert connection.exited == 1
-    assert len(cursor.executions) == 2
+    assert len(cursor.executions) == 4
     run_sql, run_params = cursor.executions[0]
     jobs_sql, jobs_params = cursor.executions[1]
     assert "UPDATE pa_auto_evaluation_runs" in run_sql
@@ -379,25 +385,43 @@ def test_request_run_cancel_updates_run_and_cancellable_jobs_in_one_transaction(
     assert "ELSE 'CANCELLED'" in jobs_sql
     assert "SUCCEEDED" not in jobs_sql
     assert run_params == jobs_params == {"run_id": "run-1", "actor": "user-9"}
+    assert "FOR UPDATE OF run" in run_sql
+    assert "GENERATE_REPORT" in cursor.executions[-1][0]
 
 
 def test_request_run_cancel_is_idempotent_while_run_is_cancelling() -> None:
-    repository, _, cursor = _repository([{"id": "run-1"}, {"id": "run-1"}])
+    dependency = _job_row(status="CANCELLED", lease_owner=None)
+    repository, _, cursor = _repository(
+        [
+            {"id": "run-1"},
+            dependency,
+            {"id": "run-1"},
+            dependency,
+        ]
+    )
 
     first = asyncio.run(repository.request_run_cancel("run-1", "user-9"))
     second = asyncio.run(repository.request_run_cancel("run-1", "user-9"))
 
     assert first is True
     assert second is True
-    assert len(cursor.executions) == 4
+    assert len(cursor.executions) == 8
     assert all(
         "status IN ('QUEUED', 'RUNNING', 'CANCELLING')" in sql
-        for sql, _ in cursor.executions[::2]
+        for sql, _ in cursor.executions[::4]
+    )
+    assert cursor.executions[3][1]["idempotency_key"] == (
+        cursor.executions[7][1]["idempotency_key"]
     )
 
 
 def test_mark_cancelled_requires_cancelling_owner_and_clears_lease() -> None:
-    repository, _, cursor = _repository([{"id": "job-1"}, None])
+    cancelled_row = _job_row(
+        status="CANCELLED",
+        lease_owner=None,
+        job_type="SYNC_SCORE_BATCH",
+    )
+    repository, _, cursor = _repository([cancelled_row, None])
 
     cancelled = asyncio.run(repository.mark_cancelled("job-1", "worker-a"))
     rejected = asyncio.run(repository.mark_cancelled("job-1", "worker-b"))
@@ -412,6 +436,104 @@ def test_mark_cancelled_requires_cancelling_owner_and_clears_lease() -> None:
     assert "lease_expires_at = NULL" in sql
     assert "heartbeat_at = NULL" in sql
     assert params == {"job_id": "job-1", "worker_id": "worker-a"}
+    assert "WITH locked_run AS MATERIALIZED" in sql
+    assert "FOR UPDATE OF run" in sql
+    assert "GENERATE_REPORT" in cursor.executions[1][0]
+
+
+class StatefulReportCursor:
+    terminal = {"SUCCEEDED", "DEAD_LETTER", "CANCELLED"}
+
+    def __init__(self, jobs: list[dict[str, Any]]) -> None:
+        self.jobs = {str(job["id"]): dict(job) for job in jobs}
+        self.reports: set[str] = set()
+        self.executions: list[tuple[str, dict[str, Any]]] = []
+        self._row: dict[str, Any] | None = None
+
+    async def __aenter__(self) -> "StatefulReportCursor":
+        return self
+
+    async def __aexit__(self, *args: object) -> None:
+        return None
+
+    async def execute(self, sql: str, params: dict[str, Any]) -> None:
+        self.executions.append((sql, params))
+        self._row = None
+        if "UPDATE pa_auto_evaluation_runs" in sql and "CANCELLING" in sql:
+            self._row = {"id": params["run_id"]}
+            return
+        if "SET status = CASE" in sql and "ELSE 'CANCELLED'" in sql:
+            for job in self.jobs.values():
+                if job["status"] == "RUNNING":
+                    job["status"] = "CANCELLING"
+                elif job["status"] in {
+                    "PENDING",
+                    "ENQUEUED",
+                    "RETRY_WAIT",
+                    "DEAD_LETTER",
+                }:
+                    job["status"] = "CANCELLED"
+            return
+        if "SELECT job.*" in sql and "job.job_type" in sql:
+            self._row = next(iter(self.jobs.values()), None)
+            return
+        if "SET status = 'CANCELLED'" in sql:
+            job = self.jobs[str(params["job_id"])]
+            if (
+                job["status"] == "CANCELLING"
+                and job["lease_owner"] == params["worker_id"]
+            ):
+                job["status"] = "CANCELLED"
+                job["lease_owner"] = None
+                self._row = dict(job)
+            return
+        if "'GENERATE_REPORT'" in sql:
+            dependencies = [
+                job
+                for job in self.jobs.values()
+                if job["job_type"] in {"EVALUATE_BATCH", "SYNC_SCORE_BATCH"}
+            ]
+            if all(job["status"] in self.terminal for job in dependencies):
+                self.reports.add(str(params["idempotency_key"]))
+            return
+        raise AssertionError(f"unexpected SQL: {sql}")
+
+    async def fetchone(self) -> dict[str, Any] | None:
+        row = self._row
+        self._row = None
+        return row
+
+
+def test_cancel_state_model_suppresses_pending_then_inserts_report_once() -> None:
+    running = _job_row(
+        id="sync-running",
+        status="RUNNING",
+        lease_owner="worker-a",
+        job_type="SYNC_SCORE_BATCH",
+    )
+    pending = _job_row(
+        id="sync-pending",
+        status="PENDING",
+        job_type="SYNC_SCORE_BATCH",
+    )
+    cursor = StatefulReportCursor([running, pending])
+    connection = FakeConnection(cursor)  # type: ignore[arg-type]
+
+    async def connection_factory() -> FakeConnection:
+        return connection
+
+    repository = JobRepository(connection_factory)
+
+    assert asyncio.run(repository.request_run_cancel("run-1", "user-1")) is True
+    assert cursor.jobs["sync-running"]["status"] == "CANCELLING"
+    assert cursor.jobs["sync-pending"]["status"] == "CANCELLED"
+    assert cursor.reports == set()
+
+    assert asyncio.run(repository.mark_cancelled("sync-running", "worker-a")) is True
+    assert len(cursor.reports) == 1
+
+    assert asyncio.run(repository.request_run_cancel("run-1", "user-1")) is True
+    assert len(cursor.reports) == 1
 
 
 def test_request_run_cancel_does_not_touch_jobs_for_terminal_run() -> None:
@@ -582,6 +704,27 @@ def test_requeue_expired_leases_retries_or_dead_letters_and_touches_runs() -> No
     assert "UPDATE pa_auto_evaluation_runs" in sql
     assert "update_date = NOW()" in sql
     assert params == {"limit": 50, "actor": "lease-reaper"}
+
+
+def test_expired_final_sync_lease_enqueues_partial_report_in_same_run_lock() -> None:
+    dead = _job_row(
+        id="job-dead",
+        status="DEAD_LETTER",
+        attempt_count=5,
+        max_attempts=5,
+        lease_owner=None,
+        job_type="SYNC_SCORE_BATCH",
+    )
+    repository, connection, cursor = _repository([dead])
+
+    jobs = asyncio.run(
+        repository.requeue_expired_leases(limit=1, actor="lease-reaper")
+    )
+
+    assert [job.status for job in jobs] == [JobStatus.DEAD_LETTER]
+    assert connection.entered == connection.exited == 1
+    assert "FOR UPDATE OF run" in cursor.executions[0][0]
+    assert "GENERATE_REPORT" in cursor.executions[1][0]
 
 
 def test_requeue_expired_leases_rejects_invalid_limit() -> None:

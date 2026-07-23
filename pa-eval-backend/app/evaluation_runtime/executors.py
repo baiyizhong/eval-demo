@@ -15,6 +15,7 @@ from app.evaluation_runtime.storage import (
     ShardDescriptor,
     StoredManifest,
 )
+from app.errors import LangfuseProjectCredentialsError
 from app.langfuse_client import LangfuseRateLimitError
 
 
@@ -45,13 +46,34 @@ class PrepareRunRepository(Protocol):
 
 
 class ResultStorage(Protocol):
-    async def read_result(self, object_key: str) -> Mapping[str, Any]: ...
+    async def read_result(
+        self,
+        object_key: str,
+        *,
+        project_id: str,
+        run_id: str,
+        producer_job_id: str,
+    ) -> Mapping[str, Any]: ...
+
+
+@dataclass(frozen=True, slots=True)
+class ProjectApiCredentials:
+    public_key: str
+    secret_key: str
+
+
+class ProjectCredentialProvider(Protocol):
+    async def get_project_credentials(
+        self,
+        project_id: str,
+    ) -> ProjectApiCredentials | None: ...
 
 
 class ScoreApiClient(Protocol):
     async def create_score(
         self,
-        project_id: str,
+        public_key: str,
+        secret_key: str,
         payload: dict[str, Any],
     ) -> dict[str, Any]: ...
 
@@ -101,7 +123,7 @@ def build_score_payload(
     payload_metadata.update(
         {
             "paAutoEvaluationRunId": job.run_id,
-            "paEvaluationJobId": job.id,
+            "paEvaluationJobId": _result_producer_job_id(job),
             "paEvaluationSampleId": sample_id,
         }
     )
@@ -130,15 +152,21 @@ class SyncScoreBatchExecutor:
         self,
         storage: ResultStorage,
         client: ScoreApiClient,
+        credential_provider: ProjectCredentialProvider,
         *,
         max_concurrency: int = 10,
+        max_rate_limit_retries: int = 3,
         sleep: Callable[[float], Awaitable[None]] = asyncio.sleep,
     ) -> None:
         if max_concurrency <= 0 or max_concurrency > SCORE_SYNC_BATCH_SIZE:
             raise ValueError("max_concurrency must be between 1 and 100")
+        if max_rate_limit_retries < 0 or max_rate_limit_retries > 10:
+            raise ValueError("max_rate_limit_retries must be between 0 and 10")
         self._storage = storage
         self._client = client
+        self._credential_provider = credential_provider
         self._max_concurrency = max_concurrency
+        self._max_rate_limit_retries = max_rate_limit_retries
         self._sleep = sleep
 
     async def execute(
@@ -154,8 +182,23 @@ class SyncScoreBatchExecutor:
                 "evaluation result object key is unavailable",
                 error_code="RESULT_OBJECT_NOT_FOUND",
             )
+        producer_job_id = _result_producer_job_id(job)
+        credentials = await self._credential_provider.get_project_credentials(
+            job.project_id
+        )
+        if (
+            credentials is None
+            or not credentials.public_key.strip()
+            or not credentials.secret_key.strip()
+        ):
+            raise LangfuseProjectCredentialsError()
         await checkpoint.checkpoint()
-        document = await self._storage.read_result(object_key)
+        document = await self._storage.read_result(
+            object_key,
+            project_id=job.project_id,
+            run_id=job.run_id,
+            producer_job_id=producer_job_id,
+        )
         payloads = _score_payloads(job, document)
         pending_ids = job.payload.get("pendingScoreIds")
         if pending_ids is not None:
@@ -182,7 +225,7 @@ class SyncScoreBatchExecutor:
             batch = payloads[start : start + SCORE_SYNC_BATCH_SIZE]
             results = await asyncio.gather(
                 *(
-                    self._create_score(job.project_id, payload, semaphore)
+                    self._create_score(credentials, payload, semaphore)
                     for payload in batch
                 ),
                 return_exceptions=True,
@@ -230,16 +273,35 @@ class SyncScoreBatchExecutor:
 
     async def _create_score(
         self,
-        project_id: str,
+        credentials: ProjectApiCredentials,
         payload: dict[str, Any],
         semaphore: asyncio.Semaphore,
     ) -> dict[str, Any]:
         async with semaphore:
-            try:
-                return await self._client.create_score(project_id, payload)
-            except LangfuseRateLimitError as error:
-                await self._sleep(error.retry_after_seconds)
-                return await self._client.create_score(project_id, payload)
+            for retry_count in range(self._max_rate_limit_retries + 1):
+                try:
+                    return await self._client.create_score(
+                        credentials.public_key,
+                        credentials.secret_key,
+                        payload,
+                    )
+                except LangfuseRateLimitError as error:
+                    if retry_count >= self._max_rate_limit_retries:
+                        raise
+                    await self._sleep(error.retry_after_seconds)
+        raise RuntimeError("score rate limit retry loop exhausted")
+
+
+def _result_producer_job_id(job: EvaluationJob) -> str:
+    producer_job_id = job.payload.get("resultProducerJobId")
+    if not isinstance(producer_job_id, str) or not producer_job_id.strip():
+        producer_job_id = job.parent_job_id
+    if not isinstance(producer_job_id, str) or not producer_job_id.strip():
+        raise NonRetryableExecutionError(
+            "evaluation result producer is unavailable",
+            error_code="RESULT_PRODUCER_NOT_FOUND",
+        )
+    return producer_job_id
 
 
 def _score_payloads(
@@ -353,6 +415,7 @@ class EvaluateBatchExecutor:
         )
         followup_payload = {
             "rawResultObjectKey": object_key,
+            "resultProducerJobId": job.id,
             "manifestHash": job.payload.get("manifestHash"),
             "contentHash": job.payload.get("contentHash"),
         }

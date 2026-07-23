@@ -153,8 +153,86 @@ def test_result_round_trip_validates_hash_and_returns_mapping() -> None:
 
     key = asyncio.run(storage.put_result("project-1", "run-1", "job-1", document))
 
-    assert asyncio.run(storage.read_result(key)) == document
+    assert (
+        asyncio.run(
+            storage.read_result(
+                key,
+                project_id="project-1",
+                run_id="run-1",
+                producer_job_id="job-1",
+            )
+        )
+        == document
+    )
     assert client.get_bodies[-1].closed is True
+
+
+@pytest.mark.parametrize(
+    ("project_id", "run_id", "producer_job_id"),
+    [
+        ("project-2", "run-1", "job-1"),
+        ("project-1", "run-2", "job-1"),
+        ("project-1", "run-1", "job-2"),
+    ],
+)
+def test_result_read_rejects_cross_context_object_key(
+    project_id: str,
+    run_id: str,
+    producer_job_id: str,
+) -> None:
+    client = FakeObjectStoreClient()
+    storage = ManifestStorage(bucket="test-bucket", client=client)
+    key = asyncio.run(
+        storage.put_result("project-1", "run-1", "job-1", {"results": []})
+    )
+
+    with pytest.raises(ObjectIntegrityError, match="context"):
+        asyncio.run(
+            storage.read_result(
+                key,
+                project_id=project_id,
+                run_id=run_id,
+                producer_job_id=producer_job_id,
+            )
+        )
+
+
+def test_result_read_rejects_corrupted_metadata() -> None:
+    client = FakeObjectStoreClient()
+    storage = ManifestStorage(bucket="test-bucket", client=client)
+    key = asyncio.run(
+        storage.put_result("project-1", "run-1", "job-1", {"results": []})
+    )
+    client.objects[key]["metadata"]["sha256"] = "0" * 64
+
+    with pytest.raises(ObjectIntegrityError, match="metadata"):
+        asyncio.run(
+            storage.read_result(
+                key,
+                project_id="project-1",
+                run_id="run-1",
+                producer_job_id="job-1",
+            )
+        )
+
+
+def test_result_read_rejects_corrupted_content() -> None:
+    client = FakeObjectStoreClient()
+    storage = ManifestStorage(bucket="test-bucket", client=client)
+    key = asyncio.run(
+        storage.put_result("project-1", "run-1", "job-1", {"results": []})
+    )
+    client.objects[key]["body"] = gzip.compress(b"{}", mtime=0)
+
+    with pytest.raises(ObjectIntegrityError, match="content"):
+        asyncio.run(
+            storage.read_result(
+                key,
+                project_id="project-1",
+                run_id="run-1",
+                producer_job_id="job-1",
+            )
+        )
 
 
 def test_same_content_with_different_batch_layout_has_distinct_manifest_identity() -> (

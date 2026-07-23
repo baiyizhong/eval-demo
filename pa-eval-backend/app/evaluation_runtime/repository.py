@@ -257,8 +257,7 @@ class JobRepository:
     ) -> list[EvaluationJob]:
         if limit <= 0:
             raise ValueError("limit must be positive")
-        rows = await self._fetchall(
-            """
+        sql = """
             WITH candidate_jobs AS MATERIALIZED (
                 SELECT job.id AS job_id, job.run_id
                 FROM pa_evaluation_jobs AS job
@@ -339,9 +338,30 @@ class JobRepository:
                 SELECT COUNT(*) AS touched_count
                 FROM touched_runs
             ) AS run_updates
-            """,
-            {"limit": limit, "actor": actor},
-        )
+            """
+        connection = await self._connection_factory()
+        async with connection as active_connection:
+            async with active_connection.cursor() as cursor:
+                await cursor.execute(sql, {"limit": limit, "actor": actor})
+                rows = list(await cursor.fetchall())
+                report_runs: set[str] = set()
+                for row in rows:
+                    if (
+                        row.get("status") != JobStatus.DEAD_LETTER.value
+                        or row.get("job_type")
+                        not in {
+                            JobType.EVALUATE_BATCH.value,
+                            JobType.SYNC_SCORE_BATCH.value,
+                        }
+                        or str(row["run_id"]) in report_runs
+                    ):
+                        continue
+                    report_runs.add(str(row["run_id"]))
+                    await self._enqueue_report_if_terminal(
+                        cursor,
+                        job=row,
+                        worker_id=actor,
+                    )
         return [_evaluation_job(row) for row in rows]
 
     async def create_job(self, job: EvaluationJob) -> EvaluationJob | None:
@@ -477,31 +497,51 @@ class JobRepository:
         result_summary: Mapping[str, Any],
         raw_result_object_key: str | None = None,
     ) -> EvaluationJob | None:
-        row = await self._fetchone(
-            """
-            UPDATE pa_evaluation_jobs
-            SET status = 'SUCCEEDED',
-                result_summary = %(result_summary)s,
-                raw_result_object_key = %(raw_result_object_key)s,
-                lease_owner = NULL,
-                lease_expires_at = NULL,
-                heartbeat_at = NULL,
-                error_code = NULL,
-                error_message = NULL,
-                update_by = %(worker_id)s,
-                update_date = NOW()
-            WHERE id = %(job_id)s
-              AND status = 'RUNNING'
-              AND lease_owner = %(worker_id)s
-            RETURNING *
-            """,
-            {
-                "job_id": job_id,
-                "worker_id": worker_id,
-                "result_summary": Jsonb(dict(result_summary)),
-                "raw_result_object_key": raw_result_object_key,
-            },
-        )
+        connection = await self._connection_factory()
+        async with connection as active_connection:
+            async with active_connection.cursor() as cursor:
+                await cursor.execute(
+                    """
+                    WITH locked_run AS MATERIALIZED (
+                        SELECT run.id
+                        FROM pa_auto_evaluation_runs AS run
+                        JOIN pa_evaluation_jobs AS candidate_job
+                          ON candidate_job.run_id = run.id
+                        WHERE candidate_job.id = %(job_id)s
+                        FOR UPDATE OF run
+                    )
+                    UPDATE pa_evaluation_jobs AS job
+                    SET status = 'SUCCEEDED',
+                        result_summary = %(result_summary)s,
+                        raw_result_object_key = %(raw_result_object_key)s,
+                        lease_owner = NULL,
+                        lease_expires_at = NULL,
+                        heartbeat_at = NULL,
+                        error_code = NULL,
+                        error_message = NULL,
+                        update_by = %(worker_id)s,
+                        update_date = NOW()
+                    FROM locked_run
+                    WHERE job.id = %(job_id)s
+                      AND job.run_id = locked_run.id
+                      AND job.status = 'RUNNING'
+                      AND job.lease_owner = %(worker_id)s
+                    RETURNING job.*
+                    """,
+                    {
+                        "job_id": job_id,
+                        "worker_id": worker_id,
+                        "result_summary": Jsonb(dict(result_summary)),
+                        "raw_result_object_key": raw_result_object_key,
+                    },
+                )
+                row = await cursor.fetchone()
+                if row is not None:
+                    await self._enqueue_report_if_terminal(
+                        cursor,
+                        job=row,
+                        worker_id=worker_id,
+                    )
         return _evaluation_job(row) if row is not None else None
 
     async def complete_with_followups(
@@ -916,22 +956,42 @@ class JobRepository:
         )
 
     async def mark_cancelled(self, job_id: str, worker_id: str) -> bool:
-        row = await self._fetchone(
-            """
-            UPDATE pa_evaluation_jobs
-            SET status = 'CANCELLED',
-                lease_owner = NULL,
-                lease_expires_at = NULL,
-                heartbeat_at = NULL,
-                update_by = %(worker_id)s,
-                update_date = NOW()
-            WHERE id = %(job_id)s
-              AND status = 'CANCELLING'
-              AND lease_owner = %(worker_id)s
-            RETURNING id
-            """,
-            {"job_id": job_id, "worker_id": worker_id},
-        )
+        connection = await self._connection_factory()
+        async with connection as active_connection:
+            async with active_connection.cursor() as cursor:
+                await cursor.execute(
+                    """
+                    WITH locked_run AS MATERIALIZED (
+                        SELECT run.id
+                        FROM pa_auto_evaluation_runs AS run
+                        JOIN pa_evaluation_jobs AS candidate_job
+                          ON candidate_job.run_id = run.id
+                        WHERE candidate_job.id = %(job_id)s
+                        FOR UPDATE OF run
+                    )
+                    UPDATE pa_evaluation_jobs AS job
+                    SET status = 'CANCELLED',
+                        lease_owner = NULL,
+                        lease_expires_at = NULL,
+                        heartbeat_at = NULL,
+                        update_by = %(worker_id)s,
+                        update_date = NOW()
+                    FROM locked_run
+                    WHERE job.id = %(job_id)s
+                      AND job.run_id = locked_run.id
+                      AND job.status = 'CANCELLING'
+                      AND job.lease_owner = %(worker_id)s
+                    RETURNING job.*
+                    """,
+                    {"job_id": job_id, "worker_id": worker_id},
+                )
+                row = await cursor.fetchone()
+                if row is not None:
+                    await self._enqueue_report_if_terminal(
+                        cursor,
+                        job=row,
+                        worker_id=worker_id,
+                    )
         return row is not None
 
     async def request_run_cancel(self, run_id: str, actor: str) -> bool:
@@ -941,14 +1001,21 @@ class JobRepository:
                 params = {"run_id": run_id, "actor": actor}
                 await cursor.execute(
                     """
-                    UPDATE pa_auto_evaluation_runs
+                    WITH locked_run AS MATERIALIZED (
+                        SELECT run.id
+                        FROM pa_auto_evaluation_runs AS run
+                        WHERE run.id = %(run_id)s
+                          AND run.status IN ('QUEUED', 'RUNNING', 'CANCELLING')
+                        FOR UPDATE OF run
+                    )
+                    UPDATE pa_auto_evaluation_runs AS run
                     SET status = 'CANCELLING',
                         cancel_requested_at = COALESCE(cancel_requested_at, NOW()),
                         update_by = %(actor)s,
                         update_date = NOW()
-                    WHERE id = %(run_id)s
-                      AND status IN ('QUEUED', 'RUNNING', 'CANCELLING')
-                    RETURNING id
+                    FROM locked_run
+                    WHERE run.id = locked_run.id
+                    RETURNING run.id
                     """,
                     params,
                 )
@@ -984,6 +1051,24 @@ class JobRepository:
                     """,
                     params,
                 )
+                await cursor.execute(
+                    """
+                    SELECT job.*
+                    FROM pa_evaluation_jobs AS job
+                    WHERE job.run_id = %(run_id)s
+                      AND job.job_type IN ('EVALUATE_BATCH', 'SYNC_SCORE_BATCH')
+                    ORDER BY job.id
+                    LIMIT 1
+                    """,
+                    params,
+                )
+                dependency = await cursor.fetchone()
+                if dependency is not None:
+                    await self._enqueue_report_if_terminal(
+                        cursor,
+                        job=dependency,
+                        worker_id=actor,
+                    )
         return True
 
     async def requeue_dead_letter(

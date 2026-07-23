@@ -192,6 +192,7 @@ def test_evaluate_batch_slices_relative_to_shard_and_writes_standard_results() -
     assert followup.job_type is JobType.SYNC_SCORE_BATCH
     assert (followup.batch_start, followup.batch_end) == (1, 3)
     assert followup.payload["rawResultObjectKey"] == outcome.raw_result_object_key
+    assert followup.payload["resultProducerJobId"] == job.id
     assert followup.payload["manifestHash"] == job.payload["manifestHash"]
 
 

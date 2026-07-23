@@ -22,6 +22,17 @@ class LangfuseUpstreamError(BusinessError):
         super().__init__(code=2002, message=message, status_code=status_code)
 
 
+class LangfuseProjectCredentialsError(BusinessError):
+    retryable = False
+
+    def __init__(self) -> None:
+        super().__init__(
+            code=2004,
+            message="Langfuse 项目 API 凭据未配置",
+            status_code=500,
+        )
+
+
 class UnsupportedOperationError(BusinessError):
     def __init__(self, message: str) -> None:
         super().__init__(code=2003, message=message, status_code=501)

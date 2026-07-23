@@ -329,10 +329,23 @@ class ManifestStorage:
         )
         return object_key
 
-    async def read_result(self, object_key: str) -> Mapping[str, Any]:
+    async def read_result(
+        self,
+        object_key: str,
+        *,
+        project_id: str,
+        run_id: str,
+        producer_job_id: str,
+    ) -> Mapping[str, Any]:
         match = _RESULT_KEY.fullmatch(object_key)
         if match is None:
             raise ValueError("invalid result object key")
+        if (
+            match.group("project") != project_id
+            or match.group("run") != run_id
+            or match.group("job") != producer_job_id
+        ):
+            raise ObjectIntegrityError("result object context mismatch")
         expected_hash = match.group("hash")
         try:
             metadata, compressed = await asyncio.to_thread(

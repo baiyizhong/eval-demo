@@ -1,12 +1,18 @@
 from datetime import datetime, timezone
 from email.utils import parsedate_to_datetime
+import math
 from typing import Any
 
 import httpx
 from fastapi import Depends
 
 from app.config import Settings, get_settings
-from app.errors import BusinessError, LangfuseConfigError, LangfuseUpstreamError
+from app.errors import (
+    BusinessError,
+    LangfuseConfigError,
+    LangfuseProjectCredentialsError,
+    LangfuseUpstreamError,
+)
 
 
 class LangfuseRateLimitError(LangfuseUpstreamError):
@@ -15,8 +21,12 @@ class LangfuseRateLimitError(LangfuseUpstreamError):
 
     def __init__(self, *, retry_after_seconds: float) -> None:
         super().__init__(message="Langfuse 服务请求过于频繁", status_code=429)
-        self.retry_after_seconds = max(0.0, retry_after_seconds)
+        self.retry_after_seconds = _safe_retry_after_seconds(retry_after_seconds)
         self.response = httpx.Response(429)
+
+
+class _LangfuseConflictError(RuntimeError):
+    pass
 
 
 class LangfuseAdminClient:
@@ -146,19 +156,42 @@ class LangfuseProjectApiClient:
 
     async def create_score(
         self,
-        project_id: str,
+        public_key: str,
+        secret_key: str,
         payload: dict[str, Any],
     ) -> dict[str, Any]:
+        if not public_key.strip() or not secret_key.strip():
+            raise LangfuseProjectCredentialsError()
         score_id = payload.get("id")
         if not isinstance(score_id, str) or not score_id:
             raise ValueError("score payload id is required")
-        return await self._request(
-            "POST",
-            "/api/public/scores",
-            project_id=project_id,
-            json=payload,
-            duplicate_id=score_id,
-        )
+        try:
+            return await self._public_request(
+                "POST",
+                "/api/public/scores",
+                public_key=public_key,
+                secret_key=secret_key,
+                json=payload,
+            )
+        except _LangfuseConflictError as conflict:
+            try:
+                existing = await self._public_request(
+                    "GET",
+                    f"/api/public/scores/{score_id}",
+                    public_key=public_key,
+                    secret_key=secret_key,
+                )
+            except (LangfuseUpstreamError, _LangfuseConflictError) as error:
+                raise LangfuseUpstreamError(
+                    message="Langfuse Score 冲突无法确认",
+                    status_code=502,
+                ) from error
+            if existing.get("id") == score_id:
+                return {"id": score_id, "duplicate": True}
+            raise LangfuseUpstreamError(
+                message="Langfuse Score 冲突无法确认",
+                status_code=502,
+            ) from conflict
 
     async def _request(
         self,
@@ -167,7 +200,6 @@ class LangfuseProjectApiClient:
         project_id: str,
         json: dict[str, Any] | None = None,
         params: dict[str, Any] | None = None,
-        duplicate_id: str | None = None,
     ) -> dict[str, Any]:
         if not self._admin_api_key:
             raise LangfuseConfigError()
@@ -194,20 +226,38 @@ class LangfuseProjectApiClient:
                     return response.json()
                 return {}
         except httpx.HTTPStatusError as exc:
-            if exc.response.status_code == 409 and duplicate_id is not None:
-                try:
-                    duplicate_payload = exc.response.json()
-                except ValueError:
-                    duplicate_payload = {}
-                remote_id = (
-                    duplicate_payload.get("id")
-                    if isinstance(duplicate_payload, dict)
-                    else None
-                )
-                return {
-                    "id": remote_id if isinstance(remote_id, str) else duplicate_id,
-                    "duplicate": True,
-                }
+            if exc.response.status_code == 429:
+                raise LangfuseRateLimitError(
+                    retry_after_seconds=_retry_after_seconds(exc.response)
+                ) from exc
+            message = LangfuseAdminClient._extract_error_message(exc.response)
+            raise LangfuseUpstreamError(message=message, status_code=502) from exc
+        except httpx.HTTPError as exc:
+            raise LangfuseUpstreamError(message="Langfuse 服务暂不可用") from exc
+
+    async def _public_request(
+        self,
+        method: str,
+        path: str,
+        *,
+        public_key: str,
+        secret_key: str,
+        json: dict[str, Any] | None = None,
+    ) -> dict[str, Any]:
+        try:
+            async with httpx.AsyncClient(
+                base_url=self._base_url,
+                auth=httpx.BasicAuth(public_key, secret_key),
+                timeout=self._timeout,
+            ) as client:
+                response = await client.request(method, path, json=json)
+                response.raise_for_status()
+                if response.content:
+                    return response.json()
+                return {}
+        except httpx.HTTPStatusError as exc:
+            if exc.response.status_code == 409:
+                raise _LangfuseConflictError("Langfuse Score conflict") from exc
             if exc.response.status_code == 429:
                 raise LangfuseRateLimitError(
                     retry_after_seconds=_retry_after_seconds(exc.response)
@@ -234,7 +284,7 @@ class LangfuseProjectApiClient:
 def _retry_after_seconds(response: httpx.Response) -> float:
     value = response.headers.get("Retry-After", "").strip()
     try:
-        return max(0.0, float(value))
+        return _safe_retry_after_seconds(float(value))
     except ValueError:
         try:
             retry_at = parsedate_to_datetime(value)
@@ -243,6 +293,12 @@ def _retry_after_seconds(response: httpx.Response) -> float:
         if retry_at.tzinfo is None:
             retry_at = retry_at.replace(tzinfo=timezone.utc)
         return max(0.0, (retry_at - datetime.now(timezone.utc)).total_seconds())
+
+
+def _safe_retry_after_seconds(value: float) -> float:
+    if not math.isfinite(value) or value < 0:
+        return 1.0
+    return value
 
 
 async def get_langfuse_client(

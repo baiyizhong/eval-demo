@@ -5,12 +5,17 @@ from typing import Any, Mapping
 import pytest
 
 from app.evaluation_runtime.executors import (
+    ProjectApiCredentials,
     SyncScoreBatchExecutor,
     build_score_payload,
 )
 from app.evaluation_runtime.idempotency import deterministic_score_id
 from app.evaluation_runtime.models import EvaluationJob, JobStatus, JobType
+from app.errors import LangfuseProjectCredentialsError
 from app.langfuse_client import LangfuseRateLimitError
+
+
+_RESULT_KEY = "results/project-1/run-1/evaluate-job-1/" + "a" * 64 + ".json.gz"
 
 
 def _job(**overrides: Any) -> EvaluationJob:
@@ -38,7 +43,10 @@ def _job(**overrides: Any) -> EvaluationJob:
         "lease_owner": "worker-1",
         "lease_expires_at": now,
         "heartbeat_at": now,
-        "payload": {"rawResultObjectKey": "results/key.json.gz"},
+        "payload": {
+            "rawResultObjectKey": _RESULT_KEY,
+            "resultProducerJobId": "evaluate-job-1",
+        },
         "result_summary": {},
         "raw_result_object_key": None,
         "error_code": None,
@@ -51,11 +59,41 @@ def _job(**overrides: Any) -> EvaluationJob:
 class ResultStorage:
     def __init__(self, result: Mapping[str, Any]) -> None:
         self.result = result
-        self.keys: list[str] = []
+        self.reads: list[dict[str, str]] = []
 
-    async def read_result(self, key: str) -> Mapping[str, Any]:
-        self.keys.append(key)
+    async def read_result(
+        self,
+        key: str,
+        *,
+        project_id: str,
+        run_id: str,
+        producer_job_id: str,
+    ) -> Mapping[str, Any]:
+        self.reads.append(
+            {
+                "key": key,
+                "projectId": project_id,
+                "runId": run_id,
+                "producerJobId": producer_job_id,
+            }
+        )
         return self.result
+
+
+class CredentialProvider:
+    def __init__(self, credentials: ProjectApiCredentials | None = None) -> None:
+        self.credentials = credentials or ProjectApiCredentials(
+            public_key="pk-project-1",
+            secret_key="sk-project-1",
+        )
+        self.project_ids: list[str] = []
+
+    async def get_project_credentials(
+        self,
+        project_id: str,
+    ) -> ProjectApiCredentials | None:
+        self.project_ids.append(project_id)
+        return self.credentials
 
 
 class RecordingGuard:
@@ -75,10 +113,12 @@ class PartialClient:
 
     async def create_score(
         self,
-        project_id: str,
+        public_key: str,
+        secret_key: str,
         payload: dict[str, Any],
     ) -> dict[str, Any]:
-        assert project_id == "project-1"
+        assert public_key == "pk-project-1"
+        assert secret_key == "sk-project-1"
         call_index = len(self.calls)
         self.calls.append(payload)
         self.active += 1
@@ -129,7 +169,7 @@ def test_build_score_payload_uses_deterministic_id_and_pa_metadata() -> None:
     assert payload["metadata"] == {
         "safe": "value",
         "paAutoEvaluationRunId": job.run_id,
-        "paEvaluationJobId": job.id,
+        "paEvaluationJobId": "evaluate-job-1",
         "paEvaluationSampleId": sample["sampleId"],
     }
     assert payload["traceId"] == "trace-9"
@@ -141,6 +181,7 @@ def test_partial_success_followup_retries_only_unconfirmed_scores() -> None:
     executor = SyncScoreBatchExecutor(
         storage,
         client,
+        CredentialProvider(),
         max_concurrency=8,
     )
     job = _job()
@@ -159,7 +200,8 @@ def test_partial_success_followup_retries_only_unconfirmed_scores() -> None:
     assert len(first.followups) == 1
     retry_spec = first.followups[0]
     assert retry_spec.job_type is JobType.SYNC_SCORE_BATCH
-    assert retry_spec.payload["rawResultObjectKey"] == "results/key.json.gz"
+    assert retry_spec.payload["rawResultObjectKey"] == _RESULT_KEY
+    assert retry_spec.payload["resultProducerJobId"] == "evaluate-job-1"
     assert len(retry_spec.payload["pendingScoreIds"]) == 40
 
     client.fail_from = None
@@ -183,7 +225,8 @@ def test_duplicate_score_is_confirmed_with_remote_object_id() -> None:
     class DuplicateClient:
         async def create_score(
             self,
-            project_id: str,
+            public_key: str,
+            secret_key: str,
             payload: dict[str, Any],
         ) -> dict[str, Any]:
             return {"id": "remote-existing-score", "duplicate": True}
@@ -192,6 +235,7 @@ def test_duplicate_score_is_confirmed_with_remote_object_id() -> None:
         SyncScoreBatchExecutor(
             ResultStorage(_results(1)),
             DuplicateClient(),
+            CredentialProvider(),
         ).execute(_job(batch_end=1), RecordingGuard())
     )
 
@@ -212,7 +256,8 @@ def test_rate_limit_waits_retry_after_before_retrying() -> None:
 
         async def create_score(
             self,
-            project_id: str,
+            public_key: str,
+            secret_key: str,
             payload: dict[str, Any],
         ) -> dict[str, Any]:
             self.calls += 1
@@ -228,6 +273,7 @@ def test_rate_limit_waits_retry_after_before_retrying() -> None:
         SyncScoreBatchExecutor(
             ResultStorage(_results(1)),
             client,
+            CredentialProvider(),
             sleep=fake_sleep,
         ).execute(_job(batch_end=1), RecordingGuard())
     )
@@ -235,6 +281,104 @@ def test_rate_limit_waits_retry_after_before_retrying() -> None:
     assert client.calls == 2
     assert sleeps == [2.5]
     assert outcome.result_summary["confirmedCount"] == 1
+
+
+def test_consecutive_rate_limits_use_latest_delay_and_stop_at_bound() -> None:
+    sleeps: list[float] = []
+
+    class RateLimitedClient:
+        def __init__(self) -> None:
+            self.calls = 0
+
+        async def create_score(
+            self,
+            public_key: str,
+            secret_key: str,
+            payload: dict[str, Any],
+        ) -> dict[str, Any]:
+            self.calls += 1
+            raise LangfuseRateLimitError(
+                retry_after_seconds=float(self.calls)
+            )
+
+    async def fake_sleep(delay: float) -> None:
+        sleeps.append(delay)
+
+    client = RateLimitedClient()
+    executor = SyncScoreBatchExecutor(
+        ResultStorage(_results(1)),
+        client,
+        CredentialProvider(),
+        max_rate_limit_retries=2,
+        sleep=fake_sleep,
+    )
+
+    with pytest.raises(LangfuseRateLimitError):
+        asyncio.run(executor.execute(_job(batch_end=1), RecordingGuard()))
+
+    assert client.calls == 3
+    assert sleeps == [1.0, 2.0]
+
+
+def test_missing_credentials_fail_without_calling_langfuse() -> None:
+    client = PartialClient()
+    provider = CredentialProvider()
+    provider.credentials = None
+    executor = SyncScoreBatchExecutor(
+        ResultStorage(_results(1)),
+        client,
+        provider,
+    )
+
+    with pytest.raises(LangfuseProjectCredentialsError):
+        asyncio.run(executor.execute(_job(batch_end=1), RecordingGuard()))
+
+    assert client.calls == []
+
+
+def test_credentials_are_never_persisted_in_outcome_or_followup() -> None:
+    outcome = asyncio.run(
+        SyncScoreBatchExecutor(
+            ResultStorage(_results(2)),
+            PartialClient(fail_from=1),
+            CredentialProvider(),
+        ).execute(_job(batch_end=2), RecordingGuard())
+    )
+
+    persisted = repr((outcome.result_summary, outcome.followups))
+    assert "pk-project-1" not in persisted
+    assert "sk-project-1" not in persisted
+
+
+def test_multi_level_pending_followups_keep_original_result_producer() -> None:
+    storage = ResultStorage(_results(3))
+    client = PartialClient(fail_from=1)
+    executor = SyncScoreBatchExecutor(
+        storage,
+        client,
+        CredentialProvider(),
+    )
+
+    first = asyncio.run(executor.execute(_job(batch_end=3), RecordingGuard()))
+    client.calls = []
+    second = asyncio.run(
+        executor.execute(
+            _job(
+                id="sync-job-2",
+                parent_job_id="sync-job-1",
+                batch_end=3,
+                payload=first.followups[0].payload,
+            ),
+            RecordingGuard(),
+        )
+    )
+
+    assert second.followups[0].payload["resultProducerJobId"] == (
+        "evaluate-job-1"
+    )
+    assert {read["producerJobId"] for read in storage.reads} == {
+        "evaluate-job-1"
+    }
 
 
 def test_sync_source_has_no_direct_langfuse_database_writer() -> None:
@@ -245,6 +389,7 @@ def test_sync_source_has_no_direct_langfuse_database_writer() -> None:
         "ClickHouse",
         "clickhouse",
         "score_writer",
+        "auto_evaluations",
         "INSERT INTO scores",
         "UPDATE scores",
     )
@@ -253,7 +398,11 @@ def test_sync_source_has_no_direct_langfuse_database_writer() -> None:
 
 
 def test_sync_rejects_wrong_job_type() -> None:
-    executor = SyncScoreBatchExecutor(ResultStorage(_results(1)), PartialClient())
+    executor = SyncScoreBatchExecutor(
+        ResultStorage(_results(1)),
+        PartialClient(),
+        CredentialProvider(),
+    )
 
     with pytest.raises(ValueError, match="SYNC_SCORE_BATCH"):
         asyncio.run(

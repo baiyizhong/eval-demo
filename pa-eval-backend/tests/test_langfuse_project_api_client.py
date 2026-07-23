@@ -4,6 +4,7 @@ import httpx
 import pytest
 
 from app.config import Settings
+from app.errors import LangfuseProjectCredentialsError, LangfuseUpstreamError
 from app.langfuse_client import LangfuseProjectApiClient, LangfuseRateLimitError
 
 
@@ -160,7 +161,8 @@ async def test_create_score_posts_to_langfuse_public_api(
     )
 
     result = await client.create_score(
-        "project-1",
+        "pk-project-1",
+        "sk-project-1",
         {"id": "score-1", "name": "quality", "value": 1},
     )
 
@@ -168,6 +170,13 @@ async def test_create_score_posts_to_langfuse_public_api(
     assert request["method"] == "POST"
     assert request["path"] == "/api/public/scores"
     assert request["kwargs"]["json"]["id"] == "score-1"
+    auth = request["client"]["auth"]
+    auth_request = httpx.Request("POST", "http://langfuse.local")
+    next(auth.sync_auth_flow(auth_request))
+    assert auth_request.headers["Authorization"] == (
+        "Basic cGstcHJvamVjdC0xOnNrLXByb2plY3QtMQ=="
+    )
+    assert "headers" not in request["client"]
     assert result == {"id": "score-1"}
 
 
@@ -179,8 +188,9 @@ async def test_create_score_treats_existing_id_as_success(
     FakeAsyncClient.responses = [
         httpx.Response(
             409,
-            json={"message": "Score ID already exists", "id": "remote-score-1"},
-        )
+            json={"message": "conflict"},
+        ),
+        httpx.Response(200, json={"id": "score-1", "name": "quality"}),
     ]
     monkeypatch.setattr("app.langfuse_client.httpx.AsyncClient", FakeAsyncClient)
     client = LangfuseProjectApiClient(
@@ -191,11 +201,78 @@ async def test_create_score_treats_existing_id_as_success(
     )
 
     result = await client.create_score(
-        "project-1",
+        "pk-project-1",
+        "sk-project-1",
         {"id": "score-1", "name": "quality", "value": 1},
     )
 
-    assert result == {"id": "remote-score-1", "duplicate": True}
+    assert result == {"id": "score-1", "duplicate": True}
+    assert [request["method"] for request in FakeAsyncClient.requests] == [
+        "POST",
+        "GET",
+    ]
+    assert FakeAsyncClient.requests[1]["path"] == "/api/public/scores/score-1"
+
+
+@pytest.mark.anyio
+async def test_create_score_does_not_confirm_unrelated_409(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    FakeAsyncClient.requests = []
+    FakeAsyncClient.responses = [
+        httpx.Response(409, json={"message": "unrelated conflict"}),
+        httpx.Response(200, json={"id": "different-score", "name": "quality"}),
+    ]
+    monkeypatch.setattr("app.langfuse_client.httpx.AsyncClient", FakeAsyncClient)
+    client = LangfuseProjectApiClient(
+        Settings(
+            langfuse_base_url="http://langfuse.local",
+            langfuse_admin_api_key="admin-secret",
+        )
+    )
+
+    with pytest.raises(LangfuseUpstreamError):
+        await client.create_score(
+            "pk-project-1",
+            "sk-project-1",
+            {"id": "score-1", "name": "quality", "value": 1},
+        )
+
+
+@pytest.mark.anyio
+async def test_create_score_keeps_conflict_pending_when_confirmation_conflicts(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    FakeAsyncClient.requests = []
+    FakeAsyncClient.responses = [
+        httpx.Response(409, json={"message": "create conflict"}),
+        httpx.Response(409, json={"message": "read conflict"}),
+    ]
+    monkeypatch.setattr("app.langfuse_client.httpx.AsyncClient", FakeAsyncClient)
+    client = LangfuseProjectApiClient(
+        Settings(langfuse_base_url="http://langfuse.local")
+    )
+
+    with pytest.raises(LangfuseUpstreamError):
+        await client.create_score(
+            "pk-project-1",
+            "sk-project-1",
+            {"id": "score-1", "name": "quality", "value": 1},
+        )
+
+
+@pytest.mark.anyio
+async def test_create_score_rejects_missing_project_credentials() -> None:
+    client = LangfuseProjectApiClient(
+        Settings(langfuse_base_url="http://langfuse.local")
+    )
+
+    with pytest.raises(LangfuseProjectCredentialsError):
+        await client.create_score(
+            "",
+            "",
+            {"id": "score-1", "name": "quality", "value": 1},
+        )
 
 
 @pytest.mark.anyio
@@ -220,7 +297,8 @@ async def test_create_score_exposes_retry_after_for_rate_limit(
 
     with pytest.raises(LangfuseRateLimitError) as captured:
         await client.create_score(
-            "project-1",
+            "pk-project-1",
+            "sk-project-1",
             {"id": "score-1", "name": "quality", "value": 1},
         )
 
@@ -249,8 +327,38 @@ async def test_create_score_accepts_http_date_retry_after(
 
     with pytest.raises(LangfuseRateLimitError) as captured:
         await client.create_score(
-            "project-1",
+            "pk-project-1",
+            "sk-project-1",
             {"id": "score-1", "name": "quality", "value": 1},
         )
 
     assert captured.value.retry_after_seconds == 0
+
+
+@pytest.mark.anyio
+@pytest.mark.parametrize("header", ["NaN", "inf", "-1", "not-a-date"])
+async def test_create_score_uses_safe_default_for_invalid_retry_after(
+    monkeypatch: pytest.MonkeyPatch,
+    header: str,
+) -> None:
+    FakeAsyncClient.requests = []
+    FakeAsyncClient.responses = [
+        httpx.Response(
+            429,
+            headers={"Retry-After": header},
+            json={"message": "rate limited"},
+        )
+    ]
+    monkeypatch.setattr("app.langfuse_client.httpx.AsyncClient", FakeAsyncClient)
+    client = LangfuseProjectApiClient(
+        Settings(langfuse_base_url="http://langfuse.local")
+    )
+
+    with pytest.raises(LangfuseRateLimitError) as captured:
+        await client.create_score(
+            "pk-project-1",
+            "sk-project-1",
+            {"id": "score-1", "name": "quality", "value": 1},
+        )
+
+    assert captured.value.retry_after_seconds == 1.0
