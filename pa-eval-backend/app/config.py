@@ -1,8 +1,9 @@
 from functools import lru_cache
 import json
+from typing import Literal
 from uuid import uuid4
 
-from pydantic import Field
+from pydantic import Field, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
@@ -31,6 +32,16 @@ class Settings(BaseSettings):
     pa_eval_scheduler_batch_size: int = Field(default=10)
     pa_eval_scheduler_lease_seconds: int = Field(default=120)
     pa_eval_openjudge_max_concurrency: int = Field(default=32)
+    pa_eval_redis_url: str = Field(default="redis://localhost:6379/0")
+    pa_eval_runtime_stream_prefix: str = Field(default="pa-eval:jobs")
+    pa_eval_runtime_consumer_group: str = Field(default="pa-eval-workers")
+    pa_eval_runtime_mode: Literal["legacy", "shadow", "worker"] = Field(
+        default="legacy"
+    )
+    pa_eval_job_batch_size: int = Field(default=100, ge=1, le=1000)
+    pa_eval_job_lease_seconds: int = Field(default=120, ge=30)
+    pa_eval_job_heartbeat_seconds: int = Field(default=30, ge=5)
+    pa_eval_dispatch_visibility_seconds: int = Field(default=30, ge=5)
     pa_eval_scheduler_instance_id: str = Field(
         default_factory=lambda: f"pa-eval-scheduler-{uuid4().hex}"
     )
@@ -64,6 +75,14 @@ class Settings(BaseSettings):
         env_file_encoding="utf-8",
         extra="ignore",
     )
+
+    @model_validator(mode="after")
+    def validate_job_heartbeat_interval(self) -> "Settings":
+        if self.pa_eval_job_heartbeat_seconds * 2 >= self.pa_eval_job_lease_seconds:
+            raise ValueError(
+                "heartbeat_seconds * 2 must be less than lease_seconds"
+            )
+        return self
 
     @property
     def cors_origins(self) -> list[str]:

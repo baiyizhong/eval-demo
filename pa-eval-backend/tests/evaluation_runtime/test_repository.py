@@ -30,6 +30,11 @@ class FakeCursor:
     async def fetchone(self) -> dict[str, Any] | None:
         return self.rows.pop(0) if self.rows else None
 
+    async def fetchall(self) -> list[dict[str, Any]]:
+        rows = [row for row in self.rows if row is not None]
+        self.rows.clear()
+        return rows
+
 
 class FakeConnection:
     def __init__(self, cursor: FakeCursor) -> None:
@@ -434,6 +439,104 @@ def test_requeue_dead_letter_returns_none_when_run_is_cancelling() -> None:
     assert result is None
     sql, _ = cursor.executions[0]
     assert "status IN ('QUEUED', 'RUNNING')" in sql
+
+
+def test_list_dispatchable_reserves_stale_enqueued_and_lists_due_new_jobs() -> None:
+    pending = _job_row(id="job-pending", status="PENDING")
+    stale = _job_row(id="job-stale", status="ENQUEUED")
+    repository, _, cursor = _repository([pending, stale])
+
+    jobs = asyncio.run(repository.list_dispatchable(limit=25))
+
+    assert [job.id for job in jobs] == ["job-pending", "job-stale"]
+    sql, params = cursor.executions[0]
+    assert "status = 'ENQUEUED'" in sql
+    assert "update_date < NOW() - make_interval" in sql
+    assert "FOR UPDATE SKIP LOCKED" in sql
+    assert "LIMIT %(limit)s\n                FOR UPDATE SKIP LOCKED" in sql
+    assert (
+        "LIMIT (SELECT slots FROM remaining_capacity)\n"
+        "                FOR UPDATE OF job SKIP LOCKED"
+    ) in sql
+    assert "SET update_date = NOW()" in sql
+    assert "status IN ('PENDING', 'RETRY_WAIT')" in sql
+    assert "next_attempt_at <= NOW()" in sql
+    assert params == {"limit": 25, "visibility_seconds": 30}
+
+
+def test_list_dispatchable_rejects_invalid_limit() -> None:
+    repository, _, cursor = _repository()
+
+    with pytest.raises(ValueError, match="limit must be positive"):
+        asyncio.run(repository.list_dispatchable(limit=0))
+
+    assert cursor.executions == []
+
+
+def test_mark_enqueued_for_dispatch_is_a_single_conditional_transition() -> None:
+    enqueued = _job_row(status="ENQUEUED")
+    repository, _, cursor = _repository([enqueued, None])
+
+    first = asyncio.run(repository.mark_enqueued_for_dispatch("job-1"))
+    duplicate = asyncio.run(repository.mark_enqueued_for_dispatch("job-1"))
+
+    assert first is not None
+    assert first.status is JobStatus.ENQUEUED
+    assert duplicate is None
+    sql, params = cursor.executions[0]
+    assert "SET status = 'ENQUEUED'" in sql
+    assert "status IN ('PENDING', 'RETRY_WAIT')" in sql
+    assert "next_attempt_at <= NOW()" in sql
+    assert params == {"job_id": "job-1"}
+
+
+def test_requeue_expired_leases_retries_or_dead_letters_and_touches_runs() -> None:
+    retrying = _job_row(
+        id="job-retry",
+        status="RETRY_WAIT",
+        attempt_count=2,
+        lease_owner=None,
+    )
+    dead = _job_row(
+        id="job-dead",
+        status="DEAD_LETTER",
+        attempt_count=5,
+        max_attempts=5,
+        lease_owner=None,
+    )
+    repository, _, cursor = _repository([retrying, dead])
+
+    jobs = asyncio.run(
+        repository.requeue_expired_leases(limit=50, actor="lease-reaper")
+    )
+
+    assert [job.status for job in jobs] == [
+        JobStatus.RETRY_WAIT,
+        JobStatus.DEAD_LETTER,
+    ]
+    sql, params = cursor.executions[0]
+    assert "status = 'RUNNING'" in sql
+    assert "lease_expires_at < NOW()" in sql
+    assert "FOR UPDATE SKIP LOCKED" in sql
+    assert "LIMIT %(limit)s\n                FOR UPDATE SKIP LOCKED" in sql
+    assert "WHEN job.attempt_count >= job.max_attempts THEN 'DEAD_LETTER'" in sql
+    assert "ELSE 'RETRY_WAIT'" in sql
+    assert "next_attempt_at" in sql
+    assert "lease_owner = NULL" in sql
+    assert "lease_expires_at = NULL" in sql
+    assert "heartbeat_at = NULL" in sql
+    assert "UPDATE pa_auto_evaluation_runs" in sql
+    assert "update_date = NOW()" in sql
+    assert params == {"limit": 50, "actor": "lease-reaper"}
+
+
+def test_requeue_expired_leases_rejects_invalid_limit() -> None:
+    repository, _, cursor = _repository()
+
+    with pytest.raises(ValueError, match="limit must be positive"):
+        asyncio.run(repository.requeue_expired_leases(limit=0, actor="reaper"))
+
+    assert cursor.executions == []
 
 
 @pytest.mark.skipif(

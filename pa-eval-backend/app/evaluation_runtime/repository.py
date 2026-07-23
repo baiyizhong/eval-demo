@@ -28,8 +28,155 @@ def _evaluation_job(row: Mapping[str, Any]) -> EvaluationJob:
 
 
 class JobRepository:
-    def __init__(self, connection_factory: ConnectionFactory) -> None:
+    def __init__(
+        self,
+        connection_factory: ConnectionFactory,
+        *,
+        dispatch_visibility_seconds: int = 30,
+    ) -> None:
+        if dispatch_visibility_seconds <= 0:
+            raise ValueError("dispatch_visibility_seconds must be positive")
         self._connection_factory = connection_factory
+        self._dispatch_visibility_seconds = dispatch_visibility_seconds
+
+    async def list_dispatchable(self, *, limit: int) -> list[EvaluationJob]:
+        if limit <= 0:
+            raise ValueError("limit must be positive")
+        rows = await self._fetchall(
+            """
+            WITH stale_candidates AS MATERIALIZED (
+                SELECT id
+                FROM pa_evaluation_jobs
+                WHERE status = 'ENQUEUED'
+                  AND update_date < NOW() - make_interval(
+                      secs => %(visibility_seconds)s
+                )
+                ORDER BY priority DESC, update_date, id
+                LIMIT %(limit)s
+                FOR UPDATE SKIP LOCKED
+            ),
+            reserved_enqueued AS (
+                UPDATE pa_evaluation_jobs AS job
+                SET update_date = NOW()
+                FROM stale_candidates AS candidate
+                WHERE job.id = candidate.id
+                  AND job.status = 'ENQUEUED'
+                RETURNING job.*
+            ),
+            remaining_capacity AS (
+                SELECT GREATEST(%(limit)s - COUNT(*), 0)::bigint AS slots
+                FROM reserved_enqueued
+            ),
+            ready_jobs AS (
+                SELECT job.*
+                FROM pa_evaluation_jobs AS job
+                WHERE job.status IN ('PENDING', 'RETRY_WAIT')
+                  AND job.next_attempt_at <= NOW()
+                ORDER BY job.priority DESC, job.next_attempt_at, job.id
+                LIMIT (SELECT slots FROM remaining_capacity)
+                FOR UPDATE OF job SKIP LOCKED
+            )
+            SELECT * FROM reserved_enqueued
+            UNION ALL
+            SELECT * FROM ready_jobs
+            """,
+            {
+                "limit": limit,
+                "visibility_seconds": self._dispatch_visibility_seconds,
+            },
+        )
+        return [_evaluation_job(row) for row in rows]
+
+    async def mark_enqueued_for_dispatch(
+        self,
+        job_id: str,
+    ) -> EvaluationJob | None:
+        row = await self._fetchone(
+            """
+            UPDATE pa_evaluation_jobs
+            SET status = 'ENQUEUED',
+                update_date = NOW()
+            WHERE id = %(job_id)s
+              AND status IN ('PENDING', 'RETRY_WAIT')
+              AND next_attempt_at <= NOW()
+            RETURNING *
+            """,
+            {"job_id": job_id},
+        )
+        return _evaluation_job(row) if row is not None else None
+
+    async def requeue_expired_leases(
+        self,
+        *,
+        limit: int,
+        actor: str,
+    ) -> list[EvaluationJob]:
+        if limit <= 0:
+            raise ValueError("limit must be positive")
+        rows = await self._fetchall(
+            """
+            WITH expired_jobs AS MATERIALIZED (
+                SELECT id
+                FROM pa_evaluation_jobs
+                WHERE status = 'RUNNING'
+                  AND lease_expires_at < NOW()
+                ORDER BY lease_expires_at, id
+                LIMIT %(limit)s
+                FOR UPDATE SKIP LOCKED
+            ),
+            requeued AS (
+                UPDATE pa_evaluation_jobs AS job
+                SET status = CASE
+                        WHEN job.attempt_count >= job.max_attempts THEN 'DEAD_LETTER'
+                        ELSE 'RETRY_WAIT'
+                    END,
+                    next_attempt_at = CASE
+                        WHEN job.attempt_count >= job.max_attempts
+                            THEN job.next_attempt_at
+                        ELSE NOW() + make_interval(
+                            secs => LEAST(
+                                300.0,
+                                POWER(
+                                    2.0,
+                                    GREATEST(job.attempt_count, 1)::double precision
+                                )
+                            )
+                        )
+                    END,
+                    lease_owner = NULL,
+                    lease_expires_at = NULL,
+                    heartbeat_at = NULL,
+                    error_code = 'LEASE_EXPIRED',
+                    error_message = 'Job lease expired',
+                    update_by = %(actor)s,
+                    update_date = NOW()
+                FROM expired_jobs AS expired
+                WHERE job.id = expired.id
+                  AND job.status = 'RUNNING'
+                  AND job.lease_expires_at < NOW()
+                RETURNING job.*
+            ),
+            touched_runs AS (
+                UPDATE pa_auto_evaluation_runs AS run
+                SET update_by = %(actor)s,
+                    update_date = NOW()
+                FROM (
+                    SELECT DISTINCT run_id
+                    FROM requeued
+                ) AS affected
+                WHERE run.id = affected.run_id
+                RETURNING run.id
+            )
+            SELECT requeued.*
+            FROM requeued
+            CROSS JOIN (
+                SELECT COUNT(*) AS touched_count
+                FROM touched_runs
+            ) AS run_updates
+            """,
+            {"limit": limit, "actor": actor},
+        )
+        return [_evaluation_job(row) for row in rows]
 
     async def create_job(self, job: EvaluationJob) -> EvaluationJob | None:
         sql = """
@@ -387,3 +534,14 @@ class JobRepository:
             async with active_connection.cursor() as cursor:
                 await cursor.execute(sql, params)
                 return await cursor.fetchone()
+
+    async def _fetchall(
+        self,
+        sql: str,
+        params: dict[str, Any],
+    ) -> list[Mapping[str, Any]]:
+        connection = await self._connection_factory()
+        async with connection as active_connection:
+            async with active_connection.cursor() as cursor:
+                await cursor.execute(sql, params)
+                return list(await cursor.fetchall())
