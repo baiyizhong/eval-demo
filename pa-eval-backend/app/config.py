@@ -44,6 +44,11 @@ class Settings(BaseSettings):
     pa_eval_trace_count_cache_max_entries: int = Field(default=1024, gt=0)
     github_client_id: str = Field(default="")
     github_client_secret: str = Field(default="")
+    pa_eval_log_level: str = Field(default="INFO")
+    pa_eval_log_dir: str = Field(default=".pa-eval/logs")
+    pa_eval_log_file_name: str = Field(default="pa-eval-backend.log")
+    pa_eval_log_retention_days: int = Field(default=30, ge=1)
+    pa_eval_log_json_enabled: bool = Field(default=False)
     github_oauth_redirect_uri: str = Field(
         default="http://localhost:8000/api/auth/github/callback"
     )
