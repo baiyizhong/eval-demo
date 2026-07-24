@@ -46,6 +46,11 @@ import {
   TooltipContent,
   TooltipTrigger,
 } from '@/components/ui/tooltip'
+import { DateTimeRangePicker } from '@/components/common/date-time/date-time-range-picker'
+import {
+  fromDateTimePickerValue,
+  toDateTimePickerValue,
+} from '@/components/common/date-time/date-time-utils'
 import { Stepper } from '@/components/common/stepper'
 import {
   countProjectAutoEvaluationTraces,
@@ -706,54 +711,32 @@ export function AutoEvaluationTaskForm({
                 <div className='grid gap-4 md:grid-cols-2'>
                   <Field label='时间范围' className='md:col-span-2'>
                     <div className='grid gap-3 lg:grid-cols-[minmax(0,1fr)_auto] lg:items-end'>
-                      <div className='grid gap-3 sm:grid-cols-2'>
-                        <Input
-                          type='datetime-local'
-                          aria-label='开始时间'
-                          value={
-                            form.dataSource.type === 'TRACE_FILTER'
-                              ? (form.dataSource.createdAtRange[0] ?? '')
-                              : ''
-                          }
-                          onChange={(event) => {
-                            if (form.dataSource.type !== 'TRACE_FILTER') return
-                            updateForm({
-                              ...form,
-                              dataSource: {
-                                ...form.dataSource,
-                                timeRange: '',
-                                createdAtRange: [
-                                  event.target.value,
-                                  form.dataSource.createdAtRange[1] ?? '',
-                                ],
-                              },
-                            })
-                          }}
-                        />
-                        <Input
-                          type='datetime-local'
-                          aria-label='结束时间'
-                          value={
-                            form.dataSource.type === 'TRACE_FILTER'
-                              ? (form.dataSource.createdAtRange[1] ?? '')
-                              : ''
-                          }
-                          onChange={(event) => {
-                            if (form.dataSource.type !== 'TRACE_FILTER') return
-                            updateForm({
-                              ...form,
-                              dataSource: {
-                                ...form.dataSource,
-                                timeRange: '',
-                                createdAtRange: [
-                                  form.dataSource.createdAtRange[0] ?? '',
-                                  event.target.value,
-                                ],
-                              },
-                            })
-                          }}
-                        />
-                      </div>
+                      <DateTimeRangePicker
+                        value={
+                          form.dataSource.type === 'TRACE_FILTER'
+                            ? form.dataSource.createdAtRange.map(
+                                toDateTimePickerValue
+                              )
+                            : []
+                        }
+                        showTime
+                        timeFormat='HH:mm'
+                        startPlaceholder='开始时间'
+                        endPlaceholder='结束时间'
+                        onChange={(nextValue) => {
+                          if (form.dataSource.type !== 'TRACE_FILTER') return
+                          updateForm({
+                            ...form,
+                            dataSource: {
+                              ...form.dataSource,
+                              timeRange: '',
+                              createdAtRange: nextValue.map(
+                                fromDateTimePickerValue
+                              ),
+                            },
+                          })
+                        }}
+                      />
                       <ToggleGroup
                         type='single'
                         variant='outline'
@@ -1032,7 +1015,7 @@ export function AutoEvaluationTaskForm({
         </section>
       ) : null}
 
-      <div className='bg-background/95 supports-[backdrop-filter]:bg-background/80 sticky bottom-0 -mx-4 -mb-4 mt-auto flex flex-wrap justify-between gap-2 border-t px-4 py-4 backdrop-blur'>
+      <div className='bg-background/95 supports-[backdrop-filter]:bg-background/80 sticky bottom-0 -mx-4 mt-auto -mb-4 flex flex-wrap justify-between gap-2 border-t px-4 py-4 backdrop-blur'>
         <div className='ml-auto flex gap-2'>
           <Button
             type='button'
@@ -1275,8 +1258,7 @@ function TracePreviewDialog({
 
           <div className='flex flex-wrap items-center gap-3'>
             <span className='text-muted-foreground text-sm'>
-              共 {total.toLocaleString()} 条，第 {currentPage} / {totalPages}{' '}
-              页
+              共 {total.toLocaleString()} 条，第 {currentPage} / {totalPages} 页
             </span>
             <div className='flex items-center gap-2'>
               <Button

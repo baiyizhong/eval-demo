@@ -21,6 +21,7 @@
 | 新增导入、删除或确认流程 | `spec/50-patterns/import-confirm.md`、`spec/30-ui/notification.md`、`spec/40-components/common/import-dialog.md` |
 | 查看或编辑 JSON、Markdown、文本等混合内容 | `spec/40-components/common/mix-editor.md` |
 | 在表格或紧凑区域展示长文本悬浮预览 | `spec/40-components/common/hover-preview-cell.md` |
+| 使用单日期、日期区间或日期时间选择组件 | `spec/40-components/common/date-time-picker.md`、`spec/40-components/common/date-time-range-picker.md` |
 | 接入 API | `spec/10-foundation/api.md`、`spec/00-project/env-build-quality.md` |
 | 接入权限 | `spec/10-foundation/permission.md`、`spec/20-architecture/routes.md` |
 | 新增全局或模块状态 | `spec/10-foundation/state.md`、`spec/20-architecture/modules.md` |

@@ -24,6 +24,12 @@ import { Switch } from '@/components/ui/switch'
 import { Textarea } from '@/components/ui/textarea'
 import { ToggleGroup, ToggleGroupItem } from '@/components/ui/toggle-group'
 import { BaseForm } from '@/components/common/base-form'
+import { DateTimePicker } from '@/components/common/date-time/date-time-picker'
+import { DateTimeRangePicker } from '@/components/common/date-time/date-time-range-picker'
+import {
+  fromDateTimePickerValue,
+  toDateTimePickerValue,
+} from '@/components/common/date-time/date-time-utils'
 import { Drawer } from '@/components/common/drawer'
 import { Stepper } from '@/components/common/stepper'
 import {
@@ -1187,12 +1193,18 @@ function BasicStep({ form, updateForm, updateFrequency }: StepProps) {
 
           {form.frequency.mode === 'ONCE' ? (
             <Field label='执行时间'>
-              <Input
-                type='datetime-local'
-                value={toDateTimeLocalValue(form.frequency.runAt)}
-                onChange={(event) =>
+              <DateTimePicker
+                value={toDateTimePickerValue(
+                  toDateTimeLocalValue(form.frequency.runAt)
+                )}
+                showTime
+                timeFormat='HH:mm'
+                placeholder='选择执行时间'
+                onChange={(nextValue) =>
                   updateFrequency({
-                    runAt: toIsoFromDateTimeLocal(event.target.value),
+                    runAt: toIsoFromDateTimeLocal(
+                      fromDateTimePickerValue(nextValue)
+                    ),
                   })
                 }
               />
@@ -1605,36 +1617,24 @@ function ConfigStep({
               {form.frequency.mode === 'ONCE' ? (
                 <Field label='固定时间范围'>
                   <div className='grid gap-3 lg:grid-cols-[minmax(0,1fr)_auto] lg:items-end'>
-                    <div className='grid gap-3 sm:grid-cols-2'>
-                      <Input
-                        type='datetime-local'
-                        aria-label='开始时间'
-                        value={form.traceCreatedAtRange[0]}
-                        onChange={(event) =>
-                          updateForm({
-                            traceTimeRange: '',
-                            traceCreatedAtRange: [
-                              event.target.value,
-                              form.traceCreatedAtRange[1],
-                            ],
-                          })
-                        }
-                      />
-                      <Input
-                        type='datetime-local'
-                        aria-label='结束时间'
-                        value={form.traceCreatedAtRange[1]}
-                        onChange={(event) =>
-                          updateForm({
-                            traceTimeRange: '',
-                            traceCreatedAtRange: [
-                              form.traceCreatedAtRange[0],
-                              event.target.value,
-                            ],
-                          })
-                        }
-                      />
-                    </div>
+                    <DateTimeRangePicker
+                      value={form.traceCreatedAtRange.map(
+                        toDateTimePickerValue
+                      )}
+                      showTime
+                      timeFormat='HH:mm'
+                      startPlaceholder='开始时间'
+                      endPlaceholder='结束时间'
+                      onChange={(nextValue) =>
+                        updateForm({
+                          traceTimeRange: '',
+                          traceCreatedAtRange: [
+                            fromDateTimePickerValue(nextValue[0]),
+                            fromDateTimePickerValue(nextValue[1]),
+                          ],
+                        })
+                      }
+                    />
                     <ToggleGroup
                       type='single'
                       variant='outline'

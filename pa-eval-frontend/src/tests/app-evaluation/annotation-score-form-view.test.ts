@@ -63,6 +63,24 @@ test('annotation detail score panel matches batch page resizable width behavior'
   assert.match(pageSource, /minmax\(320px,var\(--annotation-score-width\)\)/)
 })
 
+test('annotation detail contains responsive score overflow inside the workspace', () => {
+  assert.match(
+    pageSource,
+    /<Page fixed fluid className='flex min-h-0 flex-col'>/
+  )
+  assert.doesNotMatch(pageSource, /min-h-\[calc\(100svh-3\.5rem\)\]/)
+  assert.match(pageSource, /grid-rows-\[minmax\(0,1fr\)_minmax\(0,1fr\)\]/)
+  assert.match(pageSource, /lg:grid-rows-1/)
+  assert.match(
+    source,
+    /className='flex min-h-0 flex-1 flex-col overflow-hidden p-0'/
+  )
+  assert.match(
+    source,
+    /className='min-h-0 flex-1 overflow-auto p-3 contain-paint'/
+  )
+})
+
 test('categorical score form uses select control with business copy', () => {
   assert.match(source, /SelectTrigger/)
   assert.match(source, /SelectItem/)

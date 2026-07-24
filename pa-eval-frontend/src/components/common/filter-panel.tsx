@@ -1,27 +1,17 @@
 import { useMemo, useState, type ReactNode } from 'react'
 import * as Accordion from '@radix-ui/react-accordion'
 import * as Slider from '@radix-ui/react-slider'
-import {
-  CalendarIcon,
-  ChevronDown,
-  ChevronUp,
-  Filter,
-  Search,
-} from 'lucide-react'
-import type { DateRange } from 'react-day-picker'
+import { ChevronDown, ChevronUp, Filter, Search } from 'lucide-react'
 import { cn } from '@/lib/utils'
 import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
-import { Calendar } from '@/components/ui/calendar'
 import { Checkbox } from '@/components/ui/checkbox'
 import { Input } from '@/components/ui/input'
-import {
-  Popover,
-  PopoverContent,
-  PopoverTrigger,
-} from '@/components/ui/popover'
 import { Separator } from '@/components/ui/separator'
 import { ToggleGroup, ToggleGroupItem } from '@/components/ui/toggle-group'
+import { DateTimePicker } from '@/components/common/date-time/date-time-picker'
+import { DateTimeRangePicker } from '@/components/common/date-time/date-time-range-picker'
+import type { DateTimeConfig } from '@/components/common/date-time/date-time.types'
 
 export type FilterValues = Record<string, unknown>
 
@@ -71,13 +61,6 @@ export type TagsFilterField = BaseFilterField & {
   options: FilterOption[]
 }
 
-type DateTimeConfig = {
-  placeholder?: string
-  showTime?: boolean
-  timeStep?: number
-  timeFormat?: 'HH:mm' | 'HH:mm:ss'
-}
-
 export type DateFilterField = BaseFilterField &
   DateTimeConfig & {
     type: 'date'
@@ -86,6 +69,8 @@ export type DateFilterField = BaseFilterField &
 export type DateRangeFilterField = BaseFilterField &
   DateTimeConfig & {
     type: 'dateRange'
+    startPlaceholder?: string
+    endPlaceholder?: string
   }
 
 export type FilterRendererContext<TField extends FilterField = FilterField> = {
@@ -176,9 +161,6 @@ export function FilterPanel({
   )
   const [openGroups, setOpenGroups] = useState<string[]>(initialOpenGroups)
   const [searchQuery, setSearchQuery] = useState('')
-  const [draftDateRanges, setDraftDateRanges] = useState<
-    Record<string, DateRange>
-  >({})
   const visibleGroups = useMemo(
     () => filterGroupsByQuery(groups, searchQuery),
     [groups, searchQuery]
@@ -217,7 +199,6 @@ export function FilterPanel({
       })
     })
 
-    setDraftDateRanges({})
     onChange(nextValue, {
       groupId: '*',
       fieldId: '*',
@@ -332,18 +313,6 @@ export function FilterPanel({
                         values: value,
                         fieldValue: value[field.id],
                         renderers,
-                        draftDateRange: draftDateRanges[field.id],
-                        setDraftDateRange: (nextDraft) =>
-                          setDraftDateRanges((prev) => ({
-                            ...prev,
-                            [field.id]: nextDraft,
-                          })),
-                        clearDraftDateRange: () =>
-                          setDraftDateRanges((prev) => {
-                            const next = { ...prev }
-                            delete next[field.id]
-                            return next
-                          }),
                         setFieldValue: (nextFieldValue, action) =>
                           setFieldValue(group, field, nextFieldValue, action),
                         clearFieldValue: () => clearFieldValue(group, field),
@@ -404,9 +373,6 @@ function renderField({
   values,
   fieldValue,
   renderers,
-  draftDateRange,
-  setDraftDateRange,
-  clearDraftDateRange,
   setFieldValue,
   clearFieldValue,
 }: {
@@ -415,9 +381,6 @@ function renderField({
   values: FilterValues
   fieldValue: unknown
   renderers?: FilterRendererMap
-  draftDateRange?: DateRange
-  setDraftDateRange: (nextDraft: DateRange) => void
-  clearDraftDateRange: () => void
   setFieldValue: (nextValue: unknown, action: string) => void
   clearFieldValue: () => void
 }) {
@@ -474,23 +437,34 @@ function renderField({
   }
 
   if (field.type === 'date') {
+    const dateField = field as DateFilterField
+
     return (
-      <DateControl
-        field={field as DateFilterField}
+      <DateTimePicker
         value={typeof fieldValue === 'string' ? fieldValue : ''}
+        disabled={dateField.disabled}
+        placeholder={dateField.placeholder}
+        showTime={dateField.showTime}
+        timeStep={dateField.timeStep}
+        timeFormat={dateField.timeFormat}
         onChange={(nextValue) => setFieldValue(nextValue, 'date')}
       />
     )
   }
 
   if (field.type === 'dateRange') {
+    const dateRangeField = field as DateRangeFilterField
+
     return (
-      <DateRangeControl
-        field={field as DateRangeFilterField}
+      <DateTimeRangePicker
         value={toStringArray(fieldValue)}
-        draftRange={draftDateRange}
-        setDraftRange={setDraftDateRange}
-        clearDraftRange={clearDraftDateRange}
+        disabled={dateRangeField.disabled}
+        placeholder={dateRangeField.placeholder}
+        startPlaceholder={dateRangeField.startPlaceholder}
+        endPlaceholder={dateRangeField.endPlaceholder}
+        showTime={dateRangeField.showTime}
+        timeStep={dateRangeField.timeStep}
+        timeFormat={dateRangeField.timeFormat}
         onChange={(nextValue) => setFieldValue(nextValue, 'dateRange')}
       />
     )
@@ -639,192 +613,6 @@ function TagsControl({
   )
 }
 
-function DateControl({
-  field,
-  value,
-  onChange,
-}: {
-  field: DateFilterField
-  value: string
-  onChange: (nextValue: string) => void
-}) {
-  const datePart = getDatePart(value)
-  const selectedDate = parseDate(datePart)
-  const timeValue = getTimePart(value, field)
-
-  const updateDate = (date?: Date) => {
-    if (!date) {
-      onChange('')
-      return
-    }
-
-    const nextDate = formatDate(date)
-    onChange(
-      field.showTime ? joinDateTime(nextDate, timeValue, field) : nextDate
-    )
-  }
-
-  const updateTime = (time: string) => {
-    if (!datePart) {
-      return
-    }
-
-    onChange(joinDateTime(datePart, normalizeTime(time, field), field))
-  }
-
-  return (
-    <Popover>
-      <PopoverTrigger asChild>
-        <Button
-          type='button'
-          variant='outline'
-          className={cn(
-            'h-10 justify-start px-3 text-left font-normal',
-            !value && 'text-muted-foreground'
-          )}
-          disabled={field.disabled}
-        >
-          <CalendarIcon data-icon='inline-start' />
-          <span className='truncate'>
-            {value || field.placeholder || '选择日期'}
-          </span>
-        </Button>
-      </PopoverTrigger>
-      <PopoverContent align='start' className='w-auto p-0'>
-        <Calendar
-          mode='single'
-          selected={selectedDate}
-          onSelect={updateDate}
-          initialFocus
-        />
-        {field.showTime ? (
-          <div className='border-t p-3'>
-            <Input
-              type='time'
-              step={
-                field.timeStep ?? (field.timeFormat === 'HH:mm:ss' ? 1 : 60)
-              }
-              value={timeValue}
-              disabled={!datePart}
-              onChange={(event) => updateTime(event.target.value)}
-            />
-          </div>
-        ) : null}
-      </PopoverContent>
-    </Popover>
-  )
-}
-
-function DateRangeControl({
-  field,
-  value,
-  draftRange,
-  setDraftRange,
-  clearDraftRange,
-  onChange,
-}: {
-  field: DateRangeFilterField
-  value: string[]
-  draftRange?: DateRange
-  setDraftRange: (nextRange: DateRange) => void
-  clearDraftRange: () => void
-  onChange: (nextValue: string[]) => void
-}) {
-  const selectedRange = draftRange ?? toDateRange(value)
-  const displayText =
-    value.length > 0 ? value.join(' 至 ') : field.placeholder || '选择日期区间'
-  const startDate = getDatePart(value[0])
-  const endDate = getDatePart(value[1])
-
-  const updateRange = (range?: DateRange) => {
-    if (!range?.from) {
-      clearDraftRange()
-      onChange([])
-      return
-    }
-
-    if (!range.to) {
-      setDraftRange(range)
-      return
-    }
-
-    clearDraftRange()
-    const start = formatDate(range.from)
-    const end = formatDate(range.to)
-    const startTime = getTimePart(value[0], field, 'start')
-    const endTime = getTimePart(value[1], field, 'end')
-
-    onChange(
-      field.showTime
-        ? [
-            joinDateTime(start, startTime, field),
-            joinDateTime(end, endTime, field),
-          ]
-        : [start, end]
-    )
-  }
-
-  const updateTime = (index: 0 | 1, time: string) => {
-    if (!startDate || !endDate) {
-      return
-    }
-
-    const nextValue = [...value]
-    const date = index === 0 ? startDate : endDate
-    nextValue[index] = joinDateTime(date, normalizeTime(time, field), field)
-    onChange(nextValue)
-  }
-
-  return (
-    <Popover>
-      <PopoverTrigger asChild>
-        <Button
-          type='button'
-          variant='outline'
-          className={cn(
-            'h-auto min-h-10 justify-start px-3 text-left font-normal',
-            value.length === 0 && 'text-muted-foreground'
-          )}
-          disabled={field.disabled}
-        >
-          <CalendarIcon data-icon='inline-start' />
-          <span className='truncate'>{displayText}</span>
-        </Button>
-      </PopoverTrigger>
-      <PopoverContent align='start' className='w-auto p-0'>
-        <Calendar
-          mode='range'
-          selected={selectedRange}
-          onSelect={updateRange}
-          initialFocus
-        />
-        {field.showTime ? (
-          <div className='grid grid-cols-2 gap-2 border-t p-3'>
-            <Input
-              type='time'
-              step={
-                field.timeStep ?? (field.timeFormat === 'HH:mm:ss' ? 1 : 60)
-              }
-              value={getTimePart(value[0], field, 'start')}
-              disabled={!startDate || !endDate}
-              onChange={(event) => updateTime(0, event.target.value)}
-            />
-            <Input
-              type='time'
-              step={
-                field.timeStep ?? (field.timeFormat === 'HH:mm:ss' ? 1 : 60)
-              }
-              value={getTimePart(value[1], field, 'end')}
-              disabled={!startDate || !endDate}
-              onChange={(event) => updateTime(1, event.target.value)}
-            />
-          </div>
-        ) : null}
-      </PopoverContent>
-    </Popover>
-  )
-}
-
 function filterGroupsByQuery(groups: FilterGroup[], query: string) {
   const normalizedQuery = query.trim().toLowerCase()
 
@@ -956,71 +744,4 @@ function toRangeValue(
   const end = typeof fieldValue[1] === 'number' ? fieldValue[1] : fallback[1]
 
   return [start, end]
-}
-
-function parseDate(value?: string) {
-  if (!value) {
-    return undefined
-  }
-
-  const [year, month, day] = value.split('-').map(Number)
-
-  if (!year || !month || !day) {
-    return undefined
-  }
-
-  return new Date(year, month - 1, day)
-}
-
-function formatDate(date: Date) {
-  const year = date.getFullYear()
-  const month = String(date.getMonth() + 1).padStart(2, '0')
-  const day = String(date.getDate()).padStart(2, '0')
-
-  return `${year}-${month}-${day}`
-}
-
-function getDatePart(value?: string) {
-  return typeof value === 'string' ? value.split(' ')[0] || '' : ''
-}
-
-function getTimePart(
-  value: unknown,
-  field: DateTimeConfig,
-  rangeSide: 'start' | 'end' = 'start'
-) {
-  if (!field.showTime) {
-    return ''
-  }
-
-  const fallback = rangeSide === 'end' ? '23:59:59' : '00:00:00'
-  const rawTime =
-    typeof value === 'string' && value.includes(' ')
-      ? value.split(' ')[1]
-      : fallback
-
-  return normalizeTime(rawTime, field)
-}
-
-function normalizeTime(value: string, field: DateTimeConfig) {
-  const withSeconds = field.timeFormat === 'HH:mm:ss'
-  const [hour = '00', minute = '00', second = '00'] = value.split(':')
-  const normalized = `${hour.padStart(2, '0')}:${minute.padStart(2, '0')}:${second.padStart(2, '0')}`
-
-  return withSeconds ? normalized : normalized.slice(0, 5)
-}
-
-function joinDateTime(date: string, time: string, field: DateTimeConfig) {
-  return `${date} ${normalizeTime(time, field)}`
-}
-
-function toDateRange(value: string[]): DateRange | undefined {
-  const from = parseDate(getDatePart(value[0]))
-  const to = parseDate(getDatePart(value[1]))
-
-  if (!from) {
-    return undefined
-  }
-
-  return { from, to }
 }

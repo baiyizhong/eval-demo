@@ -198,7 +198,7 @@ export function ProjectAnnotationItemAnnotate() {
   } as CSSProperties
 
   return (
-    <Page fixed fluid className='flex min-h-[calc(100svh-3.5rem)] flex-col'>
+    <Page fixed fluid className='flex min-h-0 flex-col'>
       <div className='flex min-h-0 flex-1 flex-col gap-4'>
         <PageAction
           showBackButton
@@ -257,7 +257,7 @@ export function ProjectAnnotationItemAnnotate() {
           <section
             ref={splitContainerRef}
             style={splitStyle}
-            className='flex min-h-0 flex-1 flex-col gap-4 overflow-hidden lg:grid lg:grid-cols-[minmax(520px,1fr)_8px_minmax(320px,var(--annotation-score-width))] lg:gap-0'
+            className='grid min-h-0 flex-1 grid-rows-[minmax(0,1fr)_minmax(0,1fr)] gap-4 overflow-hidden lg:grid-cols-[minmax(520px,1fr)_8px_minmax(320px,var(--annotation-score-width))] lg:grid-rows-1 lg:gap-0'
           >
             <AnnotationSourcePanel item={item} />
             <button

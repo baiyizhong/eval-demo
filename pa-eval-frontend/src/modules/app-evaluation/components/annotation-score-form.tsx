@@ -1,7 +1,8 @@
 import { useState } from 'react'
-import { MessageSquareText } from 'lucide-react'
 import { z } from 'zod'
 import type { UseFormReturn } from 'react-hook-form'
+import { MessageSquareText } from 'lucide-react'
+import { cn } from '@/lib/utils'
 import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
 import {
@@ -26,14 +27,18 @@ import {
 } from '@/components/ui/select'
 import { Slider } from '@/components/ui/slider'
 import { Textarea } from '@/components/ui/textarea'
+import { ToggleGroup, ToggleGroupItem } from '@/components/ui/toggle-group'
 import {
   Tooltip,
   TooltipContent,
   TooltipTrigger,
 } from '@/components/ui/tooltip'
-import { ToggleGroup, ToggleGroupItem } from '@/components/ui/toggle-group'
 import { BaseForm } from '@/components/common/base-form'
-import { cn } from '@/lib/utils'
+import {
+  type AnnotationQueueItemRecord,
+  type AnnotationScoreFormInput,
+  type ScoreConfigRecord,
+} from '../types'
 import {
   buildAnnotationScoreDefaultValues,
   getBooleanScoreOptions,
@@ -42,11 +47,6 @@ import {
   normalizeAnnotationScoreFormInput,
   parseBooleanScoreInput,
 } from './annotation-score-values'
-import {
-  type AnnotationQueueItemRecord,
-  type AnnotationScoreFormInput,
-  type ScoreConfigRecord,
-} from '../types'
 
 const scoreFormSchema = z.object({
   scores: z.array(
@@ -76,7 +76,10 @@ type AnnotationScoreFormProps = {
   ) => Promise<void>
 }
 
-const scoreDataTypeBusinessLabels: Record<ScoreConfigRecord['dataType'], string> = {
+const scoreDataTypeBusinessLabels: Record<
+  ScoreConfigRecord['dataType'],
+  string
+> = {
   NUMERIC: '数值评分',
   CATEGORICAL: '结果分类',
   BOOLEAN: '是否通过',
@@ -103,13 +106,16 @@ export function AnnotationScoreForm({
       schema={scoreFormSchema}
       defaultValues={buildAnnotationScoreDefaultValues(item, scoreConfigs)}
       onSubmit={(values) =>
-        onSubmit(normalizeAnnotationScoreFormInput(values, scoreConfigs), 'save')
+        onSubmit(
+          normalizeAnnotationScoreFormInput(values, scoreConfigs),
+          'save'
+        )
       }
-      className='flex min-h-0 flex-1 flex-col p-0'
+      className='flex min-h-0 flex-1 flex-col overflow-hidden p-0'
     >
       {(form) => (
         <>
-          <div className='min-h-0 flex-1 overflow-auto p-3'>
+          <div className='min-h-0 flex-1 overflow-auto p-3 contain-paint'>
             <div className='annotation-score-list rounded-md border'>
               {scoreConfigs.map((config, index) => (
                 <div
@@ -319,7 +325,8 @@ function ScoreValueField({
         control={form.control}
         name={`scores.${index}.value`}
         render={({ field }) => {
-          const numericValue = typeof field.value === 'number' ? field.value : null
+          const numericValue =
+            typeof field.value === 'number' ? field.value : null
           const sliderValue = numericValue ?? min
 
           return (
@@ -423,7 +430,9 @@ function ScoreValueField({
                 </div>
               ) : (
                 <Select
-                  value={typeof field.value === 'number' ? String(field.value) : ''}
+                  value={
+                    typeof field.value === 'number' ? String(field.value) : ''
+                  }
                   disabled={config.archived}
                   onValueChange={(value) => {
                     const option = options.find((item) => item.value === value)

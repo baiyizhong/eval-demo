@@ -39,11 +39,13 @@ import {
   TableHeader,
   TableRow,
 } from '@/components/ui/table'
+import { ChartMetricCard } from '@/components/common/charts'
 import { ContentSection } from '@/components/common/content-section'
+import { DateTimeRangePicker } from '@/components/common/date-time/date-time-range-picker'
+import { formatDate } from '@/components/common/date-time/date-time-utils'
 import { Drawer } from '@/components/common/drawer'
 import { Loading } from '@/components/common/loading'
 import { SidebarNav } from '@/components/common/sidebar-nav'
-import { ChartMetricCard } from '@/components/common/charts'
 import { Main } from '@/components/layout/main'
 
 type AuditLogRecord = {
@@ -344,8 +346,7 @@ export function OperationAudit() {
   const [keyword, setKeyword] = useState('')
   const [status, setStatus] = useState('ALL')
   const [action, setAction] = useState('ALL')
-  const [createdFrom, setCreatedFrom] = useState('')
-  const [createdTo, setCreatedTo] = useState('')
+  const [createdRange, setCreatedRange] = useState<string[]>(getTodayAuditRange)
   const pageSize = 10
   const query = useMemo(
     () => ({
@@ -354,10 +355,10 @@ export function OperationAudit() {
       keyword: keyword.trim() || undefined,
       status: status === 'ALL' ? undefined : status,
       action: action === 'ALL' ? undefined : action,
-      createdFrom: toIsoDateTime(createdFrom),
-      createdTo: toIsoDateTime(createdTo),
+      createdFrom: toIsoDateTime(createdRange[0]),
+      createdTo: toIsoDateTime(createdRange[1]),
     }),
-    [action, createdFrom, createdTo, keyword, page, status]
+    [action, createdRange, keyword, page, status]
   )
   const auditQuery = useQuery({
     queryKey: ['audit-logs', $api, query],
@@ -378,9 +379,9 @@ export function OperationAudit() {
       showHeader={false}
     >
       <Card className='rounded-md border-none p-0 shadow-none'>
-        <CardContent className='flex flex-wrap items-center gap-2 p-3'>
+        <CardContent className='flex flex-wrap items-center gap-2 px-0 py-2'>
           <Input
-            className='h-9 min-w-64 flex-1'
+            className='h-9 w-full flex-none sm:w-128'
             value={keyword}
             onChange={(event) => {
               setKeyword(event.target.value)
@@ -431,34 +432,24 @@ export function OperationAudit() {
               <SelectItem value='FAILED'>失败</SelectItem>
             </SelectContent>
           </Select>
-          <Input
-            className='h-9 w-full sm:w-44'
-            type='datetime-local'
-            value={createdFrom}
-            onChange={(event) => {
-              setCreatedFrom(event.target.value)
+          <DateTimeRangePicker
+            className='w-full flex-none sm:w-[25rem]'
+            value={createdRange}
+            showTime
+            timeFormat='HH:mm'
+            placeholder='审计时间范围'
+            startPlaceholder='开始时间'
+            endPlaceholder='结束时间'
+            onChange={(nextValue) => {
+              setCreatedRange(nextValue)
               setPage(1)
             }}
-            aria-label='开始时间'
-          />
-          <span className='text-muted-foreground hidden text-xs sm:inline'>
-            至
-          </span>
-          <Input
-            className='h-9 w-full sm:w-44'
-            type='datetime-local'
-            value={createdTo}
-            onChange={(event) => {
-              setCreatedTo(event.target.value)
-              setPage(1)
-            }}
-            aria-label='结束时间'
           />
           <Button
             type='button'
             variant='outline'
             size='sm'
-            className='h-9'
+            className='ml-auto h-9'
             onClick={() => auditQuery.refetch()}
           >
             <RefreshCw data-icon='inline-start' />
@@ -513,9 +504,15 @@ export function OperationAudit() {
 
 function toIsoDateTime(value: string) {
   if (!value) return undefined
-  const date = new Date(value)
+  const date = new Date(value.replace(' ', 'T'))
   if (Number.isNaN(date.getTime())) return undefined
   return date.toISOString()
+}
+
+function getTodayAuditRange() {
+  const today = formatDate(new Date())
+
+  return [`${today} 00:00`, `${today} 23:59`]
 }
 
 export function BackendManagement() {
@@ -673,10 +670,7 @@ export function BackendUsers() {
   }
 
   return (
-    <ContentSection
-      title='用户管理'
-      desc='查询所有用户，允许设置超级管理员。'
-    >
+    <ContentSection title='用户管理' desc='查询所有用户，允许设置超级管理员。'>
       <div className='flex flex-col gap-4'>
         <Card className='rounded-md border-none p-0 shadow-none'>
           <CardContent className='flex flex-wrap items-center gap-2 p-0'>

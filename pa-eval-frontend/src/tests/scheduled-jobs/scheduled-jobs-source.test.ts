@@ -269,6 +269,10 @@ test('scheduled job drawer uses grouped basic cards and stacked auto evaluation 
 
 test('scheduled job drawer supports trace filter fields and schedule-aligned windows', () => {
   assert.match(drawerSource, /固定时间范围/)
+  assert.match(drawerSource, /<DateTimeRangePicker/)
+  assert.match(drawerSource, /fromDateTimePickerValue\(nextValue\[0\]\)/)
+  assert.match(drawerSource, /fromDateTimePickerValue\(nextValue\[1\]\)/)
+  assert.match(drawerSource, /debouncedTraceCountPayload/)
   assert.match(drawerSource, /快捷时间范围/)
   assert.doesNotMatch(drawerSource, /<Field label='环境'>/)
   assert.match(drawerSource, /User ID/)
@@ -297,6 +301,19 @@ test('scheduled job drawer supports trace filter fields and schedule-aligned win
   assert.match(drawerSource, /countProjectTraces/)
   assert.match(drawerSource, /traceCountState/)
   assert.match(drawerSource, /buildTraceCountPayload/)
+})
+
+test('scheduled one-time execution uses the common date time picker', () => {
+  assert.match(drawerSource, /<Field label='执行时间'>[\s\S]*?<DateTimePicker/)
+  assert.match(drawerSource, /placeholder='选择执行时间'/)
+  assert.match(
+    drawerSource,
+    /toDateTimePickerValue\(\s*toDateTimeLocalValue\(form\.frequency\.runAt\)/
+  )
+  assert.match(
+    drawerSource,
+    /toIsoFromDateTimeLocal\(\s*fromDateTimePickerValue\(nextValue\)/
+  )
 })
 
 test('scheduled job trace count uses the same trace window as saved jobs', () => {
