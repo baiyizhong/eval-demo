@@ -1,6 +1,6 @@
-import type { JsonData } from 'json-edit-react'
-import { useQuery } from '@tanstack/react-query'
 import { z } from 'zod'
+import { useQuery } from '@tanstack/react-query'
+import { useAPI } from '@/hooks/use-api'
 import {
   FormControl,
   FormField,
@@ -17,10 +17,9 @@ import {
   SelectValue,
 } from '@/components/ui/select'
 import { BaseForm } from '@/components/common/base-form'
-import { FormDialog } from '@/components/common/form-dialog'
-import { JsonEditorPanel } from '@/components/common/json-editor'
 import type { DataTableQueryState } from '@/components/common/data-table'
-import { useAPI } from '@/hooks/use-api'
+import { FormDialog } from '@/components/common/form-dialog'
+import { MixEditor } from '@/components/common/MixEditor'
 import { listProjectDatasets } from '../api/dataset-api'
 import type {
   AddAnnotationItemToDatasetInput,
@@ -126,12 +125,10 @@ export function AnnotationDatasetDialog({
                 <FormItem>
                   <FormLabel>Input</FormLabel>
                   <FormControl>
-                    <JsonEditorPanel
-                      data={field.value as JsonData}
-                      onDataChange={field.onChange}
+                    <MixEditor
+                      value={field.value}
+                      onValueChange={field.onChange}
                       title='Input'
-                      rootName='input'
-                      height={180}
                     />
                   </FormControl>
                   <FormMessage />
@@ -145,12 +142,10 @@ export function AnnotationDatasetDialog({
                 <FormItem>
                   <FormLabel>Expected Output</FormLabel>
                   <FormControl>
-                    <JsonEditorPanel
-                      data={field.value as JsonData}
-                      onDataChange={field.onChange}
+                    <MixEditor
+                      value={field.value}
+                      onValueChange={field.onChange}
                       title='Expected Output'
-                      rootName='expectedOutput'
-                      height={180}
                     />
                   </FormControl>
                   <FormMessage />
@@ -164,12 +159,10 @@ export function AnnotationDatasetDialog({
                 <FormItem>
                   <FormLabel>Metadata</FormLabel>
                   <FormControl>
-                    <JsonEditorPanel
-                      data={field.value as JsonData}
-                      onDataChange={field.onChange}
+                    <MixEditor
+                      value={field.value}
+                      onValueChange={field.onChange}
                       title='Metadata'
-                      rootName='metadata'
-                      height={180}
                     />
                   </FormControl>
                   <FormMessage />

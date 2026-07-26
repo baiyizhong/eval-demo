@@ -25,6 +25,7 @@ lerna-debug.log*
 
 dist-ssr
 *.local
+pa-eval-frontend/mock/*.bundled_*.mjs
 
 # Editor directories and files
 .vscode/*
@@ -38,3 +39,4 @@ dist-ssr
 *.sw?
 
 package-lock.json
+pa-eval-backend/.env

@@ -1,8 +1,5 @@
 import { Badge } from '@/components/ui/badge'
-import {
-  annotationItemStatusLabels,
-  type AnnotationItemStatus,
-} from '../types'
+import { annotationItemStatusLabels, type AnnotationItemStatus } from '../types'
 
 type AnnotationStatusBadgeProps = {
   status: AnnotationItemStatus

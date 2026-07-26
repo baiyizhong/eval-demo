@@ -32,6 +32,13 @@ class Settings(BaseSettings):
     pa_eval_scheduler_batch_size: int = Field(default=10)
     pa_eval_scheduler_lease_seconds: int = Field(default=120)
     pa_eval_openjudge_max_concurrency: int = Field(default=32)
+    pa_eval_skill_root: str = Field(default="/var/lib/pa-eval/skills")
+    pa_eval_skill_builtin_dir: str = Field(default="")
+    pa_eval_pi_binary: str = Field(default="pi")
+    pa_eval_pi_model: str = Field(default="")
+    pa_eval_pi_rpc_timeout: int = Field(default=300)
+    pa_eval_pi_max_concurrency: int = Field(default=4)
+    pa_eval_pi_workdir: str = Field(default="/tmp/pa-eval-skill")
     pa_eval_redis_url: str = Field(default="redis://localhost:6379/0")
     pa_eval_runtime_stream_prefix: str = Field(default="pa-eval:jobs")
     pa_eval_runtime_consumer_group: str = Field(default="pa-eval-workers")
@@ -51,6 +58,20 @@ class Settings(BaseSettings):
     pa_eval_scheduler_instance_id: str = Field(
         default_factory=lambda: f"pa-eval-scheduler-{uuid4().hex}"
     )
+    pa_eval_trace_bulk_worker_enabled: bool = Field(default=True)
+    pa_eval_trace_bulk_worker_poll_interval_seconds: float = Field(default=5)
+    pa_eval_trace_bulk_worker_batch_size: int = Field(default=4)
+    pa_eval_trace_bulk_worker_lease_seconds: int = Field(default=120)
+    pa_eval_trace_bulk_worker_instance_id: str = Field(
+        default_factory=lambda: f"pa-trace-bulk-worker-{uuid4().hex}"
+    )
+    pa_eval_annotation_score_concurrency: int = Field(default=8)
+    pa_eval_annotation_advanced_filter_max_offset: int = Field(
+        default=100_000,
+        ge=0,
+    )
+    pa_eval_trace_count_cache_ttl_seconds: float = Field(default=30, ge=0)
+    pa_eval_trace_count_cache_max_entries: int = Field(default=1024, gt=0)
     github_client_id: str = Field(default="")
     github_client_secret: str = Field(default="")
     github_oauth_redirect_uri: str = Field(

@@ -82,6 +82,18 @@ export const apiRegistry = {
     method: 'DELETE',
     url: '/projects/:projectId/settings/models/llm-connections/:connectionId',
   },
+  createProjectModelDefinition: {
+    method: 'POST',
+    url: '/projects/:projectId/settings/models/definitions',
+  },
+  updateProjectModelDefinition: {
+    method: 'PATCH',
+    url: '/projects/:projectId/settings/models/definitions/:modelId',
+  },
+  deleteProjectModelDefinition: {
+    method: 'DELETE',
+    url: '/projects/:projectId/settings/models/definitions/:modelId',
+  },
   getEvaluators: {
     method: 'GET',
     url: '/evaluators',
@@ -101,6 +113,22 @@ export const apiRegistry = {
   deleteEvaluator: {
     method: 'DELETE',
     url: '/evaluators/:evaluatorId',
+  },
+  getSkills: {
+    method: 'GET',
+    url: '/projects/:projectId/skills',
+  },
+  getSkill: {
+    method: 'GET',
+    url: '/projects/:projectId/skills/:skillName',
+  },
+  uploadSkill: {
+    method: 'POST',
+    url: '/projects/:projectId/skills',
+  },
+  deleteSkill: {
+    method: 'DELETE',
+    url: '/projects/:projectId/skills/:skillName',
   },
   getEvaluationReports: {
     method: 'GET',
@@ -125,6 +153,10 @@ export const apiRegistry = {
   getProjectDatasets: {
     method: 'GET',
     url: '/projects/:projectId/datasets',
+  },
+  getProjectDatasetNameAvailability: {
+    method: 'GET',
+    url: '/projects/:projectId/datasets/name-availability',
   },
   createProjectDataset: {
     method: 'POST',
@@ -214,6 +246,10 @@ export const apiRegistry = {
   getProjectAnnotationQueues: {
     method: 'GET',
     url: '/projects/:projectId/annotation-queues',
+  },
+  getProjectAnnotationQueueNameAvailability: {
+    method: 'GET',
+    url: '/projects/:projectId/annotation-queues/name-availability',
   },
   createProjectAnnotationQueue: {
     method: 'POST',

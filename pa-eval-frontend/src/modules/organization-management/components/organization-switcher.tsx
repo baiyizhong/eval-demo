@@ -1,5 +1,11 @@
 import { useState } from 'react'
+import { CreateOrganizationDrawer } from '@/modules/organization-management/components/create-organization-drawer'
+import { shouldShowCreateOrganization } from '@/modules/organization-management/data/create-permission'
+import { useOrganizations } from '@/modules/organization-management/hooks/use-organizations'
 import { Check, ChevronsUpDown, Plus, Building2 } from 'lucide-react'
+import { useOrganizationStore } from '@/stores/organization.store'
+import { useSessionStore } from '@/stores/session.store'
+import { cn } from '@/lib/utils'
 import { Button } from '@/components/ui/button'
 import {
   DropdownMenu,
@@ -9,17 +15,19 @@ import {
   DropdownMenuSeparator,
   DropdownMenuTrigger,
 } from '@/components/ui/dropdown-menu'
-import { cn } from '@/lib/utils'
-import { CreateOrganizationDrawer } from '@/modules/organization-management/components/create-organization-drawer'
-import { useOrganizations } from '@/modules/organization-management/hooks/use-organizations'
-import { useOrganizationStore } from '@/stores/organization.store'
 
 export function OrganizationSwitcher() {
   const [drawerOpen, setDrawerOpen] = useState(false)
   const { organizations, currentOrganization, isFetching } = useOrganizations()
+  const superAdmin = useSessionStore((state) => state.superAdmin)
   const setCurrentOrganizationId = useOrganizationStore(
     (state) => state.setCurrentOrganizationId
   )
+  const setCurrentOrgId = useSessionStore((state) => state.setCurrentOrgId)
+  const switchOrganization = (organizationId: string) => {
+    setCurrentOrganizationId(organizationId)
+    setCurrentOrgId(organizationId)
+  }
 
   return (
     <>
@@ -33,12 +41,12 @@ export function OrganizationSwitcher() {
             aria-label='切换组织'
           >
             <span className='flex min-w-0 items-center gap-2'>
-              <Building2 className='size-4 text-gray-500' />
+              <Building2 className='text-muted-foreground size-4' />
               <span className='truncate'>
                 {currentOrganization?.name ?? '暂无组织'}
               </span>
             </span>
-            <ChevronsUpDown className='size-4 text-gray-500' />
+            <ChevronsUpDown className='text-muted-foreground size-4' />
           </Button>
         </DropdownMenuTrigger>
         <DropdownMenuContent align='end' className='w-64'>
@@ -51,13 +59,10 @@ export function OrganizationSwitcher() {
                 <DropdownMenuItem
                   key={organization.id}
                   className='gap-2'
-                  onClick={() => setCurrentOrganizationId(organization.id)}
+                  onClick={() => switchOrganization(organization.id)}
                 >
                   <Check
-                    className={cn(
-                      'size-4 text-primary',
-                      isActive ? 'opacity-100' : 'opacity-0'
-                    )}
+                    className={cn(isActive ? 'opacity-100' : 'opacity-0')}
                   />
                   <div className='flex min-w-0 flex-1 flex-col'>
                     <span className='truncate'>{organization.name}</span>
@@ -73,17 +78,24 @@ export function OrganizationSwitcher() {
               {isFetching ? '加载中...' : '暂无组织'}
             </DropdownMenuItem>
           )}
-          <DropdownMenuSeparator />
-          <DropdownMenuItem
-            className='gap-2'
-            onClick={() => setDrawerOpen(true)}
-          >
-            <Plus className='size-4' />
-            <span>创建组织</span>
-          </DropdownMenuItem>
+          {shouldShowCreateOrganization(superAdmin) ? (
+            <>
+              <DropdownMenuSeparator />
+              <DropdownMenuItem
+                className='gap-2'
+                onClick={() => setDrawerOpen(true)}
+              >
+                <Plus />
+                <span>创建组织</span>
+              </DropdownMenuItem>
+            </>
+          ) : null}
         </DropdownMenuContent>
       </DropdownMenu>
-      <CreateOrganizationDrawer open={drawerOpen} onOpenChange={setDrawerOpen} />
+      <CreateOrganizationDrawer
+        open={drawerOpen}
+        onOpenChange={setDrawerOpen}
+      />
     </>
   )
 }

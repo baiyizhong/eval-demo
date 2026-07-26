@@ -188,13 +188,13 @@ import { ModulePage } from '@/modules/<module-name>'
 
 ## 路由接入
 
-项目使用集中式路由配置，路由定义在 `src/routes/index.tsx`。当前没有文件路由，也没有每模块必备的 `routes.tsx`。
+项目使用集中式路由配置，统一从 `src/routes/index.tsx` 导出 `routes`。当前没有文件路由，也没有每模块必备的 `routes.tsx`；具体布局分支拆在 `src/routes/sidebar-routes.tsx` 和 `src/routes/topbar-routes.tsx`。
 
 新增页面模块时：
 
 1. 在 `src/modules/<module>/index.tsx` 导出页面组件。
-2. 在 `src/routes/index.tsx` 顶部导入页面组件。
-3. 按页面形态挂入 `SidebarLayout` 或 `TopbarLayout` 分支。
+2. 需要懒加载时，在 `src/routes/lazy-pages.tsx` 导出 lazy 页面组件。
+3. 按页面形态挂入 `src/routes/sidebar-routes.tsx` 或 `src/routes/topbar-routes.tsx`。
 4. 如需路由级权限，用 `RouteGuard` 包裹页面元素。
 5. 如需导航入口，同步更新侧边栏数据来源、mock 数据或 `TopbarLayout` 的 `navigation.items`。
 6. 如果新增的是已有模块入口下的子页面，例如 `/tasks/auto-evaluation`，需要同步检查父级菜单项是否设置 `activeMatch: 'prefix'`，保证进入子页面时侧边栏或顶部入口仍保持高亮。
@@ -425,7 +425,7 @@ src/modules/<module-name>/hooks/
 
 - 不要为每个模块强制创建空目录。
 - 不要引用不存在的模板模块；以当前真实模块目录作为参考。
-- 不要假设每个模块必须有 `routes.tsx`；当前路由集中在 `src/routes/index.tsx`。
+- 不要假设每个模块必须有 `routes.tsx`；当前路由统一从 `src/routes/index.tsx` 导出，并按布局拆在 `src/routes/*-routes.tsx`。
 - 不要在模块内创建新的全局路由根节点。
 - 不要把模块私有 UI 直接放到 `src/components/common` 或 `src/components/business`。
 - 不要从其他模块深层路径导入私有实现。
@@ -438,7 +438,7 @@ src/modules/<module-name>/hooks/
 1. 创建 `src/modules/<module-name>/index.tsx`，导出页面组件。
 2. 按需创建 `components`、`views`、`hooks`、`stores`、`types`、`data`、`api`。
 3. 页面布局根据路由分支选择：`SidebarLayout` 页面用 `Page`，`TopbarLayout` 页面用 `Main`。
-4. 在 `src/routes/index.tsx` 导入模块页面并挂入对应布局分支。
+4. 在 `src/routes/lazy-pages.tsx` 导出 lazy 页面，并在对应 `src/routes/*-routes.tsx` 挂入布局分支。
 5. 如需路由权限，用 `RouteGuard` 包裹页面元素。
 6. 如需 API，在模块 `api/index.ts` 定义 alias，并注册到 `src/api/registry.ts`。
 7. 如需导航入口，同步更新侧边栏数据来源、mock 数据或 topbar navigation。
@@ -455,7 +455,7 @@ npm run typecheck
 - 模块目录名使用 kebab-case。
 - 没有创建无内容的模板目录。
 - 页面模块从 `index.tsx` 导出路由组件。
-- 路由已在 `src/routes/index.tsx` 按布局分支挂载。
+- 路由已在对应 `src/routes/*-routes.tsx` 按布局分支挂载，并由 `src/routes/index.tsx` 统一导出。
 - 需要权限的路由已使用 `RouteGuard`。
 - 模块私有组件、hooks、stores、types 留在模块内。
 - 跨模块导入只使用模块公开入口或全局目录。

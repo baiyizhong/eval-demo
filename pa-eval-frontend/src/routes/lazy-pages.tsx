@@ -183,3 +183,9 @@ export const TaskEvaluators = lazy(() =>
     default: module.TaskEvaluators,
   }))
 )
+
+export const ProjectSkills = lazy(() =>
+  import('@/modules/skills/views/skills').then((module) => ({
+    default: module.ProjectSkills,
+  }))
+)

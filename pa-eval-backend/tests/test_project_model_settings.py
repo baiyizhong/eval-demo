@@ -13,6 +13,11 @@ class FakeDatabaseReader:
         self.connection_payload = None
         self.updated_connection_payload = None
         self.deleted_connection_payload = None
+        self.model_payload = None
+        self.updated_connection_payload = None
+        self.deleted_connection_payload = None
+        self.updated_model_payload = None
+        self.deleted_model_payload = None
 
     async def get_project_model_settings_for_user(
         self,
@@ -39,6 +44,7 @@ class FakeDatabaseReader:
                     "withDefaultModels": True,
                 }
             ],
+            "modelDefinitions": [],
         }
 
     async def update_project_default_model_for_user(
@@ -86,6 +92,21 @@ class FakeDatabaseReader:
             "withDefaultModels": payload["withDefaultModels"],
         }
 
+    async def create_project_model_definition_for_user(
+        self,
+        project_id: str,
+        user_id: str,
+        user_email: str,
+        payload: dict,
+    ) -> dict:
+        self.model_payload = {
+            "project_id": project_id,
+            "user_id": user_id,
+            "user_email": user_email,
+            "payload": payload,
+        }
+        return {"id": "model-created", **payload}
+
     async def update_project_llm_connection_for_user(
         self,
         project_id: str,
@@ -126,6 +147,38 @@ class FakeDatabaseReader:
         }
         return {"id": connection_id}
 
+    async def update_project_model_definition_for_user(
+        self,
+        project_id: str,
+        model_id: str,
+        user_id: str,
+        user_email: str,
+        payload: dict,
+    ) -> dict:
+        self.updated_model_payload = {
+            "project_id": project_id,
+            "model_id": model_id,
+            "user_id": user_id,
+            "user_email": user_email,
+            "payload": payload,
+        }
+        return {"id": model_id, **payload}
+
+    async def delete_project_model_definition_for_user(
+        self,
+        project_id: str,
+        model_id: str,
+        user_id: str,
+        user_email: str,
+    ) -> dict:
+        self.deleted_model_payload = {
+            "project_id": project_id,
+            "model_id": model_id,
+            "user_id": user_id,
+            "user_email": user_email,
+        }
+        return {"id": model_id}
+
 
 def override_reader(fake_reader: FakeDatabaseReader):
     async def _override() -> LangfuseDatabaseReader:
@@ -153,75 +206,6 @@ def test_gets_project_model_settings() -> None:
     assert response.status_code == 200
     assert response.json()["data"]["defaultModel"]["model"] == "gpt-4o-mini"
     assert response.json()["data"]["connections"][0]["displaySecretKey"] == "sk-...1234"
-
-
-class FakeLangfuseProjectApiClient:
-    def __init__(self) -> None:
-        self.calls: list[tuple[str, str, dict | str | None]] = []
-
-    async def list_llm_connections(self, project_id: str) -> list[dict]:
-        self.calls.append(("list_llm_connections", project_id, None))
-        return [
-            {
-                "id": "lf-llm-1",
-                "provider": "OpenAI",
-                "adapter": "openai",
-                "displaySecretKey": "sk-...1234",
-                "baseUrl": "https://api.openai.com/v1",
-                "customModels": ["gpt-4o-mini"],
-                "withDefaultModels": True,
-            }
-        ]
-
-
-class ReaderForProjectModelSettings(LangfuseDatabaseReader):
-    def __init__(self, project_api_client: FakeLangfuseProjectApiClient) -> None:
-        super().__init__(Settings(), project_api_client=project_api_client)
-        self.visible_checks: list[tuple[str, str]] = []
-
-    async def _ensure_project_visible(self, project_id: str, user_id: str) -> None:
-        self.visible_checks.append((project_id, user_id))
-
-    async def _fetch_all(
-        self,
-        sql: str,
-        params: dict | None = None,
-    ) -> list[dict]:
-        assert "pa_project_model_settings" in sql
-        return [
-            {
-                "id": "pamodeldefault_project-1",
-                "llm_connection_id": "lf-llm-1",
-                "model": "gpt-4o-mini",
-                "temperature": "0.2",
-            }
-        ]
-
-
-@pytest.mark.anyio
-async def test_reader_lists_langfuse_models_and_keeps_pa_default_setting() -> None:
-    project_api_client = FakeLangfuseProjectApiClient()
-    reader = ReaderForProjectModelSettings(project_api_client)
-
-    settings = await reader.get_project_model_settings_for_user(
-        "project-1",
-        "user-1",
-    )
-
-    assert settings["connections"][0]["id"] == "lf-llm-1"
-    assert "modelDefinitions" not in settings
-    assert settings["defaultModel"] == {
-        "id": "pamodeldefault_project-1",
-        "llmConnectionId": "lf-llm-1",
-        "provider": "OpenAI",
-        "adapter": "openai",
-        "model": "gpt-4o-mini",
-        "temperature": "0.2",
-    }
-    assert reader.visible_checks == [("project-1", "user-1")]
-    assert project_api_client.calls == [
-        ("list_llm_connections", "project-1", None),
-    ]
 
 
 def test_updates_project_default_model() -> None:
@@ -278,6 +262,30 @@ def test_creates_project_llm_connection() -> None:
     assert fake_reader.connection_payload["payload"]["secretKey"] == "sk-real-value"
 
 
+def test_creates_project_model_definition() -> None:
+    fake_reader = FakeDatabaseReader()
+    override_reader(fake_reader)
+
+    try:
+        response = TestClient(app).post(
+            "/api/projects/project-1/settings/models/definitions",
+            json={
+                "modelName": "gpt-4o-mini",
+                "matchPattern": "gpt-4o*",
+                "unit": "TOKENS",
+                "inputPrice": "0.15",
+                "outputPrice": "0.60",
+                "tokenizerId": "openai",
+            },
+        )
+    finally:
+        clear_overrides()
+
+    assert response.status_code == 200
+    assert response.json()["data"]["id"] == "model-created"
+    assert fake_reader.model_payload["payload"]["modelName"] == "gpt-4o-mini"
+
+
 def test_updates_and_deletes_project_llm_connection() -> None:
     fake_reader = FakeDatabaseReader()
     override_reader(fake_reader)
@@ -314,6 +322,47 @@ def test_updates_and_deletes_project_llm_connection() -> None:
     assert fake_reader.deleted_connection_payload == {
         "project_id": "project-1",
         "connection_id": "llm-1",
+        "user_id": "user-1",
+        "user_email": "admin@163.com",
+    }
+
+
+def test_updates_and_deletes_project_model_definition() -> None:
+    fake_reader = FakeDatabaseReader()
+    override_reader(fake_reader)
+
+    payload = {
+        "modelName": "gpt-4o",
+        "matchPattern": "gpt-4o*",
+        "unit": "TOKENS",
+        "inputPrice": "2.50",
+        "outputPrice": "10.00",
+        "tokenizerId": "openai",
+    }
+    try:
+        client = TestClient(app)
+        update_response = client.patch(
+            "/api/projects/project-1/settings/models/definitions/model-1",
+            json=payload,
+        )
+        delete_response = client.delete(
+            "/api/projects/project-1/settings/models/definitions/model-1"
+        )
+    finally:
+        clear_overrides()
+
+    assert update_response.status_code == 200
+    assert delete_response.status_code == 200
+    assert fake_reader.updated_model_payload == {
+        "project_id": "project-1",
+        "model_id": "model-1",
+        "user_id": "user-1",
+        "user_email": "admin@163.com",
+        "payload": payload,
+    }
+    assert fake_reader.deleted_model_payload == {
+        "project_id": "project-1",
+        "model_id": "model-1",
         "user_id": "user-1",
         "user_email": "admin@163.com",
     }

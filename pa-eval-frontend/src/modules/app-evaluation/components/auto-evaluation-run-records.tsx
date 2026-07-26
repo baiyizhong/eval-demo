@@ -7,9 +7,9 @@ import {
   TableHeader,
   TableRow,
 } from '@/components/ui/table'
-import { formatDateTime } from './format'
-import { AutoEvaluationStatusBadge } from './auto-evaluation-status-badge'
 import type { AutoEvaluationRunRecord } from '../types'
+import { AutoEvaluationStatusBadge } from './auto-evaluation-status-badge'
+import { formatDateTime } from './format'
 
 export function AutoEvaluationRunRecords({
   runs,

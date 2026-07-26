@@ -1,3 +1,4 @@
+import React from 'react'
 import {
   ProjectSettings,
   ProjectSettingsIndexRedirect,
@@ -8,6 +9,8 @@ import { ProjectGeneralSettings } from '@/modules/project-settings/views/general
 import { ProjectMembersSettings } from '@/modules/project-settings/views/members'
 import { ProjectModelsSettings } from '@/modules/project-settings/views/models'
 import { ProjectScoreConfigsSettings } from '@/modules/project-settings/views/score-configs'
+
+void React
 
 export function ProjectSettingsTypeUsage() {
   return (

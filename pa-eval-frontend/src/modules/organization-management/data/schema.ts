@@ -5,6 +5,7 @@ export const organizationRoleSchema = z.enum([
   'ADMIN',
   'MEMBER',
   'VIEWER',
+  'NONE',
 ])
 
 export type OrganizationRole = z.infer<typeof organizationRoleSchema>
@@ -32,6 +33,14 @@ export const organizationMemberSchema = z.object({
   joinedAt: z.string().optional(),
   createdAt: z.string(),
   updatedAt: z.string(),
+  invitedBy: z
+    .object({
+      name: z.string().nullable().optional(),
+      email: z.string().nullable().optional(),
+    })
+    .optional(),
+  projectId: z.string().nullable().optional(),
+  projectRole: organizationRoleSchema.nullable().optional(),
 })
 
 export type OrganizationMember = z.infer<typeof organizationMemberSchema>
@@ -41,18 +50,35 @@ export type PaginatedResult<T> = {
   datas: T[]
 }
 
+export const normalizeOrganizationOwnerAccount = (value: string) =>
+  value.trim().toLowerCase().replace(/[^a-z0-9]/g, '')
+
+export const normalizeMemberNameInput = (value: string) =>
+  value.trim().toLowerCase()
+
+export const buildOrganizationMemberEmail = (name: string, domain: string) => {
+  const account = normalizeOrganizationOwnerAccount(name)
+  const normalizedDomain = domain.trim().toLowerCase().replace(/^@/, '')
+  return account && normalizedDomain ? `${account}@${normalizedDomain}` : ''
+}
+
 export const createOrganizationPayloadSchema = z.object({
   name: z.string(),
   subsystem: z.string(),
   description: z.string().optional(),
+  defaultOwnerAccount: z
+    .string()
+    .min(1, '请输入默认 Owner 登录账号')
+    .regex(/^[a-z0-9]+$/, '账号只允许输入英文和数字'),
 })
 
 export type CreateOrganizationPayload = z.infer<
   typeof createOrganizationPayloadSchema
 >
 
-export const updateOrganizationPayloadSchema =
-  createOrganizationPayloadSchema.partial()
+export const updateOrganizationPayloadSchema = createOrganizationPayloadSchema
+  .omit({ defaultOwnerAccount: true })
+  .partial()
 
 export type UpdateOrganizationPayload = z.infer<
   typeof updateOrganizationPayloadSchema
@@ -94,6 +120,7 @@ export type ImportOrganizationMemberFailure = z.infer<
   typeof importOrganizationMemberFailureSchema
 >
 
-export type ImportOrganizationMembersResult = PaginatedResult<OrganizationMember> & {
-  failures: ImportOrganizationMemberFailure[]
-}
+export type ImportOrganizationMembersResult =
+  PaginatedResult<OrganizationMember> & {
+    failures: ImportOrganizationMemberFailure[]
+  }

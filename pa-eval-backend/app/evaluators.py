@@ -16,8 +16,8 @@ from app.response import success
 
 router = APIRouter(prefix="/api/evaluators", tags=["evaluators"])
 
-EvaluatorType = Literal["LLM_AS_JUDGE", "CODE", "WORKFLOW", "SDK"]
-EvaluatorProvider = Literal["LANGFUSE", "DIFY", "HIAGENT", "N8N", "OPENJUDGE"]
+EvaluatorType = Literal["LLM_AS_JUDGE", "CODE", "WORKFLOW", "SDK", "SKILL"]
+EvaluatorProvider = Literal["LANGFUSE", "DIFY", "HIAGENT", "N8N", "OPENJUDGE", "PI"]
 EvaluationScenario = Literal[
     "SINGLE_TURN",
     "MULTI_TURN",
@@ -36,7 +36,7 @@ class ModelConfigPayload(BaseModel):
 
 
 class OutputVariableMappingPayload(BaseModel):
-    variable_name: str = Field(alias="variableName", min_length=1)
+    variable_name: str = Field(alias="variableName", min_length=1, max_length=30)
     score_config_name: str = Field(alias="scoreConfigName", min_length=1)
     score_config_id: str | None = Field(default=None, alias="scoreConfigId")
 
@@ -53,11 +53,11 @@ class OutputVariableMappingPayload(BaseModel):
 
 
 class CreateEvaluatorPayload(BaseModel):
-    name: str = Field(min_length=1, max_length=120)
+    name: str = Field(min_length=1, max_length=30)
     type: EvaluatorType
     provider: EvaluatorProvider
     project_id: str = Field(alias="projectId", min_length=1)
-    description: str = Field(default="", max_length=1000)
+    description: str = Field(default="", max_length=200)
     evaluation_scenario: EvaluationScenario = Field(
         default="SINGLE_TURN",
         alias="evaluationScenario",
@@ -101,6 +101,8 @@ class CreateEvaluatorPayload(BaseModel):
             self.input_variables = self.variables
         if not self.variables:
             self.variables = self.input_variables
+        if _serialized_variables_length(self.input_variables) > 30:
+            raise ValueError("输入变量不能超过30个字")
         if not self.output_variables:
             self.output_variables = [
                 mapping.variable_name
@@ -135,7 +137,14 @@ class CreateEvaluatorPayload(BaseModel):
             if not self.sdk_package:
                 raise ValueError("OpenJudge 评估器必须填写 SDK 标识")
 
+        if self.type == "SKILL":
+            if self.provider != "PI":
+                raise ValueError("Skill 评估器 provider 必须为 PI")
+            if not self.endpoint_url:
+                raise ValueError("Skill 评估器必须选择 skill")
+
         return self
+
 
     def to_storage_payload(self) -> dict[str, Any]:
         base = {
@@ -187,6 +196,26 @@ class CreateEvaluatorPayload(BaseModel):
                 },
             }
 
+        if self.type == "SKILL":
+            return {
+                **base,
+                "config": {
+                    "evaluationScenario": self.evaluation_scenario,
+                    "skillName": self.endpoint_url,
+                    "modelConfig": (
+                        self.model_config_payload.model_dump()
+                        if self.model_config_payload
+                        else None
+                    ),
+                    "inputMapping": normalize_sample_mapping(
+                        self.input_mapping,
+                        self.input_variables,
+                    ),
+                    "outputMapping": self.output_mapping or {},
+                    "outputVariableMappings": self._output_variable_mappings(),
+                },
+            }
+
         return {
             **base,
             "config": {
@@ -206,6 +235,10 @@ class CreateEvaluatorPayload(BaseModel):
             mapping.to_storage_payload()
             for mapping in self.output_variable_mappings
         ]
+
+
+def _serialized_variables_length(variables: list[str]) -> int:
+    return sum(len(variable) for variable in variables) + max(len(variables) - 1, 0)
 
 
 def _paginate(items: list[dict[str, Any]], page: int, page_size: int) -> dict[str, Any]:
@@ -248,7 +281,7 @@ async def list_evaluators(
     evaluator_type: str | None = Query(
         default=None,
         alias="type",
-        pattern="^(LLM_AS_JUDGE|CODE|WORKFLOW|SDK)$",
+        pattern="^(LLM_AS_JUDGE|CODE|WORKFLOW|SDK|SKILL)$",
     ),
     current_user: CurrentUserContext = Depends(get_current_user_context),
     reader: LangfuseDatabaseReader = Depends(get_langfuse_db_reader),

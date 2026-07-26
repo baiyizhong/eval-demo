@@ -35,15 +35,11 @@ export function ProjectAutoEvaluationNew() {
   return (
     <Page fixed fluid className='flex min-h-[calc(100svh-3.5rem)] flex-col'>
       <div className='flex min-h-0 flex-1 flex-col gap-4 overflow-auto'>
-        <PageAction
-          showBackButton
-          onBack={() => void handleBack()}
-        />
+        <PageAction showBackButton onBack={() => void handleBack()} />
         <AutoEvaluationTaskForm
           projectId={projectId}
           initialScenario={initialScenario}
           onDirtyChange={setDirty}
-          onCancel={backToList}
         />
       </div>
     </Page>

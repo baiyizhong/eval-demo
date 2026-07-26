@@ -49,6 +49,7 @@ type ImportDialogProps = {
   title?: string;
   description?: string;
   fileTypes?: string[];
+  helperContent?: React.ReactNode;
   onImport?: (file: File) => void;
 };
 ```
@@ -60,6 +61,7 @@ type ImportDialogProps = {
 - `title`：弹窗标题，默认是 `导入文件`。
 - `description`：弹窗说明，默认是 `从本地选择文件进行导入。`。
 - `fileTypes`：允许导入的文件类型，同时用于 input `accept` 和提交校验。默认是 `["text/csv"]`。
+- `helperContent`：可选辅助内容区域，用于展示模板下载、格式提示等与业务导入相关但不需要组件解析的内容。
 - `onImport`：提交成功后回调选中的 `File`，文件解析、上传和错误处理由调用方完成。
 
 ## 文件类型规则
@@ -79,6 +81,7 @@ type ImportDialogProps = {
   title="导入配置"
   description="请选择 JSON 配置文件。"
   fileTypes={["application/json", ".json"]}
+  helperContent={<Button type="button">下载模板</Button>}
   onImport={(file) => {
     // 在调用方解析或上传文件
   }}
@@ -89,7 +92,7 @@ type ImportDialogProps = {
 
 组件默认文案为中文，不包含 `Task`、`Tasks` 等业务关键字。业务页面需要特定标题或说明时，通过 `title` 和 `description` 覆盖。
 
-组件不调用 `showSubmittedData`。如需展示导入成功、失败或文件详情，调用方应在 `onImport` 中自行处理，例如通过 toast、页面状态或业务弹窗展示。
+组件不调用 `showSubmittedData`。如需展示导入成功、失败或文件详情，调用方应在 `onImport` 中自行处理，例如通过 toast、页面状态或业务弹窗展示。模板下载、格式示例等轻量辅助内容通过 `helperContent` 传入，组件不解释其中的业务含义。
 
 ## 校验行为
 

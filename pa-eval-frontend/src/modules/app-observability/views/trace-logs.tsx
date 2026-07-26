@@ -1,18 +1,25 @@
 import { useCallback, useMemo, useState } from 'react'
+import { useQuery } from '@tanstack/react-query'
+import { listProjectScoreConfigs } from '@/modules/app-evaluation/api/annotation-api'
 import { useParams, useSearchParams } from 'react-router'
-import { Page } from '@/components/common/page'
+import { useAPI } from '@/hooks/use-api'
 import { DataTable } from '@/components/common/data-table'
 import { Loading } from '@/components/common/loading'
-import { useAPI } from '@/hooks/use-api'
+import { Page } from '@/components/common/page'
 import { ObservabilityPageNav } from '../components/observability-page-nav'
 import { TraceDetailDrawer } from '../components/trace-detail-drawer'
 import { TraceLogBulkActions } from '../components/trace-log-bulk-actions'
 import { createTraceLogColumns } from '../components/trace-log-columns'
 import {
-  traceLogFilterGroups,
+  buildTraceLogFilterGroups,
   traceLogToolbarFilters,
   traceLogUrlFilters,
 } from '../components/trace-log-filters'
+import {
+  TraceOperationSuccessAlert,
+  type TraceOperationSuccessNotice,
+} from '../components/trace-operation-success-alert'
+import { normalizeTraceTimeFilterValues } from '../trace-time-ranges'
 import type { TraceListResponse, TraceLogRow } from '../types'
 import { buildTraceListQuery } from './trace-logs-query'
 
@@ -23,6 +30,8 @@ export function TraceLogs() {
   const [selectedTraceId, setSelectedTraceId] = useState<string | null>(
     searchParams.get('traceId')
   )
+  const [successNotice, setSuccessNotice] =
+    useState<TraceOperationSuccessNotice | null>(null)
 
   const closeTrace = useCallback(() => {
     const next = new URLSearchParams(searchParams)
@@ -41,16 +50,36 @@ export function TraceLogs() {
     [searchParams, setSearchParams]
   )
 
-  const columns = useMemo(
-    () => createTraceLogColumns({ onOpenTrace: openTrace }),
+  const columns = useCallback(
+    (rows: TraceLogRow[]) =>
+      createTraceLogColumns({ onOpenTrace: openTrace, rows }),
     [openTrace]
+  )
+  const scoreConfigsQuery = useQuery({
+    queryKey: ['project-score-configs', $api, projectId, 'trace-log-filters'],
+    queryFn: () => listProjectScoreConfigs($api, projectId),
+    staleTime: 5 * 60 * 1000,
+  })
+  const scoreConfigs = useMemo(
+    () => scoreConfigsQuery.data ?? [],
+    [scoreConfigsQuery.data]
+  )
+  const traceLogFilterGroups = useMemo(
+    () => buildTraceLogFilterGroups(scoreConfigs),
+    [scoreConfigs]
   )
 
   return (
     <Page fluid className='flex min-h-[calc(100svh-3.5rem)] flex-col'>
       <div className='flex min-h-0 flex-1 flex-col gap-4'>
         <ObservabilityPageNav />
-        <section className='flex min-h-0 min-w-0 flex-1 flex-col rounded-lg border bg-card p-4 text-card-foreground'>
+        {successNotice ? (
+          <TraceOperationSuccessAlert
+            notice={successNotice}
+            onClose={() => setSuccessNotice(null)}
+          />
+        ) : null}
+        <section className='bg-card text-card-foreground flex min-h-0 min-w-0 flex-1 flex-col rounded-lg border p-4'>
           <DataTable<TraceLogRow>
             className='min-h-0 flex-1'
             columns={columns}
@@ -66,6 +95,7 @@ export function TraceLogs() {
               defaultPageSize: 10,
               globalFilterKey: 'keyword',
               filters: traceLogUrlFilters,
+              normalizeFilters: normalizeTraceTimeFilterValues,
             }}
             toolbar={{
               searchPlaceholder: '搜索 traceId / sessionId',
@@ -75,8 +105,15 @@ export function TraceLogs() {
                 sessionId: 'Session ID',
                 environment: '环境',
                 status: '状态',
+                input: 'Input',
+                output: 'Output',
+                metadata: 'Metadata',
                 latency: '延迟',
                 createdAt: '创建时间',
+              },
+              columnVisibility: {
+                latency: false,
+                status: false,
               },
             }}
             filterPanel={{
@@ -85,8 +122,13 @@ export function TraceLogs() {
               advanceFilterCollapsed: true,
               width: 320,
             }}
-            bulkActions={(table) => (
-              <TraceLogBulkActions table={table} projectId={projectId} />
+            bulkActions={(table, selection) => (
+              <TraceLogBulkActions
+                table={table}
+                selection={selection}
+                projectId={projectId}
+                onOperationSuccess={setSuccessNotice}
+              />
             )}
             loadingText={
               <Loading
@@ -95,7 +137,6 @@ export function TraceLogs() {
               />
             }
             emptyText='当前筛选条件下暂无 Trace 数据'
-            minTableWidth={980}
           />
           <TraceDetailDrawer
             projectId={projectId}

@@ -29,6 +29,15 @@ const columns: ColumnDef<ExampleRow>[] = [
   },
 ]
 
+const dynamicColumns = (rows: ExampleRow[]): ColumnDef<ExampleRow>[] => [
+  ...columns,
+  ...rows.map((row) => ({
+    id: `status-${row.status}`,
+    header: row.status,
+    cell: () => row.status,
+  })),
+]
+
 function ExampleActions() {
   const { setOpen, setCurrentRow, context } = useDataTableContext<
     ExampleRow,
@@ -99,8 +108,21 @@ export function DataTableTypeUsage() {
           columnLabels: {
             name: '名称',
           },
+          columnVisibility: {
+            status: false,
+          },
         }}
         bulkActions={() => <ExampleActions />}
+      />
+      <DataTable<ExampleRow>
+        columns={dynamicColumns}
+        request={{
+          queryKey: ['dynamic-examples'],
+          queryFn: async () => ({
+            total: 1,
+            datas: [{ id: '1', name: '示例', status: 'enabled' }],
+          }),
+        }}
       />
     </DataTableProvider>
   )

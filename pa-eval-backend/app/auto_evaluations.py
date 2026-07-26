@@ -16,11 +16,18 @@ from cryptography.hazmat.primitives.ciphers.aead import AESGCM
 from fastapi import APIRouter, BackgroundTasks, Depends, Query
 from psycopg.rows import dict_row
 from psycopg.types.json import Jsonb
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, model_validator
 
 from app.auth_context import CurrentUserContext, get_current_user_context
 from app.config import Settings, get_settings
+from app.data_access.postgres import connect_postgres
 from app.errors import BusinessError
+from app.evaluation_runtime.skill_runner import (
+    SkillEvaluationInput,
+    SkillEvaluationResult,
+    SkillRpcClient,
+)
+from app.skill_store import SkillStore
 from app.evaluation_mapping import normalize_sample_mapping_template
 from app.langfuse_clickhouse import (
     LangfuseClickHouseReader,
@@ -31,12 +38,22 @@ from app.langfuse_db import (
     LangfuseDatabaseReader,
     PROJECT_ACCESS_EXISTS_SQL,
 )
-from app.langfuse_client import LangfuseAdminClient
+from app.langfuse_client import (
+    LangfuseAdminClient,
+    repair_legacy_boolean_score_configs,
+)
 from app.openjudge_defaults import (
     default_openjudge_evaluator_for_run,
     is_default_openjudge_evaluator_id,
 )
 from app.response import success
+from app.score_configs import (
+    PA_BOOLEAN_SCORE_CONFIG_REPAIR_MARKER,
+    PA_CLICKHOUSE_SCORE_VALUE,
+    clickhouse_score_payload,
+    is_langfuse_boolean_categories,
+    strip_pa_score_fields,
+)
 
 router = APIRouter(prefix="/api/projects/{project_id}", tags=["auto-evaluations"])
 logger = logging.getLogger(__name__)
@@ -77,8 +94,8 @@ class AutoEvaluationBadcaseConfig(BaseModel):
 
 
 class CreateAutoEvaluationPayload(BaseModel):
-    name: str = Field(min_length=1, max_length=120)
-    description: str = Field(default="", max_length=1000)
+    name: str = Field(min_length=1, max_length=40)
+    description: str = Field(default="", max_length=200)
     score_name: str = Field(alias="scoreName", default="dify_score", min_length=1)
     score_mapping: dict[str, Any] = Field(default_factory=dict, alias="scoreMapping")
     evaluator_id: str = Field(alias="evaluatorId", min_length=1)
@@ -133,6 +150,22 @@ class ReportTemplatePayload(BaseModel):
 class TraceCountPayload(BaseModel):
     trace_filter: dict[str, Any] = Field(default_factory=dict, alias="traceFilter")
 
+    @model_validator(mode="after")
+    def validate_created_at_range(self) -> "TraceCountPayload":
+        if "createdAtRange" not in self.trace_filter:
+            return self
+        created_at_range = self.trace_filter.get("createdAtRange")
+        if (
+            not isinstance(created_at_range, list)
+            or len(created_at_range) != 2
+            or not all(
+                isinstance(value, str) and value.strip()
+                for value in created_at_range
+            )
+        ):
+            raise ValueError("Trace 时间范围必须包含开始和结束时间")
+        return self
+
 
 class EvaluationReportFlowbackTargetPayload(BaseModel):
     mode: str = Field(pattern="^(EXISTING|CREATE)$")
@@ -180,9 +213,7 @@ def _sample_trace_id(sample: dict[str, Any]) -> str:
 
 def _sample_observation_id(sample: dict[str, Any]) -> str:
     observation = (
-        sample.get("observation")
-        if isinstance(sample.get("observation"), dict)
-        else {}
+        sample.get("observation") if isinstance(sample.get("observation"), dict) else {}
     )
     return _stringify_value(
         sample.get("source_observation_id")
@@ -196,7 +227,7 @@ def _sample_observation_id(sample: dict[str, Any]) -> str:
 async def _connect(settings: Settings) -> psycopg.AsyncConnection:
     if not settings.langfuse_database_url:
         raise LangfuseDatabaseConfigError()
-    return await psycopg.AsyncConnection.connect(
+    return await connect_postgres(
         settings.langfuse_database_url,
         row_factory=dict_row,
     )
@@ -382,7 +413,6 @@ async def _list_trace_generation_samples(
         WHERE {where_clause}
           {time_condition}
         ORDER BY o.start_time DESC, t.timestamp DESC, t.id DESC
-        LIMIT 500
         FORMAT JSONEachRow
         """
         rows = await _query_clickhouse_json_each_row(settings, query)
@@ -429,7 +459,7 @@ async def _list_trace_generation_samples(
               )
               AND (
                 %(created_at_to)s = ''
-                OR t.timestamp <= %(created_at_to)s::timestamptz
+                OR t.timestamp < %(created_at_to)s::timestamptz
               )
               AND (
                 cardinality(%(tags)s::text[]) = 0
@@ -448,7 +478,6 @@ async def _list_trace_generation_samples(
         SELECT *
         FROM latest_generations
         ORDER BY observation_start_time DESC NULLS LAST, trace_timestamp DESC NULLS LAST, trace_id DESC
-        LIMIT 500
         """,
         {
             "project_id": project_id,
@@ -572,7 +601,7 @@ async def _count_trace_generation_samples_postgres(
               )
               AND (
                 %(created_at_to)s = ''
-                OR t.timestamp <= %(created_at_to)s::timestamptz
+                OR t.timestamp < %(created_at_to)s::timestamptz
               )
               AND (
                 cardinality(%(tags)s::text[]) = 0
@@ -745,11 +774,13 @@ def _trace_time_condition(data_source_payload: dict[str, Any]) -> str:
         data_source_payload.get("createdAtRange"),
         1,
     )
+    if bool(created_at_from) != bool(created_at_to):
+        raise BusinessError(1040, "Trace 时间范围必须包含开始和结束时间", 400)
     if created_at_from and created_at_to:
         return (
             "AND t.timestamp >= parseDateTimeBestEffort("
             f"{_clickhouse_quote(created_at_from)}) "
-            "AND t.timestamp <= parseDateTimeBestEffort("
+            "AND t.timestamp < parseDateTimeBestEffort("
             f"{_clickhouse_quote(created_at_to)})"
         )
     return _trace_time_range_condition(data_source_payload.get("timeRange"))
@@ -1117,7 +1148,9 @@ async def _run_workflow_evaluator(
     except httpx.HTTPError as exc:
         raise BusinessError(4003, "工作流调用失败：无法连接上游服务", 502) from exc
     if response.status_code >= 400:
-        raise BusinessError(4003, f"工作流调用失败：上游返回 {response.status_code}", 502)
+        raise BusinessError(
+            4003, f"工作流调用失败：上游返回 {response.status_code}", 502
+        )
 
     return _parse_workflow_result(
         evaluator,
@@ -1354,6 +1387,151 @@ def _validate_workflow_evaluator_ready(evaluator: dict[str, Any]) -> None:
 
 def _is_openjudge_evaluator(evaluator: dict[str, Any]) -> bool:
     return evaluator.get("type") == "SDK" and evaluator.get("provider") == "OPENJUDGE"
+
+
+def _is_skill_evaluator(evaluator: dict[str, Any]) -> bool:
+    return evaluator.get("type") == "SKILL" and evaluator.get("provider") == "PI"
+
+
+def _normalize_sample_for_skill(
+    sample: dict[str, Any],
+    source_type: str = "DATASET",
+) -> SkillEvaluationInput:
+    normalized = _normalize_dataset_item_sample(sample)
+    dataset_item = (
+        normalized.get("datasetItem")
+        if isinstance(normalized.get("datasetItem"), dict)
+        else {}
+    )
+    messages_value: list[dict[str, Any]] | None = None
+    raw_messages = normalized.get("messages")
+    if isinstance(raw_messages, str) and raw_messages.strip():
+        try:
+            parsed = json.loads(raw_messages)
+            if isinstance(parsed, list):
+                messages_value = parsed
+        except json.JSONDecodeError:
+            messages_value = None
+    elif isinstance(raw_messages, list):
+        messages_value = raw_messages
+
+    metadata: dict[str, Any] = {
+        "sourceType": source_type,
+    }
+    raw_metadata = normalized.get("metadata")
+    if isinstance(raw_metadata, dict):
+        metadata.update(raw_metadata)
+    metadata["datasetItem"] = dataset_item
+
+    return SkillEvaluationInput(
+        sample_id=normalized.get("sourceId") or str(sample.get("id") or ""),
+        trace_id=normalized.get("trace", {}).get("id"),
+        input=normalized.get("input") or "",
+        output=normalized.get("output") or "",
+        expected_output=normalized.get("expectedOutput") or "",
+        context=normalized.get("context") or "",
+        messages=messages_value,
+        metadata=metadata,
+    )
+
+
+async def _run_skill_batch_evaluator(
+    evaluator: dict[str, Any],
+    samples: list[dict[str, Any]],
+    payload: CreateAutoEvaluationPayload,
+    settings: Settings,
+    project_id: str,
+    data_source: dict[str, Any],
+) -> tuple[list[dict[str, Any]], int, list[str]]:
+    config = evaluator.get("config") if isinstance(evaluator.get("config"), dict) else {}
+    skill_name = str(config.get("skillName") or "").strip()
+    if not skill_name:
+        raise BusinessError(4002, "Skill 评估器缺少 skillName 配置")
+
+    skill_store = SkillStore(
+        skill_root=settings.pa_eval_skill_root,
+        builtin_dir=settings.pa_eval_skill_builtin_dir or None,
+    )
+    try:
+        skill_store.get_skill_detail(project_id, skill_name)
+    except BusinessError:
+        raise BusinessError(4004, f"skill 不存在或未部署: {skill_name}")
+
+    source_type = "TRACE" if data_source.get("type") != "DATASET" else "DATASET"
+    skill_inputs = [
+        _normalize_sample_for_skill(sample, source_type) for sample in samples
+    ]
+
+    model_config = config.get("modelConfig")
+    if isinstance(model_config, dict) and model_config.get("model"):
+        model = str(model_config.get("model"))
+    elif settings.pa_eval_pi_model:
+        model = settings.pa_eval_pi_model
+    else:
+        model = ""
+
+    skill_dirs = [str(p) for p in skill_store.skill_dirs_for_project(project_id)]
+    client = SkillRpcClient(
+        binary=settings.pa_eval_pi_binary,
+        skill_dirs=skill_dirs,
+        model=model,
+        workdir=settings.pa_eval_pi_workdir,
+        timeout=settings.pa_eval_pi_rpc_timeout,
+    )
+
+    results: list[dict[str, Any]] = []
+    failed_count = 0
+    error_messages: list[str] = []
+    await client.start()
+    try:
+        skill_results = await client.evaluate(skill_name, skill_inputs)
+    except BusinessError as exc:
+        failed_count = len(samples)
+        error_messages.append(_background_error_message(exc))
+        return [], failed_count, error_messages
+    finally:
+        await client.close()
+
+    result_by_sample_id: dict[str, SkillEvaluationResult] = {
+        item.sample_id: item for item in skill_results
+    }
+    for index, sample in enumerate(samples):
+        normalized_sample = _normalize_dataset_item_sample(sample)
+        sample_id = normalized_sample.get("sourceId") or str(sample.get("id") or "")
+        skill_result = result_by_sample_id.get(sample_id)
+        if skill_result is None:
+            failed_count += 1
+            error_messages.append(f"sample {sample_id} 未返回评估结果")
+            continue
+        output = {
+            "score": (
+                float(skill_result.scores[0].get("value"))
+                if skill_result.scores
+                and isinstance(skill_result.scores[0].get("value"), int | float)
+                else 0.0
+            ),
+            "passed": skill_result.passed,
+            "reason": skill_result.reason,
+            "scores": skill_result.scores,
+        }
+        result = _parse_workflow_result(
+            evaluator,
+            output,
+            payload.score_mapping,
+        )
+        result["raw"] = {
+            "provider": "PI",
+            "skillName": skill_name,
+            "agentOutput": skill_result.raw,
+        }
+        results.append(
+            {
+                "sample": sample,
+                "normalizedSample": normalized_sample,
+                **result,
+            }
+        )
+    return results, failed_count, error_messages
 
 
 OPENJUDGE_GRADER_ALIASES = {
@@ -1628,10 +1806,18 @@ def _parse_workflow_result(
 
     mapped_scores = _resolve_mapped_scores(evaluator, outputs, score_mapping, body)
     primary_score = next(
-        (score for score in mapped_scores if isinstance(score.get("value"), int | float)),
+        (
+            score
+            for score in mapped_scores
+            if isinstance(score.get("value"), int | float)
+        ),
         None,
     )
-    score = float(primary_score["value"]) if primary_score else float(outputs.get("score") or 0)
+    score = (
+        float(primary_score["value"])
+        if primary_score
+        else float(outputs.get("score") or 0)
+    )
     passed_value = outputs.get("passed")
     if passed_value is None:
         passed = score >= 0.6
@@ -1717,7 +1903,9 @@ def _workflow_output_variable_candidates(evaluator: dict[str, Any]) -> list[Any]
     if isinstance(candidates, list) and candidates:
         return candidates
 
-    config = evaluator.get("config") if isinstance(evaluator.get("config"), dict) else {}
+    config = (
+        evaluator.get("config") if isinstance(evaluator.get("config"), dict) else {}
+    )
     mappings = config.get("outputVariableMappings")
     if isinstance(mappings, list):
         return mappings
@@ -1746,7 +1934,9 @@ def _workflow_output_value(
     if key in outputs:
         return outputs.get(key)
 
-    config = evaluator.get("config") if isinstance(evaluator.get("config"), dict) else {}
+    config = (
+        evaluator.get("config") if isinstance(evaluator.get("config"), dict) else {}
+    )
     output_mapping = config.get("outputMapping")
     if not isinstance(output_mapping, dict):
         return None
@@ -2922,6 +3112,38 @@ async def _run_auto_evaluation_background(
                 running_count=0,
                 updated_by=updated_by,
             )
+        elif _is_skill_evaluator(evaluator):
+            await _persist_auto_evaluation_progress(
+                settings,
+                project_id=project_id,
+                task_id=task_id,
+                run_id=run_id,
+                sample_count=sample_count,
+                completed_count=0,
+                failed_count=0,
+                running_count=sample_count,
+                updated_by=updated_by,
+            )
+            results, failed_count, error_messages = await _run_skill_batch_evaluator(
+                evaluator,
+                samples,
+                payload,
+                settings,
+                project_id,
+                data_source,
+            )
+            completed_count = len(results)
+            await _persist_auto_evaluation_progress(
+                settings,
+                project_id=project_id,
+                task_id=task_id,
+                run_id=run_id,
+                sample_count=sample_count,
+                completed_count=completed_count,
+                failed_count=failed_count,
+                running_count=0,
+                updated_by=updated_by,
+            )
         else:
             for sample in samples:
                 await _persist_auto_evaluation_progress(
@@ -3002,21 +3224,25 @@ async def _run_auto_evaluation_background(
 
         async with await _connect(settings) as connection:
             async with connection.cursor() as cursor:
-                await _complete_auto_evaluation_success(
-                    cursor,
-                    project_id=project_id,
-                    task_id=task_id,
-                    run_id=run_id,
-                    payload=payload,
-                    evaluator=evaluator,
-                    data_source=data_source,
-                    results=results,
-                    updated_by=updated_by,
-                    langfuse_client=LangfuseAdminClient(settings),
-                    score_writer=LangfuseClickHouseScoreWriter(settings),
-                    failed_count=failed_count,
-                    error_message=error_message,
-                )
+                async with (
+                    LangfuseAdminClient(settings) as langfuse_client,
+                    LangfuseClickHouseScoreWriter(settings) as score_writer,
+                ):
+                    await _complete_auto_evaluation_success(
+                        cursor,
+                        project_id=project_id,
+                        task_id=task_id,
+                        run_id=run_id,
+                        payload=payload,
+                        evaluator=evaluator,
+                        data_source=data_source,
+                        results=results,
+                        updated_by=updated_by,
+                        langfuse_client=langfuse_client,
+                        score_writer=score_writer,
+                        failed_count=failed_count,
+                        error_message=error_message,
+                    )
     except Exception as exc:
         message = _background_error_message(exc)
         async with await _connect(settings) as connection:
@@ -3321,7 +3547,99 @@ async def _complete_auto_evaluation_success(
             "update_by": updated_by,
             "update_date": now,
         },
+    )
+
+
+async def _get_project_default_eval_model(
+    cursor: psycopg.AsyncCursor[dict[str, Any]],
+    project_id: str,
+    settings: Settings,
+) -> dict[str, Any]:
+    await cursor.execute(
+        """
+        SELECT
+            pms.llm_connection_id,
+            pms.model,
+            pms.temperature,
+            lak.provider,
+            lak.adapter,
+            lak.secret_key,
+            lak.base_url,
+            lak.custom_models,
+            lak.with_default_models
+        FROM pa_project_model_settings pms
+        JOIN llm_api_keys lak
+          ON lak.id = pms.llm_connection_id
+         AND lak.project_id = pms.project_id
+        WHERE pms.project_id = %(project_id)s
+        LIMIT 1
+        """,
+        {"project_id": project_id},
+    )
+    row = await cursor.fetchone()
+    if row is None:
+        await cursor.execute(
+            """
+            SELECT
+                id AS llm_connection_id,
+                NULL::text AS model,
+                '0.2'::text AS temperature,
+                provider,
+                adapter,
+                secret_key,
+                base_url,
+                custom_models,
+                with_default_models
+            FROM llm_api_keys
+            WHERE project_id = %(project_id)s
+            ORDER BY created_at DESC, id DESC
+            LIMIT 1
+            """,
+            {"project_id": project_id},
         )
+        row = await cursor.fetchone()
+
+    if row is None:
+        raise BusinessError(4002, "OpenJudge 评估器需要先配置默认评估模型")
+
+    custom_models = row.get("custom_models") or []
+    model = row.get("model") or (custom_models[0] if custom_models else "")
+    if not model:
+        raise BusinessError(4002, "默认评估模型未配置模型名称")
+
+    return {
+        "llmConnectionId": row.get("llm_connection_id") or "",
+        "provider": row.get("provider") or "",
+        "adapter": row.get("adapter") or "",
+        "model": model,
+        "temperature": row.get("temperature") or "0.2",
+        "secretKey": _decrypt_langfuse_secret(row.get("secret_key") or "", settings),
+        "baseUrl": row.get("base_url") or "",
+        "withDefaultModels": bool(row.get("with_default_models")),
+    }
+
+
+def _decrypt_langfuse_secret(encrypted_secret: str, settings: Settings) -> str:
+    if not encrypted_secret:
+        return ""
+    if ":" not in encrypted_secret:
+        return encrypted_secret
+
+    encryption_key = settings.effective_langfuse_encryption_key
+    if not encryption_key:
+        raise BusinessError(4002, "Langfuse ENCRYPTION_KEY 未配置，无法读取默认评估模型密钥")
+
+    try:
+        iv_hex, encrypted_hex, auth_tag_hex = encrypted_secret.split(":")
+        aesgcm = AESGCM(bytes.fromhex(encryption_key))
+        decrypted = aesgcm.decrypt(
+            bytes.fromhex(iv_hex),
+            bytes.fromhex(encrypted_hex) + bytes.fromhex(auth_tag_hex),
+            None,
+        )
+    except Exception as exc:
+        raise BusinessError(4002, "默认评估模型密钥解密失败") from exc
+    return decrypted.decode("utf-8")
 
 
 def _with_complete_workflow_output_scores(
@@ -3334,11 +3652,15 @@ def _with_complete_workflow_output_scores(
 
     existing_scores = result.get("scores")
     mapping = score_mapping if isinstance(score_mapping, dict) else {}
-    scores = [
-        _mapped_workflow_score(score, mapping)
-        for score in existing_scores
-        if isinstance(score, dict)
-    ] if isinstance(existing_scores, list) else []
+    scores = (
+        [
+            _mapped_workflow_score(score, mapping)
+            for score in existing_scores
+            if isinstance(score, dict)
+        ]
+        if isinstance(existing_scores, list)
+        else []
+    )
     existing_output_variables = {
         str(score.get("outputVariable") or score.get("name") or "").strip()
         for score in scores
@@ -3454,7 +3776,7 @@ async def _sync_auto_evaluation_scores_to_langfuse(
                 score_config_id = str(score.get("scoreConfigId") or "")
                 output_score_name = str(score.get("name") or score_name)
                 score_payloads.append(
-                    _auto_evaluation_score_api_payload(
+                    _safe_auto_evaluation_score_api_payload(
                         project_id=project_id,
                         task_id=task_id,
                         run_id=run_id,
@@ -3472,7 +3794,7 @@ async def _sync_auto_evaluation_scores_to_langfuse(
                 )
         else:
             score_payloads.append(
-                _auto_evaluation_score_api_payload(
+                _safe_auto_evaluation_score_api_payload(
                     project_id=project_id,
                     task_id=task_id,
                     run_id=run_id,
@@ -3486,7 +3808,14 @@ async def _sync_auto_evaluation_scores_to_langfuse(
         return
 
     api_key = await _get_project_api_key_credentials(cursor, project_id)
-    for score_payload in score_payloads:
+    await repair_legacy_boolean_score_configs(
+        langfuse_client,
+        api_key["publicKey"],
+        api_key["secretKey"],
+        score_payloads,
+    )
+    for raw_score_payload in score_payloads:
+        score_payload = strip_pa_score_fields(raw_score_payload)
         await langfuse_client.create_score(
             api_key["publicKey"],
             api_key["secretKey"],
@@ -3496,7 +3825,7 @@ async def _sync_auto_evaluation_scores_to_langfuse(
             await score_writer.upsert_score(
                 project_id,
                 score_author_user_id,
-                score_payload,
+                clickhouse_score_payload(raw_score_payload),
                 source="API",
             )
 
@@ -3526,98 +3855,6 @@ async def _get_project_api_key_credentials(
         "publicKey": row["public_key"],
         "secretKey": row["secret_key"],
     }
-
-
-async def _get_project_default_eval_model(
-    cursor: psycopg.AsyncCursor[dict[str, Any]],
-    project_id: str,
-    settings: Settings,
-) -> dict[str, Any]:
-    await cursor.execute(
-        """
-        SELECT
-            pms.llm_connection_id,
-            pms.model,
-            pms.temperature,
-            lak.provider,
-            lak.adapter,
-            lak.secret_key,
-            lak.base_url,
-            lak.custom_models,
-            lak.with_default_models
-        FROM pa_project_model_settings pms
-        JOIN llm_api_keys lak
-          ON lak.id = pms.llm_connection_id
-         AND lak.project_id = pms.project_id
-        WHERE pms.project_id = %(project_id)s
-        LIMIT 1
-        """,
-        {"project_id": project_id},
-    )
-    row = await cursor.fetchone()
-    if row is None:
-        await cursor.execute(
-            """
-            SELECT
-                id AS llm_connection_id,
-                NULL::text AS model,
-                '0.2'::text AS temperature,
-                provider,
-                adapter,
-                secret_key,
-                base_url,
-                custom_models,
-                with_default_models
-            FROM llm_api_keys
-            WHERE project_id = %(project_id)s
-            ORDER BY created_at DESC, id DESC
-            LIMIT 1
-            """,
-            {"project_id": project_id},
-        )
-        row = await cursor.fetchone()
-
-    if row is None:
-        raise BusinessError(4002, "OpenJudge 评估器需要先配置默认评估模型")
-
-    custom_models = row.get("custom_models") or []
-    model = row.get("model") or (custom_models[0] if custom_models else "")
-    if not model:
-        raise BusinessError(4002, "默认评估模型未配置模型名称")
-
-    return {
-        "llmConnectionId": row.get("llm_connection_id") or "",
-        "provider": row.get("provider") or "",
-        "adapter": row.get("adapter") or "",
-        "model": model,
-        "temperature": row.get("temperature") or "0.2",
-        "secretKey": _decrypt_langfuse_secret(row.get("secret_key") or "", settings),
-        "baseUrl": row.get("base_url") or "",
-        "withDefaultModels": bool(row.get("with_default_models")),
-    }
-
-
-def _decrypt_langfuse_secret(encrypted_secret: str, settings: Settings) -> str:
-    if not encrypted_secret:
-        return ""
-    if ":" not in encrypted_secret:
-        return encrypted_secret
-
-    encryption_key = settings.effective_langfuse_encryption_key
-    if not encryption_key:
-        raise BusinessError(4002, "Langfuse ENCRYPTION_KEY 未配置，无法读取默认评估模型密钥")
-
-    try:
-        iv_hex, encrypted_hex, auth_tag_hex = encrypted_secret.split(":")
-        aesgcm = AESGCM(bytes.fromhex(encryption_key))
-        decrypted = aesgcm.decrypt(
-            bytes.fromhex(iv_hex),
-            bytes.fromhex(encrypted_hex) + bytes.fromhex(auth_tag_hex),
-            None,
-        )
-    except Exception as exc:
-        raise BusinessError(4002, "默认评估模型密钥解密失败") from exc
-    return decrypted.decode("utf-8")
 
 
 def _auto_evaluation_score_config_ids(results: list[dict[str, Any]]) -> list[str]:
@@ -3669,6 +3906,22 @@ async def _get_score_configs_by_ids(
     return configs
 
 
+def _safe_auto_evaluation_score_api_payload(**kwargs: Any) -> dict[str, Any] | None:
+    try:
+        return _auto_evaluation_score_api_payload(**kwargs)
+    except (BusinessError, TypeError, ValueError) as exc:
+        logger.warning(
+            "Skipped invalid auto evaluation score payload: score_name=%s "
+            "score_config_id=%s error=%s",
+            kwargs.get("score_name") or "",
+            kwargs.get("score_config_id") or "",
+            _background_error_message(exc)
+            if isinstance(exc, BusinessError)
+            else type(exc).__name__,
+        )
+        return None
+
+
 def _auto_evaluation_score_api_payload(
     *,
     project_id: str,
@@ -3697,10 +3950,14 @@ def _auto_evaluation_score_api_payload(
     resolved_config_id = score_config_id
     if score_config is not None:
         resolved_config_id = str(score_config.get("id") or score_config_id)
-        data_type, payload_value, string_value = _normalize_auto_evaluation_score_value(
-            score_config,
+        (
+            data_type,
             payload_value,
-        )
+            string_value,
+            clickhouse_value,
+        ) = _normalize_auto_evaluation_score_value(score_config, payload_value)
+    else:
+        clickhouse_value = payload_value
 
     payload = {
         "id": _auto_evaluation_score_id(
@@ -3725,6 +3982,7 @@ def _auto_evaluation_score_api_payload(
             "evaluatorId": evaluator_id,
             "passed": result.get("passed") if score_passed is None else score_passed,
         },
+        PA_CLICKHOUSE_SCORE_VALUE: clickhouse_value,
     }
     if string_value is not None:
         payload["stringValue"] = string_value
@@ -3732,13 +3990,20 @@ def _auto_evaluation_score_api_payload(
         payload["observationId"] = observation_id
     if resolved_config_id:
         payload["configId"] = resolved_config_id
+    if (
+        data_type == "BOOLEAN"
+        and score_config is not None
+        and score_config.get("categories") is not None
+        and not is_langfuse_boolean_categories(score_config.get("categories"))
+    ):
+        payload[PA_BOOLEAN_SCORE_CONFIG_REPAIR_MARKER] = True
     return payload
 
 
 def _normalize_auto_evaluation_score_value(
     score_config: dict[str, Any],
     raw_value: Any,
-) -> tuple[str, float | int | str | None, str | None]:
+) -> tuple[str, float | int | str | None, str | None, float | None]:
     data_type = (
         score_config.get("data_type") or score_config.get("dataType") or "NUMERIC"
     )
@@ -3749,11 +4014,11 @@ def _normalize_auto_evaluation_score_value(
     )
     if data_type == "BOOLEAN":
         score_value = 1 if value == 1 else 0
-        return data_type, score_value, string_value
+        return data_type, score_value, string_value, value
     if data_type in {"CATEGORICAL", "TEXT"}:
         text_value = string_value or ""
-        return data_type, text_value, text_value
-    return data_type, value, None
+        return data_type, text_value, text_value, value
+    return data_type, value, None, value
 
 
 def _auto_evaluation_score_id(
@@ -4301,13 +4566,14 @@ async def list_evaluation_report_items(
             )
             report_items = await cursor.fetchall()
 
-    scores = []
-    if source_task_id:
-        scores = await LangfuseClickHouseReader(settings).list_scores_by_queue(
-            project_id,
-            source_task_id,
-            run_id=run_id,
-        )
+    if not source_task_id:
+        return success({"total": 0, "datas": []})
+
+    scores = await LangfuseClickHouseReader(settings).list_scores_by_queue(
+        project_id,
+        source_task_id,
+        run_id=run_id,
+    )
     rows = _evaluation_report_items_from_scores(
         report_id=report_id,
         scores=scores,
@@ -4383,7 +4649,8 @@ async def list_evaluation_report_badcases(
     if not source_task_id:
         return success({"total": 0, "datas": []})
 
-    scores = await LangfuseClickHouseReader(settings).list_scores_by_queue(
+    trace_reader = LangfuseClickHouseReader(settings)
+    scores = await trace_reader.list_scores_by_queue(
         project_id,
         source_task_id,
         run_id=run_id,
@@ -4405,12 +4672,16 @@ async def list_evaluation_report_badcases(
     trace_ids = _unique_report_trace_ids(badcase_rows)
     start = (page - 1) * page_size
     page_trace_ids = trace_ids[start : start + page_size]
-    traces = await LangfuseClickHouseReader(settings).list_traces_by_ids(
+    traces = await trace_reader.list_traces_by_ids(
         project_id,
         page_trace_ids,
         fields="io,metadata",
     )
-    return success({"total": len(trace_ids), "datas": traces})
+    traces_with_scores = _attach_evaluation_report_scores_to_traces(
+        traces,
+        scores,
+    )
+    return success({"total": len(trace_ids), "datas": traces_with_scores})
 
 
 @router.get("/evaluation-reports/{report_id}/flowbacks")
@@ -5371,6 +5642,29 @@ def _score_exists(scores: list[dict[str, Any]], score: dict[str, Any]) -> bool:
         and existing.get("observationId") == score.get("observationId")
         for existing in scores
     )
+
+def _attach_evaluation_report_scores_to_traces(
+    traces: list[dict[str, Any]],
+    scores: list[dict[str, Any]],
+) -> list[dict[str, Any]]:
+    scores_by_trace: dict[str, list[dict[str, Any]]] = {}
+    for score in scores:
+        trace_id = str(score.get("traceId") or "").strip()
+        if trace_id:
+            scores_by_trace.setdefault(trace_id, []).append(score)
+
+    traces_with_scores: list[dict[str, Any]] = []
+    for trace in traces:
+        trace_id = str(trace.get("traceId") or "").strip()
+        trace_scores = scores_by_trace.get(trace_id, [])
+        traces_with_scores.append(
+            {
+                **trace,
+                "scores": trace_scores,
+                "scoreSummary": _score_summary(trace_scores),
+            }
+        )
+    return traces_with_scores
 
 
 def _score_result_type(score: dict[str, Any]) -> str:

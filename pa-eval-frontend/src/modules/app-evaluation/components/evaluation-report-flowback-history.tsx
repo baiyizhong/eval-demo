@@ -1,7 +1,7 @@
-import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card'
 import { Badge } from '@/components/ui/badge'
-import { formatDateTime } from './format'
+import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card'
 import type { EvaluationReportFlowbackRecord } from '../types'
+import { formatDateTime } from './format'
 
 export function EvaluationReportFlowbackHistory({
   records,
@@ -23,13 +23,17 @@ export function EvaluationReportFlowbackHistory({
               <span>类型：{record.flowbackType}</span>
               <span>请求：{record.requestedCount}</span>
               <span>成功：{record.successCount}</span>
-              <span>{formatDateTime(record.createdAt)} · {record.createdBy}</span>
+              <span>
+                {formatDateTime(record.createdAt)} · {record.createdBy}
+              </span>
             </CardContent>
           </Card>
         ))
       ) : (
         <Card>
-          <CardContent className='text-muted-foreground text-sm'>暂无回流历史</CardContent>
+          <CardContent className='text-muted-foreground text-sm'>
+            暂无回流历史
+          </CardContent>
         </Card>
       )}
     </section>

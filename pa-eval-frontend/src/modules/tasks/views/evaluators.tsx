@@ -65,6 +65,7 @@ import {
   type DataTableToolbarFilter,
 } from '@/components/common/data-table'
 import { Drawer } from '@/components/common/drawer'
+import { HoverPreviewCell } from '@/components/common/hover-preview-cell'
 import { Loading } from '@/components/common/loading'
 import { LongText } from '@/components/common/long-text'
 import { Page } from '@/components/common/page'
@@ -80,16 +81,22 @@ import {
   type TaskEvaluatorDetail,
   type TaskEvaluatorRecord,
 } from '../api/evaluator-api'
+import { EvaluatorVariableBadges } from '../components/evaluator-variable-badges'
 import { TasksPageHeader } from '../components/tasks-page-header'
 
 const createEvaluatorFormId = 'create-evaluator-form'
 const editEvaluatorFormId = 'edit-evaluator-form'
+const EVALUATOR_NAME_MAX_LENGTH = 30
+const EVALUATOR_DESCRIPTION_MAX_LENGTH = 200
+const EVALUATOR_VARIABLE_NAME_MAX_LENGTH = 30
+const EVALUATOR_INPUT_VARIABLES_MAX_LENGTH = 30
 
 const evaluatorTypeLabels: Record<TaskEvaluatorRecord['type'], string> = {
   LLM_AS_JUDGE: 'LLM-as-Judge',
   CODE: 'Code',
   WORKFLOW: '工作流',
   SDK: 'SDK',
+  SKILL: 'Skill',
 }
 
 const evaluatorProviderLabels: Record<TaskEvaluatorRecord['provider'], string> =
@@ -144,9 +151,12 @@ function stringifyEditorValue(value: unknown) {
 
 const createEvaluatorSchema = z
   .object({
-    name: z.string().min(1, '请输入评估器名称'),
-    type: z.enum(['LLM_AS_JUDGE', 'CODE', 'WORKFLOW', 'SDK']),
-    provider: z.enum(['LANGFUSE', 'DIFY', 'HIAGENT', 'N8N', 'OPENJUDGE']),
+    name: z
+      .string()
+      .min(1, '请输入评估器名称')
+      .max(EVALUATOR_NAME_MAX_LENGTH, '评估器名称不能超过30个字'),
+    type: z.enum(['LLM_AS_JUDGE', 'CODE', 'WORKFLOW', 'SDK', 'SKILL']),
+    provider: z.enum(['LANGFUSE', 'DIFY', 'HIAGENT', 'N8N', 'OPENJUDGE', 'PI']),
     evaluationScenario: z.enum([
       'SINGLE_TURN',
       'MULTI_TURN',
@@ -158,14 +168,23 @@ const createEvaluatorSchema = z
       'CUSTOM',
     ]),
     projectId: z.string().min(1, '请选择所属项目'),
-    description: z.string().min(1, '请输入评估器描述'),
+    description: z
+      .string()
+      .min(1, '请输入评估器描述')
+      .max(EVALUATOR_DESCRIPTION_MAX_LENGTH, '评估器描述不能超过200个字'),
     variables: z.string(),
-    inputVariables: z.string().min(1, '请输入输入变量，多个变量用逗号分隔'),
+    inputVariables: z
+      .string()
+      .min(1, '请输入输入变量，多个变量用逗号分隔')
+      .max(EVALUATOR_INPUT_VARIABLES_MAX_LENGTH, '输入变量不能超过30个字'),
     outputVariables: z.string(),
     outputVariableMappings: z
       .array(
         z.object({
-          variableName: z.string().min(1, '请输入变量名'),
+          variableName: z
+            .string()
+            .min(1, '请输入变量名')
+            .max(EVALUATOR_VARIABLE_NAME_MAX_LENGTH, '变量名称不能超过30个字'),
           scoreConfigId: z.string().min(1, '请选择评分指标'),
           scoreConfigName: z.string().min(1, '请选择评分指标'),
         })
@@ -229,6 +248,14 @@ const createEvaluatorSchema = z
         code: 'custom',
         path: ['sdkPackage'],
         message: '请输入 SDK 标识',
+      })
+    }
+
+    if (value.type === 'SKILL' && !value.endpointUrl.trim()) {
+      ctx.addIssue({
+        code: 'custom',
+        path: ['endpointUrl'],
+        message: '请选择 Skill',
       })
     }
   })
@@ -479,8 +506,8 @@ export function TaskEvaluators({ navigation = 'tasks' }: TaskEvaluatorsProps) {
         onOpenChange={setCreateOpen}
         title='新建评估器'
         mode='enhanced'
-        width={860}
-        actions={null}
+        confirmText='创建'
+        confirmProps={{ type: 'submit', form: createEvaluatorFormId }}
       >
         <BaseForm
           id={createEvaluatorFormId}
@@ -515,16 +542,13 @@ export function TaskEvaluators({ navigation = 'tasks' }: TaskEvaluatorsProps) {
             sdkPackage: '',
           }}
           onSubmit={handleCreate}
-          className='min-h-full gap-4 overflow-visible p-6 pb-0'
+          className='min-h-full gap-4 overflow-visible p-6'
         >
           {(form) => (
             <EvaluatorFormFields
               form={form}
-              formId={createEvaluatorFormId}
-              submitLabel='创建'
               scoreConfigs={scoreConfigs}
               scoreConfigsLoading={scoreConfigsQuery.isLoading}
-              onCancel={() => setCreateOpen(false)}
             />
           )}
         </BaseForm>
@@ -539,8 +563,8 @@ export function TaskEvaluators({ navigation = 'tasks' }: TaskEvaluatorsProps) {
         }}
         title='编辑评估器'
         mode='enhanced'
-        width={860}
-        actions={null}
+        confirmText='保存'
+        confirmProps={{ type: 'submit', form: editEvaluatorFormId }}
       >
         {editLoading ? (
           <Loading
@@ -557,16 +581,13 @@ export function TaskEvaluators({ navigation = 'tasks' }: TaskEvaluatorsProps) {
               projectId
             )}
             onSubmit={handleUpdate}
-            className='min-h-full gap-4 overflow-visible p-6 pb-0'
+            className='min-h-full gap-4 overflow-visible p-6'
           >
             {(form) => (
               <EvaluatorFormFields
                 form={form}
-                formId={editEvaluatorFormId}
-                submitLabel='保存'
                 scoreConfigs={scoreConfigs}
                 scoreConfigsLoading={scoreConfigsQuery.isLoading}
-                onCancel={() => setEditOpen(false)}
               />
             )}
           </BaseForm>
@@ -582,7 +603,6 @@ export function TaskEvaluators({ navigation = 'tasks' }: TaskEvaluatorsProps) {
         }}
         title='评估器详情'
         mode='enhanced'
-        width={820}
         showConfirm={false}
         cancelText='关闭'
       >
@@ -643,14 +663,31 @@ function createEvaluatorColumns({
       header: ({ column }) => (
         <DataTableColumnHeader column={column} title='评估器名称' />
       ),
-      cell: ({ row }) => (
-        <div className='flex max-w-80 flex-col gap-1'>
-          <span className='font-medium'>{row.original.name}</span>
-          <LongText className='text-muted-foreground text-xs'>
-            {row.original.description}
-          </LongText>
-        </div>
-      ),
+      cell: ({ row }) => {
+        const name = row.original.name
+        const description = row.original.description?.trim() || '-'
+
+        return (
+          <div className='flex max-w-80 flex-col gap-1'>
+            {Array.from(name).length > 18 ||
+            Array.from(description).length > 18 ? (
+              <HoverPreviewCell
+                label={name}
+                value={description}
+                triggerClassName='text-foreground max-w-80 text-sm font-medium'
+                contentClassName='max-w-[calc(100vw-2rem)]'
+                preClassName='font-sans'
+              />
+            ) : (
+              <span className='truncate font-medium'>{name}</span>
+            )}
+            <span className='text-muted-foreground truncate text-xs'>
+              {description}
+            </span>
+          </div>
+        )
+      },
+      meta: { className: 'w-80 max-w-80' },
       enableHiding: false,
     },
     {
@@ -705,16 +742,13 @@ function createEvaluatorColumns({
     },
     {
       accessorKey: 'variables',
-      header: '变量',
-      cell: ({ row }) => (
-        <div className='flex max-w-80 flex-wrap gap-1'>
-          {row.original.variables.map((variable) => (
-            <Badge key={variable} variant='outline'>
-              {variable}
-            </Badge>
-          ))}
-        </div>
+      header: ({ column }) => (
+        <DataTableColumnHeader column={column} title='变量' />
       ),
+      cell: ({ row }) => (
+        <EvaluatorVariableBadges values={row.original.variables} />
+      ),
+      meta: { className: 'w-[28rem] max-w-[28rem]' },
       enableSorting: false,
     },
     {
@@ -863,18 +897,12 @@ function DetailTextBlock({ title, value }: { title: string; value: string }) {
 
 function EvaluatorFormFields({
   form,
-  formId,
-  submitLabel,
   scoreConfigs,
   scoreConfigsLoading,
-  onCancel,
 }: {
   form: UseFormReturn<CreateTaskEvaluatorFormValues>
-  formId: string
-  submitLabel: string
   scoreConfigs: Pick<ScoreConfigRecord, 'id' | 'name'>[]
   scoreConfigsLoading: boolean
-  onCancel: () => void
 }) {
   return (
     <>
@@ -921,7 +949,11 @@ function EvaluatorFormFields({
           <FormItem>
             <FormLabel>评估器名称</FormLabel>
             <FormControl>
-              <Input placeholder='例如：客服回答质量评估器' {...field} />
+              <Input
+                placeholder='例如：客服回答质量评估器'
+                maxLength={EVALUATOR_NAME_MAX_LENGTH}
+                {...field}
+              />
             </FormControl>
             <FormMessage />
           </FormItem>
@@ -947,6 +979,9 @@ function EvaluatorFormFields({
                   if (nextType === 'SDK') {
                     form.setValue('provider', 'OPENJUDGE')
                   }
+                  if (nextType === 'SKILL') {
+                    form.setValue('provider', 'PI')
+                  }
                 }}
               >
                 <FormControl>
@@ -960,6 +995,7 @@ function EvaluatorFormFields({
                     <SelectItem value='CODE'>Code</SelectItem>
                     <SelectItem value='WORKFLOW'>工作流</SelectItem>
                     <SelectItem value='SDK'>SDK</SelectItem>
+                    <SelectItem value='SKILL'>Skill</SelectItem>
                   </SelectGroup>
                 </SelectContent>
               </Select>
@@ -1004,6 +1040,7 @@ function EvaluatorFormFields({
               <Textarea
                 placeholder='说明评估维度、适用场景和输出含义'
                 className='min-h-24 resize-none'
+                maxLength={EVALUATOR_DESCRIPTION_MAX_LENGTH}
                 {...field}
               />
             </FormControl>
@@ -1152,6 +1189,44 @@ function EvaluatorFormFields({
           <WorkflowMappingFields form={form} />
         </>
       ) : null}
+      {form.watch('type') === 'SKILL' ? (
+        <>
+          <SkillSelectField form={form} />
+          <FormField
+            control={form.control}
+            name='modelProvider'
+            render={({ field }) => (
+              <FormItem>
+                <FormLabel>模型提供方（可选）</FormLabel>
+                <FormControl>
+                  <Input
+                    placeholder='留空则使用项目默认评估模型'
+                    {...field}
+                  />
+                </FormControl>
+                <FormMessage />
+              </FormItem>
+            )}
+          />
+          <FormField
+            control={form.control}
+            name='model'
+            render={({ field }) => (
+              <FormItem>
+                <FormLabel>模型名称（可选）</FormLabel>
+                <FormControl>
+                  <Input
+                    placeholder='留空则使用项目默认评估模型'
+                    {...field}
+                  />
+                </FormControl>
+                <FormMessage />
+              </FormItem>
+            )}
+          />
+          <WorkflowMappingFields form={form} />
+        </>
+      ) : null}
       <FormField
         control={form.control}
         name='inputVariables'
@@ -1161,6 +1236,7 @@ function EvaluatorFormFields({
             <FormControl>
               <Input
                 placeholder='input, output, expected_output'
+                maxLength={EVALUATOR_INPUT_VARIABLES_MAX_LENGTH}
                 {...field}
                 onChange={(event) => {
                   field.onChange(event)
@@ -1177,14 +1253,6 @@ function EvaluatorFormFields({
         scoreConfigs={scoreConfigs}
         loading={scoreConfigsLoading}
       />
-      <div className='bg-background sticky bottom-0 -mx-6 mt-2 flex justify-end gap-2 border-t px-6 py-4'>
-        <Button type='button' variant='outline' onClick={onCancel}>
-          取消
-        </Button>
-        <Button form={formId} type='submit'>
-          {submitLabel}
-        </Button>
-      </div>
     </>
   )
 }
@@ -1342,6 +1410,71 @@ function getScenarioPreset(scenario: EvaluationScenario): {
           ? 'harmfulness'
           : 'openjudge',
   }
+}
+
+type SkillRecord = {
+  name: string
+  description: string
+  source: 'BUILTIN' | 'PROJECT'
+}
+
+function SkillSelectField({
+  form,
+}: {
+  form: UseFormReturn<CreateTaskEvaluatorFormValues>
+}) {
+  const $api = useAPI()
+  const { projectId = '' } = useParams()
+  const { data, isLoading } = useQuery({
+    queryKey: ['project-skills', projectId],
+    queryFn: () =>
+      $api.getSkills<{ total: number; datas: SkillRecord[] }>({
+        path: { projectId },
+      }),
+    enabled: Boolean(projectId),
+  })
+  const skills = data?.datas ?? []
+  const selected = form.watch('endpointUrl')
+
+  return (
+    <FormField
+      control={form.control}
+      name='endpointUrl'
+      render={({ field }) => (
+        <FormItem>
+          <FormLabel>Skill</FormLabel>
+          <Select
+            value={selected}
+            onValueChange={(value) => field.onChange(value)}
+          >
+            <FormControl>
+              <SelectTrigger className='w-full'>
+                  <SelectValue
+                    placeholder={isLoading ? '加载中...' : '选择 Skill'}
+                  />
+              </SelectTrigger>
+            </FormControl>
+            <SelectContent>
+              <SelectGroup>
+                {skills.length === 0 && !isLoading ? (
+                  <SelectItem value='_empty' disabled>
+                    暂无可用 Skill，请先上传
+                  </SelectItem>
+                ) : null}
+                {skills.map((skill) => (
+                  <SelectItem key={skill.name} value={skill.name}>
+                    {skill.name}
+                    {skill.source === 'BUILTIN' ? '（预置）' : ''}
+                  </SelectItem>
+                ))}
+              </SelectGroup>
+            </SelectContent>
+          </Select>
+          <FormMessage />
+        </FormItem>
+      )}
+    />
+  )
 }
 
 function WorkflowFields({
@@ -1657,6 +1790,7 @@ function OutputVariableMappingsField({
                     <Input
                       className='h-8'
                       placeholder='请输入变量名'
+                      maxLength={EVALUATOR_VARIABLE_NAME_MAX_LENGTH}
                       {...variableField}
                       onChange={(event) => {
                         variableField.onChange(event)

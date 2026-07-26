@@ -8,8 +8,10 @@ export function showSubmittedData(
   const toastId = toast.message(title, {
     description: (
       <div className='flex flex-col gap-3'>
-        <pre className='mt-2 w-full overflow-x-auto rounded-md bg-slate-950 p-4'>
-          <code className='text-white'>{JSON.stringify(data, null, 2)}</code>
+        <pre className='bg-foreground mt-2 w-full overflow-x-auto rounded-md p-4'>
+          <code className='text-background'>
+            {JSON.stringify(data, null, 2)}
+          </code>
         </pre>
         <Button
           type='button'

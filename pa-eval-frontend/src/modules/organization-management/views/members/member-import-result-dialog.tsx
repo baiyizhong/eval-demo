@@ -1,3 +1,4 @@
+import type { MemberImportFailureItem } from '@/modules/organization-management/data/member-import'
 import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
 import {
@@ -16,7 +17,6 @@ import {
   TableHeader,
   TableRow,
 } from '@/components/ui/table'
-import type { MemberImportFailureItem } from '@/modules/organization-management/data/member-import'
 
 const FIELD_LABELS: Record<MemberImportFailureItem['field'], string> = {
   email: '邮箱',
@@ -80,7 +80,7 @@ export function MemberImportResultDialog({
                     <TableCell>{FIELD_LABELS[failure.field]}</TableCell>
                     <TableCell>{failure.email || '-'}</TableCell>
                     <TableCell>{failure.reason}</TableCell>
-                    <TableCell className='max-w-72 whitespace-normal break-all text-muted-foreground'>
+                    <TableCell className='text-muted-foreground max-w-72 break-all whitespace-normal'>
                       {failure.rawData || '-'}
                     </TableCell>
                   </TableRow>
@@ -89,7 +89,7 @@ export function MemberImportResultDialog({
             </Table>
           </div>
         ) : (
-          <div className='rounded-md border border-dashed bg-muted/20 px-4 py-8 text-center text-sm text-muted-foreground'>
+          <div className='bg-muted/20 text-muted-foreground rounded-md border border-dashed px-4 py-8 text-center text-sm'>
             本次导入没有失败项。
           </div>
         )}

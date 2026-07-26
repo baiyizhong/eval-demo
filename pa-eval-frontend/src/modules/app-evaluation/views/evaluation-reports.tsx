@@ -1,10 +1,11 @@
 import { useCallback, useMemo, useState } from 'react'
-import { FileSliders } from 'lucide-react'
 import { useQueryClient } from '@tanstack/react-query'
-import { useNavigate, useParams } from 'react-router'
+import { FileSliders, RefreshCw } from 'lucide-react'
+import { useParams } from 'react-router'
 import { toast } from 'sonner'
 import { confirm } from '@/lib/confirm'
 import { useAPI } from '@/hooks/use-api'
+import { usePermission } from '@/hooks/use-permission'
 import { DataTable } from '@/components/common/data-table'
 import { Loading } from '@/components/common/loading'
 import { Page } from '@/components/common/page'
@@ -17,13 +18,17 @@ import { EvaluationPageNav } from '../components/evaluation-page-nav'
 import { createEvaluationReportColumns } from '../components/evaluation-report-columns'
 import { ReportTemplateDialog } from '../components/report-template-dialog'
 import type { EvaluationReportRecord } from '../types'
-import { reportToolbarFilters, reportUrlFilters } from './evaluation-report-filters'
+import {
+  reportToolbarFilters,
+  reportUrlFilters,
+} from './evaluation-report-filters'
 
 export function ProjectEvaluationReports() {
   const { projectId = 'project_customer_agent' } = useParams()
   const $api = useAPI()
-  const navigate = useNavigate()
   const queryClient = useQueryClient()
+  const { can } = usePermission({ type: 'project', projectId })
+  const canEditReports = can('project:evaluation-report:edit')
   const [templateOpen, setTemplateOpen] = useState(false)
 
   const invalidateReports = useCallback(async () => {
@@ -48,13 +53,10 @@ export function ProjectEvaluationReports() {
     () =>
       createEvaluationReportColumns({
         projectId,
+        canEdit: canEditReports,
         onExport: (report) => void handleExport($api, projectId, report),
         onRegenerate: (report) =>
           void handleRegenerate(report, invalidateReports),
-        onFlowback: (report) =>
-          navigate(
-            `/projects/${projectId}/evaluation/reports/${report.id}?tab=badcases`
-          ),
         onViewUnavailable: (report) =>
           toast.warning(
             report.status === 'GENERATING'
@@ -64,8 +66,13 @@ export function ProjectEvaluationReports() {
         onDelete: (report) =>
           void handleDelete($api, projectId, report, invalidateReports),
       }),
-    [$api, invalidateReports, navigate, projectId]
+    [$api, canEditReports, invalidateReports, projectId]
   )
+
+  const handleRefresh = async () => {
+    await invalidateReports()
+    toast.success('评测报告已刷新')
+  }
 
   return (
     <Page fixed fluid className='flex min-h-[calc(100svh-3.5rem)] flex-col'>
@@ -74,14 +81,27 @@ export function ProjectEvaluationReports() {
           buttonGroups={{
             buttons: [
               {
-                id: 'report-template',
-                label: '报告模板',
-                icon: FileSliders,
+                id: 'refresh',
+                label: '刷新',
+                icon: RefreshCw,
                 iconPosition: 'start',
                 variant: 'outline',
                 size: 'sm',
-                onClick: () => setTemplateOpen(true),
+                onClick: () => void handleRefresh(),
               },
+              ...(canEditReports
+                ? [
+                    {
+                      id: 'report-template',
+                      label: '报告模板',
+                      icon: FileSliders,
+                      iconPosition: 'start' as const,
+                      variant: 'outline' as const,
+                      size: 'sm' as const,
+                      onClick: () => setTemplateOpen(true),
+                    },
+                  ]
+                : []),
             ],
           }}
         />
@@ -125,12 +145,11 @@ export function ProjectEvaluationReports() {
               />
             }
             emptyText='当前项目下暂无匹配的评测报告'
-            minTableWidth={1200}
           />
         </section>
       </div>
       <ReportTemplateDialog
-        open={templateOpen}
+        open={canEditReports && templateOpen}
         onOpenChange={setTemplateOpen}
         projectId={projectId}
       />
@@ -165,7 +184,7 @@ async function handleRegenerate(
 ) {
   const confirmed = await confirm({
     title: '重新生成评测报告',
-    desc: `将基于 mock 报告数据重新生成「${report.title}」。确定继续吗？`,
+    desc: `将刷新「${report.title}」的报告数据。确定继续吗？`,
     confirmText: '重新生成',
   })
   if (!confirmed) return

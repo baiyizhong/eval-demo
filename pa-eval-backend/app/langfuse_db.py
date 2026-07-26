@@ -1,6 +1,7 @@
 import json
 import hashlib
 from datetime import datetime, timedelta, timezone
+from collections.abc import AsyncIterator
 from typing import Any
 from uuid import uuid4
 
@@ -16,8 +17,16 @@ from app.annotation_assignment import (
     plan_annotation_assignments,
 )
 from app.config import Settings, get_settings
+from app.data_access.postgres import connect_postgres
 from app.errors import BusinessError
 from app.langfuse_client import LangfuseProjectApiClient
+from app.score_configs import (
+    PA_BOOLEAN_SCORE_CONFIG_REPAIR_MARKER,
+    PA_CLICKHOUSE_SCORE_VALUE,
+    is_langfuse_boolean_categories,
+    langfuse_boolean_categories,
+    langfuse_boolean_label,
+)
 
 
 PROJECT_ACCESS_EXISTS_SQL = """
@@ -44,10 +53,6 @@ PROJECT_ACCESS_EXISTS_SQL = """
 )
 """
 
-LANGFUSE_BOOLEAN_SCORE_CATEGORIES = [
-    {"label": "True", "value": 1},
-    {"label": "False", "value": 0},
-]
 TEXT_SCORE_MAX_LENGTH = 500
 ROLE_LEVELS = {
     "NONE": 0,
@@ -264,6 +269,7 @@ class LangfuseDatabaseReader:
                 p.name,
                 p.org_id,
                 o.name AS organization_name,
+                p.retention_days,
                 p.created_at,
                 p.updated_at,
                 p.deleted_at,
@@ -283,6 +289,7 @@ class LangfuseDatabaseReader:
                 p.name,
                 p.org_id,
                 o.name AS organization_name,
+                p.retention_days,
                 p.created_at,
                 p.updated_at,
                 p.deleted_at,
@@ -415,6 +422,7 @@ class LangfuseDatabaseReader:
                 p.name,
                 p.org_id,
                 o.name AS organization_name,
+                p.retention_days,
                 p.created_at,
                 p.updated_at,
                 p.deleted_at,
@@ -446,7 +454,7 @@ class LangfuseDatabaseReader:
             raise LangfuseDatabaseConfigError()
 
         project_id = _new_langfuse_id("project")
-        async with await psycopg.AsyncConnection.connect(
+        async with await connect_postgres(
             self._database_url,
             row_factory=dict_row,
         ) as connection:
@@ -461,21 +469,35 @@ class LangfuseDatabaseReader:
                     None,
                     {
                         "description": payload.get("description") or "",
-                        "retentionDays": payload.get("retentionDays"),
                         "createdBy": user_email,
                         "updatedBy": user_email,
                     },
                 )
                 await cursor.execute(
                     """
-                    INSERT INTO projects (id, name, org_id, metadata)
-                    VALUES (%(id)s, %(name)s, %(org_id)s, %(metadata)s)
-                    RETURNING id, name, org_id, created_at, updated_at, deleted_at, metadata
+                    INSERT INTO projects (id, name, org_id, retention_days, metadata)
+                    VALUES (
+                        %(id)s,
+                        %(name)s,
+                        %(org_id)s,
+                        %(retention_days)s,
+                        %(metadata)s
+                    )
+                    RETURNING
+                        id,
+                        name,
+                        org_id,
+                        retention_days,
+                        created_at,
+                        updated_at,
+                        deleted_at,
+                        metadata
                     """,
                     {
                         "id": project_id,
                         "name": payload["name"],
                         "org_id": organization_id,
+                        "retention_days": payload.get("retentionDays", 14),
                         "metadata": Jsonb(metadata),
                     },
                 )
@@ -531,7 +553,7 @@ class LangfuseDatabaseReader:
         if not self._database_url:
             raise LangfuseDatabaseConfigError()
 
-        async with await psycopg.AsyncConnection.connect(
+        async with await connect_postgres(
             self._database_url,
             row_factory=dict_row,
         ) as connection:
@@ -545,7 +567,6 @@ class LangfuseDatabaseReader:
                     current.get("metadata"),
                     {
                         "description": payload.get("description") or "",
-                        "retentionDays": payload.get("retentionDays"),
                         "updatedBy": user_email,
                     },
                 )
@@ -554,14 +575,27 @@ class LangfuseDatabaseReader:
                     UPDATE projects
                     SET
                         name = %(name)s,
+                        retention_days = %(retention_days)s,
                         metadata = %(metadata)s,
                         updated_at = NOW()
                     WHERE id = %(project_id)s
-                    RETURNING id, name, org_id, created_at, updated_at, deleted_at, metadata
+                    RETURNING
+                        id,
+                        name,
+                        org_id,
+                        retention_days,
+                        created_at,
+                        updated_at,
+                        deleted_at,
+                        metadata
                     """,
                     {
                         "project_id": project_id,
                         "name": payload["name"],
+                        "retention_days": payload.get(
+                            "retentionDays",
+                            current.get("retention_days"),
+                        ),
                         "metadata": Jsonb(metadata),
                     },
                 )
@@ -642,7 +676,7 @@ class LangfuseDatabaseReader:
         public_key = f"pk-lf-{uuid4()}"
         secret_key = f"sk-lf-{uuid4()}"
 
-        async with await psycopg.AsyncConnection.connect(
+        async with await connect_postgres(
             self._database_url,
             row_factory=dict_row,
         ) as connection:
@@ -716,7 +750,7 @@ class LangfuseDatabaseReader:
         if not self._database_url:
             raise LangfuseDatabaseConfigError()
 
-        async with await psycopg.AsyncConnection.connect(
+        async with await connect_postgres(
             self._database_url,
             row_factory=dict_row,
         ) as connection:
@@ -767,7 +801,7 @@ class LangfuseDatabaseReader:
         if not self._database_url:
             raise LangfuseDatabaseConfigError()
 
-        async with await psycopg.AsyncConnection.connect(
+        async with await connect_postgres(
             self._database_url,
             row_factory=dict_row,
         ) as connection:
@@ -862,42 +896,72 @@ class LangfuseDatabaseReader:
         user_id: str,
     ) -> dict[str, Any]:
         await self._ensure_project_visible(project_id, user_id)
-        connection_payloads = await self._project_api_client.list_llm_connections(
-            project_id
+        connections = await self._fetch_all(
+            """
+            SELECT
+                id,
+                provider,
+                adapter,
+                secret_key,
+                base_url,
+                custom_models,
+                with_default_models
+            FROM pa_project_llm_connections
+            WHERE project_id = %(project_id)s
+              AND status = 'ACTIVE'
+            ORDER BY update_date DESC, create_date DESC, id DESC
+            """,
+            {"project_id": project_id},
+        )
+        definitions = await self._fetch_all(
+            """
+            SELECT
+                id,
+                model_name,
+                match_pattern,
+                unit,
+                input_price,
+                output_price,
+                tokenizer_id
+            FROM pa_project_model_definitions
+            WHERE project_id = %(project_id)s
+              AND status = 'ACTIVE'
+            ORDER BY update_date DESC, create_date DESC, id DESC
+            """,
+            {"project_id": project_id},
         )
         settings_rows = await self._fetch_all(
             """
             SELECT
-                id,
-                llm_connection_id,
-                model,
-                temperature
-            FROM pa_project_model_settings
-            WHERE project_id = %(project_id)s
+                pms.id,
+                pms.llm_connection_id,
+                pms.model,
+                pms.temperature,
+                plc.provider,
+                plc.adapter
+            FROM pa_project_model_settings pms
+            LEFT JOIN pa_project_llm_connections plc
+              ON plc.project_id = pms.project_id
+             AND plc.id = pms.llm_connection_id
+            WHERE pms.project_id = %(project_id)s
             LIMIT 1
             """,
             {"project_id": project_id},
         )
-        connections_by_id = {item["id"]: item for item in connection_payloads}
-        settings_row = settings_rows[0] if settings_rows else None
-        if settings_row is not None:
-            matched_connection = connections_by_id.get(
-                settings_row.get("llm_connection_id") or ""
-            )
-            if matched_connection:
-                settings_row = {
-                    **settings_row,
-                    "provider": matched_connection.get("provider") or "",
-                    "adapter": matched_connection.get("adapter") or "",
-                }
+        connection_payloads = [
+            self._to_llm_connection_payload(row) for row in connections
+        ]
         default_model = self._to_default_model_payload(
-            settings_row,
+            settings_rows[0] if settings_rows else None,
             connection_payloads[0] if connection_payloads else None,
             project_id,
         )
         return {
             "defaultModel": default_model,
             "connections": connection_payloads,
+            "modelDefinitions": [
+                self._to_model_definition_payload(row) for row in definitions
+            ],
         }
 
     async def update_project_default_model_for_user(
@@ -911,25 +975,17 @@ class LangfuseDatabaseReader:
             raise LangfuseDatabaseConfigError()
 
         setting_id = f"pamodeldefault_{project_id}"
-        async with await psycopg.AsyncConnection.connect(
+        async with await connect_postgres(
             self._database_url,
             row_factory=dict_row,
         ) as connection:
             async with connection.cursor() as cursor:
                 await self._get_project_for_user(cursor, project_id, user_id)
-                connections = await self._project_api_client.list_llm_connections(
-                    project_id
+                connection_row = await self._get_llm_connection_row(
+                    cursor,
+                    project_id,
+                    payload["llmConnectionId"],
                 )
-                connection_row = next(
-                    (
-                        item
-                        for item in connections
-                        if item["id"] == payload["llmConnectionId"]
-                    ),
-                    None,
-                )
-                if connection_row is None:
-                    raise BusinessError(1013, "LLM 连接不存在或已不可用", 404)
                 await cursor.execute(
                     """
                     INSERT INTO pa_project_model_settings (
@@ -993,8 +1049,74 @@ class LangfuseDatabaseReader:
         user_email: str,
         payload: dict[str, Any],
     ) -> dict[str, Any]:
-        await self._ensure_project_visible(project_id, user_id)
-        return await self._project_api_client.upsert_llm_connection(project_id, payload)
+        if not self._database_url:
+            raise LangfuseDatabaseConfigError()
+
+        connection_id = _new_langfuse_id("pallm")
+        async with await connect_postgres(
+            self._database_url,
+            row_factory=dict_row,
+        ) as connection:
+            async with connection.cursor() as cursor:
+                await self._get_project_for_user(cursor, project_id, user_id)
+                await cursor.execute(
+                    """
+                    INSERT INTO pa_project_llm_connections (
+                        id,
+                        project_id,
+                        provider,
+                        adapter,
+                        secret_key,
+                        base_url,
+                        custom_models,
+                        with_default_models,
+                        create_by,
+                        create_date,
+                        update_by,
+                        update_date
+                    )
+                    VALUES (
+                        %(id)s,
+                        %(project_id)s,
+                        %(provider)s,
+                        %(adapter)s,
+                        %(secret_key)s,
+                        %(base_url)s,
+                        %(custom_models)s,
+                        %(with_default_models)s,
+                        %(create_by)s,
+                        NOW(),
+                        %(update_by)s,
+                        NOW()
+                    )
+                    RETURNING
+                        id,
+                        provider,
+                        adapter,
+                        secret_key,
+                        base_url,
+                        custom_models,
+                        with_default_models
+                    """,
+                    {
+                        "id": connection_id,
+                        "project_id": project_id,
+                        "provider": payload["provider"],
+                        "adapter": payload["adapter"],
+                        "secret_key": payload.get("secretKey") or "",
+                        "base_url": payload.get("baseUrl") or "",
+                        "custom_models": Jsonb(payload.get("customModels") or []),
+                        "with_default_models": bool(
+                            payload.get("withDefaultModels", True)
+                        ),
+                        "create_by": user_email,
+                        "update_by": user_email,
+                    },
+                )
+                row = await cursor.fetchone()
+
+        assert row is not None
+        return self._to_llm_connection_payload(row)
 
     async def update_project_llm_connection_for_user(
         self,
@@ -1004,14 +1126,59 @@ class LangfuseDatabaseReader:
         user_email: str,
         payload: dict[str, Any],
     ) -> dict[str, Any]:
-        await self._ensure_project_visible(project_id, user_id)
-        connection = await self._project_api_client.upsert_llm_connection(
-            project_id,
-            payload,
-        )
-        if connection["id"] != connection_id:
-            return {**connection, "id": connection_id}
-        return connection
+        if not self._database_url:
+            raise LangfuseDatabaseConfigError()
+
+        async with await connect_postgres(
+            self._database_url,
+            row_factory=dict_row,
+        ) as connection:
+            async with connection.cursor() as cursor:
+                await self._get_project_for_user(cursor, project_id, user_id)
+                await cursor.execute(
+                    """
+                    UPDATE pa_project_llm_connections
+                    SET provider = %(provider)s,
+                        adapter = %(adapter)s,
+                        secret_key = CASE
+                            WHEN %(secret_key)s = '' THEN secret_key
+                            ELSE %(secret_key)s
+                        END,
+                        base_url = %(base_url)s,
+                        custom_models = %(custom_models)s,
+                        with_default_models = %(with_default_models)s,
+                        update_by = %(update_by)s,
+                        update_date = NOW()
+                    WHERE project_id = %(project_id)s
+                      AND id = %(connection_id)s
+                      AND status = 'ACTIVE'
+                    RETURNING
+                        id,
+                        provider,
+                        adapter,
+                        secret_key,
+                        base_url,
+                        custom_models,
+                        with_default_models
+                    """,
+                    {
+                        "project_id": project_id,
+                        "connection_id": connection_id,
+                        "provider": payload["provider"],
+                        "adapter": payload["adapter"],
+                        "secret_key": payload.get("secretKey") or "",
+                        "base_url": payload.get("baseUrl") or "",
+                        "custom_models": Jsonb(payload.get("customModels") or []),
+                        "with_default_models": bool(
+                            payload.get("withDefaultModels", True)
+                        ),
+                        "update_by": user_email,
+                    },
+                )
+                row = await cursor.fetchone()
+        if row is None:
+            raise BusinessError(1013, "LLM 连接不存在或已不可用", 404)
+        return self._to_llm_connection_payload(row)
 
     async def delete_project_llm_connection_for_user(
         self,
@@ -1020,11 +1187,205 @@ class LangfuseDatabaseReader:
         user_id: str,
         user_email: str,
     ) -> dict[str, Any]:
-        await self._ensure_project_visible(project_id, user_id)
-        return await self._project_api_client.delete_llm_connection(
-            project_id,
-            connection_id,
-        )
+        if not self._database_url:
+            raise LangfuseDatabaseConfigError()
+
+        async with await connect_postgres(
+            self._database_url,
+            row_factory=dict_row,
+        ) as connection:
+            async with connection.cursor() as cursor:
+                await self._get_project_for_user(cursor, project_id, user_id)
+                await cursor.execute(
+                    """
+                    UPDATE pa_project_llm_connections
+                    SET status = 'ARCHIVED',
+                        update_by = %(update_by)s,
+                        update_date = NOW()
+                    WHERE project_id = %(project_id)s
+                      AND id = %(connection_id)s
+                      AND status = 'ACTIVE'
+                    RETURNING id
+                    """,
+                    {
+                        "project_id": project_id,
+                        "connection_id": connection_id,
+                        "update_by": user_email,
+                    },
+                )
+                row = await cursor.fetchone()
+        if row is None:
+            raise BusinessError(1013, "LLM 连接不存在或已不可用", 404)
+        return {"id": row["id"]}
+
+    async def create_project_model_definition_for_user(
+        self,
+        project_id: str,
+        user_id: str,
+        user_email: str,
+        payload: dict[str, Any],
+    ) -> dict[str, Any]:
+        if not self._database_url:
+            raise LangfuseDatabaseConfigError()
+
+        model_id = _new_langfuse_id("pamodel")
+        async with await connect_postgres(
+            self._database_url,
+            row_factory=dict_row,
+        ) as connection:
+            async with connection.cursor() as cursor:
+                await self._get_project_for_user(cursor, project_id, user_id)
+                await cursor.execute(
+                    """
+                    INSERT INTO pa_project_model_definitions (
+                        id,
+                        project_id,
+                        model_name,
+                        match_pattern,
+                        unit,
+                        input_price,
+                        output_price,
+                        tokenizer_id,
+                        create_by,
+                        create_date,
+                        update_by,
+                        update_date
+                    )
+                    VALUES (
+                        %(id)s,
+                        %(project_id)s,
+                        %(model_name)s,
+                        %(match_pattern)s,
+                        %(unit)s,
+                        %(input_price)s,
+                        %(output_price)s,
+                        %(tokenizer_id)s,
+                        %(create_by)s,
+                        NOW(),
+                        %(update_by)s,
+                        NOW()
+                    )
+                    RETURNING
+                        id,
+                        model_name,
+                        match_pattern,
+                        unit,
+                        input_price,
+                        output_price,
+                        tokenizer_id
+                    """,
+                    {
+                        "id": model_id,
+                        "project_id": project_id,
+                        "model_name": payload["modelName"],
+                        "match_pattern": payload.get("matchPattern") or "",
+                        "unit": payload.get("unit") or "TOKENS",
+                        "input_price": payload.get("inputPrice") or "",
+                        "output_price": payload.get("outputPrice") or "",
+                        "tokenizer_id": payload.get("tokenizerId") or "",
+                        "create_by": user_email,
+                        "update_by": user_email,
+                    },
+                )
+                row = await cursor.fetchone()
+
+        assert row is not None
+        return self._to_model_definition_payload(row)
+
+    async def update_project_model_definition_for_user(
+        self,
+        project_id: str,
+        model_id: str,
+        user_id: str,
+        user_email: str,
+        payload: dict[str, Any],
+    ) -> dict[str, Any]:
+        if not self._database_url:
+            raise LangfuseDatabaseConfigError()
+
+        async with await connect_postgres(
+            self._database_url,
+            row_factory=dict_row,
+        ) as connection:
+            async with connection.cursor() as cursor:
+                await self._get_project_for_user(cursor, project_id, user_id)
+                await cursor.execute(
+                    """
+                    UPDATE pa_project_model_definitions
+                    SET model_name = %(model_name)s,
+                        match_pattern = %(match_pattern)s,
+                        unit = %(unit)s,
+                        input_price = %(input_price)s,
+                        output_price = %(output_price)s,
+                        tokenizer_id = %(tokenizer_id)s,
+                        update_by = %(update_by)s,
+                        update_date = NOW()
+                    WHERE project_id = %(project_id)s
+                      AND id = %(model_id)s
+                      AND status = 'ACTIVE'
+                    RETURNING
+                        id,
+                        model_name,
+                        match_pattern,
+                        unit,
+                        input_price,
+                        output_price,
+                        tokenizer_id
+                    """,
+                    {
+                        "project_id": project_id,
+                        "model_id": model_id,
+                        "model_name": payload["modelName"],
+                        "match_pattern": payload.get("matchPattern") or "",
+                        "unit": payload.get("unit") or "TOKENS",
+                        "input_price": payload.get("inputPrice") or "",
+                        "output_price": payload.get("outputPrice") or "",
+                        "tokenizer_id": payload.get("tokenizerId") or "",
+                        "update_by": user_email,
+                    },
+                )
+                row = await cursor.fetchone()
+        if row is None:
+            raise BusinessError(1014, "模型定义不存在或已不可用", 404)
+        return self._to_model_definition_payload(row)
+
+    async def delete_project_model_definition_for_user(
+        self,
+        project_id: str,
+        model_id: str,
+        user_id: str,
+        user_email: str,
+    ) -> dict[str, Any]:
+        if not self._database_url:
+            raise LangfuseDatabaseConfigError()
+
+        async with await connect_postgres(
+            self._database_url,
+            row_factory=dict_row,
+        ) as connection:
+            async with connection.cursor() as cursor:
+                await self._get_project_for_user(cursor, project_id, user_id)
+                await cursor.execute(
+                    """
+                    UPDATE pa_project_model_definitions
+                    SET status = 'ARCHIVED',
+                        update_by = %(update_by)s,
+                        update_date = NOW()
+                    WHERE project_id = %(project_id)s
+                      AND id = %(model_id)s
+                      AND status = 'ACTIVE'
+                    RETURNING id
+                    """,
+                    {
+                        "project_id": project_id,
+                        "model_id": model_id,
+                        "update_by": user_email,
+                    },
+                )
+                row = await cursor.fetchone()
+        if row is None:
+            raise BusinessError(1014, "模型定义不存在或已不可用", 404)
+        return {"id": row["id"]}
 
     async def list_evaluators_for_user(self, user_id: str) -> list[dict[str, Any]]:
         langfuse_evaluators = await self._list_langfuse_evaluators_for_user(user_id)
@@ -1098,7 +1459,10 @@ class LangfuseDatabaseReader:
             """,
             {**params, "limit": limit, "offset": offset},
         )
-        return {"total": total, "datas": [self._to_dataset_payload(row) for row in rows]}
+        return {
+            "total": total,
+            "datas": [self._to_dataset_payload(row) for row in rows],
+        }
 
     async def get_dataset_for_user(
         self,
@@ -1160,7 +1524,7 @@ class LangfuseDatabaseReader:
         if not self._database_url:
             raise LangfuseDatabaseConfigError()
 
-        async with await psycopg.AsyncConnection.connect(
+        async with await connect_postgres(
             self._database_url,
             row_factory=dict_row,
         ) as connection:
@@ -1208,7 +1572,7 @@ class LangfuseDatabaseReader:
 
         dataset_id = _new_langfuse_id("dataset")
         try:
-            async with await psycopg.AsyncConnection.connect(
+            async with await connect_postgres(
                 self._database_url,
                 row_factory=dict_row,
             ) as connection:
@@ -1260,6 +1624,26 @@ class LangfuseDatabaseReader:
 
         return await self.get_dataset_for_user(project_id, dataset_id, user_id)
 
+    async def is_dataset_name_available_for_user(
+        self,
+        project_id: str,
+        user_id: str,
+        name: str,
+    ) -> bool:
+        await self._ensure_project_visible(project_id, user_id)
+        rows = await self._fetch_all(
+            """
+            SELECT NOT EXISTS (
+                SELECT 1
+                FROM datasets
+                WHERE project_id = %(project_id)s
+                  AND name = %(name)s
+            ) AS available
+            """,
+            {"project_id": project_id, "name": name},
+        )
+        return bool(rows and rows[0].get("available"))
+
     async def update_dataset_for_user(
         self,
         project_id: str,
@@ -1271,7 +1655,7 @@ class LangfuseDatabaseReader:
             raise LangfuseDatabaseConfigError()
 
         try:
-            async with await psycopg.AsyncConnection.connect(
+            async with await connect_postgres(
                 self._database_url,
                 row_factory=dict_row,
             ) as connection:
@@ -1328,7 +1712,7 @@ class LangfuseDatabaseReader:
         if not self._database_url:
             raise LangfuseDatabaseConfigError()
 
-        async with await psycopg.AsyncConnection.connect(
+        async with await connect_postgres(
             self._database_url,
             row_factory=dict_row,
         ) as connection:
@@ -1489,23 +1873,71 @@ class LangfuseDatabaseReader:
         user_id: str,
         *,
         batch_size: int = 1000,
+        keyword: str | None = None,
+        status: list[str] | None = None,
     ):
-        page = 1
+        await self._ensure_project_visible(project_id, user_id)
+        await self._ensure_dataset_visible(project_id, dataset_id)
+        where_sql, base_params = self._build_dataset_item_filters(
+            project_id,
+            dataset_id,
+            keyword=keyword,
+            status=status,
+        )
+        cursor: dict[str, Any] = {}
         while True:
-            result = await self.list_dataset_items_for_user(
-                project_id,
-                dataset_id,
-                user_id,
-                page=page,
-                page_size=batch_size,
+            params: dict[str, Any] = {**base_params, "limit": batch_size}
+            cursor_sql = ""
+            if cursor:
+                params.update(
+                    {
+                        "cursor_updated_at": cursor["updatedAt"],
+                        "cursor_created_at": cursor["createdAt"],
+                        "cursor_id": cursor["id"],
+                    }
+                )
+                cursor_sql = """
+                  AND (di.updated_at, di.created_at, di.id) < (
+                        %(cursor_updated_at)s,
+                        %(cursor_created_at)s,
+                        %(cursor_id)s
+                  )
+                """
+            rows = await self._fetch_all(
+                f"""
+                SELECT
+                    di.id,
+                    di.project_id,
+                    di.dataset_id,
+                    di.status::text AS status,
+                    di.input,
+                    di.expected_output,
+                    di.metadata,
+                    di.source_trace_id,
+                    di.source_observation_id,
+                    di.is_deleted,
+                    di.created_at,
+                    di.updated_at
+                FROM dataset_items di
+                WHERE {where_sql}
+                  {cursor_sql}
+                ORDER BY di.updated_at DESC, di.created_at DESC, di.id DESC
+                LIMIT %(limit)s
+                """,
+                params,
             )
-            items = result["datas"]
+            items = [self._to_dataset_item_payload(row) for row in rows]
             if not items:
                 break
             yield items
             if len(items) < batch_size:
                 break
-            page += 1
+            last_row = rows[-1]
+            cursor = {
+                "updatedAt": last_row["updated_at"],
+                "createdAt": last_row["created_at"],
+                "id": last_row["id"],
+            }
 
     async def create_dataset_item_for_user(
         self,
@@ -1518,7 +1950,7 @@ class LangfuseDatabaseReader:
             raise LangfuseDatabaseConfigError()
 
         item_id = _new_langfuse_id("datasetitem")
-        async with await psycopg.AsyncConnection.connect(
+        async with await connect_postgres(
             self._database_url,
             row_factory=dict_row,
         ) as connection:
@@ -1600,7 +2032,7 @@ class LangfuseDatabaseReader:
         if not self._database_url:
             raise LangfuseDatabaseConfigError()
 
-        async with await psycopg.AsyncConnection.connect(
+        async with await connect_postgres(
             self._database_url,
             row_factory=dict_row,
         ) as connection:
@@ -1668,7 +2100,7 @@ class LangfuseDatabaseReader:
         if not self._database_url:
             raise LangfuseDatabaseConfigError()
 
-        async with await psycopg.AsyncConnection.connect(
+        async with await connect_postgres(
             self._database_url,
             row_factory=dict_row,
         ) as connection:
@@ -1726,7 +2158,7 @@ class LangfuseDatabaseReader:
         if not self._database_url:
             raise LangfuseDatabaseConfigError()
 
-        async with await psycopg.AsyncConnection.connect(
+        async with await connect_postgres(
             self._database_url,
             row_factory=dict_row,
         ) as connection:
@@ -1773,7 +2205,7 @@ class LangfuseDatabaseReader:
 
         job_id = _new_langfuse_id("paexport")
         expires_at = datetime.now(timezone.utc) + timedelta(days=7)
-        async with await psycopg.AsyncConnection.connect(
+        async with await connect_postgres(
             self._database_url,
             row_factory=dict_row,
         ) as connection:
@@ -1829,7 +2261,7 @@ class LangfuseDatabaseReader:
         if not self._database_url:
             raise LangfuseDatabaseConfigError()
 
-        async with await psycopg.AsyncConnection.connect(
+        async with await connect_postgres(
             self._database_url,
             row_factory=dict_row,
         ) as connection:
@@ -1940,7 +2372,7 @@ class LangfuseDatabaseReader:
             "defaultFileName": file_name,
             "fileName": file_name,
         }
-        async with await psycopg.AsyncConnection.connect(
+        async with await connect_postgres(
             self._database_url,
             row_factory=dict_row,
         ) as connection:
@@ -1995,6 +2427,324 @@ class LangfuseDatabaseReader:
                     job_id,
                 )
 
+    async def create_trace_bulk_job_for_user(
+        self,
+        project_id: str,
+        user_id: str,
+        payload: dict[str, Any],
+    ) -> dict[str, Any]:
+        if not self._database_url:
+            raise LangfuseDatabaseConfigError()
+
+        job_id = _new_langfuse_id("patracejob")
+        expires_at = datetime.now(timezone.utc) + timedelta(hours=2)
+        async with await connect_postgres(
+            self._database_url,
+            row_factory=dict_row,
+        ) as connection:
+            async with connection.cursor() as cursor:
+                await self._get_project_for_user(cursor, project_id, user_id)
+                await cursor.execute(
+                    """
+                    INSERT INTO pa_trace_bulk_jobs (
+                        create_by,
+                        update_by,
+                        id,
+                        project_id,
+                        user_id,
+                        job_type,
+                        status,
+                        selection_type,
+                        selection_payload,
+                        operation_payload,
+                        result_payload,
+                        total_count,
+                        expires_at
+                    )
+                    VALUES (
+                        %(user_id)s,
+                        %(user_id)s,
+                        %(id)s,
+                        %(project_id)s,
+                        %(user_id)s,
+                        %(job_type)s,
+                        'PENDING',
+                        %(selection_type)s,
+                        %(selection_payload)s,
+                        %(operation_payload)s,
+                        %(result_payload)s,
+                        %(total_count)s,
+                        %(expires_at)s
+                    )
+                    RETURNING *
+                    """,
+                    {
+                        "id": job_id,
+                        "project_id": project_id,
+                        "user_id": user_id,
+                        "job_type": payload["jobType"],
+                        "selection_type": payload["selectionType"],
+                        "selection_payload": Jsonb(payload["selectionPayload"]),
+                        "operation_payload": Jsonb(payload["operationPayload"]),
+                        "result_payload": Jsonb(payload.get("resultPayload") or {}),
+                        "total_count": int(payload.get("totalCount") or 0),
+                        "expires_at": expires_at,
+                    },
+                )
+                row = await cursor.fetchone()
+
+        assert row is not None
+        return self._to_trace_bulk_job_payload(row)
+
+    async def get_trace_bulk_job_for_user(
+        self,
+        project_id: str,
+        user_id: str,
+        job_id: str,
+    ) -> dict[str, Any]:
+        if not self._database_url:
+            raise LangfuseDatabaseConfigError()
+
+        async with await connect_postgres(
+            self._database_url,
+            row_factory=dict_row,
+        ) as connection:
+            async with connection.cursor() as cursor:
+                await self._get_project_for_user(cursor, project_id, user_id)
+                await cursor.execute(
+                    """
+                    SELECT *
+                    FROM pa_trace_bulk_jobs
+                    WHERE id = %(job_id)s
+                      AND project_id = %(project_id)s
+                      AND user_id = %(user_id)s
+                      AND expires_at > NOW()
+                    LIMIT 1
+                    """,
+                    {
+                        "job_id": job_id,
+                        "project_id": project_id,
+                        "user_id": user_id,
+                    },
+                )
+                row = await cursor.fetchone()
+
+        if row is None:
+            raise BusinessError(1033, "批量任务不存在或已过期", 404)
+        return self._to_trace_bulk_job_payload(row)
+
+    async def claim_trace_bulk_job(
+        self,
+        job_id: str,
+        lock_owner: str,
+        lease_seconds: int,
+    ) -> dict[str, Any] | None:
+        if not self._database_url:
+            raise LangfuseDatabaseConfigError()
+
+        lease_until = datetime.now(timezone.utc) + timedelta(seconds=lease_seconds)
+        async with await connect_postgres(
+            self._database_url,
+            row_factory=dict_row,
+        ) as connection:
+            async with connection.cursor() as cursor:
+                await cursor.execute(
+                    """
+                    WITH candidate AS (
+                        SELECT id
+                        FROM pa_trace_bulk_jobs
+                        WHERE id = %(job_id)s
+                          AND expires_at > NOW()
+                          AND (
+                              status = 'PENDING'
+                              OR (
+                                  status = 'RUNNING'
+                                  AND (lock_until IS NULL OR lock_until < NOW())
+                              )
+                          )
+                        FOR UPDATE SKIP LOCKED
+                    )
+                    UPDATE pa_trace_bulk_jobs job
+                    SET
+                        status = 'RUNNING',
+                        lock_owner = %(lock_owner)s,
+                        lock_until = %(lease_until)s,
+                        attempt_count = attempt_count + 1,
+                        started_at = COALESCE(started_at, NOW()),
+                        update_by = %(lock_owner)s,
+                        update_date = NOW()
+                    FROM candidate
+                    WHERE job.id = candidate.id
+                    RETURNING job.*
+                    """,
+                    {
+                        "job_id": job_id,
+                        "lock_owner": lock_owner,
+                        "lease_until": lease_until,
+                    },
+                )
+                row = await cursor.fetchone()
+
+        return self._to_trace_bulk_job_payload(row) if row else None
+
+    async def claim_trace_bulk_jobs(
+        self,
+        lock_owner: str,
+        lease_seconds: int,
+        limit: int,
+    ) -> list[dict[str, Any]]:
+        if not self._database_url:
+            raise LangfuseDatabaseConfigError()
+
+        lease_until = datetime.now(timezone.utc) + timedelta(seconds=lease_seconds)
+        async with await connect_postgres(
+            self._database_url,
+            row_factory=dict_row,
+        ) as connection:
+            async with connection.cursor() as cursor:
+                await cursor.execute(
+                    """
+                    WITH candidates AS (
+                        SELECT id
+                        FROM pa_trace_bulk_jobs
+                        WHERE expires_at > NOW()
+                          AND (
+                              status = 'PENDING'
+                              OR (
+                                  status = 'RUNNING'
+                                  AND (lock_until IS NULL OR lock_until < NOW())
+                              )
+                          )
+                        ORDER BY create_date ASC, id ASC
+                        FOR UPDATE SKIP LOCKED
+                        LIMIT %(limit)s
+                    )
+                    UPDATE pa_trace_bulk_jobs job
+                    SET
+                        status = 'RUNNING',
+                        lock_owner = %(lock_owner)s,
+                        lock_until = %(lease_until)s,
+                        attempt_count = attempt_count + 1,
+                        started_at = COALESCE(started_at, NOW()),
+                        update_by = %(lock_owner)s,
+                        update_date = NOW()
+                    FROM candidates
+                    WHERE job.id = candidates.id
+                    RETURNING job.*
+                    """,
+                    {
+                        "lock_owner": lock_owner,
+                        "lease_until": lease_until,
+                        "limit": max(1, limit),
+                    },
+                )
+                rows = await cursor.fetchall()
+
+        return [self._to_trace_bulk_job_payload(row) for row in rows]
+
+    async def renew_trace_bulk_job_lease(
+        self,
+        job_id: str,
+        lock_owner: str,
+        lease_seconds: int,
+    ) -> bool:
+        if not self._database_url:
+            raise LangfuseDatabaseConfigError()
+
+        lease_until = datetime.now(timezone.utc) + timedelta(seconds=lease_seconds)
+        async with await connect_postgres(
+            self._database_url,
+            row_factory=dict_row,
+        ) as connection:
+            async with connection.cursor() as cursor:
+                await cursor.execute(
+                    """
+                    UPDATE pa_trace_bulk_jobs
+                    SET
+                        lock_until = %(lease_until)s,
+                        update_by = %(lock_owner)s,
+                        update_date = NOW()
+                    WHERE id = %(job_id)s
+                      AND status = 'RUNNING'
+                      AND lock_owner = %(lock_owner)s
+                      AND expires_at > NOW()
+                    """,
+                    {
+                        "job_id": job_id,
+                        "lock_owner": lock_owner,
+                        "lease_until": lease_until,
+                    },
+                )
+                return cursor.rowcount > 0
+
+    async def update_trace_bulk_job(
+        self,
+        job_id: str,
+        lock_owner: str,
+        updates: dict[str, Any],
+        lease_seconds: int = 120,
+    ) -> dict[str, Any]:
+        if not self._database_url:
+            raise LangfuseDatabaseConfigError()
+
+        terminal = updates.get("status") in {"SUCCEEDED", "FAILED"}
+        lease_until = None
+        if not terminal:
+            lease_until = datetime.now(timezone.utc) + timedelta(seconds=lease_seconds)
+        async with await connect_postgres(
+            self._database_url,
+            row_factory=dict_row,
+        ) as connection:
+            async with connection.cursor() as cursor:
+                await cursor.execute(
+                    """
+                    UPDATE pa_trace_bulk_jobs
+                    SET
+                        status = %(status)s,
+                        operation_payload = %(operation_payload)s,
+                        cursor_payload = %(cursor_payload)s,
+                        result_payload = %(result_payload)s,
+                        total_count = %(total_count)s,
+                        completed_count = %(completed_count)s,
+                        success_count = %(success_count)s,
+                        failure_count = %(failure_count)s,
+                        error_message = %(error_message)s,
+                        completed_at = %(completed_at)s,
+                        lock_owner = %(next_lock_owner)s,
+                        lock_until = %(lock_until)s,
+                        update_by = %(lock_owner)s,
+                        update_date = NOW()
+                    WHERE id = %(job_id)s
+                      AND lock_owner = %(lock_owner)s
+                    RETURNING *
+                    """,
+                    {
+                        "job_id": job_id,
+                        "lock_owner": lock_owner,
+                        "status": updates.get("status") or "RUNNING",
+                        "operation_payload": Jsonb(
+                            updates.get("operationPayload") or {}
+                        ),
+                        "cursor_payload": Jsonb(updates.get("cursorPayload") or {}),
+                        "result_payload": Jsonb(updates.get("resultPayload") or {}),
+                        "total_count": int(updates.get("totalCount") or 0),
+                        "completed_count": int(updates.get("completedCount") or 0),
+                        "success_count": int(updates.get("successCount") or 0),
+                        "failure_count": int(updates.get("failureCount") or 0),
+                        "error_message": str(updates.get("errorMessage") or "")[:1000],
+                        "completed_at": datetime.now(timezone.utc)
+                        if terminal
+                        else None,
+                        "next_lock_owner": "" if terminal else lock_owner,
+                        "lock_until": lease_until,
+                    },
+                )
+                row = await cursor.fetchone()
+
+        if row is None:
+            raise BusinessError(1035, "批量任务租约已失效", 409)
+        return self._to_trace_bulk_job_payload(row)
+
     async def get_annotation_export_job_for_user(
         self,
         project_id: str,
@@ -2005,7 +2755,7 @@ class LangfuseDatabaseReader:
         if not self._database_url:
             raise LangfuseDatabaseConfigError()
 
-        async with await psycopg.AsyncConnection.connect(
+        async with await connect_postgres(
             self._database_url,
             row_factory=dict_row,
         ) as connection:
@@ -2100,8 +2850,31 @@ class LangfuseDatabaseReader:
         user_id: str,
         *,
         include_archived: bool = False,
-    ) -> list[dict[str, Any]]:
+        keyword: str | None = None,
+        page: int = 1,
+        page_size: int = 10,
+    ) -> dict[str, Any]:
         await self._ensure_project_visible(project_id, user_id)
+        normalized_keyword = (keyword or "").strip()
+        query_params = {
+            "project_id": project_id,
+            "include_archived": include_archived,
+            "keyword": normalized_keyword,
+            "like": f"%{normalized_keyword}%",
+        }
+        total_rows = await self._fetch_all(
+            """
+            SELECT COUNT(*)::int AS total
+            FROM score_configs
+            WHERE project_id = %(project_id)s
+              AND (%(include_archived)s IS TRUE OR is_archived IS FALSE)
+              AND (
+                  %(keyword)s = ''
+                  OR name ILIKE %(like)s
+              )
+            """,
+            query_params,
+        )
         rows = await self._fetch_all(
             """
             SELECT
@@ -2119,14 +2892,23 @@ class LangfuseDatabaseReader:
             FROM score_configs
             WHERE project_id = %(project_id)s
               AND (%(include_archived)s IS TRUE OR is_archived IS FALSE)
+              AND (
+                  %(keyword)s = ''
+                  OR name ILIKE %(like)s
+              )
             ORDER BY is_archived ASC, updated_at DESC, created_at DESC, id DESC
+            LIMIT %(limit)s OFFSET %(offset)s
             """,
             {
-                "project_id": project_id,
-                "include_archived": include_archived,
+                **query_params,
+                "limit": page_size,
+                "offset": (page - 1) * page_size,
             },
         )
-        return [self._to_score_config_payload(row) for row in rows]
+        return {
+            "total": int(total_rows[0]["total"]) if total_rows else 0,
+            "datas": [self._to_score_config_payload(row) for row in rows],
+        }
 
     async def ensure_default_score_config_for_user(
         self,
@@ -2136,7 +2918,7 @@ class LangfuseDatabaseReader:
         if not self._database_url:
             raise LangfuseDatabaseConfigError()
 
-        async with await psycopg.AsyncConnection.connect(
+        async with await connect_postgres(
             self._database_url,
             row_factory=dict_row,
         ) as connection:
@@ -2190,7 +2972,7 @@ class LangfuseDatabaseReader:
             raise LangfuseDatabaseConfigError()
 
         config_id = _new_langfuse_id("scorecfg")
-        async with await psycopg.AsyncConnection.connect(
+        async with await connect_postgres(
             self._database_url,
             row_factory=dict_row,
         ) as connection:
@@ -2247,7 +3029,7 @@ class LangfuseDatabaseReader:
         if not self._database_url:
             raise LangfuseDatabaseConfigError()
 
-        async with await psycopg.AsyncConnection.connect(
+        async with await connect_postgres(
             self._database_url,
             row_factory=dict_row,
         ) as connection:
@@ -2291,7 +3073,7 @@ class LangfuseDatabaseReader:
         if not self._database_url:
             raise LangfuseDatabaseConfigError()
 
-        async with await psycopg.AsyncConnection.connect(
+        async with await connect_postgres(
             self._database_url,
             row_factory=dict_row,
         ) as connection:
@@ -2387,7 +3169,7 @@ class LangfuseDatabaseReader:
         if not self._database_url:
             raise LangfuseDatabaseConfigError()
 
-        async with await psycopg.AsyncConnection.connect(
+        async with await connect_postgres(
             self._database_url,
             row_factory=dict_row,
         ) as connection:
@@ -2488,7 +3270,7 @@ class LangfuseDatabaseReader:
         if not self._database_url:
             raise LangfuseDatabaseConfigError()
 
-        async with await psycopg.AsyncConnection.connect(
+        async with await connect_postgres(
             self._database_url,
             row_factory=dict_row,
         ) as connection:
@@ -2580,7 +3362,7 @@ class LangfuseDatabaseReader:
         if not self._database_url:
             raise LangfuseDatabaseConfigError()
 
-        async with await psycopg.AsyncConnection.connect(
+        async with await connect_postgres(
             self._database_url,
             row_factory=dict_row,
         ) as connection:
@@ -2632,7 +3414,7 @@ class LangfuseDatabaseReader:
         if not self._database_url:
             raise LangfuseDatabaseConfigError()
 
-        async with await psycopg.AsyncConnection.connect(
+        async with await connect_postgres(
             self._database_url,
             row_factory=dict_row,
         ) as connection:
@@ -2934,7 +3716,7 @@ class LangfuseDatabaseReader:
 
         queue_id = _new_langfuse_id("annqueue")
         try:
-            async with await psycopg.AsyncConnection.connect(
+            async with await connect_postgres(
                 self._database_url,
                 row_factory=dict_row,
             ) as connection:
@@ -2996,6 +3778,26 @@ class LangfuseDatabaseReader:
 
         return await self.get_annotation_queue_for_user(project_id, queue_id, user_id)
 
+    async def is_annotation_queue_name_available_for_user(
+        self,
+        project_id: str,
+        user_id: str,
+        name: str,
+    ) -> bool:
+        await self._ensure_project_visible(project_id, user_id)
+        rows = await self._fetch_all(
+            """
+            SELECT NOT EXISTS (
+                SELECT 1
+                FROM annotation_queues
+                WHERE project_id = %(project_id)s
+                  AND name = %(name)s
+            ) AS available
+            """,
+            {"project_id": project_id, "name": name},
+        )
+        return bool(rows and rows[0].get("available"))
+
     async def update_annotation_queue_for_user(
         self,
         project_id: str,
@@ -3007,7 +3809,7 @@ class LangfuseDatabaseReader:
             raise LangfuseDatabaseConfigError()
 
         try:
-            async with await psycopg.AsyncConnection.connect(
+            async with await connect_postgres(
                 self._database_url,
                 row_factory=dict_row,
             ) as connection:
@@ -3076,7 +3878,7 @@ class LangfuseDatabaseReader:
         if not self._database_url:
             raise LangfuseDatabaseConfigError()
 
-        async with await psycopg.AsyncConnection.connect(
+        async with await connect_postgres(
             self._database_url,
             row_factory=dict_row,
         ) as connection:
@@ -3168,6 +3970,294 @@ class LangfuseDatabaseReader:
         )
         return [self._to_annotation_item_payload(row) for row in rows]
 
+    async def iter_annotation_queue_items_for_user(
+        self,
+        project_id: str,
+        queue_id: str,
+        user_id: str,
+        *,
+        batch_size: int = 500,
+        include_details: bool = False,
+        include_source: bool = False,
+        include_assignment: bool = False,
+        include_has_scores: bool = False,
+    ) -> AsyncIterator[list[dict[str, Any]]]:
+        """Scan a queue in stable descending order without OFFSET/full materialization."""
+        await self.get_annotation_queue_for_user(project_id, queue_id, user_id)
+        cursor_values: tuple[Any, Any, str] | None = None
+        while True:
+            params: dict[str, Any] = {
+                "project_id": project_id,
+                "queue_id": queue_id,
+                "limit": batch_size,
+            }
+            seek_sql = ""
+            if cursor_values is not None:
+                params.update(
+                    {
+                        "cursor_updated_at": cursor_values[0],
+                        "cursor_created_at": cursor_values[1],
+                        "cursor_id": cursor_values[2],
+                    }
+                )
+                seek_sql = """
+                  AND (aqi.updated_at, aqi.created_at, aqi.id) < (
+                    %(cursor_updated_at)s,
+                    %(cursor_created_at)s,
+                    %(cursor_id)s
+                  )
+                """
+            select_sql = (
+                self._annotation_item_select_sql()
+                if include_details
+                else self._annotation_item_candidate_select_sql(
+                    include_source=include_source,
+                    include_assignment=include_assignment,
+                    include_has_scores=include_has_scores,
+                )
+            )
+            rows = await self._fetch_all(
+                select_sql
+                + f"""
+                WHERE aqi.project_id = %(project_id)s
+                  AND aqi.queue_id = %(queue_id)s
+                  {seek_sql}
+                ORDER BY aqi.updated_at DESC, aqi.created_at DESC, aqi.id DESC
+                LIMIT %(limit)s
+                """,
+                params,
+            )
+            if not rows:
+                return
+            yield [self._to_annotation_item_payload(row) for row in rows]
+            last = rows[-1]
+            cursor_values = (
+                last["updated_at"],
+                last["created_at"],
+                str(last["id"]),
+            )
+            if len(rows) < batch_size:
+                return
+
+    async def list_annotation_queue_items_by_ids_for_user(
+        self,
+        project_id: str,
+        queue_id: str,
+        user_id: str,
+        item_ids: list[str],
+    ) -> list[dict[str, Any]]:
+        if not item_ids:
+            return []
+        await self.get_annotation_queue_for_user(project_id, queue_id, user_id)
+        rows = await self._fetch_all(
+            self._annotation_item_select_sql()
+            + """
+            WHERE aqi.project_id = %(project_id)s
+              AND aqi.queue_id = %(queue_id)s
+              AND aqi.id = ANY(%(item_ids)s)
+            """,
+            {"project_id": project_id, "queue_id": queue_id, "item_ids": item_ids},
+        )
+        row_by_id = {str(row["id"]): row for row in rows}
+        return [
+            self._to_annotation_item_payload(row_by_id[item_id])
+            for item_id in item_ids
+            if item_id in row_by_id
+        ]
+
+    async def list_annotation_queue_item_candidates_for_user(
+        self,
+        project_id: str,
+        queue_id: str,
+        user_id: str,
+        *,
+        filters: dict[str, Any],
+        omit_facet_filters: bool = False,
+    ) -> list[dict[str, Any]]:
+        await self.get_annotation_queue_for_user(project_id, queue_id, user_id)
+        candidate_filters = {
+            **filters,
+            "keyword": "",
+            "metadata_filter": None,
+            "metadata_filters": [],
+            "input_filters": [],
+            "output_filters": [],
+        }
+        if omit_facet_filters:
+            candidate_filters.update(
+                {"status": [], "object_type": [], "assignee_ids": []}
+            )
+        filter_sql, filter_params = self._annotation_item_filter_sql(
+            candidate_filters
+        )
+        rows = await self._fetch_all(
+            "WITH annotation_items AS ("
+            + self._annotation_item_external_candidate_select_sql(
+                include_has_scores=filters.get("has_scores") is not None,
+            )
+            + f"""
+            WHERE aqi.project_id = %(project_id)s
+              AND aqi.queue_id = %(queue_id)s
+            )
+            SELECT item.*
+            FROM annotation_items item
+            WHERE {filter_sql}
+            ORDER BY item.updated_at DESC, item.created_at DESC, item.id DESC
+            """,
+            {
+                "project_id": project_id,
+                "queue_id": queue_id,
+                **filter_params,
+            },
+        )
+        return [self._to_annotation_candidate_payload(row) for row in rows]
+
+    async def list_annotation_queue_items_page_for_user(
+        self,
+        project_id: str,
+        queue_id: str,
+        user_id: str,
+        *,
+        page: int,
+        page_size: int,
+        filters: dict[str, Any],
+    ) -> dict[str, Any]:
+        await self.get_annotation_queue_for_user(project_id, queue_id, user_id)
+        filter_sql, filter_params = self._annotation_item_filter_sql(filters)
+        params = {
+            "project_id": project_id,
+            "queue_id": queue_id,
+            "limit": page_size,
+            "offset": (page - 1) * page_size,
+            **filter_params,
+        }
+        source_filters = bool(
+            filters.get("keyword")
+            or filters.get("metadata_filter")
+            or filters.get("metadata_filters")
+            or filters.get("input_filters")
+            or filters.get("output_filters")
+        )
+        candidate_base_sql = (
+            "WITH annotation_items AS ("
+            + self._annotation_item_candidate_select_sql(
+                include_source=source_filters,
+                include_assignment=bool(filters.get("assignee_ids")),
+                include_has_scores=filters.get("has_scores") is not None,
+            )
+            + """
+            WHERE aqi.project_id = %(project_id)s
+              AND aqi.queue_id = %(queue_id)s
+            )
+            """
+        )
+        total_rows = await self._fetch_all(
+            candidate_base_sql
+            + f"""
+            SELECT COUNT(*)::int AS total
+            FROM annotation_items item
+            WHERE {filter_sql}
+            """,
+            params,
+        )
+        candidate_rows = await self._fetch_all(
+            candidate_base_sql
+            + f"""
+            SELECT item.id
+            FROM annotation_items item
+            WHERE {filter_sql}
+            ORDER BY item.updated_at DESC, item.created_at DESC, item.id DESC
+            LIMIT %(limit)s OFFSET %(offset)s
+            """,
+            params,
+        )
+        page_ids = [str(row["id"]) for row in candidate_rows]
+        if not page_ids:
+            rows: list[dict[str, Any]] = []
+        else:
+            rows = await self._fetch_all(
+                self._annotation_item_select_sql()
+                + """
+                WHERE aqi.project_id = %(project_id)s
+                  AND aqi.queue_id = %(queue_id)s
+                  AND aqi.id = ANY(%(page_item_ids)s)
+                """,
+                {
+                    "project_id": project_id,
+                    "queue_id": queue_id,
+                    "page_item_ids": page_ids,
+                },
+            )
+            row_by_id = {str(row["id"]): row for row in rows}
+            rows = [row_by_id[item_id] for item_id in page_ids if item_id in row_by_id]
+        return {
+            "total": int((total_rows[0] if total_rows else {}).get("total") or 0),
+            "datas": [self._to_annotation_item_payload(row) for row in rows],
+        }
+
+    async def count_annotation_queue_item_filters_for_user(
+        self,
+        project_id: str,
+        queue_id: str,
+        user_id: str,
+        *,
+        filters: dict[str, Any],
+    ) -> dict[str, dict[str, int]]:
+        await self.get_annotation_queue_for_user(project_id, queue_id, user_id)
+        base_sql = (
+            "WITH annotation_items AS ("
+            + self._annotation_item_candidate_select_sql(
+                include_source=bool(
+                    filters.get("keyword")
+                    or filters.get("metadata_filter")
+                    or filters.get("metadata_filters")
+                    or filters.get("input_filters")
+                    or filters.get("output_filters")
+                ),
+                include_assignment=True,
+                include_has_scores=filters.get("has_scores") is not None,
+            )
+            + """
+            WHERE aqi.project_id = %(project_id)s
+              AND aqi.queue_id = %(queue_id)s
+            )
+            """
+        )
+        counts: dict[str, dict[str, int]] = {}
+        for response_key, field, omitted_filter in (
+            ("status", "status", "status"),
+            ("objectType", "object_type", "object_type"),
+            ("assigneeIds", "assignee_id", "assignee_ids"),
+        ):
+            filter_sql, filter_params = self._annotation_item_filter_sql(
+                filters,
+                omitted_filter=omitted_filter,
+            )
+            rows = await self._fetch_all(
+                base_sql
+                + f"""
+                SELECT item.{field} AS value, COUNT(*)::int AS total
+                FROM annotation_items item
+                WHERE {filter_sql}
+                  AND item.{field} IS NOT NULL
+                  AND item.{field} <> ''
+                GROUP BY item.{field}
+                """,
+                {
+                    "project_id": project_id,
+                    "queue_id": queue_id,
+                    **filter_params,
+                },
+            )
+            counts[response_key] = {
+                str(row["value"]): int(row.get("total") or 0) for row in rows
+            }
+        for status in ("PENDING", "COMPLETED"):
+            counts["status"].setdefault(status, 0)
+        for object_type in ("TRACE", "OBSERVATION", "SESSION"):
+            counts["objectType"].setdefault(object_type, 0)
+        return counts
+
     async def get_annotation_queue_item_for_user(
         self,
         project_id: str,
@@ -3209,7 +4299,7 @@ class LangfuseDatabaseReader:
             raise LangfuseDatabaseConfigError()
 
         item_id = _new_langfuse_id("annitem")
-        async with await psycopg.AsyncConnection.connect(
+        async with await connect_postgres(
             self._database_url,
             row_factory=dict_row,
         ) as connection:
@@ -3304,7 +4394,7 @@ class LangfuseDatabaseReader:
         if not self._database_url:
             raise LangfuseDatabaseConfigError()
 
-        async with await psycopg.AsyncConnection.connect(
+        async with await connect_postgres(
             self._database_url,
             row_factory=dict_row,
         ) as connection:
@@ -3367,7 +4457,7 @@ class LangfuseDatabaseReader:
                 status_code=404,
             )
 
-        async with await psycopg.AsyncConnection.connect(
+        async with await connect_postgres(
             self._database_url,
             row_factory=dict_row,
         ) as connection:
@@ -3467,7 +4557,7 @@ class LangfuseDatabaseReader:
             raise LangfuseDatabaseConfigError()
 
         trace_ids = list(dict.fromkeys(payload.get("traceIds") or []))
-        async with await psycopg.AsyncConnection.connect(
+        async with await connect_postgres(
             self._database_url,
             row_factory=dict_row,
         ) as connection:
@@ -3530,7 +4620,9 @@ class LangfuseDatabaseReader:
                     str(row.get("object_id") or "") for row in await cursor.fetchall()
                 }
                 trace_ids_to_create = [
-                    trace_id for trace_id in trace_ids if trace_id not in existing_trace_ids
+                    trace_id
+                    for trace_id in trace_ids
+                    if trace_id not in existing_trace_ids
                 ]
 
                 created_item_ids: list[str] = []
@@ -3580,17 +4672,6 @@ class LangfuseDatabaseReader:
                     )
                     created_item_ids.extend(item["itemId"] for item in batch_items)
                     created_items.extend(batch_items)
-
-                for item in created_items:
-                    await _copy_existing_annotation_scores_for_item(
-                        cursor,
-                        project_id=project_id,
-                        queue_id=queue_id,
-                        item_id=item["itemId"],
-                        object_id=item["traceId"],
-                        object_type="TRACE",
-                        score_config_ids=score_config_ids,
-                    )
 
                 await self._assign_annotation_queue_items(
                     cursor,
@@ -3648,71 +4729,164 @@ class LangfuseDatabaseReader:
         user_id: str,
         payload: dict[str, Any],
     ) -> list[dict[str, Any]]:
+        return await self.prepare_annotation_score_payloads_batch_for_user(
+            project_id,
+            queue_id,
+            user_id,
+            [{"itemId": item_id, "scorePayload": payload}],
+        )
+
+    async def prepare_annotation_score_payloads_batch_for_user(
+        self,
+        project_id: str,
+        queue_id: str,
+        user_id: str,
+        items: list[dict[str, Any]],
+    ) -> list[dict[str, Any]]:
         if not self._database_url:
             raise LangfuseDatabaseConfigError()
+        item_ids = list(
+            dict.fromkeys(
+                str(item.get("itemId") or "") for item in items if item.get("itemId")
+            )
+        )
+        if not item_ids:
+            return []
 
         score_payloads: list[dict[str, Any]] = []
-        async with await psycopg.AsyncConnection.connect(
+        async with await connect_postgres(
             self._database_url,
             row_factory=dict_row,
         ) as connection:
             async with connection.cursor() as cursor:
                 await self._get_project_for_user(cursor, project_id, user_id)
-                item = await self._get_annotation_item_score_context(
-                    cursor,
-                    project_id,
-                    queue_id,
-                    item_id,
+                await cursor.execute(
+                    """
+                    SELECT
+                        aqi.id,
+                        aqi.object_id,
+                        aqi.object_type::text AS object_type,
+                        aq.score_config_ids,
+                        o.trace_id AS observation_trace_id
+                    FROM annotation_queue_items aqi
+                    JOIN annotation_queues aq
+                      ON aq.project_id = aqi.project_id
+                     AND aq.id = aqi.queue_id
+                    LEFT JOIN observations o
+                      ON aqi.object_type::text = 'OBSERVATION'
+                     AND o.project_id = aqi.project_id
+                     AND o.id = aqi.object_id
+                    WHERE aqi.project_id = %(project_id)s
+                      AND aqi.queue_id = %(queue_id)s
+                      AND aqi.id = ANY(%(item_ids)s)
+                    """,
+                    {
+                        "project_id": project_id,
+                        "queue_id": queue_id,
+                        "item_ids": item_ids,
+                    },
                 )
-                score_config_ids = set(item["score_config_ids"] or [])
-                trace_id = item.get("resolved_trace_id") or item["object_id"]
-                observation_id = (
-                    item["object_id"] if item["object_type"] == "OBSERVATION" else None
-                )
-                session_id = (
-                    item["object_id"] if item["object_type"] == "SESSION" else None
-                )
+                item_rows = list(await cursor.fetchall())
+                item_by_id = {str(item["id"]): item for item in item_rows}
+                missing_item_ids = [
+                    item_id for item_id in item_ids if item_id not in item_by_id
+                ]
+                if missing_item_ids:
+                    raise BusinessError(1023, "标注数据不存在或无访问权限", 404)
 
-                for score in payload.get("scores") or []:
-                    config_id = score["configId"]
-                    if config_id not in score_config_ids:
-                        raise BusinessError(
-                            code=1024,
-                            message="评分指标不属于当前人工标注任务",
-                            status_code=400,
-                        )
-                    config = await self._get_score_config_row(
-                        cursor,
-                        project_id,
-                        config_id,
+                requested_config_ids = list(
+                    dict.fromkeys(
+                        str(score.get("configId") or "")
+                        for item in items
+                        for score in (item.get("scorePayload") or {}).get("scores")
+                        or []
+                        if score.get("configId")
                     )
-                    if config.get("is_archived"):
-                        raise BusinessError(
-                            code=1026,
-                            message="已归档评分指标不能继续标注",
-                            status_code=400,
-                        )
-                    value, string_value = self._normalize_score_value(
-                        config,
-                        score.get("value"),
-                        score.get("stringValue") or "",
+                )
+                await cursor.execute(
+                    """
+                    SELECT
+                        id,
+                        name,
+                        data_type::text AS data_type,
+                        min_value,
+                        max_value,
+                        categories,
+                        is_archived
+                    FROM score_configs
+                    WHERE project_id = %(project_id)s
+                      AND id = ANY(%(config_ids)s)
+                    """,
+                    {
+                        "project_id": project_id,
+                        "config_ids": requested_config_ids,
+                    },
+                )
+                configs = {
+                    str(config["id"]): config for config in await cursor.fetchall()
+                }
+
+                for item_input in items:
+                    item_id = str(item_input.get("itemId") or "")
+                    item = item_by_id[item_id]
+                    allowed_config_ids = set(item["score_config_ids"] or [])
+                    trace_id = (
+                        item.get("observation_trace_id")
+                        if item["object_type"] == "OBSERVATION"
+                        else item["object_id"]
                     )
-                    score_payloads.append(
-                        _annotation_score_api_payload(
-                            project_id=project_id,
-                            queue_id=queue_id,
-                            item_id=item_id,
-                            user_id=user_id,
-                            trace_id=trace_id,
-                            observation_id=observation_id,
-                            session_id=session_id,
-                            config=config,
-                            config_id=config_id,
-                            value=value,
-                            string_value=string_value,
-                            comment=score.get("comment") or "",
-                        )
+                    observation_id = (
+                        item["object_id"]
+                        if item["object_type"] == "OBSERVATION"
+                        else None
                     )
+                    session_id = (
+                        item["object_id"] if item["object_type"] == "SESSION" else None
+                    )
+                    for score in (item_input.get("scorePayload") or {}).get(
+                        "scores"
+                    ) or []:
+                        config_id = score["configId"]
+                        if config_id not in allowed_config_ids:
+                            raise BusinessError(
+                                code=1024,
+                                message="评分指标不属于当前人工标注任务",
+                                status_code=400,
+                            )
+                        config = configs.get(config_id)
+                        if config is None:
+                            raise BusinessError(
+                                code=1024,
+                                message="评分指标不存在或无访问权限",
+                                status_code=400,
+                            )
+                        if config.get("is_archived"):
+                            raise BusinessError(
+                                code=1026,
+                                message="已归档评分指标不能继续标注",
+                                status_code=400,
+                            )
+                        value, string_value = self._normalize_score_value(
+                            config,
+                            score.get("value"),
+                            score.get("stringValue") or "",
+                        )
+                        score_payloads.append(
+                            _annotation_score_api_payload(
+                                project_id=project_id,
+                                queue_id=queue_id,
+                                item_id=item_id,
+                                user_id=user_id,
+                                trace_id=trace_id,
+                                observation_id=observation_id,
+                                session_id=session_id,
+                                config=config,
+                                config_id=config_id,
+                                value=value,
+                                string_value=string_value,
+                                comment=score.get("comment") or "",
+                            )
+                        )
         return score_payloads
 
     async def complete_annotation_queue_item_for_user(
@@ -3725,7 +4899,7 @@ class LangfuseDatabaseReader:
         if not self._database_url:
             raise LangfuseDatabaseConfigError()
 
-        async with await psycopg.AsyncConnection.connect(
+        async with await connect_postgres(
             self._database_url,
             row_factory=dict_row,
         ) as connection:
@@ -3767,6 +4941,53 @@ class LangfuseDatabaseReader:
             user_id,
         )
 
+    async def complete_annotation_queue_items_for_user(
+        self,
+        project_id: str,
+        queue_id: str,
+        item_ids: list[str],
+        user_id: str,
+    ) -> None:
+        unique_item_ids = list(dict.fromkeys(item_ids))
+        if not unique_item_ids:
+            return
+        if not self._database_url:
+            raise LangfuseDatabaseConfigError()
+        async with await connect_postgres(
+            self._database_url,
+            row_factory=dict_row,
+        ) as connection:
+            async with connection.cursor() as cursor:
+                await self._get_project_for_user(cursor, project_id, user_id)
+                await cursor.execute(
+                    """
+                    UPDATE annotation_queue_items
+                    SET
+                        status = 'COMPLETED'::"AnnotationQueueStatus",
+                        annotator_user_id = %(user_id)s,
+                        completed_at = COALESCE(completed_at, NOW()),
+                        updated_at = NOW()
+                    WHERE project_id = %(project_id)s
+                      AND queue_id = %(queue_id)s
+                      AND id = ANY(%(item_ids)s)
+                    """,
+                    {
+                        "project_id": project_id,
+                        "queue_id": queue_id,
+                        "item_ids": unique_item_ids,
+                        "user_id": user_id,
+                    },
+                )
+                await cursor.execute(
+                    """
+                    UPDATE annotation_queues
+                    SET updated_at = NOW()
+                    WHERE project_id = %(project_id)s
+                      AND id = %(queue_id)s
+                    """,
+                    {"project_id": project_id, "queue_id": queue_id},
+                )
+
     async def get_project_api_key_credentials_for_user(
         self,
         project_id: str,
@@ -3796,7 +5017,7 @@ class LangfuseDatabaseReader:
             raise LangfuseDatabaseConfigError()
 
         dataset_item_id = _new_langfuse_id("datasetitem")
-        async with await psycopg.AsyncConnection.connect(
+        async with await connect_postgres(
             self._database_url,
             row_factory=dict_row,
         ) as connection:
@@ -3905,7 +5126,7 @@ class LangfuseDatabaseReader:
 
         traces = _unique_traces_by_trace_id(payload.get("traces") or [])
         item_ids: list[str] = []
-        async with await psycopg.AsyncConnection.connect(
+        async with await connect_postgres(
             self._database_url,
             row_factory=dict_row,
         ) as connection:
@@ -4318,7 +5539,7 @@ class LangfuseDatabaseReader:
             raise LangfuseDatabaseConfigError()
 
         evaluator_id = _new_langfuse_id("evaltmpl")
-        async with await psycopg.AsyncConnection.connect(
+        async with await connect_postgres(
             self._database_url,
             row_factory=dict_row,
         ) as connection:
@@ -4428,7 +5649,7 @@ class LangfuseDatabaseReader:
             raise LangfuseDatabaseConfigError()
 
         evaluator_id = _new_langfuse_id("paeval")
-        async with await psycopg.AsyncConnection.connect(
+        async with await connect_postgres(
             self._database_url,
             row_factory=dict_row,
         ) as connection:
@@ -4523,7 +5744,7 @@ class LangfuseDatabaseReader:
         if not self._database_url:
             raise LangfuseDatabaseConfigError()
 
-        async with await psycopg.AsyncConnection.connect(
+        async with await connect_postgres(
             self._database_url,
             row_factory=dict_row,
         ) as connection:
@@ -4606,7 +5827,7 @@ class LangfuseDatabaseReader:
         if not self._database_url:
             raise LangfuseDatabaseConfigError()
 
-        async with await psycopg.AsyncConnection.connect(
+        async with await connect_postgres(
             self._database_url,
             row_factory=dict_row,
         ) as connection:
@@ -4713,7 +5934,7 @@ class LangfuseDatabaseReader:
             raise LangfuseDatabaseConfigError()
 
         membership_id = _new_langfuse_id("orgmem")
-        async with await psycopg.AsyncConnection.connect(
+        async with await connect_postgres(
             self._database_url,
             row_factory=dict_row,
         ) as connection:
@@ -4797,7 +6018,7 @@ class LangfuseDatabaseReader:
         if not self._database_url:
             raise LangfuseDatabaseConfigError()
 
-        async with await psycopg.AsyncConnection.connect(
+        async with await connect_postgres(
             self._database_url,
             row_factory=dict_row,
         ) as connection:
@@ -4860,7 +6081,7 @@ class LangfuseDatabaseReader:
         if not self._database_url:
             raise LangfuseDatabaseConfigError()
 
-        async with await psycopg.AsyncConnection.connect(
+        async with await connect_postgres(
             self._database_url,
             row_factory=dict_row,
         ) as connection:
@@ -5131,7 +6352,7 @@ class LangfuseDatabaseReader:
         organization_id = _new_langfuse_id("org")
         project_id = _new_langfuse_id("project")
 
-        async with await psycopg.AsyncConnection.connect(
+        async with await connect_postgres(
             self._database_url,
             row_factory=dict_row,
         ) as connection:
@@ -5237,7 +6458,7 @@ class LangfuseDatabaseReader:
         if not self._database_url:
             raise LangfuseDatabaseConfigError()
 
-        async with await psycopg.AsyncConnection.connect(
+        async with await connect_postgres(
             self._database_url,
             row_factory=dict_row,
         ) as connection:
@@ -5356,6 +6577,313 @@ class LangfuseDatabaseReader:
             """
 
     @staticmethod
+    def _annotation_item_filter_sql(
+        filters: dict[str, Any],
+        *,
+        omitted_filter: str = "",
+    ) -> tuple[str, dict[str, Any]]:
+        conditions = ["1 = 1"]
+        params: dict[str, Any] = {}
+        keyword = str(filters.get("keyword") or "").strip()
+        if keyword:
+            params["annotation_keyword"] = f"%{keyword}%"
+            conditions.append(
+                "("
+                "item.id ILIKE %(annotation_keyword)s "
+                "OR item.object_id ILIKE %(annotation_keyword)s "
+                "OR item.object_type ILIKE %(annotation_keyword)s "
+                "OR COALESCE(item.source_title, '') ILIKE %(annotation_keyword)s "
+                "OR COALESCE(item.trace_id, '') ILIKE %(annotation_keyword)s "
+                "OR COALESCE(item.session_id, '') ILIKE %(annotation_keyword)s "
+                "OR COALESCE(item.user_id, '') ILIKE %(annotation_keyword)s "
+                "OR COALESCE(item.source_input::text, '') ILIKE %(annotation_keyword)s "
+                "OR COALESCE(item.source_output::text, '') ILIKE %(annotation_keyword)s "
+                "OR COALESCE(item.source_metadata::text, '') ILIKE %(annotation_keyword)s"
+                ")"
+            )
+        if omitted_filter != "status" and filters.get("status"):
+            params["annotation_statuses"] = list(filters["status"])
+            conditions.append("item.status = ANY(%(annotation_statuses)s)")
+        if omitted_filter != "object_type" and filters.get("object_type"):
+            params["annotation_object_types"] = list(filters["object_type"])
+            conditions.append("item.object_type = ANY(%(annotation_object_types)s)")
+        if filters.get("completed_by"):
+            params["annotation_completed_by"] = list(filters["completed_by"])
+            conditions.append("item.completed_by_id = ANY(%(annotation_completed_by)s)")
+        if omitted_filter != "assignee_ids" and filters.get("assignee_ids"):
+            params["annotation_assignee_ids"] = list(filters["assignee_ids"])
+            conditions.append("item.assignee_id = ANY(%(annotation_assignee_ids)s)")
+        if filters.get("item_ids"):
+            params["annotation_item_ids"] = list(filters["item_ids"])
+            conditions.append("item.id = ANY(%(annotation_item_ids)s)")
+        if filters.get("created_at_from"):
+            params["annotation_created_at_from"] = filters["created_at_from"]
+            conditions.append(
+                "item.created_at >= CAST(%(annotation_created_at_from)s AS timestamptz)"
+            )
+        if filters.get("created_at_to"):
+            params["annotation_created_at_to"] = filters["created_at_to"]
+            conditions.append(
+                "item.created_at <= CAST(%(annotation_created_at_to)s AS timestamptz)"
+            )
+        if filters.get("completed_at_from"):
+            params["annotation_completed_at_from"] = filters["completed_at_from"]
+            conditions.append(
+                "item.completed_at >= CAST(%(annotation_completed_at_from)s AS timestamptz)"
+            )
+        if filters.get("completed_at_to"):
+            params["annotation_completed_at_to"] = filters["completed_at_to"]
+            conditions.append(
+                "item.completed_at <= CAST(%(annotation_completed_at_to)s AS timestamptz)"
+            )
+        if filters.get("has_scores") is True:
+            conditions.append("item.has_scores")
+        elif filters.get("has_scores") is False:
+            conditions.append("NOT item.has_scores")
+
+        metadata_filters = list(filters.get("metadata_filters") or [])
+        metadata_filter = filters.get("metadata_filter")
+        if metadata_filter:
+            metadata_filters.insert(0, metadata_filter)
+        LangfuseDatabaseReader._append_annotation_json_filters(
+            conditions,
+            params,
+            metadata_filters,
+            column="item.source_metadata",
+            prefix="annotation_metadata",
+        )
+        LangfuseDatabaseReader._append_annotation_json_filters(
+            conditions,
+            params,
+            list(filters.get("input_filters") or []),
+            column="item.source_input",
+            prefix="annotation_input",
+        )
+        LangfuseDatabaseReader._append_annotation_json_filters(
+            conditions,
+            params,
+            list(filters.get("output_filters") or []),
+            column="item.source_output",
+            prefix="annotation_output",
+        )
+        return " AND ".join(conditions), params
+
+    @staticmethod
+    def _annotation_item_candidate_select_sql(
+        *,
+        include_source: bool = True,
+        include_assignment: bool = True,
+        include_has_scores: bool = True,
+    ) -> str:
+        """Return only fields needed to filter, count and order annotation items."""
+        source_columns = (
+            """
+                CASE
+                    WHEN aqi.object_type::text = 'TRACE' THEN COALESCE(t.name, t.id)
+                    WHEN aqi.object_type::text = 'OBSERVATION' THEN COALESCE(o.name, o.id)
+                    ELSE COALESCE(ts.id, aqi.object_id)
+                END AS source_title,
+                COALESCE(t.input, o.input) AS source_input,
+                COALESCE(t.output, o.output) AS source_output,
+                COALESCE(t.metadata, o.metadata, '{}'::jsonb) AS source_metadata,
+                COALESCE(t.id, o.trace_id, trace_from_observation.id, '') AS trace_id,
+                COALESCE(t.session_id, trace_from_observation.session_id, ts.id, '')
+                    AS session_id,
+                COALESCE(t.user_id, trace_from_observation.user_id, '') AS user_id,
+                COALESCE(t.timestamp, o.start_time, ts.created_at, aqi.created_at)
+                    AS source_created_at,
+            """
+            if include_source
+            else """
+                aqi.object_id AS source_title,
+                NULL::jsonb AS source_input,
+                NULL::jsonb AS source_output,
+                '{}'::jsonb AS source_metadata,
+                CASE WHEN aqi.object_type::text = 'TRACE' THEN aqi.object_id ELSE '' END
+                    AS trace_id,
+                CASE WHEN aqi.object_type::text = 'SESSION' THEN aqi.object_id ELSE '' END
+                    AS session_id,
+                ''::text AS user_id,
+                aqi.created_at AS source_created_at,
+            """
+        )
+        source_joins = (
+            """
+            LEFT JOIN traces t
+              ON aqi.object_type::text = 'TRACE'
+             AND t.project_id = aqi.project_id
+             AND t.id = aqi.object_id
+            LEFT JOIN observations o
+              ON aqi.object_type::text = 'OBSERVATION'
+             AND o.project_id = aqi.project_id
+             AND o.id = aqi.object_id
+            LEFT JOIN traces trace_from_observation
+              ON trace_from_observation.project_id = aqi.project_id
+             AND trace_from_observation.id = o.trace_id
+            LEFT JOIN trace_sessions ts
+              ON aqi.object_type::text = 'SESSION'
+             AND ts.project_id = aqi.project_id
+             AND ts.id = aqi.object_id
+            """
+            if include_source
+            else ""
+        )
+        assignment_join = (
+            """
+            LEFT JOIN pa_annotation_queue_item_assignments assignment
+              ON assignment.project_id = aqi.project_id
+             AND assignment.queue_id = aqi.queue_id
+             AND assignment.item_id = aqi.id
+            LEFT JOIN users assignee_user ON assignee_user.id = assignment.assignee_user_id
+            """
+            if include_assignment
+            else ""
+        )
+        assignee_columns = (
+            """
+                assignment.assignee_user_id AS assignee_id,
+                assignee_user.name AS assignee_name,
+                assignee_user.email AS assignee_email,
+            """
+            if include_assignment
+            else """
+                NULL::text AS assignee_id,
+                NULL::text AS assignee_name,
+                NULL::text AS assignee_email,
+            """
+        )
+        score_expression = (
+            """EXISTS (
+                    SELECT 1
+                    FROM scores candidate_score
+                    WHERE candidate_score.project_id = aqi.project_id
+                      AND candidate_score.queue_id = aqi.queue_id
+                      AND candidate_score.source::text = 'ANNOTATION'
+                      AND (
+                        (aqi.object_type::text = 'TRACE'
+                         AND candidate_score.trace_id = aqi.object_id
+                         AND candidate_score.observation_id IS NULL)
+                        OR (aqi.object_type::text = 'OBSERVATION'
+                            AND candidate_score.observation_id = aqi.object_id)
+                        OR (aqi.object_type::text = 'SESSION'
+                            AND candidate_score.trace_id = aqi.object_id)
+                      )
+                )"""
+            if include_has_scores
+            else "FALSE"
+        )
+        return f"""
+            SELECT
+                aqi.id,
+                aqi.project_id,
+                aqi.queue_id,
+                aqi.object_id,
+                aqi.object_type::text AS object_type,
+                aqi.status::text AS status,
+                aqi.completed_at,
+                aqi.created_at,
+                aqi.updated_at,
+                aqi.annotator_user_id AS completed_by_id,
+                completed_user.name AS completed_by_name,
+                completed_user.email AS completed_by_email,
+                {assignee_columns}
+                {source_columns}
+                0::numeric AS latency_ms,
+                0::numeric AS cost_usd,
+                {score_expression} AS has_scores,
+                CASE WHEN {score_expression} THEN '[{{}}]'::jsonb ELSE '[]'::jsonb END
+                    AS scores
+            FROM annotation_queue_items aqi
+            LEFT JOIN users completed_user ON completed_user.id = aqi.annotator_user_id
+            {assignment_join}
+            {source_joins}
+            """
+
+    @staticmethod
+    def _annotation_item_external_candidate_select_sql(
+        *,
+        include_has_scores: bool,
+    ) -> str:
+        score_expression = (
+            """EXISTS (
+                    SELECT 1
+                    FROM scores candidate_score
+                    WHERE candidate_score.project_id = aqi.project_id
+                      AND candidate_score.queue_id = aqi.queue_id
+                      AND candidate_score.source::text = 'ANNOTATION'
+                      AND (
+                        (aqi.object_type::text = 'TRACE'
+                         AND candidate_score.trace_id = aqi.object_id
+                         AND candidate_score.observation_id IS NULL)
+                        OR (aqi.object_type::text = 'OBSERVATION'
+                            AND candidate_score.observation_id = aqi.object_id)
+                        OR (aqi.object_type::text = 'SESSION'
+                            AND candidate_score.trace_id = aqi.object_id)
+                      )
+                )"""
+            if include_has_scores
+            else "FALSE"
+        )
+        return f"""
+            SELECT
+                aqi.id,
+                aqi.project_id,
+                aqi.queue_id,
+                aqi.object_id,
+                aqi.object_type::text AS object_type,
+                aqi.status::text AS status,
+                aqi.completed_at,
+                aqi.created_at,
+                aqi.updated_at,
+                aqi.annotator_user_id AS completed_by_id,
+                completed_user.name AS completed_by_name,
+                completed_user.email AS completed_by_email,
+                assignment.assignee_user_id AS assignee_id,
+                assignee_user.name AS assignee_name,
+                assignee_user.email AS assignee_email,
+                {score_expression} AS has_scores
+            FROM annotation_queue_items aqi
+            LEFT JOIN users completed_user ON completed_user.id = aqi.annotator_user_id
+            LEFT JOIN pa_annotation_queue_item_assignments assignment
+              ON assignment.project_id = aqi.project_id
+             AND assignment.queue_id = aqi.queue_id
+             AND assignment.item_id = aqi.id
+            LEFT JOIN users assignee_user ON assignee_user.id = assignment.assignee_user_id
+            """
+
+    @staticmethod
+    def _append_annotation_json_filters(
+        conditions: list[str],
+        params: dict[str, Any],
+        filters: list[dict[str, Any]],
+        *,
+        column: str,
+        prefix: str,
+    ) -> None:
+        for index, value_filter in enumerate(filters):
+            key = str(value_filter.get("key") or "").strip()
+            if key.startswith("metadata."):
+                key = key.removeprefix("metadata.")
+            value = str(value_filter.get("value") or "")
+            operator = str(value_filter.get("operator") or "contains")
+            key_param = f"{prefix}_key_{index}"
+            value_param = f"{prefix}_value_{index}"
+            params[key_param] = key
+            params[value_param] = value
+            extracted = (
+                f"({column} #>> string_to_array(%({key_param})s, '.'))"
+                if key
+                else f"({column})::text"
+            )
+            if operator == "exists":
+                conditions.append(f"{extracted} IS NOT NULL")
+            elif operator == "equals":
+                conditions.append(f"COALESCE({extracted}, '') = %({value_param})s")
+            else:
+                params[value_param] = f"%{value}%"
+                conditions.append(f"COALESCE({extracted}, '') ILIKE %({value_param})s")
+
+    @staticmethod
     def _annotation_item_select_sql() -> str:
         return """
             SELECT
@@ -5375,6 +6903,7 @@ class LangfuseDatabaseReader:
                 assignee_user.name AS assignee_name,
                 assignee_user.email AS assignee_email,
                 COALESCE(scores.scores, '[]'::jsonb) AS scores,
+                COALESCE(scores.scores, '[]'::jsonb) <> '[]'::jsonb AS has_scores,
                 CASE
                     WHEN aqi.object_type::text = 'TRACE' THEN COALESCE(t.name, t.id)
                     WHEN aqi.object_type::text = 'OBSERVATION' THEN COALESCE(o.name, o.id)
@@ -5491,7 +7020,7 @@ class LangfuseDatabaseReader:
         if not self._database_url:
             raise LangfuseDatabaseConfigError()
 
-        async with await psycopg.AsyncConnection.connect(
+        async with await connect_postgres(
             self._database_url,
             row_factory=dict_row,
         ) as connection:
@@ -5669,6 +7198,7 @@ class LangfuseDatabaseReader:
                 p.name,
                 p.org_id,
                 o.name AS organization_name,
+                p.retention_days,
                 p.created_at,
                 p.updated_at,
                 p.deleted_at,
@@ -5700,7 +7230,7 @@ class LangfuseDatabaseReader:
         if not self._database_url:
             raise LangfuseDatabaseConfigError()
 
-        async with await psycopg.AsyncConnection.connect(
+        async with await connect_postgres(
             self._database_url,
             row_factory=dict_row,
         ) as connection:
@@ -5722,7 +7252,15 @@ class LangfuseDatabaseReader:
                         metadata = %(metadata)s,
                         updated_at = NOW()
                     WHERE id = %(project_id)s
-                    RETURNING id, name, org_id, created_at, updated_at, deleted_at, metadata
+                    RETURNING
+                        id,
+                        name,
+                        org_id,
+                        retention_days,
+                        created_at,
+                        updated_at,
+                        deleted_at,
+                        metadata
                     """,
                     {
                         "project_id": project_id,
@@ -5736,6 +7274,32 @@ class LangfuseDatabaseReader:
         return self._to_project_payload(
             {**row, "organization_name": current["organization_name"]}
         )
+
+    @staticmethod
+    async def _get_llm_connection_row(
+        cursor: psycopg.AsyncCursor[dict[str, Any]],
+        project_id: str,
+        connection_id: str,
+    ) -> dict[str, Any]:
+        await cursor.execute(
+            """
+            SELECT id, provider, adapter
+            FROM pa_project_llm_connections
+            WHERE project_id = %(project_id)s
+              AND id = %(connection_id)s
+              AND status = 'ACTIVE'
+            LIMIT 1
+            """,
+            {"project_id": project_id, "connection_id": connection_id},
+        )
+        row = await cursor.fetchone()
+        if row is None:
+            raise BusinessError(
+                code=1013,
+                message="LLM 连接不存在或已不可用",
+                status_code=404,
+            )
+        return row
 
     @staticmethod
     async def _get_project_for_user(
@@ -5837,7 +7401,7 @@ class LangfuseDatabaseReader:
         if not self._database_url:
             raise LangfuseDatabaseConfigError()
 
-        async with await psycopg.AsyncConnection.connect(
+        async with await connect_postgres(
             self._database_url,
             row_factory=dict_row,
         ) as connection:
@@ -5914,7 +7478,7 @@ class LangfuseDatabaseReader:
         if not self._database_url:
             raise LangfuseDatabaseConfigError()
 
-        async with await psycopg.AsyncConnection.connect(
+        async with await connect_postgres(
             self._database_url,
             row_factory=dict_row,
         ) as connection:
@@ -6139,9 +7703,24 @@ class LangfuseDatabaseReader:
             weights=weights,
             existing_counts=existing_counts,
         )
-        for item_id, assignee_id in assignments:
+        if assignments:
+            values_sql: list[str] = []
+            params: dict[str, Any] = {
+                "user_id": user_id,
+                "project_id": project_id,
+                "queue_id": queue_id,
+            }
+            for index, (item_id, assignee_id) in enumerate(assignments):
+                params[f"id_{index}"] = _new_langfuse_id("paannassign")
+                params[f"item_id_{index}"] = item_id
+                params[f"assignee_id_{index}"] = assignee_id
+                values_sql.append(
+                    f"(%(user_id)s, %(user_id)s, %(id_{index})s, "
+                    f"%(project_id)s, %(queue_id)s, %(item_id_{index})s, "
+                    f"%(assignee_id_{index})s)"
+                )
             await cursor.execute(
-                """
+                f"""
                 INSERT INTO pa_annotation_queue_item_assignments (
                     create_by,
                     update_by,
@@ -6151,29 +7730,14 @@ class LangfuseDatabaseReader:
                     item_id,
                     assignee_user_id
                 )
-                VALUES (
-                    %(user_id)s,
-                    %(user_id)s,
-                    %(id)s,
-                    %(project_id)s,
-                    %(queue_id)s,
-                    %(item_id)s,
-                    %(assignee_user_id)s
-                )
+                VALUES {", ".join(values_sql)}
                 ON CONFLICT (project_id, queue_id, item_id)
                 DO UPDATE SET
                     update_by = EXCLUDED.update_by,
                     update_date = NOW(),
                     assignee_user_id = EXCLUDED.assignee_user_id
                 """,
-                {
-                    "user_id": user_id,
-                    "id": _new_langfuse_id("paannassign"),
-                    "project_id": project_id,
-                    "queue_id": queue_id,
-                    "item_id": item_id,
-                    "assignee_user_id": assignee_id,
-                },
+                params,
             )
 
     @staticmethod
@@ -6531,15 +8095,8 @@ class LangfuseDatabaseReader:
             boolean_value = _parse_boolean_score_value(value, string_value)
             if boolean_value is None:
                 return None, None
-            if config_payload.get("categories"):
-                categories = _normalize_boolean_score_categories(
-                    config_payload.get("categories")
-                )
-                category_value = 1.0 if boolean_value else 0.0
-                category = _find_score_category(categories, category_value, "")
-                if category is not None:
-                    return (float(category["value"]), str(category["label"]))
-            return (1.0 if boolean_value else 0.0, str(boolean_value).lower())
+            numeric_value = 1.0 if boolean_value else 0.0
+            return numeric_value, langfuse_boolean_label(numeric_value)
         if data_type == "CATEGORICAL":
             categories = _normalize_score_categories(config_payload.get("categories"))
             category = _find_score_category(categories, value, string_value)
@@ -6569,9 +8126,7 @@ class LangfuseDatabaseReader:
         metadata = row.get("metadata") or {}
         pa_eval = metadata.get("paEval") if isinstance(metadata, dict) else None
         description = pa_eval.get("description") if isinstance(pa_eval, dict) else None
-        retention_days = (
-            pa_eval.get("retentionDays") if isinstance(pa_eval, dict) else None
-        )
+        retention_days = row.get("retention_days")
         organization_name = row["organization_name"]
 
         return {
@@ -6580,7 +8135,7 @@ class LangfuseDatabaseReader:
             "organizationId": row["org_id"],
             "organizationName": organization_name,
             "description": description or f"所属组织：{organization_name}",
-            "retentionDays": retention_days or 14,
+            "retentionDays": retention_days if retention_days is not None else 14,
             "status": "archived" if row.get("deleted_at") else "active",
             "createdAt": _format_datetime(row["created_at"]),
             "updatedAt": _format_datetime(row["updated_at"]),
@@ -6597,6 +8152,31 @@ class LangfuseDatabaseReader:
             "updatedBy": row.get("update_by") or "",
             "createdAt": _format_datetime(row["create_date"]),
             "updatedAt": _format_datetime(row["update_date"]),
+        }
+
+    @staticmethod
+    def _to_llm_connection_payload(row: dict[str, Any]) -> dict[str, Any]:
+        custom_models = row.get("custom_models") or []
+        return {
+            "id": row["id"],
+            "provider": row["provider"],
+            "adapter": row["adapter"],
+            "displaySecretKey": _mask_secret(row.get("secret_key") or ""),
+            "baseUrl": row.get("base_url") or "",
+            "customModels": custom_models if isinstance(custom_models, list) else [],
+            "withDefaultModels": bool(row.get("with_default_models")),
+        }
+
+    @staticmethod
+    def _to_model_definition_payload(row: dict[str, Any]) -> dict[str, Any]:
+        return {
+            "id": row["id"],
+            "modelName": row["model_name"],
+            "matchPattern": row.get("match_pattern") or "",
+            "unit": row.get("unit") or "TOKENS",
+            "inputPrice": row.get("input_price") or "",
+            "outputPrice": row.get("output_price") or "",
+            "tokenizerId": row.get("tokenizer_id") or "",
         }
 
     @staticmethod
@@ -6776,16 +8356,49 @@ class LangfuseDatabaseReader:
         }
 
     @staticmethod
+    def _to_trace_bulk_job_payload(row: dict[str, Any]) -> dict[str, Any]:
+        return {
+            "id": row["id"],
+            "projectId": row["project_id"],
+            "userId": row["user_id"],
+            "jobType": row["job_type"],
+            "status": row["status"],
+            "selectionType": row["selection_type"],
+            "selectionPayload": row.get("selection_payload") or {},
+            "operationPayload": row.get("operation_payload") or {},
+            "cursorPayload": row.get("cursor_payload") or {},
+            "resultPayload": row.get("result_payload") or {},
+            "totalCount": int(row.get("total_count") or 0),
+            "completedCount": int(row.get("completed_count") or 0),
+            "successCount": int(row.get("success_count") or 0),
+            "failureCount": int(row.get("failure_count") or 0),
+            "attemptCount": int(row.get("attempt_count") or 0),
+            "errorMessage": row.get("error_message") or "",
+            "createdAt": _format_datetime(row["create_date"]),
+            "updatedAt": _format_datetime(row["update_date"]),
+            "startedAt": _format_datetime(row.get("started_at")),
+            "completedAt": _format_datetime(row.get("completed_at")),
+            "expiresAt": _format_datetime(row["expires_at"]),
+            "lockOwner": row.get("lock_owner") or "",
+            "lockUntil": _format_datetime(row.get("lock_until")),
+        }
+
+    @staticmethod
     def _to_score_config_payload(row: dict[str, Any]) -> dict[str, Any]:
+        data_type = row["data_type"]
         return {
             "id": row["id"],
             "projectId": row["project_id"],
             "name": row["name"],
-            "dataType": row["data_type"],
+            "dataType": data_type,
             "description": row.get("description") or "",
             "minValue": _to_float_or_none(row.get("min_value")),
             "maxValue": _to_float_or_none(row.get("max_value")),
-            "categories": _normalize_score_categories(row.get("categories")),
+            "categories": (
+                langfuse_boolean_categories()
+                if data_type == "BOOLEAN"
+                else _normalize_score_categories(row.get("categories"))
+            ),
             "archived": bool(row.get("is_archived")),
             "createdAt": _format_datetime(row["created_at"]),
             "updatedAt": _format_datetime(row["updated_at"]),
@@ -6912,6 +8525,34 @@ class LangfuseDatabaseReader:
             "createdAt": _format_datetime(row["created_at"]),
             "updatedAt": _format_datetime(row["updated_at"]),
         }
+
+    @staticmethod
+    def _to_annotation_candidate_payload(row: dict[str, Any]) -> dict[str, Any]:
+        payload = LangfuseDatabaseReader._to_annotation_item_payload(
+            {
+                **row,
+                "source_title": row["object_id"],
+                "source_input": None,
+                "source_output": None,
+                "source_metadata": {},
+                "trace_id": row["object_id"]
+                if row["object_type"] == "TRACE"
+                else "",
+                "observation_id": row["object_id"]
+                if row["object_type"] == "OBSERVATION"
+                else "",
+                "session_id": row["object_id"]
+                if row["object_type"] == "SESSION"
+                else "",
+                "user_id": "",
+                "latency_ms": 0,
+                "cost_usd": 0,
+                "source_created_at": row["created_at"],
+                "scores": [],
+            }
+        )
+        payload.pop("source", None)
+        return payload
 
     @staticmethod
     def _redact_evaluator_config(config: dict[str, Any]) -> dict[str, Any]:
@@ -7042,48 +8683,22 @@ def _normalize_score_categories(value: Any) -> list[dict[str, float | str]]:
 
 
 def _normalize_score_config_object(config: dict[str, Any]) -> dict[str, Any]:
+    data_type = config.get("dataType") or "NUMERIC"
     return {
         "id": config.get("id") or "",
         "projectId": config.get("projectId") or "",
         "name": config.get("name") or "",
-        "dataType": config.get("dataType") or "NUMERIC",
+        "dataType": data_type,
         "description": config.get("description") or "",
         "minValue": _to_float_or_none(config.get("minValue")),
         "maxValue": _to_float_or_none(config.get("maxValue")),
-        "categories": _normalize_score_categories(config.get("categories")),
+        "categories": (
+            langfuse_boolean_categories()
+            if data_type == "BOOLEAN"
+            else _normalize_score_categories(config.get("categories"))
+        ),
         "archived": bool(config.get("archived")),
     }
-
-
-def _normalize_boolean_score_categories(value: Any) -> list[dict[str, float | str]]:
-    categories = _normalize_score_categories(value)
-    true_label = LANGFUSE_BOOLEAN_SCORE_CATEGORIES[0]["label"]
-    false_label = LANGFUSE_BOOLEAN_SCORE_CATEGORIES[1]["label"]
-    labels_by_value = {
-        category["value"]: str(category["label"]).strip()
-        for category in categories
-        if str(category.get("label") or "").strip()
-    }
-    ordered_labels = [
-        str(category["label"]).strip()
-        for category in categories
-        if str(category.get("label") or "").strip()
-    ]
-
-    if labels_by_value.get(1):
-        true_label = labels_by_value[1]
-    elif ordered_labels:
-        true_label = ordered_labels[0]
-
-    if labels_by_value.get(0):
-        false_label = labels_by_value[0]
-    elif len(ordered_labels) > 1:
-        false_label = ordered_labels[1]
-
-    return [
-        {"label": true_label, "value": 1},
-        {"label": false_label, "value": 0},
-    ]
 
 
 def _legacy_string_score_category(
@@ -7158,7 +8773,7 @@ def _annotation_score_api_payload(
     boolean_string_value: str | None = None
     if data_type == "BOOLEAN":
         score_value = 1 if value == 1 else 0
-        boolean_string_value = string_value or ("true" if score_value == 1 else "false")
+        boolean_string_value = langfuse_boolean_label(score_value)
     elif data_type in {"CATEGORICAL", "TEXT"}:
         score_value = string_value or ""
     else:
@@ -7185,9 +8800,16 @@ def _annotation_score_api_payload(
             "annotationItemId": item_id,
             "annotatorUserId": user_id,
         },
+        PA_CLICKHOUSE_SCORE_VALUE: value,
     }
     if boolean_string_value is not None:
         payload["stringValue"] = boolean_string_value
+        if config.get("categories") is not None and not is_langfuse_boolean_categories(
+            config.get("categories")
+        ):
+            payload[PA_BOOLEAN_SCORE_CONFIG_REPAIR_MARKER] = True
+    elif data_type in {"CATEGORICAL", "TEXT"} and string_value is not None:
+        payload["stringValue"] = string_value
     if session_id:
         payload["sessionId"] = session_id
     else:
@@ -7207,12 +8829,53 @@ async def _copy_existing_annotation_scores_for_item(
     object_type: str,
     score_config_ids: list[str],
 ) -> int:
-    if not score_config_ids:
-        return 0
+    return await _copy_existing_annotation_scores_for_items(
+        cursor,
+        project_id=project_id,
+        queue_id=queue_id,
+        items=[
+            {
+                "itemId": item_id,
+                "objectId": object_id,
+                "objectType": object_type,
+            }
+        ],
+        score_config_ids=score_config_ids,
+    )
 
+
+async def _copy_existing_annotation_scores_for_items(
+    cursor: psycopg.AsyncCursor[dict[str, Any]],
+    *,
+    project_id: str,
+    queue_id: str,
+    items: list[dict[str, str]],
+    score_config_ids: list[str],
+) -> int:
+    if not score_config_ids or not items:
+        return 0
+    candidate_values: list[str] = []
+    params: dict[str, Any] = {
+        "project_id": project_id,
+        "queue_id": queue_id,
+        "score_config_ids": score_config_ids,
+    }
+    for index, item in enumerate(items):
+        params[f"item_id_{index}"] = item["itemId"]
+        params[f"object_id_{index}"] = item["objectId"]
+        params[f"object_type_{index}"] = item["objectType"]
+        candidate_values.append(
+            f"(%(item_id_{index})s, %(object_id_{index})s, %(object_type_{index})s)"
+        )
     await cursor.execute(
-        """
-        SELECT DISTINCT ON (s.config_id)
+        f"""
+        WITH candidates(item_id, object_id, object_type) AS (
+            VALUES {", ".join(candidate_values)}
+        )
+        SELECT DISTINCT ON (candidate.item_id, s.config_id)
+            candidate.item_id,
+            candidate.object_id,
+            candidate.object_type,
             s.config_id,
             s.name,
             s.value,
@@ -7222,46 +8885,39 @@ async def _copy_existing_annotation_scores_for_item(
             s.author_user_id,
             s.trace_id,
             s.observation_id
-        FROM scores s
+        FROM candidates candidate
+        JOIN scores s ON (
+            (candidate.object_type = 'TRACE'
+             AND s.trace_id = candidate.object_id
+             AND s.observation_id IS NULL)
+            OR (candidate.object_type = 'OBSERVATION'
+                AND s.observation_id = candidate.object_id)
+            OR (candidate.object_type = 'SESSION'
+                AND s.trace_id = candidate.object_id)
+        )
         WHERE s.project_id = %(project_id)s
           AND s.source::text = 'ANNOTATION'
           AND s.config_id = ANY(%(score_config_ids)s)
           AND COALESCE(s.queue_id, '') <> %(queue_id)s
-          AND (
-            (
-              %(object_type)s = 'TRACE'
-              AND s.trace_id = %(object_id)s
-              AND s.observation_id IS NULL
-            )
-            OR (
-              %(object_type)s = 'OBSERVATION'
-              AND s.observation_id = %(object_id)s
-            )
-            OR (
-              %(object_type)s = 'SESSION'
-              AND s.trace_id = %(object_id)s
-            )
-          )
-        ORDER BY s.config_id, s.updated_at DESC, s.created_at DESC, s.id DESC
+        ORDER BY candidate.item_id, s.config_id,
+                 s.updated_at DESC, s.created_at DESC, s.id DESC
         """,
-        {
-            "project_id": project_id,
-            "queue_id": queue_id,
-            "object_id": object_id,
-            "object_type": object_type,
-            "score_config_ids": score_config_ids,
-        },
+        params,
     )
-    rows = await cursor.fetchall()
-    copied_count = 0
-    for row in rows:
+    rows = list(await cursor.fetchall())
+    insert_values: list[str] = []
+    insert_params: dict[str, Any] = {"project_id": project_id, "queue_id": queue_id}
+    for index, row in enumerate(rows):
         config_id = str(row.get("config_id") or "").strip()
         if not config_id:
             continue
+        item_id = str(row.get("item_id") or items[0]["itemId"])
+        object_id = str(row.get("object_id") or items[0]["objectId"])
+        object_type = str(row.get("object_type") or items[0]["objectType"])
         trace_id = str(row.get("trace_id") or object_id)
         observation_id = str(row.get("observation_id") or "")
         session_id = object_id if object_type == "SESSION" else ""
-        score_id = _annotation_score_id(
+        insert_params[f"id_{index}"] = _annotation_score_id(
             project_id=project_id,
             queue_id=queue_id,
             item_id=item_id,
@@ -7270,8 +8926,31 @@ async def _copy_existing_annotation_scores_for_item(
             observation_id=observation_id,
             session_id=session_id,
         )
+        for key in (
+            "name",
+            "value",
+            "author_user_id",
+            "comment",
+            "string_value",
+            "data_type",
+        ):
+            insert_params[f"{key}_{index}"] = row.get(key)
+        insert_params[f"name_{index}"] = row.get("name") or ""
+        insert_params[f"data_type_{index}"] = row.get("data_type") or "NUMERIC"
+        insert_params[f"trace_id_{index}"] = trace_id
+        insert_params[f"observation_id_{index}"] = observation_id or None
+        insert_params[f"config_id_{index}"] = config_id
+        insert_values.append(
+            f"(%(id_{index})s, NOW(), %(project_id)s, %(name_{index})s, "
+            f"%(value_{index})s, 'ANNOTATION'::\"ScoreSource\", "
+            f"%(author_user_id_{index})s, %(comment_{index})s, "
+            f"%(trace_id_{index})s, %(observation_id_{index})s, "
+            f"%(config_id_{index})s, %(string_value_{index})s, %(queue_id)s, "
+            f'NOW(), NOW(), %(data_type_{index})s::"ScoreConfigDataType")'
+        )
+    if insert_values:
         await cursor.execute(
-            """
+            f"""
             INSERT INTO scores (
                 id,
                 timestamp,
@@ -7290,43 +8969,12 @@ async def _copy_existing_annotation_scores_for_item(
                 updated_at,
                 data_type
             )
-            VALUES (
-                %(id)s,
-                NOW(),
-                %(project_id)s,
-                %(name)s,
-                %(value)s,
-                'ANNOTATION'::"ScoreSource",
-                %(author_user_id)s,
-                %(comment)s,
-                %(trace_id)s,
-                %(observation_id)s,
-                %(config_id)s,
-                %(string_value)s,
-                %(queue_id)s,
-                NOW(),
-                NOW(),
-                %(data_type)s::"ScoreConfigDataType"
-            )
+            VALUES {", ".join(insert_values)}
             ON CONFLICT (id) DO NOTHING
             """,
-            {
-                "id": score_id,
-                "project_id": project_id,
-                "name": row.get("name") or "",
-                "value": row.get("value"),
-                "author_user_id": row.get("author_user_id"),
-                "comment": row.get("comment"),
-                "trace_id": trace_id,
-                "observation_id": observation_id or None,
-                "config_id": config_id,
-                "string_value": row.get("string_value"),
-                "queue_id": queue_id,
-                "data_type": row.get("data_type") or "NUMERIC",
-            },
+            insert_params,
         )
-        copied_count += 1
-    return copied_count
+    return len(insert_values)
 
 
 def _annotation_score_id(
@@ -7364,9 +9012,7 @@ def _score_config_storage_payload(payload: dict[str, Any]) -> dict[str, Any]:
     max_value = payload.get("maxValue") if data_type == "NUMERIC" else None
     categories: Jsonb | None = None
     if data_type == "BOOLEAN":
-        categories = Jsonb(
-            _normalize_boolean_score_categories(payload.get("categories"))
-        )
+        categories = Jsonb(langfuse_boolean_categories())
     elif data_type == "CATEGORICAL":
         categories = Jsonb(_normalize_score_categories(payload.get("categories") or []))
 
@@ -7453,6 +9099,14 @@ def _merge_pa_eval_metadata(
     pa_eval.update({key: value for key, value in values.items() if value is not None})
     merged["paEval"] = pa_eval
     return merged
+
+
+def _mask_secret(value: str) -> str:
+    if not value:
+        return ""
+    if len(value) <= 4:
+        return "****"
+    return f"{value[:3]}...{value[-4:]}"
 
 
 def _new_langfuse_id(prefix: str) -> str:

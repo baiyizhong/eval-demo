@@ -75,14 +75,8 @@ function FormDialog({
     showCloseButton = false,
     ...restContentProps
   } = contentProps ?? {}
-  const {
-    className: bodyClassName,
-    ...restBodyProps
-  } = bodyProps ?? {}
-  const {
-    className: footerClassName,
-    ...restFooterProps
-  } = footerProps ?? {}
+  const { className: bodyClassName, ...restBodyProps } = bodyProps ?? {}
+  const { className: footerClassName, ...restFooterProps } = footerProps ?? {}
 
   const handleCancel: React.MouseEventHandler<HTMLButtonElement> = (event) => {
     cancelProps?.onClick?.(event)

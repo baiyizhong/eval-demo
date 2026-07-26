@@ -1,7 +1,8 @@
 import { Copy } from 'lucide-react'
 import { toast } from 'sonner'
-import { Button } from '@/components/ui/button'
+import { copyTextToClipboard } from '@/lib/clipboard'
 import { cn } from '@/lib/utils'
+import { Button } from '@/components/ui/button'
 
 type CopyableTextProps = {
   value: string
@@ -10,8 +11,12 @@ type CopyableTextProps = {
 
 export function CopyableText({ value, className }: CopyableTextProps) {
   const copy = async () => {
-    await navigator.clipboard.writeText(value)
-    toast.success('已复制')
+    try {
+      await copyTextToClipboard(value)
+      toast.success('已复制')
+    } catch {
+      toast.error('复制失败，请手动复制')
+    }
   }
 
   return (

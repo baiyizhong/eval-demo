@@ -135,9 +135,7 @@ export function parseMemberImportCsv(
   if (!canManageMembers(actorRole)) {
     return {
       members: [],
-      failures: [
-        buildFailure(1, '', '当前角色不能导入成员', 'role'),
-      ],
+      failures: [buildFailure(1, '', '当前角色不能导入成员', 'role')],
     }
   }
 

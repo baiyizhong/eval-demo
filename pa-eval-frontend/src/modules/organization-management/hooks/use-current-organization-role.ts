@@ -1,12 +1,12 @@
 import { useQuery } from '@tanstack/react-query'
-import { useAPI } from '@/hooks/use-api'
 import {
   type OrganizationMember,
   type OrganizationRole,
   type PaginatedResult,
 } from '@/modules/organization-management/data/schema'
-
-const MOCK_CURRENT_MEMBER_USER_ID = 'user-current'
+import { resolveCurrentOrganizationRole } from '@/modules/organization-management/data/current-organization-role'
+import { useSessionStore } from '@/stores/session.store'
+import { useAPI } from '@/hooks/use-api'
 
 type UseCurrentOrganizationRoleResult = {
   actorRole: OrganizationRole | null
@@ -17,15 +17,15 @@ export function useCurrentOrganizationRole(
   organizationId: string | null
 ): UseCurrentOrganizationRoleResult {
   const $api = useAPI()
+  const currentUser = useSessionStore((state) => state.user)
   const actorMembersQuery = useQuery({
-    queryKey: ['organization-members-actor', organizationId, $api],
+    queryKey: ['organization-members-actor', organizationId, currentUser?.email, $api],
     enabled: Boolean(organizationId),
     queryFn: () => {
       if (!organizationId) {
         throw new Error('缺少组织 ID')
       }
 
-      // mock 模式下缺少独立的“当前成员/组织权限”接口；真实后端应替换为专用权限上下文接口。
       return $api.getOrganizationMembers<PaginatedResult<OrganizationMember>>({
         path: { organizationId },
         query: {
@@ -37,13 +37,13 @@ export function useCurrentOrganizationRole(
     },
   })
 
-  const actorMember =
-    actorMembersQuery.data?.datas.find(
-      (member) => member.userId === MOCK_CURRENT_MEMBER_USER_ID
-    ) ?? null
+  const actorRole = resolveCurrentOrganizationRole(
+    actorMembersQuery.data?.datas ?? [],
+    currentUser
+  )
 
   return {
-    actorRole: actorMember?.role ?? null,
+    actorRole,
     isPending: actorMembersQuery.isPending,
   }
 }

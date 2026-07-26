@@ -10,10 +10,12 @@ import {
   TooltipContent,
   TooltipTrigger,
 } from '@/components/ui/tooltip'
+import type { DataTableSelectionState } from './data-table'
 
 type DataTableBulkActionsProps<TData> = {
   table: Table<TData>
   entityName: string
+  selection?: DataTableSelectionState<TData>
   children: React.ReactNode
 }
 
@@ -30,10 +32,11 @@ type DataTableBulkActionsProps<TData> = {
 export function DataTableBulkActions<TData>({
   table,
   entityName,
+  selection,
   children,
 }: DataTableBulkActionsProps<TData>): React.ReactNode | null {
   const selectedRows = table.getFilteredSelectedRowModel().rows
-  const selectedCount = selectedRows.length
+  const selectedCount = selection?.selectedRowCount ?? selectedRows.length
   const toolbarRef = useRef<HTMLDivElement>(null)
   const [announcement, setAnnouncement] = useState('')
 
@@ -54,6 +57,11 @@ export function DataTableBulkActions<TData>({
   }, [selectedCount, entityName])
 
   const handleClearSelection = () => {
+    if (selection) {
+      selection.clearSelection()
+      return
+    }
+
     table.resetRowSelection()
   }
 

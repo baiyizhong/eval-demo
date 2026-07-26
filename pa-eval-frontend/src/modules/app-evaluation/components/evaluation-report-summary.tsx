@@ -15,8 +15,14 @@ export function EvaluationReportSummary({
   const metrics = [
     { label: '平均分', value: metricValues.averageScore.toFixed(2) },
     { label: '通过率', value: `${Math.round(metricValues.passRate * 100)}%` },
-    { label: '失败率', value: `${Math.round(metricValues.failureRate * 100)}%` },
-    { label: 'Badcase率', value: `${Math.round(metricValues.badcaseRate * 100)}%` },
+    {
+      label: '失败率',
+      value: `${Math.round(metricValues.failureRate * 100)}%`,
+    },
+    {
+      label: 'Badcase率',
+      value: `${Math.round(metricValues.badcaseRate * 100)}%`,
+    },
   ]
 
   return (
@@ -25,7 +31,7 @@ export function EvaluationReportSummary({
         {metrics.map((metric) => (
           <Card key={metric.label}>
             <CardHeader>
-              <CardTitle className='text-sm text-muted-foreground'>
+              <CardTitle className='text-muted-foreground text-sm'>
                 {metric.label}
               </CardTitle>
             </CardHeader>

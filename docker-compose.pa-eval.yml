@@ -1,0 +1,27 @@
+services:
+  pa-eval-backend:
+    build:
+      context: ./pa-eval-backend
+      dockerfile: Dockerfile
+    ports:
+      - "8000:8000"
+    volumes:
+      - skill-store:/var/lib/pa-eval/skills
+      - ./skills/builtin:/var/lib/pa-eval/skills/_builtin:ro
+    environment:
+      - PA_EVAL_SKILL_ROOT=/var/lib/pa-eval/skills
+      - PA_EVAL_PI_BINARY=pi
+      - PA_EVAL_PI_MODEL=${PA_EVAL_PI_MODEL:-}
+      - PA_EVAL_PI_RPC_TIMEOUT=${PA_EVAL_PI_RPC_TIMEOUT:-300}
+      - PA_EVAL_PI_MAX_CONCURRENCY=${PA_EVAL_PI_MAX_CONCURRENCY:-4}
+      - PA_EVAL_PI_WORKDIR=/tmp/pa-eval-skill
+      - LANGFUSE_BASE_URL=${LANGFUSE_BASE_URL:-http://langfuse-web:3000}
+      - LANGFUSE_DATABASE_URL=${LANGFUSE_DATABASE_URL}
+      - LANGFUSE_CLICKHOUSE_URL=${LANGFUSE_CLICKHOUSE_URL:-http://clickhouse:8123}
+      - PA_EVAL_REDIS_URL=${PA_EVAL_REDIS_URL:-redis://redis:6379/0}
+    depends_on:
+      - langfuse-web
+      - redis
+
+volumes:
+  skill-store:

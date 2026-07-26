@@ -3,10 +3,25 @@ import { GeneralError } from '@/modules/errors/general-error'
 import { MaintenanceError } from '@/modules/errors/maintenance-error'
 import { NotFoundError } from '@/modules/errors/not-found-error'
 import { UnauthorisedError } from '@/modules/errors/unauthorized-error'
-import { useRouteError, isRouteErrorResponse } from 'react-router'
+import { buildRouteErrorUrl, logRouteError } from '@/lib/route-error-logging'
+import { useEffect } from 'react'
+import { useLocation, useRouteError, isRouteErrorResponse } from 'react-router'
 
 export function RootErrorBoundary() {
   const error = useRouteError()
+  const location = useLocation()
+  const route = buildRouteErrorUrl(location)
+  const status = isRouteErrorResponse(error) ? error.status : undefined
+
+  useEffect(() => {
+    if (status === 403 || status === 404) {
+      logRouteError({
+        status,
+        route,
+        reason: 'route error boundary matched',
+      })
+    }
+  }, [route, status])
 
   // 404 - 路由未找到
   if (isRouteErrorResponse(error) && error.status === 404) {

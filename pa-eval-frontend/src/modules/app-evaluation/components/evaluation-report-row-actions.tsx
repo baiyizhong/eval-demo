@@ -1,5 +1,12 @@
 import type { Row } from '@tanstack/react-table'
-import { Download, Eye, MoreHorizontal, RefreshCw, RotateCcw, Send, Trash2 } from 'lucide-react'
+import {
+  Download,
+  Eye,
+  MoreHorizontal,
+  RefreshCw,
+  RotateCcw,
+  Trash2,
+} from 'lucide-react'
 import { Link } from 'react-router'
 import { Button } from '@/components/ui/button'
 import {
@@ -17,9 +24,9 @@ type Props = {
   projectId: string
   onExport: (report: EvaluationReportRecord) => void
   onRegenerate: (report: EvaluationReportRecord) => void
-  onFlowback: (report: EvaluationReportRecord) => void
   onViewUnavailable: (report: EvaluationReportRecord) => void
   onDelete: (report: EvaluationReportRecord) => void
+  canEdit?: boolean
 }
 
 export function EvaluationReportRowActions({
@@ -27,9 +34,9 @@ export function EvaluationReportRowActions({
   projectId,
   onExport,
   onRegenerate,
-  onFlowback,
   onViewUnavailable,
   onDelete,
+  canEdit,
 }: Props) {
   const report = row.original
   const ready = report.status === 'READY'
@@ -45,7 +52,9 @@ export function EvaluationReportRowActions({
         <DropdownMenuGroup>
           {ready ? (
             <DropdownMenuItem asChild>
-              <Link to={`/projects/${projectId}/evaluation/reports/${report.id}`}>
+              <Link
+                to={`/projects/${projectId}/evaluation/reports/${report.id}`}
+              >
                 <Eye data-icon='inline-start' />
                 查看报告
               </Link>
@@ -58,21 +67,24 @@ export function EvaluationReportRowActions({
           )}
           <DropdownMenuItem disabled={!ready} onSelect={() => onExport(report)}>
             <Download data-icon='inline-start' />
-            导出
+            导出报告
           </DropdownMenuItem>
-          <DropdownMenuItem onSelect={() => onRegenerate(report)}>
-            <RotateCcw data-icon='inline-start' />
-            重新生成
-          </DropdownMenuItem>
-          <DropdownMenuItem disabled={!ready} onSelect={() => onFlowback(report)}>
-            <Send data-icon='inline-start' />
-            回流数据
-          </DropdownMenuItem>
-          <DropdownMenuSeparator />
-          <DropdownMenuItem variant='destructive' onSelect={() => onDelete(report)}>
-            <Trash2 data-icon='inline-start' />
-            删除
-          </DropdownMenuItem>
+          {canEdit ? (
+            <>
+              <DropdownMenuItem onSelect={() => onRegenerate(report)}>
+                <RotateCcw data-icon='inline-start' />
+                重新生成
+              </DropdownMenuItem>
+              <DropdownMenuSeparator />
+              <DropdownMenuItem
+                variant='destructive'
+                onSelect={() => onDelete(report)}
+              >
+                <Trash2 data-icon='inline-start' />
+                删除
+              </DropdownMenuItem>
+            </>
+          ) : null}
         </DropdownMenuGroup>
       </DropdownMenuContent>
     </DropdownMenu>

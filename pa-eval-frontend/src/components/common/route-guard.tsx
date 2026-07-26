@@ -1,30 +1,7 @@
-import { useEffect, type ReactNode } from 'react'
-import { useNavigate } from 'react-router'
-import { usePermissionStore } from '@/stores/permission.store'
-import { matchPermission } from '@/lib/permission'
-
-export interface RouteAccessConfig {
-  access?: string | string[]
-  superAccess?: boolean
-  projectId?: string
-}
-
-const checkRouteAccess = (config?: RouteAccessConfig): boolean => {
-  if (!config) return true
-
-  const { superAdmin } = usePermissionStore.getState()
-  if (config.superAccess && !superAdmin) return false
-
-  if (config.access) {
-    const codes = Array.isArray(config.access) ? config.access : [config.access]
-    const effectiveCodes = usePermissionStore
-      .getState()
-      .getPermissionsForProject(config.projectId ?? '')
-    return codes.some((code) => matchPermission(code, effectiveCodes))
-  }
-
-  return true
-}
+import { useEffect, useMemo, useRef, type ReactNode } from 'react'
+import { useLocation, useNavigate, useParams } from 'react-router'
+import { buildRouteErrorUrl, logRouteError } from '@/lib/route-error-logging'
+import { checkRouteAccess, type RouteAccessConfig } from './route-access'
 
 export function RouteGuard({
   children,
@@ -34,15 +11,42 @@ export function RouteGuard({
   accessConfig?: RouteAccessConfig
 }) {
   const navigate = useNavigate()
+  const location = useLocation()
+  const lastDeniedRouteRef = useRef<string | null>(null)
+  const currentRoute = useMemo(() => buildRouteErrorUrl(location), [location])
 
   useEffect(() => {
     if (!checkRouteAccess(accessConfig)) {
+      if (lastDeniedRouteRef.current !== currentRoute) {
+        logRouteError({
+          status: 403,
+          route: currentRoute,
+          reason: 'route guard denied access',
+        })
+        lastDeniedRouteRef.current = currentRoute
+      }
       navigate('/403', { replace: true })
     }
-  }, [accessConfig, navigate])
+  }, [accessConfig, currentRoute, navigate])
 
   if (!checkRouteAccess(accessConfig)) return null
   return <>{children}</>
 }
 
-export { checkRouteAccess }
+export function ProjectRouteGuard({
+  access,
+  children,
+}: {
+  access: string | string[]
+  children: ReactNode
+}) {
+  const { projectId } = useParams()
+
+  return (
+    <RouteGuard
+      accessConfig={{ scope: { type: 'project', projectId }, access }}
+    >
+      {children}
+    </RouteGuard>
+  )
+}

@@ -1,6 +1,5 @@
 import { useMemo, useState } from 'react'
 import { z } from 'zod'
-import type { JsonData } from 'json-edit-react'
 import { toast } from 'sonner'
 import { confirm } from '@/lib/confirm'
 import { showSubmittedData } from '@/lib/show-submitted-data'
@@ -23,8 +22,7 @@ import {
   type FilterValues,
 } from '@/components/common/filter-panel'
 import { ImportDialog } from '@/components/common/import-dialog'
-import { JsonEditorPanel } from '@/components/common/json-editor'
-import { MarkdownEditorPanel } from '@/components/common/markdown-editor'
+import { MixEditor } from '@/components/common/MixEditor'
 import { Page } from '@/components/common/page'
 import { TasksPageHeader } from './components/tasks-page-header'
 
@@ -73,7 +71,7 @@ export function Tasks() {
   const [createDrawerOpen, setCreateDrawerOpen] = useState(false)
   const [detailDrawerOpen, setDetailDrawerOpen] = useState(false)
   const [markdownExample, setMarkdownExample] = useState(initialMarkdownExample)
-  const [jsonExample, setJsonExample] = useState<JsonData>(initialJsonExample)
+  const [jsonExample, setJsonExample] = useState<unknown>(initialJsonExample)
 
   const handleCreateTaskSubmit = (data: CreateTaskForm) => {
     showSubmittedData(data)
@@ -212,19 +210,17 @@ export function Tasks() {
             </div>
 
             <div className='grid gap-4 xl:grid-cols-2'>
-              <MarkdownEditorPanel
+              <MixEditor
                 title='Markdown 最小示例'
                 value={markdownExample}
-                onValueChange={setMarkdownExample}
-                defaultMode='edit'
-                height={260}
+                onValueChange={(nextValue) =>
+                  setMarkdownExample(String(nextValue ?? ''))
+                }
               />
-              <JsonEditorPanel
+              <MixEditor
                 title='JSON 最小示例'
-                data={jsonExample}
-                onDataChange={setJsonExample}
-                rootName='task'
-                height={260}
+                value={jsonExample}
+                onValueChange={(nextValue) => setJsonExample(nextValue)}
               />
             </div>
           </div>

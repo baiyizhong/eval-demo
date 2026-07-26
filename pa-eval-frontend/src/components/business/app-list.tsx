@@ -17,6 +17,13 @@ import {
 } from 'lucide-react'
 import { useSearchParams } from 'react-router'
 import { Button } from '@/components/ui/button'
+import {
+  FormControl,
+  FormField,
+  FormItem,
+  FormLabel,
+  FormMessage,
+} from '@/components/ui/form'
 import { Input } from '@/components/ui/input'
 import {
   Select,
@@ -28,23 +35,16 @@ import {
 } from '@/components/ui/select'
 import { Separator } from '@/components/ui/separator'
 import { Textarea } from '@/components/ui/textarea'
-import { BaseForm } from '@/components/common/base-form'
-import {
-  FormDialog,
-  type FormDialogProps,
-} from '@/components/common/form-dialog'
-import {
-  FormControl,
-  FormField,
-  FormItem,
-  FormLabel,
-  FormMessage,
-} from '@/components/ui/form'
 import {
   AppCardList,
   type AppCardTag,
   type AppCardListItem,
 } from '@/components/business/app-card-list'
+import { BaseForm } from '@/components/common/base-form'
+import {
+  FormDialog,
+  type FormDialogProps,
+} from '@/components/common/form-dialog'
 
 const appListAddFormSchema = z.object({
   name: z.string().min(1, '请输入项目名称'),
@@ -59,8 +59,7 @@ type AppListAddDialogContext = {
 }
 
 type AppListAddDialogContent =
-  | ReactNode
-  | ((context: AppListAddDialogContext) => ReactNode)
+  ReactNode | ((context: AppListAddDialogContext) => ReactNode)
 
 type AppListAddDialogProps = Omit<
   FormDialogProps,
@@ -133,6 +132,8 @@ function AppListToolbar({
   onSortChange,
   onAddClick,
 }: AppListToolbarProps) {
+  const canAdd = Boolean(onAddClick)
+
   return (
     <div className='my-4 flex items-end justify-between sm:my-0 sm:items-center'>
       <div className='flex flex-col gap-4 sm:my-4 sm:flex-row'>
@@ -180,10 +181,12 @@ function AppListToolbar({
       </div>
 
       <div className='flex items-center gap-2'>
-        <Button type='button' size='sm' onClick={onAddClick}>
-          <Plus size={16} />
-          新增项目
-        </Button>
+        {canAdd ? (
+          <Button type='button' size='sm' onClick={onAddClick}>
+            <Plus size={16} />
+            新增项目
+          </Button>
+        ) : null}
       </div>
     </div>
   )
@@ -295,6 +298,7 @@ export function AppList({
   const [appStatus, setAppStatus] = useState(status)
   const [searchTerm, setSearchTerm] = useState(filter)
   const [addDialogOpen, setAddDialogOpen] = useState(false)
+  const canAdd = Boolean(onAddClick || onAddSubmit || addDialogContent)
 
   const filteredApps = [...apps]
     .sort((a, b) =>
@@ -374,7 +378,7 @@ export function AppList({
         onSearch={handleSearch}
         onStatusChange={handleStatusChange}
         onSortChange={handleSortChange}
-        onAddClick={handleAddClick}
+        onAddClick={canAdd ? handleAddClick : undefined}
       />
       <Separator className='shadow-sm' />
       <AppCardList

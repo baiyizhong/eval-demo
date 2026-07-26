@@ -59,6 +59,11 @@ export type DatasetExportJobRecord = {
   expiresAt: string
 }
 
+export type DatasetExportFiltersInput = {
+  keyword?: string
+  status?: DatasetItemStatus[]
+}
+
 export type DatasetFormInput = {
   name: string
   type: DatasetType
@@ -127,10 +132,7 @@ export type AnnotationExportScope = 'filtered' | 'selected'
 export type AnnotationExportFormat = 'xlsx' | 'csv' | 'txt'
 
 export type AnnotationExportJobStatus =
-  | 'PENDING'
-  | 'RUNNING'
-  | 'SUCCEEDED'
-  | 'FAILED'
+  'PENDING' | 'RUNNING' | 'SUCCEEDED' | 'FAILED'
 
 export type ScoreDataType = 'NUMERIC' | 'CATEGORICAL' | 'BOOLEAN' | 'TEXT'
 
@@ -308,6 +310,7 @@ export type AnnotationBatchFiltersInput = {
   status?: AnnotationItemStatus[]
   objectType?: AnnotationObjectType[]
   completedBy?: string[]
+  assigneeIds?: string[]
   createdAtFrom?: string
   createdAtTo?: string
   completedAtFrom?: string
@@ -400,7 +403,7 @@ export type AutoEvaluationTaskStatus =
   'DRAFT' | 'READY' | 'RUNNING' | 'COMPLETED' | 'FAILED' | 'CANCELLED'
 
 export type AutoEvaluationEvaluatorType =
-  'LLM_AS_JUDGE' | 'CODE' | 'WORKFLOW' | 'SDK'
+  'LLM_AS_JUDGE' | 'CODE' | 'WORKFLOW' | 'SDK' | 'SKILL'
 
 export type AutoEvaluationDataSourceType = 'DATASET' | 'TRACE_FILTER'
 
@@ -606,8 +609,8 @@ export type EvaluationReportItemRecord = {
     observationId: string
     name: string
     value?: number | null
-    source?: string
-    dataType?: string
+    source: string
+    dataType: string
     stringValue?: string
     longStringValue?: string
     comment?: string

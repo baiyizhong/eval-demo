@@ -1,5 +1,10 @@
 export type ScoreConfigDataType = 'NUMERIC' | 'CATEGORICAL' | 'BOOLEAN' | 'TEXT'
 
+export type ScoreConfigCategory = {
+  label: string
+  value: number
+}
+
 export type ProjectRole = 'OWNER' | 'ADMIN' | 'MEMBER' | 'VIEWER'
 
 export type ProjectInfo = {
@@ -19,8 +24,9 @@ export type ScoreConfig = {
   description: string
   minValue?: number
   maxValue?: number
-  categories?: string[]
+  categories?: ScoreConfigCategory[]
   isArchived: boolean
+  createdAt?: string
   updatedAt: string
 }
 
@@ -43,6 +49,16 @@ export type LlmConnection = {
   withDefaultModels: boolean
 }
 
+export type ModelDefinition = {
+  id: string
+  modelName: string
+  matchPattern: string
+  unit: string
+  inputPrice: string
+  outputPrice: string
+  tokenizerId: string
+}
+
 export type DefaultModel = {
   id: string
   llmConnectionId: string
@@ -58,8 +74,7 @@ export type ProjectApiKey = {
   note: string
   publicKey: string
   secretKey: string
-  status: string
-  lastUsedAt?: string
+  updatedBy: string
   createdAt: string
   updatedAt: string
 }

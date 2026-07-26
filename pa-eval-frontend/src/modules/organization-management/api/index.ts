@@ -15,6 +15,10 @@ export const organizationApi = {
     method: 'PATCH',
     url: '/organizations/:organizationId',
   },
+  getOrganizationMemberEmailSettings: {
+    method: 'GET',
+    url: '/organizations/member-email-settings',
+  },
   getOrganizationMembers: {
     method: 'GET',
     url: '/organizations/:organizationId/members',

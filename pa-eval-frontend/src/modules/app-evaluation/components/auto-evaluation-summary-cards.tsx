@@ -10,12 +10,7 @@ type Summary = {
 }
 
 export type AutoEvaluationSummaryFilter =
-  | 'all'
-  | 'RUNNING'
-  | 'COMPLETED'
-  | 'FAILED'
-  | 'NOT_STARTED'
-  | 'HAS_BADCASE'
+  'all' | 'RUNNING' | 'COMPLETED' | 'FAILED' | 'NOT_STARTED' | 'HAS_BADCASE'
 
 const items: {
   id: AutoEvaluationSummaryFilter

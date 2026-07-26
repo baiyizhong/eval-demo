@@ -1,51 +1,92 @@
 import { useQuery } from '@tanstack/react-query'
+import type { PermissionScope } from '@/types/permission'
 import { useParams } from 'react-router'
-import { usePermissionStore } from '@/stores/permission.store'
+import { useSessionStore } from '@/stores/session.store'
 import { matchPermission } from '@/lib/permission'
 import {
   buildSidebarDataFromProjects,
   type PaginatedSidebarProjects,
 } from '@/lib/sidebar-data'
 import { useAPI } from '@/hooks/use-api'
+import { checkPermissionAccessRule } from '@/components/common/route-access'
 import type { SidebarData, NavItem, NavGroup } from '@/components/layout/types'
 
 function filterNavItemsByPermission(
   items: NavItem[],
-  getPermissions: () => string[]
+  getPermissionsForScope: (scope?: PermissionScope) => string[],
+  superAdmin: boolean
 ): NavItem[] {
   return items
-    .filter((item) => {
-      if (item.superAccess && !usePermissionStore.getState().superAdmin) {
-        return false
-      }
-      if (item.access) {
-        const codes = Array.isArray(item.access) ? item.access : [item.access]
-        const effectiveCodes = getPermissions()
-        return codes.some((code) => matchPermission(code, effectiveCodes))
-      }
-      return true
-    })
     .map((item) => {
+      if (item.superAccess && !superAdmin) {
+        return null
+      }
+
+      if (item.accessRules?.length) {
+        const allowed = item.accessRules.some((rule) =>
+          checkPermissionAccessRule(rule)
+        )
+
+        if (!allowed) {
+          return null
+        }
+      } else if (item.access) {
+        const codes = Array.isArray(item.access) ? item.access : [item.access]
+        const effectiveCodes = getPermissionsForScope(item.scope)
+        const allowed = codes.some((code) =>
+          matchPermission(code, effectiveCodes)
+        )
+
+        if (!allowed) {
+          return null
+        }
+      }
+
       if ('items' in item && item.items) {
+        const filteredItems = filterNavItemsByPermission(
+          item.items,
+          getPermissionsForScope,
+          superAdmin
+        )
+
+        if (filteredItems.length === 0) {
+          return null
+        }
+
         return {
           ...item,
-          items: filterNavItemsByPermission(item.items, getPermissions),
+          items: filteredItems,
         } as NavItem
       }
+
       return item
     })
+    .filter((item): item is NavItem => item !== null)
 }
 
 function filterNavGroupsByPermission(
   menuGroups: NavGroup[],
-  getPermissions: () => string[]
+  getPermissionsForScope: (scope?: PermissionScope) => string[],
+  superAdmin: boolean
 ): NavGroup[] {
   return menuGroups
     .map((group) => ({
       ...group,
-      items: filterNavItemsByPermission(group.items, getPermissions),
+      items: filterNavItemsByPermission(
+        group.items,
+        getPermissionsForScope,
+        superAdmin
+      ),
     }))
     .filter((group) => group.items.length > 0)
+}
+
+function getSidebarPermissionsForScope(scope?: PermissionScope) {
+  return useSessionStore.getState().getPermissionsForScope(scope)
+}
+
+function getSidebarSuperAdmin() {
+  return useSessionStore.getState().superAdmin
 }
 
 export function useSidebarData(): {
@@ -54,7 +95,7 @@ export function useSidebarData(): {
 } {
   const $api = useAPI()
   const { projectId } = useParams()
-  const store = usePermissionStore()
+  const store = useSessionStore()
 
   const { data, isLoading } = useQuery({
     queryKey: ['sidebar-projects', $api] as const,
@@ -72,10 +113,10 @@ export function useSidebarData(): {
   }
 
   const sidebarData = buildSidebarDataFromProjects(data.datas, projectId)
-  const getPermissions = () => store.getPermissionsForProject('')
   const filteredNavGroups = filterNavGroupsByPermission(
     sidebarData.menuGroups,
-    getPermissions
+    store.getPermissionsForScope,
+    store.superAdmin
   )
 
   return {
@@ -84,4 +125,9 @@ export function useSidebarData(): {
   }
 }
 
-export { filterNavItemsByPermission, filterNavGroupsByPermission }
+export {
+  filterNavItemsByPermission,
+  filterNavGroupsByPermission,
+  getSidebarPermissionsForScope,
+  getSidebarSuperAdmin,
+}

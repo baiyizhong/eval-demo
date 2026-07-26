@@ -1,10 +1,12 @@
-import { useCallback, useMemo } from 'react'
+import { useCallback, useMemo, useState } from 'react'
 import { useQuery, useQueryClient } from '@tanstack/react-query'
-import { Download } from 'lucide-react'
+import { ListChecks, RefreshCw } from 'lucide-react'
 import { useNavigate, useParams, useSearchParams } from 'react-router'
 import { toast } from 'sonner'
 import { confirm } from '@/lib/confirm'
-import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card'
+import { useAPI } from '@/hooks/use-api'
+import { usePermission } from '@/hooks/use-permission'
+import { ChartMetricCard } from '@/components/common/charts'
 import {
   DataTable,
   type DataTableFilterBinding,
@@ -15,56 +17,46 @@ import { Loading } from '@/components/common/loading'
 import { Page } from '@/components/common/page'
 import { PageAction } from '@/components/common/page-action'
 import {
-  deleteProjectAnnotationQueueItemsMock,
-  exportProjectAnnotationQueueMock,
-  getProjectAnnotationQueueMetricSummaryMock,
-  getProjectAnnotationQueueMock,
-  listProjectAnnotationQueueItemsMock,
-} from '../api/mock-annotation-api'
-import { AnnotationQueueItemBulkActions } from '../components/annotation-queue-item-bulk-actions'
+  deleteProjectAnnotationQueueItems,
+  getProjectAnnotationQueue,
+  getProjectAnnotationQueueItemFilterCounts,
+  getProjectAnnotationQueueMetricSummary,
+  listProjectAnnotationQueueItems,
+  listProjectAnnotationUsers,
+} from '../api/annotation-api'
+import { AnnotationExportDialog } from '../components/annotation-export-dialog'
+import {
+  AnnotationQueueItemBulkActions,
+  type AnnotationQueueItemExportSelection,
+} from '../components/annotation-queue-item-bulk-actions'
 import { createAnnotationQueueItemColumns } from '../components/annotation-queue-item-columns'
-import { downloadJson, formatDateTime } from '../components/format'
-import type { AnnotationQueueItemRecord } from '../types'
+import { formatDateTime } from '../components/format'
+import { SessionTraceDialog } from '../components/session-trace-dialog'
+import type { AnnotationQueueItemRecord, ProjectUserRecord } from '../types'
 
 const itemUrlFilters: DataTableFilterBinding[] = [
   { fieldId: 'status', type: 'array' },
   { fieldId: 'objectType', type: 'array' },
-  { fieldId: 'completedBy', type: 'array' },
+  { fieldId: 'assigneeIds', columnId: 'assignee', type: 'array' },
 ]
 
-const itemToolbarFilters: DataTableToolbarFilter[] = [
-  {
-    columnId: 'status',
-    title: '状态',
-    options: [
-      { label: '待处理', value: 'PENDING' },
-      { label: '已完成', value: 'COMPLETED' },
-    ],
-  },
-  {
-    columnId: 'objectType',
-    title: '类型',
-    options: [
-      { label: '追踪', value: 'TRACE' },
-      { label: '观测', value: 'OBSERVATION' },
-      { label: '会话', value: 'SESSION' },
-    ],
-  },
-  {
-    columnId: 'completedBy',
-    title: '完成人',
-    options: [
-      { label: '张三', value: 'user_annotator_a' },
-      { label: '李四', value: 'user_annotator_b' },
-    ],
-  },
-]
+type SelectedSessionTrace = {
+  sessionId: string
+  traceId: string
+}
 
 export function ProjectAnnotationQueueDetail() {
+  const $api = useAPI()
   const navigate = useNavigate()
   const queryClient = useQueryClient()
   const [searchParams] = useSearchParams()
   const { projectId = 'project_customer_agent', queueId = '' } = useParams()
+  const { can } = usePermission({ type: 'project', projectId })
+  const canEditAnnotation = can('project:annotation:edit')
+  const [exportSelection, setExportSelection] =
+    useState<AnnotationQueueItemExportSelection | null>(null)
+  const [selectedSessionTrace, setSelectedSessionTrace] =
+    useState<SelectedSessionTrace | null>(null)
 
   const queryState = useMemo<DataTableQueryState>(
     () => ({
@@ -74,22 +66,42 @@ export function ProjectAnnotationQueueDetail() {
       filters: {
         status: searchParams.getAll('status'),
         objectType: searchParams.getAll('objectType'),
-        completedBy: searchParams.getAll('completedBy'),
+        assigneeIds: searchParams.getAll('assigneeIds'),
       },
       sorting: [],
     }),
     [searchParams]
   )
-
   const queueQuery = useQuery({
-    queryKey: ['project-annotation-queue', projectId, queueId],
-    queryFn: () => getProjectAnnotationQueueMock(projectId, queueId),
+    queryKey: ['project-annotation-queue', $api, projectId, queueId],
+    queryFn: () => getProjectAnnotationQueue($api, projectId, queueId),
     enabled: Boolean(queueId),
   })
   const metricQuery = useQuery({
-    queryKey: ['project-annotation-queue-metrics', projectId, queueId],
+    queryKey: ['project-annotation-queue-metrics', $api, projectId, queueId],
     queryFn: () =>
-      getProjectAnnotationQueueMetricSummaryMock(projectId, queueId),
+      getProjectAnnotationQueueMetricSummary($api, projectId, queueId),
+    enabled: Boolean(queueId),
+  })
+  const usersQuery = useQuery({
+    queryKey: ['project-annotation-users', $api, projectId],
+    queryFn: () => listProjectAnnotationUsers($api, projectId),
+  })
+  const filterCountsQuery = useQuery({
+    queryKey: [
+      'project-annotation-queue-item-filter-counts',
+      $api,
+      projectId,
+      queueId,
+      queryState,
+    ],
+    queryFn: () =>
+      getProjectAnnotationQueueItemFilterCounts(
+        $api,
+        projectId,
+        queueId,
+        queryState
+      ),
     enabled: Boolean(queueId),
   })
 
@@ -97,19 +109,22 @@ export function ProjectAnnotationQueueDetail() {
     () =>
       Promise.all([
         queryClient.invalidateQueries({
-          queryKey: ['project-annotation-queue', projectId, queueId],
+          queryKey: ['project-annotation-queue'],
         }),
         queryClient.invalidateQueries({
-          queryKey: ['project-annotation-queue-metrics', projectId, queueId],
+          queryKey: ['project-annotation-queue-metrics'],
         }),
         queryClient.invalidateQueries({
-          queryKey: ['project-annotation-queue-items', projectId, queueId],
+          queryKey: ['project-annotation-queue-items'],
         }),
         queryClient.invalidateQueries({
-          queryKey: ['project-annotation-queues', projectId],
+          queryKey: ['project-annotation-queue-item-filter-counts'],
+        }),
+        queryClient.invalidateQueries({
+          queryKey: ['project-annotation-queues'],
         }),
       ]),
-    [projectId, queueId, queryClient]
+    [queryClient]
   )
 
   const columns = useMemo(
@@ -117,15 +132,46 @@ export function ProjectAnnotationQueueDetail() {
       createAnnotationQueueItemColumns({
         projectId,
         queueId,
-        onDelete: (item) => {
-          void handleDeleteItem(projectId, queueId, item, invalidateDetail)
-        },
+        canEdit: canEditAnnotation,
+        onDelete: canEditAnnotation
+          ? (item) => {
+              void handleDeleteItem(
+                $api,
+                projectId,
+                queueId,
+                item,
+                invalidateDetail
+              )
+            }
+          : undefined,
+        onOpenSession: (sessionId, traceId) =>
+          setSelectedSessionTrace({ sessionId, traceId }),
       }),
-    [invalidateDetail, projectId, queueId]
+    [$api, canEditAnnotation, invalidateDetail, projectId, queueId]
+  )
+  const toolbarFilters = useMemo(
+    () =>
+      createItemToolbarFilters({
+        users: usersQuery.data ?? [],
+        statusCounts: filterCountsQuery.data?.status,
+        objectTypeCounts: filterCountsQuery.data?.objectType,
+        assigneeCounts: filterCountsQuery.data?.assigneeIds,
+      }),
+    [
+      filterCountsQuery.data?.assigneeIds,
+      filterCountsQuery.data?.objectType,
+      filterCountsQuery.data?.status,
+      usersQuery.data,
+    ]
   )
 
   const queue = queueQuery.data
   const metrics = metricQuery.data
+
+  const handleRefresh = async () => {
+    await invalidateDetail()
+    toast.success('人工标注任务详情已刷新')
+  }
 
   return (
     <Page fixed fluid className='flex min-h-[calc(100svh-3.5rem)] flex-col'>
@@ -138,16 +184,30 @@ export function ProjectAnnotationQueueDetail() {
           buttonGroups={{
             buttons: [
               {
-                id: 'export',
-                label: '全量导出',
-                icon: Download,
+                id: 'refresh',
+                label: '刷新',
+                icon: RefreshCw,
                 iconPosition: 'start',
                 variant: 'outline',
                 size: 'sm',
-                onClick: () => {
-                  void handleFullExport(projectId, queueId, queryState)
-                },
+                onClick: () => void handleRefresh(),
               },
+              ...(canEditAnnotation
+                ? [
+                    {
+                      id: 'batch-annotate',
+                      label: '批量标注',
+                      icon: ListChecks,
+                      iconPosition: 'start' as const,
+                      size: 'sm' as const,
+                      onClick: () => {
+                        navigate(
+                          `/projects/${projectId}/evaluation/annotation-queues/${queueId}/batch-annotate`
+                        )
+                      },
+                    },
+                  ]
+                : []),
             ],
           }}
         >
@@ -162,24 +222,29 @@ export function ProjectAnnotationQueueDetail() {
           ) : null}
         </PageAction>
 
-        {queueQuery.isLoading || metricQuery.isLoading ? (
-          <Loading text='加载人工标注任务详情中...' className='flex-1' />
-        ) : null}
-
-        {queue && metrics ? (
-          <>
-            <section className='grid gap-4 md:grid-cols-2 xl:grid-cols-4'>
-              <MetricCard title='总量' value={String(metrics.total)} />
-              <MetricCard title='待处理' value={String(metrics.pending)} />
-              <MetricCard title='已完成' value={String(metrics.completed)} />
-              <MetricCard
-                title='完成率'
-                value={`${metrics.completionRate}%`}
-                description={`最近更新 ${formatDateTime(metrics.updatedAt)}`}
-              />
-            </section>
-          </>
-        ) : null}
+        <section className='grid min-h-[120px] gap-4 md:grid-cols-2 xl:grid-cols-4'>
+          <ChartMetricCard
+            title='总量'
+            value={metrics ? String(metrics.total) : '--'}
+          />
+          <ChartMetricCard
+            title='待处理'
+            value={metrics ? String(metrics.pending) : '--'}
+          />
+          <ChartMetricCard
+            title='已完成'
+            value={metrics ? String(metrics.completed) : '--'}
+          />
+          <ChartMetricCard
+            title='完成率'
+            value={metrics ? `${metrics.completionRate}%` : '--'}
+            description={
+              metrics
+                ? `最近更新 ${formatDateTime(metrics.updatedAt)}`
+                : '\u00A0'
+            }
+          />
+        </section>
 
         <section className='bg-card text-card-foreground flex min-h-0 min-w-0 flex-1 flex-col rounded-lg border p-4'>
           <DataTable<AnnotationQueueItemRecord>
@@ -188,12 +253,18 @@ export function ProjectAnnotationQueueDetail() {
             request={{
               queryKey: (state) => [
                 'project-annotation-queue-items',
+                $api,
                 projectId,
                 queueId,
                 state,
               ],
               queryFn: (state) =>
-                listProjectAnnotationQueueItemsMock(projectId, queueId, state),
+                listProjectAnnotationQueueItems(
+                  $api,
+                  projectId,
+                  queueId,
+                  state
+                ),
               enabled: Boolean(queueId),
             }}
             urlState={{
@@ -202,24 +273,34 @@ export function ProjectAnnotationQueueDetail() {
               filters: itemUrlFilters,
             }}
             toolbar={{
-              searchPlaceholder: '搜索数据 ID / 源对象 / JSON 内容',
-              filters: itemToolbarFilters,
+              searchPlaceholder: '搜索数据 ID / 源数据 ID / JSON 内容',
+              filters: toolbarFilters,
               columnLabels: {
                 id: '数据 ID',
                 objectType: '类型',
-                'source.title': '源对象',
-                objectId: '源对象 ID',
+                objectId: '源数据 ID',
+                sessionId: '会话 ID',
                 status: '状态',
                 completedAt: '完成时间',
-                completedBy: '完成人',
+                assignee: '预设处理人',
+                completedBy: '实际处理人',
               },
+              columnVisibility: {
+                objectType: false,
+                assignee: false
+              }
             }}
-            bulkActions={(table) => (
+            bulkActions={(table, selection) => (
               <AnnotationQueueItemBulkActions
                 table={table}
+                selection={selection}
+                api={$api}
                 projectId={projectId}
                 queueId={queueId}
+                users={usersQuery.data ?? []}
+                canEdit={canEditAnnotation}
                 onChanged={invalidateDetail}
+                onExportSelected={setExportSelection}
               />
             )}
             loadingText={
@@ -229,57 +310,88 @@ export function ProjectAnnotationQueueDetail() {
               />
             }
             emptyText='当前筛选条件下暂无标注数据'
-            minTableWidth={1320}
           />
         </section>
+        <SessionTraceDialog
+          key={`${selectedSessionTrace?.sessionId ?? ''}:${selectedSessionTrace?.traceId ?? ''}`}
+          projectId={projectId}
+          sessionId={selectedSessionTrace?.sessionId ?? ''}
+          highlightTraceId={selectedSessionTrace?.traceId ?? ''}
+          open={Boolean(selectedSessionTrace)}
+          onOpenChange={(open) => {
+            if (!open) setSelectedSessionTrace(null)
+          }}
+        />
+        <AnnotationExportDialog
+          open={Boolean(exportSelection)}
+          onOpenChange={(open) => {
+            if (!open) setExportSelection(null)
+          }}
+          api={$api}
+          projectId={projectId}
+          queueId={queueId}
+          scope={exportSelection?.scope ?? 'selected'}
+          filters={exportSelection?.filters ?? {}}
+          itemIds={
+            exportSelection?.scope === 'selected'
+              ? exportSelection.itemIds
+              : undefined
+          }
+        />
       </div>
     </Page>
   )
 }
 
-function MetricCard({
-  title,
-  value,
-  description,
+function createItemToolbarFilters({
+  users,
+  statusCounts,
+  objectTypeCounts,
+  assigneeCounts: rawAssigneeCounts,
 }: {
-  title: string
-  value: string
-  description?: string
-}) {
-  return (
-    <Card>
-      <CardHeader>
-        <CardTitle className='text-muted-foreground text-sm font-medium'>
-          {title}
-        </CardTitle>
-      </CardHeader>
-      <CardContent>
-        <div className='text-2xl font-semibold'>{value}</div>
-        {description ? (
-          <div className='text-muted-foreground mt-1 text-xs'>
-            {description}
-          </div>
-        ) : null}
-      </CardContent>
-    </Card>
+  users: ProjectUserRecord[]
+  statusCounts?: Record<string, number>
+  objectTypeCounts?: Record<string, number>
+  assigneeCounts?: Record<string, number>
+}): DataTableToolbarFilter[] {
+  const assigneeCounts = Object.fromEntries(
+    users.map((user) => [user.id, rawAssigneeCounts?.[user.id] ?? 0])
   )
-}
 
-async function handleFullExport(
-  projectId: string,
-  queueId: string,
-  queryState: DataTableQueryState
-) {
-  const payload = await exportProjectAnnotationQueueMock(
-    projectId,
-    queueId,
-    queryState
-  )
-  downloadJson(`annotation-queue-${queueId}-${Date.now()}.json`, payload)
-  toast.success(`已导出 ${payload.items.length} 条标注数据`)
+  return [
+    {
+      columnId: 'status',
+      title: '状态',
+      optionCounts: statusCounts,
+      options: [
+        { label: '待处理', value: 'PENDING' },
+        { label: '已完成', value: 'COMPLETED' },
+      ],
+    },
+    {
+      columnId: 'objectType',
+      title: '类型',
+      optionCounts: objectTypeCounts,
+      options: [
+        { label: '追踪', value: 'TRACE' },
+        { label: '观测', value: 'OBSERVATION' },
+        { label: '会话', value: 'SESSION' },
+      ],
+    },
+    {
+      columnId: 'assignee',
+      title: '预设处理人',
+      optionCounts: assigneeCounts,
+      options: users.map((user) => ({
+        label: user.name || user.email,
+        value: user.id,
+      })),
+    },
+  ]
 }
 
 async function handleDeleteItem(
+  $api: Parameters<typeof deleteProjectAnnotationQueueItems>[0],
   projectId: string,
   queueId: string,
   item: AnnotationQueueItemRecord,
@@ -287,14 +399,14 @@ async function handleDeleteItem(
 ) {
   const confirmed = await confirm({
     title: '删除标注数据',
-    desc: `将仅移除 ${item.id} 这条 mock 队列数据，不删除源对象、历史评分或数据集项。确定继续吗？`,
+    desc: `将仅移除 ${item.id} 这条队列数据，不删除源对象、历史评分或数据集项。确定继续吗？`,
     confirmText: '删除',
     destructive: true,
   })
 
   if (!confirmed) return
 
-  await deleteProjectAnnotationQueueItemsMock(projectId, queueId, [item.id])
+  await deleteProjectAnnotationQueueItems($api, projectId, queueId, [item.id])
   await onDeleted()
   toast.success(`已删除标注数据：${item.id}`)
 }

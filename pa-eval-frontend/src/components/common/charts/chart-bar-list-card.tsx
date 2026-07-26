@@ -47,7 +47,7 @@ export function ChartBarListCard({
         {description ? <CardDescription>{description}</CardDescription> : null}
       </CardHeader>
       <CardContent className={contentClassName}>
-        <ul className={cn('space-y-3', listClassName)}>
+        <ul className={cn('flex flex-col gap-3', listClassName)}>
           {items.map((item, index) => {
             const width = `${Math.round((item.value / max) * 100)}%`
 

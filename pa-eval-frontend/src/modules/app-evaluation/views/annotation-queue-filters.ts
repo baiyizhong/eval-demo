@@ -19,10 +19,23 @@ export const queueToolbarFilters: DataTableToolbarFilter[] = [
   },
   {
     columnId: 'assignees',
-    title: '处理人',
-    options: [
-      { label: '张三', value: 'user_annotator_a' },
-      { label: '李四', value: 'user_annotator_b' },
-    ],
+    title: '候选处理人',
+    options: [],
   },
 ]
+
+export function buildQueueToolbarFilters(
+  users: { id: string; name: string; email: string }[]
+): DataTableToolbarFilter[] {
+  return [
+    queueToolbarFilters[0],
+    {
+      columnId: 'assignees',
+      title: '候选处理人',
+      options: users.map((user) => ({
+        label: user.name || user.email || user.id,
+        value: user.id,
+      })),
+    },
+  ]
+}

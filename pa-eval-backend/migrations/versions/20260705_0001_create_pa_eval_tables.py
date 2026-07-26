@@ -30,17 +30,6 @@ def _index_exists(table_name: str, index_name: str) -> bool:
     return any(index["name"] == index_name for index in _inspector().get_indexes(table_name))
 
 
-def _column_exists(table_name: str, column_name: str) -> bool:
-    if not _table_exists(table_name):
-        return False
-    return any(column["name"] == column_name for column in _inspector().get_columns(table_name))
-
-
-def _add_column_once(table_name: str, column: sa.Column) -> None:
-    if not _column_exists(table_name, column.name):
-        op.add_column(table_name, column)
-
-
 def _create_index_once(index_name: str, table_name: str, columns: list[str]) -> None:
     if not _index_exists(table_name, index_name):
         op.create_index(index_name, table_name, columns)
@@ -59,13 +48,13 @@ def _drop_table_if_exists(table_name: str) -> None:
 def _audit_columns() -> list[sa.Column]:
     return [
         sa.Column("create_by", sa.Text(), nullable=False),
+        sa.Column("update_by", sa.Text(), nullable=False),
         sa.Column(
             "create_date",
             sa.DateTime(timezone=True),
             nullable=False,
             server_default=sa.text("NOW()"),
         ),
-        sa.Column("update_by", sa.Text(), nullable=False),
         sa.Column(
             "update_date",
             sa.DateTime(timezone=True),
@@ -79,6 +68,7 @@ def upgrade() -> None:
     if not _table_exists("pa_evaluators"):
         op.create_table(
             "pa_evaluators",
+            *_audit_columns(),
             sa.Column("id", sa.Text(), primary_key=True),
             sa.Column("project_id", sa.Text(), nullable=False),
             sa.Column("name", sa.Text(), nullable=False),
@@ -99,7 +89,6 @@ def upgrade() -> None:
                 server_default=sa.text("'{}'::jsonb"),
             ),
             sa.Column("status", sa.Text(), nullable=False, server_default="ACTIVE"),
-            *_audit_columns(),
         )
     _create_index_once("pa_evaluators_project_id_idx", "pa_evaluators", ["project_id"])
     _create_index_once(
@@ -111,6 +100,7 @@ def upgrade() -> None:
     if not _table_exists("pa_evaluation_report_templates"):
         op.create_table(
             "pa_evaluation_report_templates",
+            *_audit_columns(),
             sa.Column("id", sa.Text(), primary_key=True),
             sa.Column("project_id", sa.Text(), nullable=False),
             sa.Column("name", sa.Text(), nullable=False),
@@ -143,7 +133,6 @@ def upgrade() -> None:
                 server_default=sa.text("'[]'::jsonb"),
             ),
             sa.Column("status", sa.Text(), nullable=False, server_default="ACTIVE"),
-            *_audit_columns(),
         )
     _create_index_once(
         "pa_evaluation_report_templates_project_id_idx",
@@ -159,24 +148,17 @@ def upgrade() -> None:
     if not _table_exists("pa_project_api_keys"):
         op.create_table(
             "pa_project_api_keys",
+            *_audit_columns(),
             sa.Column("id", sa.Text(), primary_key=True),
             sa.Column("project_id", sa.Text(), nullable=False),
             sa.Column("note", sa.Text(), nullable=False, server_default=""),
             sa.Column("public_key", sa.Text(), nullable=False),
             sa.Column("secret_key", sa.Text(), nullable=False),
-            sa.Column("status", sa.Text(), nullable=False, server_default="ACTIVE"),
-            sa.Column("last_used_at", sa.DateTime(timezone=True), nullable=True),
-            *_audit_columns(),
         )
     _create_index_once(
         "pa_project_api_keys_project_id_idx",
         "pa_project_api_keys",
         ["project_id"],
-    )
-    _create_index_once(
-        "pa_project_api_keys_project_status_idx",
-        "pa_project_api_keys",
-        ["project_id", "status"],
     )
     _create_index_once(
         "pa_project_api_keys_public_key_idx",
@@ -187,6 +169,7 @@ def upgrade() -> None:
     if not _table_exists("pa_auto_evaluation_tasks"):
         op.create_table(
             "pa_auto_evaluation_tasks",
+            *_audit_columns(),
             sa.Column("id", sa.Text(), primary_key=True),
             sa.Column("project_id", sa.Text(), nullable=False),
             sa.Column("name", sa.Text(), nullable=False),
@@ -215,18 +198,7 @@ def upgrade() -> None:
                 server_default=sa.text("'{}'::jsonb"),
             ),
             sa.Column("last_run_at", sa.DateTime(timezone=True), nullable=True),
-            *_audit_columns(),
         )
-    _add_column_once("pa_auto_evaluation_tasks", sa.Column("report_template_id", sa.Text(), nullable=True))
-    _add_column_once(
-        "pa_auto_evaluation_tasks",
-        sa.Column(
-            "report_template_snapshot",
-            postgresql.JSONB(astext_type=sa.Text()),
-            nullable=False,
-            server_default=sa.text("'{}'::jsonb"),
-        ),
-    )
     _create_index_once(
         "pa_auto_evaluation_tasks_project_id_idx",
         "pa_auto_evaluation_tasks",
@@ -241,6 +213,7 @@ def upgrade() -> None:
     if not _table_exists("pa_auto_evaluation_runs"):
         op.create_table(
             "pa_auto_evaluation_runs",
+            *_audit_columns(),
             sa.Column("id", sa.Text(), primary_key=True),
             sa.Column("project_id", sa.Text(), nullable=False),
             sa.Column("task_id", sa.Text(), nullable=False),
@@ -258,7 +231,6 @@ def upgrade() -> None:
             sa.Column("ended_at", sa.DateTime(timezone=True), nullable=True),
             sa.Column("duration_text", sa.Text(), nullable=False, server_default=""),
             sa.Column("error_message", sa.Text(), nullable=True),
-            *_audit_columns(),
             sa.ForeignKeyConstraint(
                 ["task_id"],
                 ["pa_auto_evaluation_tasks.id"],
@@ -279,6 +251,7 @@ def upgrade() -> None:
     if not _table_exists("pa_evaluation_reports"):
         op.create_table(
             "pa_evaluation_reports",
+            *_audit_columns(),
             sa.Column("id", sa.Text(), primary_key=True),
             sa.Column("project_id", sa.Text(), nullable=False),
             sa.Column("title", sa.Text(), nullable=False),
@@ -340,23 +313,12 @@ def upgrade() -> None:
                 nullable=False,
                 server_default=sa.text("'{}'::jsonb"),
             ),
-            *_audit_columns(),
             sa.ForeignKeyConstraint(
                 ["source_task_id"],
                 ["pa_auto_evaluation_tasks.id"],
                 ondelete="CASCADE",
             ),
         )
-    _add_column_once("pa_evaluation_reports", sa.Column("report_template_id", sa.Text(), nullable=True))
-    _add_column_once(
-        "pa_evaluation_reports",
-        sa.Column(
-            "report_template_snapshot",
-            postgresql.JSONB(astext_type=sa.Text()),
-            nullable=False,
-            server_default=sa.text("'{}'::jsonb"),
-        ),
-    )
     _create_index_once(
         "pa_evaluation_reports_project_id_idx",
         "pa_evaluation_reports",
@@ -376,6 +338,7 @@ def upgrade() -> None:
     if not _table_exists("pa_evaluation_report_items"):
         op.create_table(
             "pa_evaluation_report_items",
+            *_audit_columns(),
             sa.Column("id", sa.Text(), primary_key=True),
             sa.Column("project_id", sa.Text(), nullable=False),
             sa.Column("report_id", sa.Text(), nullable=False),
@@ -384,7 +347,6 @@ def upgrade() -> None:
             sa.Column("result_type", sa.Text(), nullable=False),
             sa.Column("execution_status", sa.Text(), nullable=False),
             sa.Column("dataset_flowback_status", sa.Text(), nullable=False, server_default="NONE"),
-            *_audit_columns(),
             sa.ForeignKeyConstraint(
                 ["report_id"],
                 ["pa_evaluation_reports.id"],
@@ -405,6 +367,7 @@ def upgrade() -> None:
     if not _table_exists("pa_evaluation_report_badcases"):
         op.create_table(
             "pa_evaluation_report_badcases",
+            *_audit_columns(),
             sa.Column("id", sa.Text(), primary_key=True),
             sa.Column("project_id", sa.Text(), nullable=False),
             sa.Column("report_id", sa.Text(), nullable=False),
@@ -417,7 +380,6 @@ def upgrade() -> None:
             sa.Column("comment", sa.Text(), nullable=False),
             sa.Column("source_type", sa.Text(), nullable=False),
             sa.Column("flowback_status", sa.Text(), nullable=False, server_default="NONE"),
-            *_audit_columns(),
             sa.ForeignKeyConstraint(
                 ["report_id"],
                 ["pa_evaluation_reports.id"],
@@ -438,6 +400,7 @@ def upgrade() -> None:
     if not _table_exists("pa_evaluation_report_flowbacks"):
         op.create_table(
             "pa_evaluation_report_flowbacks",
+            *_audit_columns(),
             sa.Column("id", sa.Text(), primary_key=True),
             sa.Column("project_id", sa.Text(), nullable=False),
             sa.Column("report_id", sa.Text(), nullable=False),
@@ -460,7 +423,6 @@ def upgrade() -> None:
                 nullable=False,
                 server_default=sa.text("'[]'::jsonb"),
             ),
-            *_audit_columns(),
             sa.ForeignKeyConstraint(
                 ["report_id"],
                 ["pa_evaluation_reports.id"],
@@ -482,10 +444,6 @@ def upgrade() -> None:
 def downgrade() -> None:
     _drop_index_if_exists(
         "pa_project_api_keys_public_key_idx",
-        "pa_project_api_keys",
-    )
-    _drop_index_if_exists(
-        "pa_project_api_keys_project_status_idx",
         "pa_project_api_keys",
     )
     _drop_index_if_exists(

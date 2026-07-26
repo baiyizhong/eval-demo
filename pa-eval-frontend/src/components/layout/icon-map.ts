@@ -2,6 +2,7 @@ import type { ComponentType, SVGProps } from 'react'
 import {
   Bell,
   Bug,
+  CalendarClock,
   Construction,
   Database,
   FileX,
@@ -32,6 +33,7 @@ const iconMap: Record<string, LucideIcon> = {
   AudioWaveform,
   Bell,
   Bug,
+  CalendarClock,
   Command,
   Construction,
   Database,

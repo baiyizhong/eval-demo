@@ -3,6 +3,7 @@ import {
   Bot,
   ClipboardCheck,
   Database,
+  FileCode,
   LayoutTemplate,
   SlidersHorizontal,
   type LucideIcon,
@@ -62,6 +63,12 @@ export function buildEvaluationTopNavLinks({
       href: `${basePath}/evaluators`,
       icon: SlidersHorizontal,
       isActive: pathname.startsWith(`${basePath}/evaluators`),
+    },
+    {
+      title: 'Skill 管理',
+      href: `${basePath}/skills`,
+      icon: FileCode,
+      isActive: pathname.startsWith(`${basePath}/skills`),
     },
   ]
 }

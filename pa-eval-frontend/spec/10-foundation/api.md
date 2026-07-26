@@ -52,7 +52,7 @@
 - 全局 registry 位于 `src/api/registry.ts`。
 - 全局 API 单例位于 `src/api/index.ts`，可直接导入用于非 React 上下文。
 - 业务侧通过 `src/hooks/use-api.ts` 暴露的 `useAPI()` 获取 `$api`。
-- `src/modules/layout/api/index.ts` 是当前 API alias 示例之一。
+- `src/modules/organization-management/api/index.ts` 是当前 API alias 示例之一。
 - `request` 的配置来自 `env`（`apiBaseURL`、`apiTimeout`、`apiWithCredentials`）。
 - React Query 的 `queryClient` 实例位于 `src/lib/query-client.ts`，可在全局操作缓存。
 

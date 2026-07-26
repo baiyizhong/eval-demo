@@ -1,24 +1,33 @@
-import { useMemo, useState, type CSSProperties } from 'react'
-import { z } from 'zod'
+import { useState, type CSSProperties } from 'react'
 import { useQuery, useQueryClient } from '@tanstack/react-query'
-import type { JsonData } from 'json-edit-react'
+import {
+  createProjectAnnotationQueue,
+  createTraceAnnotationTask,
+} from '@/modules/app-evaluation/api/annotation-api'
+import type { AnnotationQueueFormInput } from '@/modules/app-evaluation/types'
 import { toast } from 'sonner'
-import { confirm } from '@/lib/confirm'
+import { useAPI } from '@/hooks/use-api'
+import { usePermission } from '@/hooks/use-permission'
 import { Button } from '@/components/ui/button'
 import { LLMTraceChain } from '@/components/business/llm-trace-chain'
 import { Drawer } from '@/components/common/drawer'
-import { JsonEditorPanel } from '@/components/common/json-editor'
 import { Loading } from '@/components/common/loading'
-import { MarkdownEditorPanel } from '@/components/common/markdown-editor'
-import { useAPI } from '@/hooks/use-api'
+import { MixEditor } from '@/components/common/MixEditor'
+import {
+  addProjectTracesToDatasetTarget,
+  type TraceDatasetTargetInput,
+} from '../api/trace-dataset-api'
 import { formatDateTime, formatLatency } from '../lib/format'
-import type { TraceDetail } from '../types'
+import type { TraceDetail, TraceObservationDetail } from '../types'
 import { CopyableText } from './copyable-text'
 import { StatusBadge } from './status-badge'
-import { TRACE_METADATA_JSON_EDITOR_CONFIG } from './trace-detail-drawer-config'
+import { TraceAnnotationDialog } from './trace-annotation-dialog'
+import {
+  TraceDatasetDialog,
+  type TraceDatasetSubmitValues,
+} from './trace-dataset-dialog'
 
-const metadataSchema = z.record(z.string(), z.unknown())
-const TRACE_CHAIN_DRAWER_WIDTH = 400
+const TRACE_CHAIN_DRAWER_WIDTH = 500
 const TRACE_CHAIN_COLLAPSED_WIDTH = 40
 
 type TraceDetailDrawerProps = {
@@ -36,12 +45,22 @@ export function TraceDetailDrawer({
 }: TraceDetailDrawerProps) {
   const $api = useAPI()
   const queryClient = useQueryClient()
-  const [editing, setEditing] = useState(false)
-  const [saving, setSaving] = useState(false)
-  const [input, setInput] = useState('')
-  const [output, setOutput] = useState('')
-  const [metadataData, setMetadataData] = useState<JsonData>({})
+  const { can } = usePermission({ type: 'project', projectId })
+  const canEditTrace = can('project:trace:edit')
   const [traceChainCollapsed, setTraceChainCollapsed] = useState(false)
+  const [traceChainWidth, setTraceChainWidth] = useState(
+    TRACE_CHAIN_DRAWER_WIDTH
+  )
+  const [selectedObservationTarget, setSelectedObservationTarget] = useState<{
+    traceId: string
+    observationId: string
+  } | null>(null)
+  const selectedObservationId =
+    selectedObservationTarget?.traceId === traceId
+      ? selectedObservationTarget.observationId
+      : null
+  const [datasetDialogOpen, setDatasetDialogOpen] = useState(false)
+  const [annotationDialogOpen, setAnnotationDialogOpen] = useState(false)
   const queryKey = ['trace-detail', $api, projectId, traceId]
   const detailQuery = useQuery({
     queryKey,
@@ -51,106 +70,86 @@ export function TraceDetailDrawer({
       }),
     enabled: open && Boolean(traceId),
   })
-  const detail = detailQuery.data
-  const showDetailLoading = open && (detailQuery.isLoading || !detail)
-  const dirty = useMemo(() => {
-    if (!detail) return false
-
-    return (
-      input !== detail.input ||
-      output !== detail.output ||
-      JSON.stringify(metadataData) !== JSON.stringify(detail.metadata)
-    )
-  }, [detail, input, metadataData, output])
-
-  const startEdit = () => {
-    if (!detail) return
-
-    setInput(detail.input)
-    setOutput(detail.output)
-    setMetadataData(detail.metadata)
-    setEditing(true)
-  }
-
-  const cancelEdit = async () => {
-    if (
-      dirty &&
-      !(await confirm({
-        title: '放弃未保存修改',
-        desc: '当前 Trace 编辑内容尚未保存，确认放弃这些修改吗？',
-        confirmText: '放弃修改',
-        destructive: true,
-      }))
-    ) {
-      return
-    }
-
-    if (detail) {
-      setInput(detail.input)
-      setOutput(detail.output)
-      setMetadataData(detail.metadata)
-    }
-    setEditing(false)
-  }
-
-  const save = async () => {
-    if (!detail) return
-
-    if (
-      !metadataData ||
-      typeof metadataData !== 'object' ||
-      Array.isArray(metadataData)
-    ) {
-      toast.error('metadata 必须是合法 JSON 对象')
-      return
-    }
-
-    const result = metadataSchema.safeParse(metadataData)
-    if (!result.success) {
-      toast.error('metadata 必须是合法 JSON 对象')
-      return
-    }
-
-    setSaving(true)
-    try {
-      const nextDetail = await $api.patchProjectTrace<TraceDetail>({
-        path: { projectId, traceId: detail.traceId },
-        body: {
-          input,
-          output,
-          metadata: result.data,
+  const observationQuery = useQuery({
+    queryKey: [
+      'trace-observation-detail',
+      $api,
+      projectId,
+      traceId,
+      selectedObservationId,
+    ],
+    queryFn: () =>
+      $api.getProjectTraceObservation<TraceObservationDetail>({
+        path: {
+          projectId,
+          traceId: traceId ?? '',
+          observationId: selectedObservationId ?? '',
         },
-      })
-      queryClient.setQueryData(queryKey, nextDetail)
-      setMetadataData(nextDetail.metadata)
-      setEditing(false)
-      toast.success('Trace 已保存')
-    } catch (error) {
-      toast.error(error instanceof Error ? error.message : '保存失败')
-    } finally {
-      setSaving(false)
-    }
+      }),
+    enabled: open && Boolean(traceId) && Boolean(selectedObservationId),
+  })
+  const detail = detailQuery.data
+  const selectedObservationDetail = observationQuery.data
+  const showDetailLoading = open && (detailQuery.isLoading || !detail)
+  const selectedPayload = selectedObservationDetail ?? detail
+  const showObservationLoading =
+    Boolean(selectedObservationId) && observationQuery.isFetching
+
+  const close = (nextOpen: boolean) => {
+    onOpenChange(nextOpen)
   }
 
-  const close = async (nextOpen: boolean) => {
-    if (
-      !nextOpen &&
-      editing &&
-      dirty &&
-      !(await confirm({
-        title: '关闭 Trace 详情',
-        desc: '当前 Trace 编辑内容尚未保存，确认关闭抽屉并放弃修改吗？',
-        confirmText: '关闭并放弃',
-        destructive: true,
-      }))
-    ) {
-      return
-    }
+  const handleAddToDataset = async (values: TraceDatasetSubmitValues) => {
+    if (!canEditTrace) return
+    if (!detail) return
+    const input: TraceDatasetTargetInput =
+      values.mode === 'existing'
+        ? {
+            mode: 'existing',
+            datasetId: values.datasetId,
+            traceIds: [detail.traceId],
+          }
+        : {
+            mode: 'create',
+            name: values.name,
+            description: values.description,
+            datasetType: values.datasetType,
+            traceIds: [detail.traceId],
+          }
+    const result = await addProjectTracesToDatasetTarget($api, projectId, input)
+    await queryClient.invalidateQueries({ queryKey: ['project-datasets'] })
+    toast.success(`已加入 ${result.successCount} 条 Trace`)
+  }
 
-    if (!nextOpen) {
-      setEditing(false)
-    }
-    onOpenChange(nextOpen)
+  const handleCreateAnnotationTask = async (queueId: string) => {
+    if (!canEditTrace) return
+    if (!detail) return
+    const result = await createTraceAnnotationTask($api, projectId, [
+      detail.traceId,
+    ], { queueId })
+    await queryClient.invalidateQueries({
+      queryKey: ['project-annotation-queues', projectId],
+    })
+    toast.success(
+      `已加入人工标注队列：新增 ${result.createdCount} 条，跳过 ${result.skippedCount} 条`
+    )
+  }
+
+  const handleCreateAnnotationQueueAndTask = async (
+    input: AnnotationQueueFormInput
+  ) => {
+    if (!canEditTrace) return
+    if (!detail) return
+    const queue = await createProjectAnnotationQueue($api, projectId, input)
+    const result = await createTraceAnnotationTask($api, projectId, [
+      detail.traceId,
+    ], { queueId: queue.id })
+    await queryClient.invalidateQueries({
+      queryKey: ['project-annotation-queues', projectId],
+    })
+    toast.success(
+      `已创建标注任务：新增 ${result.createdCount} 条，跳过 ${result.skippedCount} 条`
+    )
   }
 
   return (
@@ -159,51 +158,46 @@ export function TraceDetailDrawer({
       onOpenChange={(nextOpen) => {
         void close(nextOpen)
       }}
+      width='clamp(64rem, 70vw, 96rem)'
+      showOverlay={false}
       mode='enhanced'
       title={detail ? `Trace 详情：${detail.traceId}` : 'Trace 详情'}
       showConfirm={false}
       cancelText='关闭'
       actions={
         <div className='flex items-center gap-2'>
-          {editing ? (
-            <>
-              <Button type='button' size='sm' disabled={saving} onClick={save}>
-                {saving ? '保存中...' : '保存'}
-              </Button>
-              <Button
-                type='button'
-                size='sm'
-                variant='outline'
-                onClick={() => {
-                  void cancelEdit()
-                }}
-              >
-                取消
-              </Button>
-            </>
-          ) : (
+          {canEditTrace ? (
             <>
               <Button
                 type='button'
                 size='sm'
                 variant='outline'
                 disabled={!detail}
-                onClick={startEdit}
+                onClick={() => setDatasetDialogOpen(true)}
               >
-                编辑
+                加入数据集
               </Button>
               <Button
                 type='button'
                 size='sm'
                 variant='outline'
-                onClick={() => {
-                  void close(false)
-                }}
+                disabled={!detail}
+                onClick={() => setAnnotationDialogOpen(true)}
               >
-                关闭
+                加入标注任务
               </Button>
             </>
-          )}
+          ) : null}
+          <Button
+            type='button'
+            size='sm'
+            variant='outline'
+            onClick={() => {
+              close(false)
+            }}
+          >
+            关闭
+          </Button>
         </div>
       }
       contentProps={{
@@ -218,77 +212,84 @@ export function TraceDetailDrawer({
         <div className='flex flex-col gap-4 p-4'>
           <TraceOverview detail={detail} />
 
-          {editing ? (
-            <div className='grid gap-4 xl:grid-cols-2'>
-              <MarkdownEditorPanel
+          <div
+            className='grid items-stretch gap-4 xl:grid-cols-[var(--trace-chain-current-column-width)_minmax(0,1fr)]'
+            style={
+              {
+                '--trace-chain-current-column-width': traceChainCollapsed
+                  ? `${TRACE_CHAIN_COLLAPSED_WIDTH}px`
+                  : `${traceChainWidth}px`,
+              } as CSSProperties
+            }
+          >
+            <LLMTraceChain
+              data={detail.callChain}
+              width={traceChainWidth}
+              collapsedWidth={TRACE_CHAIN_COLLAPSED_WIDTH}
+              height='100%'
+              isCollapsed={traceChainCollapsed}
+              onCollapsedChange={setTraceChainCollapsed}
+              onWidthChange={setTraceChainWidth}
+              onNodeClick={(node) => {
+                if (!traceId) return
+                setSelectedObservationTarget({
+                  traceId,
+                  observationId: node.id,
+                })
+              }}
+              summary={{ duration: formatLatency(detail.latency) }}
+            />
+            <div className='min-w-0 flex h-full flex-col gap-3'>
+              {showObservationLoading ? (
+                <Loading
+                  text='加载节点详情中...'
+                  className='min-h-24 border bg-transparent'
+                />
+              ) : null}
+              <MixEditor
                 title='Input'
-                value={input}
-                onValueChange={setInput}
-                defaultMode='edit'
-                readOnly={false}
-                height={260}
+                value={selectedPayload?.input ?? ''}
+                readOnly
               />
-              <MarkdownEditorPanel
+              <MixEditor
                 title='Output'
-                value={output}
-                onValueChange={setOutput}
-                defaultMode='edit'
-                readOnly={false}
-                height={260}
+                value={selectedPayload?.output ?? ''}
+                readOnly
               />
-              <JsonEditorPanel
-                {...TRACE_METADATA_JSON_EDITOR_CONFIG}
-                data={metadataData}
-                onDataChange={setMetadataData}
-                height={360}
-                className='xl:col-span-2'
+              <MixEditor
+                title='Metadata'
+                value={selectedPayload?.metadata ?? {}}
+                readOnly
+              />
+              <MixEditor
+                title='Scores'
+                value={selectedPayload?.scores ?? []}
+                readOnly
               />
             </div>
-          ) : (
-            <div
-              className='grid items-stretch gap-4 xl:grid-cols-[var(--trace-chain-current-column-width)_minmax(0,1fr)]'
-              style={
-                {
-                  '--trace-chain-current-column-width': traceChainCollapsed
-                    ? `${TRACE_CHAIN_COLLAPSED_WIDTH}px`
-                    : `${TRACE_CHAIN_DRAWER_WIDTH}px`,
-                } as CSSProperties
-              }
-            >
-              <LLMTraceChain
-                data={detail.callChain}
-                width={TRACE_CHAIN_DRAWER_WIDTH}
-                collapsedWidth={TRACE_CHAIN_COLLAPSED_WIDTH}
-                height='100%'
-                isCollapsed={traceChainCollapsed}
-                onCollapsedChange={setTraceChainCollapsed}
-                summary={{ duration: formatLatency(detail.latency) }}
-              />
-              <div className='flex h-full flex-col gap-3'>
-                <MarkdownEditorPanel
-                  title='Input'
-                  value={detail.input}
-                  mode='preview'
-                  readOnly
-                  height={180}
-                />
-                <MarkdownEditorPanel
-                  title='Output'
-                  value={detail.output}
-                  mode='preview'
-                  readOnly
-                  height={180}
-                />
-                <JsonEditorPanel
-                  {...TRACE_METADATA_JSON_EDITOR_CONFIG}
-                  data={detail.metadata}
-                  readOnly
-                  height={220}
-                />
-              </div>
-            </div>
-          )}
+          </div>
         </div>
+      ) : null}
+      {detail ? (
+        <>
+          <TraceDatasetDialog
+            open={canEditTrace && datasetDialogOpen}
+            projectId={projectId}
+            projectName={detail.projectName || projectId}
+            traces={[detail]}
+            onOpenChange={setDatasetDialogOpen}
+            onSubmit={handleAddToDataset}
+          />
+          <TraceAnnotationDialog
+            open={canEditTrace && annotationDialogOpen}
+            projectId={projectId}
+            projectName={detail.projectName || projectId}
+            traces={[detail]}
+            onOpenChange={setAnnotationDialogOpen}
+            onSubmitExisting={handleCreateAnnotationTask}
+            onSubmitNew={handleCreateAnnotationQueueAndTask}
+          />
+        </>
       ) : null}
     </Drawer>
   )

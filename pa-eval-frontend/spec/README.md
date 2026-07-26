@@ -19,11 +19,15 @@
 | 新增设置类页面 | `spec/50-patterns/settings-page-layout.md`、`spec/20-architecture/routes.md`、`spec/30-ui/page-layout.md` |
 | 新增表单抽屉 | `spec/50-patterns/form-drawer.md`、`spec/40-components/common/drawer.md`、`spec/40-components/common/base-form.md` |
 | 新增导入、删除或确认流程 | `spec/50-patterns/import-confirm.md`、`spec/30-ui/notification.md`、`spec/40-components/common/import-dialog.md` |
+| 查看或编辑 JSON、Markdown、文本等混合内容 | `spec/40-components/common/mix-editor.md` |
+| 在表格或紧凑区域展示长文本悬浮预览 | `spec/40-components/common/hover-preview-cell.md` |
+| 使用单日期、日期区间或日期时间选择组件 | `spec/40-components/common/date-time-picker.md`、`spec/40-components/common/date-time-range-picker.md` |
 | 接入 API | `spec/10-foundation/api.md`、`spec/00-project/env-build-quality.md` |
 | 接入权限 | `spec/10-foundation/permission.md`、`spec/20-architecture/routes.md` |
 | 新增全局或模块状态 | `spec/10-foundation/state.md`、`spec/20-architecture/modules.md` |
 | 修改主题、样式或 shadcn/ui 组件 | `spec/30-ui/styles-theme.md`、`spec/30-ui/component-guide.md` |
 | 局部加载态 | `spec/40-components/common/loading.md` |
+| 多步骤流程进度或向导式表单 | `spec/40-components/common/stepper.md` |
 | 新增或接入报表图表 | `spec/40-components/charts/recharts.spec.md`、`spec/40-components/charts/chart-metric-card.spec.md`、`spec/40-components/charts/chart-avatar-list-card.spec.md`、`spec/40-components/charts/chart-bar-list-card.spec.md` |
 | 使用顶部导航或页面壳 | `spec/40-components/layout/top-nav.md`、`spec/40-components/layout/page-shell.md`、`spec/20-architecture/layouts.md` |
 | 使用业务组件 AppList 或 LLM Trace | `spec/40-components/business/app-list.md`、`spec/40-components/business/llm-trace-chain.md` |

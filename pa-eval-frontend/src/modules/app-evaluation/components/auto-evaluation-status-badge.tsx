@@ -21,5 +21,9 @@ export function AutoEvaluationStatusBadge({
 }: {
   status: AutoEvaluationTaskStatus
 }) {
-  return <Badge variant={variants[status]}>{autoEvaluationStatusLabels[status]}</Badge>
+  return (
+    <Badge variant={variants[status]}>
+      {autoEvaluationStatusLabels[status]}
+    </Badge>
+  )
 }

@@ -1,12 +1,14 @@
 import assert from 'node:assert/strict'
-import { readFileSync } from 'node:fs'
 import { test } from 'node:test'
 import {
   createProjectLlmConnection,
+  createProjectModelDefinition,
   deleteProjectLlmConnection,
+  deleteProjectModelDefinition,
   getProjectModelSettings,
   updateProjectLlmConnection,
   updateProjectDefaultModel,
+  updateProjectModelDefinition,
 } from '../modules/project-settings/api/model-settings-api.ts'
 
 test('project model settings api helpers call model settings endpoints', async () => {
@@ -24,12 +26,24 @@ test('project model settings api helpers call model settings endpoints', async (
       calls.push(['connection', input])
       return {}
     },
+    async createProjectModelDefinition(input: unknown) {
+      calls.push(['definition', input])
+      return {}
+    },
     async updateProjectLlmConnection(input: unknown) {
       calls.push(['connection-update', input])
       return {}
     },
     async deleteProjectLlmConnection(input: unknown) {
       calls.push(['connection-delete', input])
+      return {}
+    },
+    async updateProjectModelDefinition(input: unknown) {
+      calls.push(['definition-update', input])
+      return {}
+    },
+    async deleteProjectModelDefinition(input: unknown) {
+      calls.push(['definition-delete', input])
       return {}
     },
   }
@@ -48,6 +62,14 @@ test('project model settings api helpers call model settings endpoints', async (
     customModels: ['gpt-4o'],
     withDefaultModels: true,
   })
+  await createProjectModelDefinition(api as never, 'project-1', {
+    modelName: 'gpt-4o',
+    matchPattern: 'gpt-4o*',
+    unit: 'TOKENS',
+    inputPrice: '2.5',
+    outputPrice: '10',
+    tokenizerId: 'openai',
+  })
   await updateProjectLlmConnection(api as never, 'project-1', 'llm-1', {
     provider: 'OpenAI',
     adapter: 'openai',
@@ -57,6 +79,15 @@ test('project model settings api helpers call model settings endpoints', async (
     withDefaultModels: false,
   })
   await deleteProjectLlmConnection(api as never, 'project-1', 'llm-1')
+  await updateProjectModelDefinition(api as never, 'project-1', 'model-1', {
+    modelName: 'gpt-4o',
+    matchPattern: 'gpt-4o*',
+    unit: 'TOKENS',
+    inputPrice: '2.5',
+    outputPrice: '10',
+    tokenizerId: 'openai',
+  })
+  await deleteProjectModelDefinition(api as never, 'project-1', 'model-1')
 
   assert.deepEqual(calls, [
     ['get', { path: { projectId: 'project-1' } }],
@@ -86,6 +117,20 @@ test('project model settings api helpers call model settings endpoints', async (
       },
     ],
     [
+      'definition',
+      {
+        path: { projectId: 'project-1' },
+        body: {
+          modelName: 'gpt-4o',
+          matchPattern: 'gpt-4o*',
+          unit: 'TOKENS',
+          inputPrice: '2.5',
+          outputPrice: '10',
+          tokenizerId: 'openai',
+        },
+      },
+    ],
+    [
       'connection-update',
       {
         path: { projectId: 'project-1', connectionId: 'llm-1' },
@@ -103,16 +148,23 @@ test('project model settings api helpers call model settings endpoints', async (
       'connection-delete',
       { path: { projectId: 'project-1', connectionId: 'llm-1' } },
     ],
+    [
+      'definition-update',
+      {
+        path: { projectId: 'project-1', modelId: 'model-1' },
+        body: {
+          modelName: 'gpt-4o',
+          matchPattern: 'gpt-4o*',
+          unit: 'TOKENS',
+          inputPrice: '2.5',
+          outputPrice: '10',
+          tokenizerId: 'openai',
+        },
+      },
+    ],
+    [
+      'definition-delete',
+      { path: { projectId: 'project-1', modelId: 'model-1' } },
+    ],
   ])
-})
-
-test('project model settings helpers do not expose model definition crud', () => {
-  const source = readFileSync(
-    new URL('../modules/project-settings/api/model-settings-api.ts', import.meta.url),
-    'utf8'
-  )
-
-  assert.equal(source.includes('createProjectModelDefinition'), false)
-  assert.equal(source.includes('updateProjectModelDefinition'), false)
-  assert.equal(source.includes('deleteProjectModelDefinition'), false)
 })

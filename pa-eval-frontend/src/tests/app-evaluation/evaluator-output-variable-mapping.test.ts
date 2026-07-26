@@ -29,13 +29,14 @@ test('evaluator output variable names do not use score examples as defaults', ()
 
 test('evaluator output variable score mapping loads project score config names only', () => {
   assert.match(evaluatorsSource, /listProjectScoreConfigs/)
+  assert.match(evaluatorsSource, /scoreConfigNames/)
   assert.match(
     evaluatorsSource,
-    /scoreConfigsQuery\.data[\s\S]*\?\.filter\(\(item\) => !item\.archived\)[\s\S]*\.map\(\(item\) => \(\{[\s\S]*id:\s*item\.id,[\s\S]*name:\s*item\.name/
+    /scoreConfigsQuery\.data[\s\S]*\?\.filter\(\(item\) => !item\.archived\)[\s\S]*\.map\(\(item\) => item\.name\)/
   )
   assert.match(
     evaluatorsSource,
-    /<SelectItem[\s\S]{0,120}key=\{scoreConfig\.id\}[\s\S]{0,120}value=\{scoreConfig\.id\}/
+    /<SelectItem[\s\S]{0,80}key=\{scoreConfigName\}[\s\S]{0,80}value=\{scoreConfigName\}/
   )
 })
 

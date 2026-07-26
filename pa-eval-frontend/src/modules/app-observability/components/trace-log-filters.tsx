@@ -1,11 +1,38 @@
-import { Circle, CircleCheck, CircleHelp, CircleX, Tags } from 'lucide-react'
+import { useState } from 'react'
+import {
+  Circle,
+  CircleCheck,
+  CircleHelp,
+  CircleX,
+  Plus,
+  Trash2,
+} from 'lucide-react'
+import { Button } from '@/components/ui/button'
+import { Input } from '@/components/ui/input'
+import {
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from '@/components/ui/select'
 import type {
   DataTableFilterBinding,
   DataTableToolbarFilter,
 } from '@/components/common/data-table'
 import type { FilterGroup } from '@/components/common/filter-panel'
+import {
+  getTraceQuickTimeRangeToolbarDefault,
+  TRACE_QUICK_TIME_RANGE_OPTIONS,
+} from '../trace-time-ranges'
+import type { TraceObjectFilter, TraceScoreConfigOption } from '../types'
+import {
+  CategoricalScoreFilterEditor,
+  NumericScoreFilterEditor,
+} from './trace-score-filter-editors'
 
 export const traceLogUrlFilters: DataTableFilterBinding[] = [
+  { fieldId: 'timeRange', type: 'string' },
   { fieldId: 'createdAtRange', type: 'array' },
   { fieldId: 'environment', type: 'array', columnId: 'environment' },
   { fieldId: 'status', type: 'array', columnId: 'status' },
@@ -15,11 +42,24 @@ export const traceLogUrlFilters: DataTableFilterBinding[] = [
   { fieldId: 'sessionId', type: 'string' },
   { fieldId: 'userId', type: 'string' },
   { fieldId: 'businessId', type: 'string' },
+  { fieldId: 'scoreQueueId', type: 'string' },
   { fieldId: 'metadataKey', type: 'string' },
   { fieldId: 'metadataValue', type: 'string' },
+  { fieldId: 'metadataFilters', type: 'json' },
+  { fieldId: 'inputFilters', type: 'json' },
+  { fieldId: 'outputFilters', type: 'json' },
+  { fieldId: 'categoricalScoreFilters', type: 'json' },
+  { fieldId: 'numericScoreFilters', type: 'json' },
 ]
 
 export const traceLogToolbarFilters: DataTableToolbarFilter[] = [
+  {
+    fieldId: 'timeRange',
+    title: '时间',
+    selectionMode: 'single',
+    defaultValue: getTraceQuickTimeRangeToolbarDefault,
+    options: TRACE_QUICK_TIME_RANGE_OPTIONS,
+  },
   {
     columnId: 'environment',
     title: '环境',
@@ -42,68 +82,249 @@ export const traceLogToolbarFilters: DataTableToolbarFilter[] = [
   },
 ]
 
-export const traceLogFilterGroups: FilterGroup[] = [
-  {
-    id: 'basic',
-    label: '普通筛选',
-    defaultOpen: true,
-    fields: [
-      {
-        id: 'createdAtRange',
-        type: 'dateRange',
-        label: '时间范围',
-        showTime: true,
-        placeholder: '选择 Trace 创建时间范围',
-      },
-      {
-        id: 'sessionId',
-        type: 'input',
-        label: 'Session ID',
-        placeholder: '输入 Session ID',
-      },
-    ],
-  },
-  {
-    id: 'advanced',
-    label: '高级筛选',
-    icon: <Tags className='size-4' />,
-    fields: [
-      {
-        id: 'latencyMin',
-        type: 'input',
-        label: '最小延迟 ms',
-        placeholder: '例如 1000',
-      },
-      {
-        id: 'latencyMax',
-        type: 'input',
-        label: '最大延迟 ms',
-        placeholder: '例如 5000',
-      },
-      {
-        id: 'userId',
-        type: 'input',
-        label: '用户标识',
-        placeholder: '输入 userId',
-      },
-      {
-        id: 'businessId',
-        type: 'input',
-        label: '业务标识',
-        placeholder: '输入 businessId',
-      },
-      {
-        id: 'metadataKey',
-        type: 'input',
-        label: 'metadata key',
-        placeholder: '例如 businessId',
-      },
-      {
-        id: 'metadataValue',
-        type: 'input',
-        label: 'metadata value',
-        placeholder: '可为空',
-      },
-    ],
-  },
-]
+export function buildTraceLogFilterGroups(
+  scoreConfigs: TraceScoreConfigOption[] = []
+): FilterGroup[] {
+  return [
+    {
+      id: 'trace',
+      label: '筛选条件',
+      defaultOpen: true,
+      fields: [
+        {
+          id: 'metadataFilters',
+          type: 'custom',
+          label: 'Metadata',
+          render: ({ value, setValue }) => (
+            <ObjectFilterEditor
+              label='Metadata'
+              value={value}
+              onChange={(nextValue) => setValue(nextValue, 'metadataFilters')}
+            />
+          ),
+        },
+        {
+          id: 'inputFilters',
+          type: 'custom',
+          label: 'Input',
+          render: ({ value, setValue }) => (
+            <ObjectFilterEditor
+              label='Input'
+              value={value}
+              onChange={(nextValue) => setValue(nextValue, 'inputFilters')}
+            />
+          ),
+        },
+        {
+          id: 'outputFilters',
+          type: 'custom',
+          label: 'Output',
+          render: ({ value, setValue }) => (
+            <ObjectFilterEditor
+              label='Output'
+              value={value}
+              onChange={(nextValue) => setValue(nextValue, 'outputFilters')}
+            />
+          ),
+        },
+        {
+          id: 'createdAtRange',
+          type: 'dateRange',
+          label: 'Trace 创建时间范围',
+          showTime: true,
+          placeholder: '选择 Trace 创建时间范围',
+        },
+        {
+          id: 'sessionId',
+          type: 'input',
+          label: 'Session ID',
+          placeholder: '输入 Session ID',
+        },
+        {
+          id: 'businessId',
+          type: 'input',
+          label: '业务标识',
+          placeholder: '输入 businessId',
+        },
+        {
+          id: 'userId',
+          type: 'input',
+          label: '用户标识',
+          placeholder: '输入 userId',
+        },
+        {
+          id: 'scoreQueueId',
+          type: 'input',
+          label: 'Score Queue ID',
+          placeholder: '输入 score queue_id',
+        },
+        {
+          id: 'categoricalScoreFilters',
+          type: 'custom',
+          label: 'Categorical Scores',
+          render: ({ value, setValue }) => (
+            <CategoricalScoreFilterEditor
+              value={value}
+              scoreConfigs={scoreConfigs}
+              onChange={(nextValue) =>
+                setValue(nextValue, 'categoricalScoreFilters')
+              }
+            />
+          ),
+        },
+        {
+          id: 'numericScoreFilters',
+          type: 'custom',
+          label: 'Numeric Scores',
+          render: ({ value, setValue }) => (
+            <NumericScoreFilterEditor
+              value={value}
+              scoreConfigs={scoreConfigs}
+              onChange={(nextValue) =>
+                setValue(nextValue, 'numericScoreFilters')
+              }
+            />
+          ),
+        },
+        // {
+        //   id: 'latencyMin',
+        //   type: 'input',
+        //   label: '最小延迟 ms',
+        //   placeholder: '例如 1000',
+        // },
+        // {
+        //   id: 'latencyMax',
+        //   type: 'input',
+        //   label: '最大延迟 ms',
+        //   placeholder: '例如 5000',
+        // },
+      ],
+    },
+  ]
+}
+
+export const traceLogFilterGroups: FilterGroup[] = buildTraceLogFilterGroups()
+
+function ObjectFilterEditor({
+  label,
+  value,
+  onChange,
+}: {
+  label: string
+  value: unknown
+  onChange: (nextValue: TraceObjectFilter[]) => void
+}) {
+  const filters = Array.isArray(value) ? (value as TraceObjectFilter[]) : []
+  const updateFilter = (index: number, patch: Partial<TraceObjectFilter>) => {
+    onChange(
+      filters.map((filter, currentIndex) =>
+        currentIndex === index ? { ...filter, ...patch } : filter
+      )
+    )
+  }
+
+  return (
+    <div className='flex flex-col gap-2'>
+      {filters.map((filter, index) => (
+        <div key={index} className='flex flex-col gap-2 rounded-md border p-2'>
+          <div className='grid grid-cols-[minmax(0,1fr)_auto] gap-2'>
+            <ObjectFilterTextInput
+              value={filter.key}
+              onValueChange={(value) => updateFilter(index, { key: value })}
+              placeholder='key'
+            />
+            <Button
+              type='button'
+              variant='ghost'
+              size='sm'
+              onClick={() =>
+                onChange(
+                  filters.filter((_, currentIndex) => currentIndex !== index)
+                )
+              }
+            >
+              <Trash2 data-icon='inline-start' />
+              删除
+            </Button>
+          </div>
+          <div className='grid grid-cols-[72px_minmax(0,1fr)] gap-2'>
+            <Select
+              value={filter.operator}
+              onValueChange={(operator) =>
+                updateFilter(index, {
+                  operator: operator as TraceObjectFilter['operator'],
+                })
+              }
+            >
+              <SelectTrigger className='w-full'>
+                <SelectValue />
+              </SelectTrigger>
+              <SelectContent>
+                <SelectItem value='contains'>包含</SelectItem>
+                <SelectItem value='equals'>等于</SelectItem>
+                <SelectItem value='exists'>存在</SelectItem>
+              </SelectContent>
+            </Select>
+            <ObjectFilterTextInput
+              value={filter.value ?? ''}
+              disabled={filter.operator === 'exists'}
+              onValueChange={(value) => updateFilter(index, { value })}
+              placeholder='value'
+            />
+          </div>
+        </div>
+      ))}
+      <Button
+        type='button'
+        variant='outline'
+        size='sm'
+        onClick={() =>
+          onChange([...filters, { key: '', operator: 'contains', value: '' }])
+        }
+      >
+        <Plus data-icon='inline-start' />
+        添加 {label} 条件
+      </Button>
+    </div>
+  )
+}
+
+function ObjectFilterTextInput({
+  value,
+  onValueChange,
+  disabled,
+  placeholder,
+}: {
+  value: string
+  onValueChange: (value: string) => void
+  disabled?: boolean
+  placeholder?: string
+}) {
+  const [draftValue, setDraftValue] = useState(value)
+  const [isComposing, setIsComposing] = useState(false)
+
+  return (
+    <Input
+      value={isComposing ? draftValue : value}
+      disabled={disabled}
+      placeholder={placeholder}
+      onCompositionStart={(event) => {
+        setDraftValue(event.currentTarget.value)
+        setIsComposing(true)
+      }}
+      onCompositionEnd={(event) => {
+        const nextValue = event.currentTarget.value
+        setIsComposing(false)
+        setDraftValue(nextValue)
+        onValueChange(nextValue)
+      }}
+      onChange={(event) => {
+        const nextValue = event.target.value
+        setDraftValue(nextValue)
+        if (!isComposing) {
+          onValueChange(nextValue)
+        }
+      }}
+    />
+  )
+}

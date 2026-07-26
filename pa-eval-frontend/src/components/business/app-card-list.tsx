@@ -50,6 +50,10 @@ export function AppCardList({
   getCreatedAt,
   onCardClick,
 }: AppCardListProps) {
+  const renderableIconActions = iconActions.filter((action) =>
+    Boolean(action.onClick)
+  )
+
   return (
     <ul className='no-scrollbar grid gap-4 overflow-auto pt-4 pb-16 md:grid-cols-2 lg:grid-cols-3'>
       {apps.map((app) => {
@@ -59,16 +63,16 @@ export function AppCardList({
         return (
           <li
             key={app.name}
-            className='flex cursor-pointer flex-col rounded-lg border p-4 shadow-md transition-all duration-200 hover:bg-accent/40 hover:shadow-lg hover:ring-1 hover:ring-primary/30'
+            className='hover:bg-accent/40 hover:ring-primary/30 flex cursor-pointer flex-col rounded-lg border p-4 shadow-md transition-all duration-200 hover:shadow-lg hover:ring-1'
             onClick={(event) => onCardClick?.(app, event)}
           >
             <div className='mb-3 flex items-start justify-between gap-3'>
               <div className='min-w-0'>
                 <h2 className='mb-1 truncate font-semibold'>{app.name}</h2>
-                <p className='line-clamp-2 text-muted-foreground'>{app.desc}</p>
+                <p className='text-muted-foreground line-clamp-2'>{app.desc}</p>
               </div>
               <div className='flex shrink-0 items-center gap-1'>
-                {iconActions.map((action, index) => (
+                {renderableIconActions.map((action, index) => (
                   <Button
                     key={index}
                     type='button'
@@ -101,7 +105,7 @@ export function AppCardList({
             <div className='mt-4 flex items-center justify-between gap-4'>
               <div className='flex min-w-0 flex-wrap items-center gap-2'>
                 {createdAt ? (
-                  <p className='text-xs text-muted-foreground'>
+                  <p className='text-muted-foreground text-xs'>
                     创建时间：{createdAt}
                   </p>
                 ) : null}

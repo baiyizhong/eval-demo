@@ -1,12 +1,15 @@
 import axios, { type AxiosError } from 'axios'
-import { toast } from 'sonner'
 import { env } from '@/config/env'
+import { toast } from 'sonner'
 import type { ApiErrorPayload } from './types'
 
 export const request = axios.create({
   baseURL: env.apiBaseURL,
   timeout: env.apiTimeout,
   withCredentials: env.apiWithCredentials,
+  paramsSerializer: {
+    indexes: null,
+  },
 })
 
 request.interceptors.request.use((config) => {
@@ -41,13 +44,14 @@ request.interceptors.response.use(
   },
   (error: AxiosError) => {
     const status = error.response?.status
+    let message = error.message || 'Request failed'
 
     if (!error.response && !error.request) {
       // 网络异常（无 response 也无 request，可能是拦截器中断或 Cancel）
-      const message = error.message || '网络异常'
       toast.error(message, { id: `network-${message}` })
     } else if (!error.response) {
       // 请求已发出但无响应（断网、超时、CORS 等）
+      message = '网络连接失败，请检查网络后重试'
       toast.error('网络连接失败，请检查网络后重试', {
         id: 'network-error',
         duration: Infinity,
@@ -64,18 +68,20 @@ request.interceptors.response.use(
         504: '网关超时，请稍后重试',
       }
       const id = `http-${status}` as string
-      const serverMessage = (error.response?.data as Record<string, unknown>)?.message
+      const serverMessage = (error.response?.data as Record<string, unknown>)
+        ?.message
       const msg = serverMessage
         ? String(serverMessage)
         : statusMessages[status] || `网络失败 (${status})`
+      message = msg
       toast.error(msg, { id })
     }
 
     const payload: ApiErrorPayload = {
-      message: error.message || 'Request failed',
+      message,
       status: error.response?.status,
       code: error.code,
-        details: error.response?.data as Record<string, unknown>,
+      details: error.response?.data as Record<string, unknown>,
     }
 
     return Promise.reject(payload)

@@ -230,7 +230,9 @@ function formatLogPreview(value: unknown) {
       model && typeof model === 'object'
         ? String((model as Record<string, unknown>).model || '').trim()
         : ''
-    const label = [provider, runner, grader, modelName].filter(Boolean).join(' / ')
+    const label = [provider, runner, grader, modelName]
+      .filter(Boolean)
+      .join(' / ')
     if (label) {
       return label
     }

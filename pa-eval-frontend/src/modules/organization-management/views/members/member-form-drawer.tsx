@@ -1,9 +1,20 @@
-import { useId, useMemo } from 'react'
-import { useMutation, useQueryClient } from '@tanstack/react-query'
+import { useEffect, useId, useMemo, useState } from 'react'
 import { z } from 'zod'
+import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
+import { canAssignRole } from '@/modules/organization-management/data/permissions'
+import {
+  buildOrganizationMemberEmail,
+  normalizeMemberNameInput,
+  organizationRoleSchema,
+  type CreateOrganizationMemberPayload,
+  type OrganizationMember,
+  type OrganizationRole,
+  type UpdateOrganizationMemberPayload,
+} from '@/modules/organization-management/data/schema'
 import { toast } from 'sonner'
-import { BaseForm } from '@/components/common/base-form'
-import { Drawer } from '@/components/common/drawer'
+import { useSessionStore } from '@/stores/session.store'
+import { refreshSessionStore } from '@/lib/session-refresh'
+import { useAPI } from '@/hooks/use-api'
 import {
   FormControl,
   FormField,
@@ -19,21 +30,15 @@ import {
   SelectTrigger,
   SelectValue,
 } from '@/components/ui/select'
-import { useAPI } from '@/hooks/use-api'
-import { canAssignRole } from '@/modules/organization-management/data/permissions'
-import {
-  organizationRoleSchema,
-  type CreateOrganizationMemberPayload,
-  type OrganizationMember,
-  type OrganizationRole,
-  type UpdateOrganizationMemberPayload,
-} from '@/modules/organization-management/data/schema'
+import { BaseForm } from '@/components/common/base-form'
+import { Drawer } from '@/components/common/drawer'
 
 const ROLE_LABELS: Record<OrganizationRole, string> = {
   OWNER: 'Owner',
   ADMIN: 'Admin',
   MEMBER: 'Member',
   VIEWER: 'Viewer',
+  NONE: 'None',
 }
 
 const memberFormSchema = z.object({
@@ -44,6 +49,13 @@ const memberFormSchema = z.object({
 
 type MemberFormValues = z.infer<typeof memberFormSchema>
 
+const ORGANIZATION_MEMBER_EXISTS_MESSAGE =
+  '用户已在该组织中，请使用设置组织角色调整权限'
+
+type MemberEmailSettings = {
+  defaultEmailDomain: string
+}
+
 type MemberFormDrawerProps = {
   open: boolean
   onOpenChange: (open: boolean) => void
@@ -51,6 +63,7 @@ type MemberFormDrawerProps = {
   actorRole: OrganizationRole
   ownerCount: number
   member?: OrganizationMember | null
+  existingMembers?: OrganizationMember[]
 }
 
 export function MemberFormDrawer({
@@ -60,11 +73,21 @@ export function MemberFormDrawer({
   actorRole,
   ownerCount,
   member,
+  existingMembers = [],
 }: MemberFormDrawerProps) {
   const formId = useId()
   const $api = useAPI()
   const queryClient = useQueryClient()
   const isEditMode = Boolean(member)
+  const [formError, setFormError] = useState<string | null>(null)
+  const emailSettingsQuery = useQuery({
+    queryKey: ['organization-member-email-settings', $api],
+    enabled: open && !isEditMode,
+    queryFn: () =>
+      $api.getOrganizationMemberEmailSettings<MemberEmailSettings>(),
+    staleTime: Infinity,
+  })
+  const defaultEmailDomain = emailSettingsQuery.data?.defaultEmailDomain ?? ''
 
   const roleOptions = useMemo(() => {
     if (member?.role === 'OWNER' && ownerCount <= 1) {
@@ -105,7 +128,18 @@ export function MemberFormDrawer({
         },
       })
     },
-    onSuccess: async () => {
+    onError: (error) => {
+      const message =
+        error instanceof Error &&
+        (error.message.includes('已经为该组织成员') ||
+          error.message.includes('已在该组织中'))
+          ? ORGANIZATION_MEMBER_EXISTS_MESSAGE
+          : error instanceof Error
+            ? error.message
+            : '成员保存失败'
+      setFormError(message)
+    },
+    onSuccess: async (memberResult) => {
       await Promise.all([
         queryClient.invalidateQueries({
           queryKey: ['organization-members', organizationId],
@@ -113,8 +147,16 @@ export function MemberFormDrawer({
         queryClient.invalidateQueries({
           queryKey: ['organization-members-actor', organizationId],
         }),
+        refreshSessionStore($api),
       ])
-      toast.success(isEditMode ? '成员角色已更新' : '成员已添加')
+      useSessionStore.getState().setCurrentOrgId(organizationId)
+      toast.success(
+        isEditMode
+          ? '成员角色已更新'
+          : memberResult.status === 'INVITED'
+            ? '成员邀请已创建'
+            : '成员已添加'
+      )
       onOpenChange(false)
     },
   })
@@ -129,8 +171,24 @@ export function MemberFormDrawer({
   )
 
   const handleSubmit = async (values: MemberFormValues) => {
+    setFormError(null)
+
+    if (
+      !isEditMode &&
+      findExistingOrganizationMemberByEmail(existingMembers, values.email)
+    ) {
+      setFormError(ORGANIZATION_MEMBER_EXISTS_MESSAGE)
+      return
+    }
+
     await mutation.mutateAsync(values)
   }
+
+  useEffect(() => {
+    if (open) {
+      setFormError(null)
+    }
+  }, [member?.id, open])
 
   return (
     <Drawer
@@ -153,73 +211,126 @@ export function MemberFormDrawer({
         onSubmit={handleSubmit}
         className='gap-4 overflow-visible'
       >
-        {(form) => (
-          <>
-            <FormField
-              control={form.control}
-              name='name'
-              render={({ field }) => (
-                <FormItem>
-                  <FormLabel>姓名</FormLabel>
-                  <FormControl>
-                    <Input
-                      placeholder='输入成员姓名'
-                      disabled={isEditMode || mutation.isPending}
-                      {...field}
-                    />
-                  </FormControl>
-                  <FormMessage />
-                </FormItem>
-              )}
-            />
-            <FormField
-              control={form.control}
-              name='email'
-              render={({ field }) => (
-                <FormItem>
-                  <FormLabel>邮箱</FormLabel>
-                  <FormControl>
-                    <Input
-                      placeholder='输入成员邮箱'
-                      disabled={isEditMode || mutation.isPending}
-                      {...field}
-                    />
-                  </FormControl>
-                  <FormMessage />
-                </FormItem>
-              )}
-            />
-            <FormField
-              control={form.control}
-              name='role'
-              render={({ field }) => (
-                <FormItem>
-                  <FormLabel>角色</FormLabel>
-                  <Select
-                    value={field.value}
-                    onValueChange={field.onChange}
-                    disabled={mutation.isPending}
-                  >
+        {(form) => {
+          return (
+            <>
+              <FormField
+                control={form.control}
+                name='name'
+                render={({ field }) => (
+                  <FormItem>
+                    <FormLabel>姓名</FormLabel>
                     <FormControl>
-                      <SelectTrigger>
-                        <SelectValue placeholder='选择组织角色' />
-                      </SelectTrigger>
+                      <Input
+                        placeholder='输入成员姓名'
+                        disabled={isEditMode || mutation.isPending}
+                        name={field.name}
+                        ref={field.ref}
+                        value={field.value}
+                        onBlur={field.onBlur}
+                        onChange={(event) => {
+                          const normalizedName = normalizeMemberNameInput(
+                            event.target.value
+                          )
+
+                          field.onChange(normalizedName)
+                          if (!isEditMode && defaultEmailDomain) {
+                            form.setValue(
+                              'email',
+                              buildOrganizationMemberEmail(
+                                normalizedName,
+                                defaultEmailDomain
+                              ),
+                              {
+                                shouldDirty: true,
+                                shouldValidate: true,
+                              }
+                            )
+                            setFormError(null)
+                          }
+                        }}
+                      />
                     </FormControl>
-                    <SelectContent>
-                      {roleOptions.map((role) => (
-                        <SelectItem key={role} value={role}>
-                          {ROLE_LABELS[role]}
-                        </SelectItem>
-                      ))}
-                    </SelectContent>
-                  </Select>
-                  <FormMessage />
-                </FormItem>
-              )}
-            />
-          </>
-        )}
+                    <FormMessage />
+                  </FormItem>
+                )}
+              />
+              <FormField
+                control={form.control}
+                name='email'
+                render={({ field }) => (
+                  <FormItem>
+                    <FormLabel>邮箱</FormLabel>
+                    <FormControl>
+                      <Input
+                        placeholder='输入成员邮箱'
+                        disabled={isEditMode || mutation.isPending}
+                        name={field.name}
+                        ref={field.ref}
+                        value={field.value}
+                        onBlur={field.onBlur}
+                        onChange={(event) => {
+                          field.onChange(event)
+                          setFormError(null)
+                        }}
+                      />
+                    </FormControl>
+                    <FormMessage />
+                  </FormItem>
+                )}
+              />
+              <FormField
+                control={form.control}
+                name='role'
+                render={({ field }) => (
+                  <FormItem>
+                    <FormLabel>角色</FormLabel>
+                    <Select
+                      value={field.value}
+                      onValueChange={field.onChange}
+                      disabled={mutation.isPending}
+                    >
+                      <FormControl>
+                        <SelectTrigger>
+                          <SelectValue placeholder='选择组织角色' />
+                        </SelectTrigger>
+                      </FormControl>
+                      <SelectContent>
+                        {roleOptions.map((role) => (
+                          <SelectItem key={role} value={role}>
+                            {ROLE_LABELS[role]}
+                          </SelectItem>
+                        ))}
+                      </SelectContent>
+                    </Select>
+                    <FormMessage />
+                  </FormItem>
+                )}
+              />
+            </>
+          )
+        }}
       </BaseForm>
+      {formError ? (
+        <div className='border-destructive/30 bg-destructive/5 text-destructive mx-4 mb-4 rounded-md border px-3 py-2 text-sm'>
+          {formError}
+        </div>
+      ) : null}
     </Drawer>
   )
+}
+
+function findExistingOrganizationMemberByEmail(
+  members: OrganizationMember[],
+  email: string
+) {
+  const normalizedEmail = normalizeMemberEmail(email)
+
+  return members.find(
+    (member) => normalizeMemberEmail(member.email) === normalizedEmail
+  )
+}
+
+function normalizeMemberEmail(email: string) {
+  return email.trim().toLowerCase()
 }

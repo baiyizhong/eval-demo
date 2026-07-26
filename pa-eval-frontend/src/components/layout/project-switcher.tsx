@@ -1,11 +1,13 @@
-import * as React from 'react'
-import { ChevronsUpDown } from 'lucide-react'
+import { buildProjectSwitchPath } from '@/modules/project-context/project-context-utils'
+import { Check, ChevronsUpDown } from 'lucide-react'
+import { useNavigate } from 'react-router'
+import { useSessionStore } from '@/stores/session.store'
+import { cn } from '@/lib/utils'
 import {
   DropdownMenu,
   DropdownMenuContent,
   DropdownMenuItem,
   DropdownMenuLabel,
-  DropdownMenuShortcut,
   DropdownMenuTrigger,
 } from '@/components/ui/dropdown-menu'
 import {
@@ -18,6 +20,8 @@ import { resolveIcon } from './icon-map'
 
 type ProjectSwitcherProps = {
   projects: {
+    id?: string
+    organizationId?: string
     name: string
     logo: string
     plan: string
@@ -25,8 +29,12 @@ type ProjectSwitcherProps = {
 }
 
 export function ProjectSwitcher({ projects }: ProjectSwitcherProps) {
-  const { isMobile } = useSidebar()
-  const [activeProject, setActiveProject] = React.useState(projects?.[0])
+  const { isMobile, setOpenMobile } = useSidebar()
+  const navigate = useNavigate()
+  const setCurrentProjectContext = useSessionStore(
+    (state) => state.setCurrentProjectContext
+  )
+  const activeProject = projects?.[0]
 
   if (!activeProject) {
     return null
@@ -70,10 +78,23 @@ export function ProjectSwitcher({ projects }: ProjectSwitcherProps) {
               const ProjectItemLogo = project.logo
                 ? resolveIcon(project.logo)
                 : null
+              const active = index === 0
               return (
                 <DropdownMenuItem
-                  key={project.name}
-                  onClick={() => setActiveProject(project)}
+                  key={project.id ?? project.name}
+                  onSelect={() => {
+                    if (!project.id || active) {
+                      return
+                    }
+
+                    setCurrentProjectContext(project.id, project.organizationId)
+                    navigate(
+                      buildProjectSwitchPath({
+                        nextProjectId: project.id,
+                      })
+                    )
+                    setOpenMobile(false)
+                  }}
                   className='gap-2 p-2'
                 >
                   <div className='flex size-6 items-center justify-center rounded-sm border'>
@@ -81,8 +102,18 @@ export function ProjectSwitcher({ projects }: ProjectSwitcherProps) {
                       <ProjectItemLogo className='size-4 shrink-0' />
                     ) : null}
                   </div>
-                  {project.name}
-                  <DropdownMenuShortcut>⌘{index + 1}</DropdownMenuShortcut>
+                  <span className='flex min-w-0 flex-1 flex-col'>
+                    <span className='truncate font-medium'>{project.name}</span>
+                    <span className='text-muted-foreground truncate text-xs'>
+                      {project.plan}
+                    </span>
+                  </span>
+                  <Check
+                    className={cn(
+                      'size-4 shrink-0',
+                      active ? 'opacity-100' : 'opacity-0'
+                    )}
+                  />
                 </DropdownMenuItem>
               )
             })}

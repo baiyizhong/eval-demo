@@ -1,17 +1,25 @@
 import { useMemo, useState } from 'react'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { type ColumnDef } from '@tanstack/react-table'
-import { MoreHorizontal, Plus, Upload } from 'lucide-react'
-import { toast } from 'sonner'
-import { ContentSection } from '@/components/common/content-section'
-import { ConfirmDialog } from '@/components/common/confirm-dialog'
+import { EmptyOrganizationState } from '@/modules/organization-management/components/empty-organization-state'
 import {
-  DataTable,
-  type DataTableListResponse,
-  type DataTableQueryState,
-  type DataTableToolbarFilter,
-} from '@/components/common/data-table'
-import { ImportDialog } from '@/components/common/import-dialog'
+  canManageMembers,
+  canRemoveMember,
+} from '@/modules/organization-management/data/permissions'
+import {
+  type OrganizationMember,
+  type OrganizationRole,
+  type PaginatedResult,
+} from '@/modules/organization-management/data/schema'
+import { useCurrentOrganizationRole } from '@/modules/organization-management/hooks/use-current-organization-role'
+import { useOrganizations } from '@/modules/organization-management/hooks/use-organizations'
+import { MoreHorizontal, Plus } from 'lucide-react'
+import { toast } from 'sonner'
+import { useOrganizationStore } from '@/stores/organization.store'
+import { useSessionStore } from '@/stores/session.store'
+import { refreshSessionStore } from '@/lib/session-refresh'
+import { useAPI } from '@/hooks/use-api'
+import { usePermission } from '@/hooks/use-permission'
 import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
 import {
@@ -21,37 +29,22 @@ import {
   DropdownMenuTrigger,
 } from '@/components/ui/dropdown-menu'
 import { Skeleton } from '@/components/ui/skeleton'
-import { useAPI } from '@/hooks/use-api'
+import { ConfirmDialog } from '@/components/common/confirm-dialog'
+import { ContentSection } from '@/components/common/content-section'
 import {
-  buildMemberImportResult,
-  parseMemberImportCsv,
-} from '@/modules/organization-management/data/member-import'
-import {
-  canManageMembers,
-  canRemoveMember,
-} from '@/modules/organization-management/data/permissions'
-import {
-  type ImportOrganizationMembersPayload,
-  type ImportOrganizationMembersResult,
-  type OrganizationMember,
-  type OrganizationRole,
-  type PaginatedResult,
-} from '@/modules/organization-management/data/schema'
-import { useOrganizations } from '@/modules/organization-management/hooks/use-organizations'
-import { useCurrentOrganizationRole } from '@/modules/organization-management/hooks/use-current-organization-role'
-import { EmptyOrganizationState } from '@/modules/organization-management/components/empty-organization-state'
-import { useOrganizationStore } from '@/stores/organization.store'
+  DataTable,
+  type DataTableListResponse,
+  type DataTableQueryState,
+  type DataTableToolbarFilter,
+} from '@/components/common/data-table'
 import { MemberFormDrawer } from './member-form-drawer'
-import {
-  MemberImportResultDialog,
-  type MemberImportResultSummary,
-} from './member-import-result-dialog'
 
 const ROLE_LABELS: Record<OrganizationRole, string> = {
   OWNER: 'Owner',
   ADMIN: 'Admin',
   MEMBER: 'Member',
   VIEWER: 'Viewer',
+  NONE: 'None',
 }
 
 const ROLE_BADGE_VARIANTS: Record<
@@ -62,6 +55,7 @@ const ROLE_BADGE_VARIANTS: Record<
   ADMIN: 'secondary',
   MEMBER: 'outline',
   VIEWER: 'outline',
+  NONE: 'outline',
 }
 
 const STATUS_LABELS: Record<string, string> = {
@@ -122,6 +116,10 @@ function getEditBlockedReason(
   member: OrganizationMember,
   ownerCount: number
 ) {
+  if (member.status === 'INVITED') {
+    return '等待接受邀请'
+  }
+
   if (!actorRole || !canManageMembers(actorRole)) {
     return '当前角色不能管理成员'
   }
@@ -139,13 +137,12 @@ function getEditBlockedReason(
 
 function OrganizationMembersLoading() {
   return (
-    <div className='space-y-4'>
+    <div className='flex flex-col gap-4'>
       <div className='flex flex-wrap justify-end gap-2'>
-        <Skeleton className='h-9 w-24' />
         <Skeleton className='h-9 w-24' />
       </div>
       <div className='rounded-lg border p-4'>
-        <div className='space-y-3'>
+        <div className='flex flex-col gap-3'>
           <Skeleton className='h-8 w-56' />
           <Skeleton className='h-10 w-full' />
           <Skeleton className='h-10 w-full' />
@@ -171,23 +168,26 @@ export function SettingsOrganizationMembers() {
   const isLoaded = useOrganizationStore((state) => state.isLoaded)
 
   const [createOpen, setCreateOpen] = useState(false)
-  const [importOpen, setImportOpen] = useState(false)
   const [editingMember, setEditingMember] = useState<OrganizationMember | null>(
     null
   )
   const [deletingMember, setDeletingMember] =
     useState<OrganizationMember | null>(null)
-  const [importResult, setImportResult] =
-    useState<MemberImportResultSummary | null>(null)
-  const [importResultOpen, setImportResultOpen] = useState(false)
 
   const queryOrganizations = organizationsData?.datas
   const effectiveOrganizations = queryOrganizations ?? storeOrganizations
   const effectiveCurrentOrganization =
     effectiveOrganizations.find(
       (organization) => organization.id === currentOrganizationId
-    ) ?? effectiveOrganizations[0] ?? null
+    ) ??
+    effectiveOrganizations[0] ??
+    null
   const organizationId = effectiveCurrentOrganization?.id ?? null
+  const { can } = usePermission({
+    type: 'org',
+    orgId: organizationId ?? undefined,
+  })
+  const canEditOrgMembers = can('org:member:edit')
   const isLoading = organizationsPending || (!isLoaded && !queryOrganizations)
   const isEmpty = !isLoading && effectiveOrganizations.length === 0
 
@@ -213,9 +213,11 @@ export function SettingsOrganizationMembers() {
     },
   })
   const ownerCount =
-    actorMembersQuery.data?.datas.filter((member) => member.role === 'OWNER')
-      .length ?? 0
-  const canManage = actorRole ? canManageMembers(actorRole) : false
+    actorMembersQuery.data?.datas.filter(
+      (member) => member.status !== 'INVITED' && member.role === 'OWNER'
+    ).length ?? 0
+  const canManage =
+    canEditOrgMembers && actorRole ? canManageMembers(actorRole) : false
 
   const deleteMutation = useMutation({
     mutationFn: (member: OrganizationMember) =>
@@ -233,25 +235,13 @@ export function SettingsOrganizationMembers() {
         queryClient.invalidateQueries({
           queryKey: ['organization-members-actor', organizationId],
         }),
+        refreshSessionStore($api),
       ])
+      if (organizationId) {
+        useSessionStore.getState().setCurrentOrgId(organizationId)
+      }
       toast.success('成员已删除')
       setDeletingMember(null)
-    },
-  })
-
-  const importMutation = useMutation({
-    mutationFn: (payload: ImportOrganizationMembersPayload) => {
-      if (!organizationId) {
-        throw new Error('缺少组织 ID')
-      }
-
-      return $api.importOrganizationMembers<
-        ImportOrganizationMembersResult,
-        ImportOrganizationMembersPayload
-      >({
-        path: { organizationId },
-        body: payload,
-      })
     },
   })
 
@@ -284,7 +274,7 @@ export function SettingsOrganizationMembers() {
         accessorKey: 'email',
         header: '邮箱',
         cell: ({ row }) => (
-          <div className='max-w-56 truncate text-muted-foreground'>
+          <div className='text-muted-foreground max-w-56 truncate'>
             {row.original.email}
           </div>
         ),
@@ -325,22 +315,29 @@ export function SettingsOrganizationMembers() {
         header: '操作',
         cell: ({ row }) => {
           const member = row.original
-          const editBlockedReason = getEditBlockedReason(
-            actorRole,
-            member,
-            ownerCount
-          )
-          const removeResult = actorRole
-            ? canRemoveMember(actorRole, member.role, ownerCount)
-            : {
-                allowed: false,
-                reason: '当前角色不能删除成员',
-              }
+          if (member.status === 'INVITED') {
+            return (
+              <span className='text-muted-foreground text-xs'>
+                等待接受邀请
+              </span>
+            )
+          }
+
+          const editBlockedReason = canEditOrgMembers
+            ? getEditBlockedReason(actorRole, member, ownerCount)
+            : '当前角色不能管理成员'
+          const removeResult =
+            canEditOrgMembers && actorRole
+              ? canRemoveMember(actorRole, member.role, ownerCount)
+              : {
+                  allowed: false,
+                  reason: '当前角色不能删除成员',
+                }
           const hasAnyAction = !editBlockedReason || removeResult.allowed
 
           if (!hasAnyAction) {
             return (
-              <span className='text-xs text-muted-foreground'>
+              <span className='text-muted-foreground text-xs'>
                 {editBlockedReason ?? removeResult.reason ?? '不可操作'}
               </span>
             )
@@ -374,68 +371,11 @@ export function SettingsOrganizationMembers() {
         },
       },
     ],
-    [actorRole, ownerCount]
+    [actorRole, canEditOrgMembers, ownerCount]
   )
 
-  const handleImport = async (file: File) => {
-    if (!actorRole) {
-      toast.error('当前角色信息加载中，请稍后重试')
-      return
-    }
-
-    const text = await file.text()
-    const parsed = parseMemberImportCsv(text, actorRole)
-
-    if (!organizationId) {
-      return
-    }
-
-    if (parsed.members.length === 0) {
-      setImportResult(
-        buildMemberImportResult(parsed, {
-          total: 0,
-          datas: [],
-          failures: [],
-        })
-      )
-      setImportResultOpen(true)
-      return
-    }
-
-    try {
-      const response = await importMutation.mutateAsync({
-        members: parsed.members.map((member) => ({
-          name: member.name,
-          email: member.email,
-          role: member.role,
-        })),
-      })
-
-      await Promise.all([
-        queryClient.invalidateQueries({
-          queryKey: ['organization-members', organizationId],
-        }),
-        queryClient.invalidateQueries({
-          queryKey: ['organization-members-actor', organizationId],
-        }),
-      ])
-
-      const result = buildMemberImportResult(parsed, response)
-      setImportResult(result)
-      setImportResultOpen(true)
-      toast.success(
-        result.failures.length > 0 ? '成员导入已完成' : `已导入 ${result.successCount} 位成员`
-      )
-    } catch {
-      // 请求层会统一提示错误，这里不重复 toast
-    }
-  }
-
   return (
-    <ContentSection
-      title='组织人员'
-      desc='管理当前组织成员、角色权限，并支持批量导入结果回看。'
-    >
+    <ContentSection title='组织人员' desc='管理当前组织成员和角色权限。'>
       <>
         {isLoading ? (
           <OrganizationMembersLoading />
@@ -446,15 +386,6 @@ export function SettingsOrganizationMembers() {
             <div className='flex flex-wrap items-center justify-end gap-2'>
               <Button
                 type='button'
-                variant='outline'
-                onClick={() => setImportOpen(true)}
-                disabled={!canManage || actorRolePending}
-              >
-                <Upload className='size-4' />
-                导入成员
-              </Button>
-              <Button
-                type='button'
                 onClick={() => setCreateOpen(true)}
                 disabled={!canManage || actorRolePending}
               >
@@ -463,7 +394,7 @@ export function SettingsOrganizationMembers() {
               </Button>
             </div>
 
-            <section className='min-w-0 rounded-lg border bg-card p-4 text-card-foreground'>
+            <section className='bg-card text-card-foreground min-w-0 rounded-lg border p-4'>
               <DataTable<
                 OrganizationMember,
                 DataTableListResponse<OrganizationMember>
@@ -473,7 +404,9 @@ export function SettingsOrganizationMembers() {
                   queryKey: ['organization-members', organizationId, $api],
                   enabled: Boolean(organizationId),
                   queryFn: (state) =>
-                    $api.getOrganizationMembers<DataTableListResponse<OrganizationMember>>({
+                    $api.getOrganizationMembers<
+                      DataTableListResponse<OrganizationMember>
+                    >({
                       path: { organizationId },
                       query: {
                         page: state.page,
@@ -501,7 +434,6 @@ export function SettingsOrganizationMembers() {
                   },
                 }}
                 enableRowSelection={false}
-                minTableWidth={920}
                 emptyText='当前组织暂无成员。'
                 errorText='成员列表加载失败。'
               />
@@ -524,17 +456,9 @@ export function SettingsOrganizationMembers() {
             actorRole={actorRole}
             ownerCount={ownerCount}
             member={editingMember}
+            existingMembers={actorMembersQuery.data?.datas ?? []}
           />
         ) : null}
-
-        <ImportDialog
-          open={importOpen}
-          onOpenChange={setImportOpen}
-          title='导入组织成员'
-          description='请上传 CSV 文件，支持姓名/邮箱/组织角色三列。'
-          fileTypes={['text/csv', '.csv']}
-          onImport={handleImport}
-        />
 
         <ConfirmDialog
           open={Boolean(deletingMember)}
@@ -546,9 +470,14 @@ export function SettingsOrganizationMembers() {
           title='删除成员'
           desc={
             deletingMember ? (
-              <div className='space-y-2'>
-                <p>确定要删除该成员吗？删除后需要重新邀请才能恢复。</p>
-                <div className='rounded-md border bg-muted/20 px-3 py-2 text-sm'>
+              <div className='flex flex-col gap-2'>
+                <p>
+                  确定要删除该成员吗？删除组织成员会移除该用户在组织下所有项目角色，需要谨慎。
+                </p>
+                <p className='text-muted-foreground'>
+                  删除后需要重新添加成员，并重新配置项目角色才能恢复。
+                </p>
+                <div className='bg-muted/20 rounded-md border px-3 py-2 text-sm'>
                   <div>{deletingMember.name || '-'}</div>
                   <div className='text-muted-foreground'>
                     {deletingMember.email}
@@ -565,12 +494,6 @@ export function SettingsOrganizationMembers() {
               void deleteMutation.mutateAsync(deletingMember)
             }
           }}
-        />
-
-        <MemberImportResultDialog
-          open={importResultOpen}
-          onOpenChange={setImportResultOpen}
-          result={importResult}
         />
       </>
     </ContentSection>

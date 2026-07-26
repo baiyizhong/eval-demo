@@ -1,9 +1,9 @@
 import { useEffect, useRef, useState } from 'react'
-import { ConfirmDialog } from '@/components/common/confirm-dialog'
 import {
   confirmDialogController,
   type ConfirmDialogRequest,
 } from '@/lib/confirm'
+import { ConfirmDialog } from '@/components/common/confirm-dialog'
 
 const CLOSE_ANIMATION_MS = 200
 

@@ -1,9 +1,9 @@
 import { useState } from 'react'
 import { useQuery } from '@tanstack/react-query'
 import { useNavigate, useParams } from 'react-router'
+import { useAPI } from '@/hooks/use-api'
 import { Loading } from '@/components/common/loading'
 import { Page } from '@/components/common/page'
-import { useAPI } from '@/hooks/use-api'
 import { ObservabilityPageNav } from '../components/observability-page-nav'
 import { SlowTraceRanking } from '../components/slow-trace-ranking'
 import { TraceDashboardCards } from '../components/trace-dashboard-cards'
@@ -13,13 +13,19 @@ import {
   TraceTrendChart,
 } from '../components/trace-dashboard-charts'
 import { TraceDashboardFilters } from '../components/trace-dashboard-filters'
+import {
+  DEFAULT_TRACE_QUICK_TIME_RANGE,
+  type TraceQuickTimeRange,
+} from '../trace-time-ranges'
 import type { TraceMetrics } from '../types'
 
 export function TraceDashboard() {
   const $api = useAPI()
   const navigate = useNavigate()
   const { projectId = 'project_customer_agent' } = useParams()
-  const [timeRange, setTimeRange] = useState('24h')
+  const [timeRange, setTimeRange] = useState<TraceQuickTimeRange>(
+    DEFAULT_TRACE_QUICK_TIME_RANGE
+  )
   const [environment, setEnvironment] = useState('all')
   const metricsQuery = useQuery({
     queryKey: ['trace-metrics', $api, projectId, timeRange, environment],
@@ -57,9 +63,7 @@ export function TraceDashboard() {
             <TraceDashboardCards summary={metrics.summary} />
             <div className='grid gap-4 xl:grid-cols-[2fr_1fr]'>
               <TraceTrendChart data={metrics.traceTrend} />
-              <TraceEnvironmentChart
-                data={metrics.environmentDistribution}
-              />
+              <TraceEnvironmentChart data={metrics.environmentDistribution} />
             </div>
             <div className='grid gap-4 xl:grid-cols-[2fr_1fr]'>
               <TraceLatencyChart data={metrics.latencyTrend} />

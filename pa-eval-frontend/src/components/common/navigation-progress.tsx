@@ -26,19 +26,9 @@ export function NavigationProgress({ router }: NavigationProgressProps) {
     }
 
     ref.current?.complete()
-  }, [
-    isLoading,
-    state.initialized,
-    state.navigation.state,
-    state.revalidation,
-  ])
+  }, [isLoading, state.initialized, state.navigation.state, state.revalidation])
 
   return (
-    <LoadingBar
-      ref={ref}
-      color='var(--primary)'
-      shadow={false}
-      height={2}
-    />
+    <LoadingBar ref={ref} color='var(--primary)' shadow={false} height={2} />
   )
 }

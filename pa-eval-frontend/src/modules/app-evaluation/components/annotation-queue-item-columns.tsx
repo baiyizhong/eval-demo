@@ -3,22 +3,25 @@ import { Link } from 'react-router'
 import { Button } from '@/components/ui/button'
 import { Checkbox } from '@/components/ui/checkbox'
 import { DataTableColumnHeader } from '@/components/common/data-table'
-import { LongText } from '@/components/common/long-text'
-import { formatDateTime } from './format'
+import type { AnnotationQueueItemRecord } from '../types'
 import { AnnotationObjectTypeBadge } from './annotation-object-type-badge'
 import { AnnotationStatusBadge } from './annotation-status-badge'
-import type { AnnotationQueueItemRecord } from '../types'
+import { formatDateTime } from './format'
 
 type CreateAnnotationQueueItemColumnsOptions = {
   projectId: string
   queueId: string
-  onDelete: (item: AnnotationQueueItemRecord) => void
+  canEdit?: boolean
+  onDelete?: (item: AnnotationQueueItemRecord) => void
+  onOpenSession?: (sessionId: string, traceId: string) => void
 }
 
 export function createAnnotationQueueItemColumns({
   projectId,
   queueId,
+  canEdit,
   onDelete,
+  onOpenSession,
 }: CreateAnnotationQueueItemColumnsOptions): ColumnDef<AnnotationQueueItemRecord>[] {
   return [
     {
@@ -48,14 +51,17 @@ export function createAnnotationQueueItemColumns({
       header: ({ column }) => (
         <DataTableColumnHeader column={column} title='数据 ID' />
       ),
-      cell: ({ row }) => (
-        <Link
-          to={`/projects/${projectId}/evaluation/annotation-queues/${queueId}/items/${row.original.id}/annotate`}
-          className='font-mono text-xs underline-offset-4 hover:underline'
-        >
-          {row.original.id}
-        </Link>
-      ),
+      cell: ({ row }) =>
+        canEdit ? (
+          <Link
+            to={`/projects/${projectId}/evaluation/annotation-queues/${queueId}/items/${row.original.id}/annotate`}
+            className='font-mono text-xs underline-offset-4 hover:underline'
+          >
+            {row.original.id}
+          </Link>
+        ) : (
+          <span className='font-mono text-xs'>{row.original.id}</span>
+        ),
       enableHiding: false,
     },
     {
@@ -69,23 +75,57 @@ export function createAnnotationQueueItemColumns({
       filterFn: (row, id, value) => value.includes(row.getValue(id)),
     },
     {
-      accessorKey: 'source.title',
-      header: ({ column }) => (
-        <DataTableColumnHeader column={column} title='源对象' />
-      ),
-      cell: ({ row }) => (
-        <LongText className='max-w-64'>{row.original.source.title}</LongText>
-      ),
-      enableSorting: false,
-    },
-    {
       accessorKey: 'objectId',
       header: ({ column }) => (
-        <DataTableColumnHeader column={column} title='源对象 ID' />
+        <DataTableColumnHeader column={column} title='源数据 ID' />
       ),
-      cell: ({ row }) => (
-        <span className='font-mono text-xs'>{row.original.objectId}</span>
+      cell: ({ row }) => {
+        const sourceDataId = row.original.objectId.trim()
+        if (row.original.objectType === 'TRACE' && sourceDataId) {
+          return (
+            <Link
+              to={`/projects/${projectId}/observability/traces/logs?traceId=${encodeURIComponent(sourceDataId)}`}
+              className='text-primary block max-w-[280px] truncate font-mono text-xs underline-offset-4 hover:underline'
+            >
+              {row.original.objectId}
+            </Link>
+          )
+        }
+
+        return (
+          <span className='block max-w-[280px] truncate font-mono text-xs'>
+            {row.original.objectId || '-'}
+          </span>
+        )
+      },
+    },
+    {
+      accessorKey: 'sessionId',
+      header: ({ column }) => (
+        <DataTableColumnHeader column={column} title='会话 ID' />
       ),
+      cell: ({ row }) => {
+        const item = row.original
+        const sessionId = item.source.sessionId.trim()
+        const traceId =
+          item.source.traceId.trim() ||
+          (item.objectType === 'TRACE' ? item.objectId.trim() : '')
+        if (!sessionId) {
+          return <span className='text-muted-foreground text-xs'>-</span>
+        }
+
+        return (
+          <Button
+            type='button'
+            variant='link'
+            className='h-auto max-w-[220px] justify-start p-0'
+            onClick={() => onOpenSession?.(sessionId, traceId)}
+          >
+            <span className='truncate font-mono text-xs'>{sessionId}</span>
+          </Button>
+        )
+      },
+      enableSorting: false,
     },
     {
       accessorKey: 'status',
@@ -101,12 +141,22 @@ export function createAnnotationQueueItemColumns({
         <DataTableColumnHeader column={column} title='完成时间' />
       ),
       cell: ({ row }) =>
-        row.original.completedAt ? formatDateTime(row.original.completedAt) : '-',
+        row.original.completedAt
+          ? formatDateTime(row.original.completedAt)
+          : '-',
+    },
+    {
+      accessorKey: 'assignee',
+      header: ({ column }) => (
+        <DataTableColumnHeader column={column} title='预设处理人' />
+      ),
+      cell: ({ row }) => row.original.assignee?.name ?? '-',
+      enableSorting: false,
     },
     {
       accessorKey: 'completedBy',
       header: ({ column }) => (
-        <DataTableColumnHeader column={column} title='完成人' />
+        <DataTableColumnHeader column={column} title='实际处理人' />
       ),
       cell: ({ row }) => row.original.completedBy?.name ?? '-',
       enableSorting: false,
@@ -116,21 +166,25 @@ export function createAnnotationQueueItemColumns({
       enableHiding: false,
       cell: ({ row }) => (
         <div className='flex items-center justify-end gap-2'>
-          <Button asChild size='sm' variant='outline'>
-            <Link
-              to={`/projects/${projectId}/evaluation/annotation-queues/${queueId}/items/${row.original.id}/annotate`}
+          {canEdit ? (
+            <Button asChild size='sm' variant='outline'>
+              <Link
+                to={`/projects/${projectId}/evaluation/annotation-queues/${queueId}/items/${row.original.id}/annotate`}
+              >
+                {row.original.status === 'COMPLETED' ? '查看/编辑' : '标注'}
+              </Link>
+            </Button>
+          ) : null}
+          {onDelete ? (
+            <Button
+              type='button'
+              size='sm'
+              variant='ghost'
+              onClick={() => onDelete(row.original)}
             >
-              {row.original.status === 'COMPLETED' ? '查看/编辑' : '标注'}
-            </Link>
-          </Button>
-          <Button
-            type='button'
-            size='sm'
-            variant='ghost'
-            onClick={() => onDelete(row.original)}
-          >
-            删除
-          </Button>
+              删除
+            </Button>
+          ) : null}
         </div>
       ),
     },

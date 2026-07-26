@@ -200,6 +200,27 @@ export function buildCreateEvaluatorPayload(
     }
   }
 
+  if (values.type === 'SKILL') {
+    return {
+      ...base,
+      provider: 'PI',
+      endpointUrl: values.endpointUrl.trim(),
+      ...(values.model.trim()
+        ? {
+            modelConfig: {
+              provider: values.modelProvider.trim(),
+              model: values.model.trim(),
+            },
+          }
+        : {}),
+      inputMapping: normalizeInputMapping(
+        parseJsonObject(values.inputMapping, '输入映射'),
+        inputVariables
+      ),
+      outputMapping: parseJsonObject(values.outputMapping, '输出映射'),
+    }
+  }
+
   if (values.type === 'CODE') {
     return {
       ...base,
@@ -438,7 +459,8 @@ function getEvaluatorTypeFilter(value: unknown) {
     candidate === 'LLM_AS_JUDGE' ||
     candidate === 'CODE' ||
     candidate === 'WORKFLOW' ||
-    candidate === 'SDK'
+    candidate === 'SDK' ||
+    candidate === 'SKILL'
   ) {
     return candidate
   }

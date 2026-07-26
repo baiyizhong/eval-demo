@@ -1,3 +1,6 @@
+import { Search } from 'lucide-react'
+import { Link } from 'react-router'
+import { Button } from '@/components/ui/button'
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card'
 import type { EvaluationReportDetailRecord } from '../types'
 
@@ -9,9 +12,9 @@ export function EvaluationReportAnalysis({
   const maxCount = Math.max(...report.distribution.map((item) => item.count), 1)
   const hasReproduction = Boolean(
     report.reproduction.reportId ||
-      report.reproduction.sourceTaskId ||
-      report.reproduction.scoreName ||
-      report.reproduction.generatedConfig
+    report.reproduction.sourceTaskId ||
+    report.reproduction.scoreName ||
+    report.reproduction.generatedConfig
   )
 
   return (
@@ -23,12 +26,17 @@ export function EvaluationReportAnalysis({
           </CardHeader>
           <CardContent className='flex flex-col gap-3'>
             {report.distribution.map((item) => (
-              <div key={item.label} className='grid grid-cols-[72px_1fr_48px] items-center gap-3 text-sm'>
+              <div
+                key={item.label}
+                className='grid grid-cols-[72px_1fr_48px] items-center gap-3 text-sm'
+              >
                 <span>{item.label}</span>
                 <div className='bg-muted h-2 rounded'>
                   <div
                     className='bg-primary h-2 rounded'
-                    style={{ width: `${Math.round((item.count / maxCount) * 100)}%` }}
+                    style={{
+                      width: `${Math.round((item.count / maxCount) * 100)}%`,
+                    }}
                   />
                 </div>
                 <span>{item.count}</span>
@@ -44,17 +52,30 @@ export function EvaluationReportAnalysis({
           </CardHeader>
           <CardContent className='flex flex-col gap-2'>
             {report.groupAnalysis.map((item) => (
-              <div key={item.group} className='flex justify-between gap-4 text-sm'>
+              <div
+                key={item.group}
+                className='flex justify-between gap-4 text-sm'
+              >
                 <span>{item.group}</span>
                 <span className='text-muted-foreground'>
                   {item.sampleCount} 条 · {item.averageScore.toFixed(2)}
                 </span>
               </div>
             ))}
+            <div className='border-border mt-2 flex justify-end border-t pt-3'>
+              <Button variant='outline' size='sm' asChild>
+                <Link to={getTraceScoreQueueLink(report)}>
+                  <Search data-icon='inline-start' />
+                  查看详情
+                </Link>
+              </Button>
+            </div>
           </CardContent>
         </Card>
       ) : null}
-      {report.risks.length ? <ListCard title='风险限制' items={report.risks} /> : null}
+      {report.risks.length ? (
+        <ListCard title='风险限制' items={report.risks} />
+      ) : null}
       {report.recommendations.length ? (
         <ListCard title='改进建议' items={report.recommendations} />
       ) : null}
@@ -81,6 +102,15 @@ export function EvaluationReportAnalysis({
       ) : null}
     </section>
   )
+}
+
+function getTraceScoreQueueLink(report: EvaluationReportDetailRecord) {
+  const projectId = encodeURIComponent(report.projectId)
+  const params = new URLSearchParams()
+  params.set('scoreQueueId', report.sourceTaskId)
+  params.append('createdAtRange', '1970-01-01 00:00:00')
+  params.append('createdAtRange', '2999-12-31 23:59:59')
+  return `/projects/${projectId}/observability/traces/logs?${params.toString()}`
 }
 
 function ListCard({ title, items }: { title: string; items: string[] }) {

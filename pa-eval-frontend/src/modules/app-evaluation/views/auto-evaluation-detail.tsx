@@ -1,19 +1,22 @@
 import { useMemo } from 'react'
-import { RefreshCw, RotateCcw, Trash2 } from 'lucide-react'
 import { useQuery, useQueryClient } from '@tanstack/react-query'
+import { RefreshCw, Trash2 } from 'lucide-react'
 import { useNavigate, useParams } from 'react-router'
 import { toast } from 'sonner'
-import { useAPI } from '@/hooks/use-api'
 import { confirm } from '@/lib/confirm'
+import { useAPI } from '@/hooks/use-api'
+import { usePermission } from '@/hooks/use-permission'
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card'
+import { ChartMetricCard } from '@/components/common/charts'
+import { Loading } from '@/components/common/loading'
 import { Page } from '@/components/common/page'
 import { PageAction } from '@/components/common/page-action'
-import { Loading } from '@/components/common/loading'
 import {
   deleteProjectAutoEvaluationTask,
   getProjectAutoEvaluationLatestReport,
   getProjectAutoEvaluationTask,
   listProjectAutoEvaluationRuns,
+  rerunProjectAutoEvaluationTask,
 } from '../api/auto-evaluation-api'
 import { AutoEvaluationReportCard } from '../components/auto-evaluation-report-card'
 import { AutoEvaluationRunRecords } from '../components/auto-evaluation-run-records'
@@ -25,26 +28,33 @@ export function ProjectAutoEvaluationDetail() {
   const $api = useAPI()
   const navigate = useNavigate()
   const queryClient = useQueryClient()
+  const { can } = usePermission({ type: 'project', projectId })
+  const canEditAutoEvaluation = can('project:auto-evaluation:edit')
 
   const taskQuery = useQuery({
     queryKey: ['project-auto-evaluation', $api, projectId, taskId],
     queryFn: () => getProjectAutoEvaluationTask($api, projectId, taskId),
     enabled: Boolean(taskId),
     refetchInterval: (query) =>
-      query.state.data?.status === 'RUNNING' ? 3000 : false,
+      query.state.data?.status === 'RUNNING' ? 5000 : false,
   })
   const reportQuery = useQuery({
-    queryKey: ['project-auto-evaluation-latest-report', $api, projectId, taskId],
+    queryKey: [
+      'project-auto-evaluation-latest-report',
+      $api,
+      projectId,
+      taskId,
+    ],
     queryFn: () =>
       getProjectAutoEvaluationLatestReport($api, projectId, taskId),
     enabled: Boolean(taskId),
-    refetchInterval: taskQuery.data?.status === 'RUNNING' ? 3000 : false,
+    refetchInterval: taskQuery.data?.status === 'RUNNING' ? 5000 : false,
   })
   const runsQuery = useQuery({
     queryKey: ['project-auto-evaluation-runs', $api, projectId, taskId],
     queryFn: () => listProjectAutoEvaluationRuns($api, projectId, taskId),
     enabled: Boolean(taskId),
-    refetchInterval: taskQuery.data?.status === 'RUNNING' ? 3000 : false,
+    refetchInterval: taskQuery.data?.status === 'RUNNING' ? 5000 : false,
   })
 
   const invalidateDetail = useMemo(
@@ -74,6 +84,11 @@ export function ProjectAutoEvaluationDetail() {
       })
       await queryClient.invalidateQueries({
         predicate: (query) =>
+          query.queryKey[0] === 'project-auto-evaluation-summary' &&
+          query.queryKey.includes(projectId),
+      })
+      await queryClient.invalidateQueries({
+        predicate: (query) =>
           query.queryKey[0] === 'project-evaluation-reports' &&
           query.queryKey.includes(projectId),
       })
@@ -89,15 +104,26 @@ export function ProjectAutoEvaluationDetail() {
   }
 
   const handleRerun = async () => {
+    if (!canEditAutoEvaluation) return
     if (!task) return
-    await confirm({
+    if (task.status === 'RUNNING') {
+      toast.warning('任务已在运行中')
+      return
+    }
+    const confirmed = await confirm({
       title: '确认重新运行该自动评测任务？',
-      desc: '当前真实自动评测任务暂未接入重新运行接口。',
-      confirmText: '知道了',
+      desc: `将基于「${task.name}」当前配置重新创建运行记录并生成报告。确定继续吗？`,
+      confirmText: '重新运行',
     })
+    if (!confirmed) return
+    const newTask = await rerunProjectAutoEvaluationTask($api, projectId, task.id)
+    await invalidateDetail()
+    toast.success('已创建新的自动评测任务并开始运行')
+    navigate(`/projects/${projectId}/evaluation/auto-evaluations/${newTask.id}`)
   }
 
   const handleDelete = async () => {
+    if (!canEditAutoEvaluation) return
     if (!task) return
     if (task.status === 'RUNNING') {
       toast.warning('任务运行中，暂不支持删除')
@@ -121,7 +147,9 @@ export function ProjectAutoEvaluationDetail() {
       <div className='flex min-h-0 flex-1 flex-col gap-4 overflow-auto'>
         <PageAction
           showBackButton
-          onBack={() => navigate(`/projects/${projectId}/evaluation/auto-evaluations`)}
+          onBack={() =>
+            navigate(`/projects/${projectId}/evaluation/auto-evaluations`)
+          }
           buttonGroups={{
             buttons: [
               {
@@ -133,26 +161,30 @@ export function ProjectAutoEvaluationDetail() {
                 size: 'sm',
                 onClick: () => void handleRefresh(),
               },
-              {
-                id: 'rerun',
-                label: '重新运行',
-                icon: RotateCcw,
-                iconPosition: 'start',
-                variant: 'outline',
-                size: 'sm',
-                disabled: !task || task.status === 'RUNNING',
-                onClick: () => void handleRerun(),
-              },
-              {
-                id: 'delete',
-                label: '删除',
-                icon: Trash2,
-                iconPosition: 'start',
-                variant: 'destructive',
-                size: 'sm',
-                disabled: !task,
-                onClick: () => void handleDelete(),
-              },
+              ...(canEditAutoEvaluation
+                ? [
+                    {
+                      id: 'rerun',
+                      label: '重新运行',
+                      icon: RefreshCw,
+                      iconPosition: 'start' as const,
+                      variant: 'outline' as const,
+                      size: 'sm' as const,
+                      disabled: !task || task.status === 'RUNNING',
+                      onClick: () => void handleRerun(),
+                    },
+                    {
+                      id: 'delete',
+                      label: '删除',
+                      icon: Trash2,
+                      iconPosition: 'start' as const,
+                      variant: 'destructive' as const,
+                      size: 'sm' as const,
+                      disabled: !task,
+                      onClick: () => void handleDelete(),
+                    },
+                  ]
+                : []),
             ],
           }}
         />
@@ -161,10 +193,16 @@ export function ProjectAutoEvaluationDetail() {
         ) : task ? (
           <>
             <section className='grid gap-3 md:grid-cols-4'>
-              <MetricCard label='样本数' value={task.dataSource.sampleCount} />
-              <MetricCard label='已完成' value={task.executionStats.completed} />
-              <MetricCard label='失败' value={task.executionStats.failed} />
-              <MetricCard label='Badcase' value={task.badcaseCount} />
+              <ChartMetricCard
+                title='样本数'
+                value={task.dataSource.sampleCount}
+              />
+              <ChartMetricCard
+                title='已完成'
+                value={task.executionStats.completed}
+              />
+              <ChartMetricCard title='失败' value={task.executionStats.failed} />
+              <ChartMetricCard title='Badcase' value={task.badcaseCount} />
             </section>
             <section className='grid gap-4 xl:grid-cols-[1fr_420px]'>
               <Card>
@@ -181,10 +219,15 @@ export function ProjectAutoEvaluationDetail() {
                   <Info label='数据源' value={task.dataSource.name} />
                   <Info label='采样率' value={`${task.sampleRate}%`} />
                   <Info label='创建人' value={task.createdBy} />
-                  <Info label='创建时间' value={formatDateTime(task.createdAt)} />
+                  <Info
+                    label='创建时间'
+                    value={formatDateTime(task.createdAt)}
+                  />
                   <Info
                     label='最近运行'
-                    value={task.lastRunAt ? formatDateTime(task.lastRunAt) : '-'}
+                    value={
+                      task.lastRunAt ? formatDateTime(task.lastRunAt) : '-'
+                    }
                   />
                 </CardContent>
               </Card>
@@ -205,17 +248,6 @@ export function ProjectAutoEvaluationDetail() {
         )}
       </div>
     </Page>
-  )
-}
-
-function MetricCard({ label, value }: { label: string; value: number }) {
-  return (
-    <Card>
-      <CardHeader>
-        <CardTitle className='text-sm text-muted-foreground'>{label}</CardTitle>
-      </CardHeader>
-      <CardContent className='text-2xl font-semibold'>{value}</CardContent>
-    </Card>
   )
 }
 

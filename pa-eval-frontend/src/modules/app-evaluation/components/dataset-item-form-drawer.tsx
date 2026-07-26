@@ -1,10 +1,14 @@
 import { z } from 'zod'
 import { toast } from 'sonner'
-import type { JsonData } from 'json-edit-react'
-import { FormField, FormItem, FormLabel, FormMessage } from '@/components/ui/form'
+import {
+  FormField,
+  FormItem,
+  FormLabel,
+  FormMessage,
+} from '@/components/ui/form'
 import { BaseForm } from '@/components/common/base-form'
 import { Drawer } from '@/components/common/drawer'
-import { JsonEditorPanel } from '@/components/common/json-editor'
+import { MixEditor } from '@/components/common/MixEditor'
 import {
   type JsonObject,
   type DatasetItemFormInput,
@@ -24,9 +28,11 @@ const datasetItemFormSchema = z.object({
 })
 
 type DatasetItemFormValues = z.infer<typeof datasetItemFormSchema>
+export type DatasetItemDrawerIntent = 'create' | 'view' | 'edit'
 
 type DatasetItemFormDrawerProps = {
   open: boolean
+  intent: DatasetItemDrawerIntent
   item?: DatasetItemRecord | null
   onOpenChange: (open: boolean) => void
   onSubmit: (input: DatasetItemFormInput) => Promise<void> | void
@@ -34,13 +40,21 @@ type DatasetItemFormDrawerProps = {
 
 export function DatasetItemFormDrawer({
   open,
+  intent,
   item,
   onOpenChange,
   onSubmit,
 }: DatasetItemFormDrawerProps) {
-  const formId = item ? 'edit-dataset-item-form' : 'create-dataset-item-form'
+  const isView = intent === 'view'
+  const isEdit = intent === 'edit'
+  const isCreate = intent === 'create'
+  const startsEditing = isEdit || isCreate
+  const formId =
+    isCreate ? 'create-dataset-item-form' : 'dataset-item-form'
 
   const handleSubmit = async (values: DatasetItemFormValues) => {
+    if (isView) return
+
     try {
       await onSubmit({
         input: values.input,
@@ -57,12 +71,16 @@ export function DatasetItemFormDrawer({
     <Drawer
       open={open}
       onOpenChange={onOpenChange}
-      title={item ? '查看/编辑数据项' : '新增数据项'}
-      confirmText={item ? '保存' : '创建'}
+      mode='enhanced'
+      title={getDrawerTitle(intent)}
+      confirmText={intent === 'create' ? '创建' : '保存'}
+      showConfirm={!isView}
+      cancelText={isView ? '关闭' : '取消'}
       confirmProps={{ type: 'submit', form: formId }}
+      contentProps={{ className: 'overflow-y-auto' }}
     >
       <BaseForm
-        key={item?.id ?? 'create'}
+        key={`${intent}-${item?.id ?? 'create'}`}
         id={formId}
         schema={datasetItemFormSchema}
         defaultValues={getDefaultValues(item)}
@@ -76,12 +94,14 @@ export function DatasetItemFormDrawer({
               render={({ field }) => (
                 <FormItem>
                   <FormLabel>Input</FormLabel>
-                  <JsonEditorPanel
-                    data={field.value as JsonData}
-                    onDataChange={(nextData) => field.onChange(nextData)}
-                    rootName='input'
+                  <MixEditor
+                    value={field.value}
+                    onValueChange={field.onChange}
                     title='Input'
-                    height={260}
+                    readOnly={isView}
+                    showEditButton={!isView}
+                    defaultEditing={startsEditing}
+                    showEditActions={false}
                   />
                   <FormMessage />
                 </FormItem>
@@ -93,12 +113,14 @@ export function DatasetItemFormDrawer({
               render={({ field }) => (
                 <FormItem>
                   <FormLabel>Expected Output</FormLabel>
-                  <JsonEditorPanel
-                    data={field.value as JsonData}
-                    onDataChange={(nextData) => field.onChange(nextData)}
-                    rootName='expectedOutput'
+                  <MixEditor
+                    value={field.value}
+                    onValueChange={field.onChange}
                     title='Expected Output'
-                    height={260}
+                    readOnly={isView}
+                    showEditButton={!isView}
+                    defaultEditing={startsEditing}
+                    showEditActions={false}
                   />
                   <FormMessage />
                 </FormItem>
@@ -110,12 +132,14 @@ export function DatasetItemFormDrawer({
               render={({ field }) => (
                 <FormItem>
                   <FormLabel>Metadata</FormLabel>
-                  <JsonEditorPanel
-                    data={field.value as JsonData}
-                    onDataChange={(nextData) => field.onChange(nextData)}
-                    rootName='metadata'
+                  <MixEditor
+                    value={field.value}
+                    onValueChange={field.onChange}
                     title='Metadata'
-                    height={220}
+                    readOnly={isView}
+                    showEditButton={!isView}
+                    defaultEditing={startsEditing}
+                    showEditActions={false}
                   />
                   <FormMessage />
                 </FormItem>
@@ -128,7 +152,15 @@ export function DatasetItemFormDrawer({
   )
 }
 
-function getDefaultValues(item?: DatasetItemRecord | null): DatasetItemFormValues {
+function getDrawerTitle(intent: DatasetItemDrawerIntent) {
+  if (intent === 'view') return '查看数据项'
+  if (intent === 'edit') return '编辑数据项'
+  return '新增数据项'
+}
+
+function getDefaultValues(
+  item?: DatasetItemRecord | null
+): DatasetItemFormValues {
   return {
     input: item?.input ?? {},
     expectedOutput: item?.expectedOutput ?? {},

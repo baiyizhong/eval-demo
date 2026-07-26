@@ -1,17 +1,26 @@
-import { useCallback, useMemo, useState } from 'react'
-import { ArrowLeft, ArrowRight } from 'lucide-react'
+import {
+  useCallback,
+  useMemo,
+  useRef,
+  useState,
+  type CSSProperties,
+} from 'react'
 import { useQuery, useQueryClient } from '@tanstack/react-query'
+import { ArrowLeft, ArrowRight, GripVertical } from 'lucide-react'
 import { useNavigate, useParams, useSearchParams } from 'react-router'
 import { toast } from 'sonner'
+import { useAPI } from '@/hooks/use-api'
+import { Loading } from '@/components/common/loading'
 import { Page } from '@/components/common/page'
 import { PageAction } from '@/components/common/page-action'
-import { Loading } from '@/components/common/loading'
 import {
-  addProjectAnnotationItemToDatasetMock,
-  getProjectAnnotationNavigationMock,
-  getProjectAnnotationQueueMock,
-  saveProjectAnnotationScoresMock,
-} from '../api/mock-annotation-api'
+  addProjectAnnotationItemToDataset,
+  getNextPendingProjectAnnotationItem,
+  getProjectAnnotationQueueItem,
+  getProjectAnnotationNavigation,
+  getProjectAnnotationQueue,
+  saveProjectAnnotationScores,
+} from '../api/annotation-api'
 import { AnnotationDatasetDialog } from '../components/annotation-dataset-dialog'
 import { AnnotationScoreForm } from '../components/annotation-score-form'
 import { AnnotationSourcePanel } from '../components/annotation-source-panel'
@@ -21,6 +30,7 @@ import type {
 } from '../types'
 
 export function ProjectAnnotationItemAnnotate() {
+  const $api = useAPI()
   const navigate = useNavigate()
   const queryClient = useQueryClient()
   const [searchParams] = useSearchParams()
@@ -30,10 +40,12 @@ export function ProjectAnnotationItemAnnotate() {
     itemId = '',
   } = useParams()
   const [datasetDialogOpen, setDatasetDialogOpen] = useState(false)
+  const [scorePaneWidth, setScorePaneWidth] = useState(400)
+  const splitContainerRef = useRef<HTMLDivElement>(null)
 
   const queryState = useMemo(
     () => ({
-      page: 1,
+      page: Math.max(1, Number(searchParams.get('page') ?? 1) || 1),
       pageSize: Number(searchParams.get('pageSize') ?? 10),
       keyword: searchParams.get('keyword') ?? '',
       filters: {
@@ -47,51 +59,79 @@ export function ProjectAnnotationItemAnnotate() {
   )
 
   const queueQuery = useQuery({
-    queryKey: ['project-annotation-queue', projectId, queueId],
-    queryFn: () => getProjectAnnotationQueueMock(projectId, queueId),
+    queryKey: ['project-annotation-queue', $api, projectId, queueId],
+    queryFn: () => getProjectAnnotationQueue($api, projectId, queueId),
     enabled: Boolean(queueId),
+  })
+
+  const itemQuery = useQuery({
+    queryKey: ['project-annotation-item', $api, projectId, queueId, itemId],
+    queryFn: () =>
+      getProjectAnnotationQueueItem($api, projectId, queueId, itemId),
+    enabled: Boolean(queueId && itemId),
   })
 
   const navigationQuery = useQuery({
     queryKey: [
       'project-annotation-navigation',
+      $api,
       projectId,
       queueId,
       itemId,
       queryState,
+      itemQuery.data,
     ],
     queryFn: () =>
-      getProjectAnnotationNavigationMock(projectId, queueId, itemId, queryState),
-    enabled: Boolean(queueId && itemId),
+      getProjectAnnotationNavigation(
+        $api,
+        projectId,
+        queueId,
+        itemId,
+        queryState,
+        itemQuery.data
+      ),
+    enabled: Boolean(queueId && itemId && itemQuery.data),
   })
 
   const invalidateAnnotation = useCallback(
     () =>
       Promise.all([
         queryClient.invalidateQueries({
-          queryKey: ['project-annotation-navigation', projectId, queueId],
+          queryKey: ['project-annotation-navigation'],
         }),
         queryClient.invalidateQueries({
-          queryKey: ['project-annotation-queue-items', projectId, queueId],
+          queryKey: ['project-annotation-item'],
         }),
         queryClient.invalidateQueries({
-          queryKey: ['project-annotation-queue-metrics', projectId, queueId],
+          queryKey: ['project-annotation-queue'],
         }),
         queryClient.invalidateQueries({
-          queryKey: ['project-annotation-queues', projectId],
+          queryKey: ['project-annotation-queue-items'],
+        }),
+        queryClient.invalidateQueries({
+          queryKey: ['project-annotation-queue-metrics'],
+        }),
+        queryClient.invalidateQueries({
+          queryKey: ['project-annotation-queues'],
         }),
       ]),
-    [projectId, queueId, queryClient]
+    [queryClient]
   )
 
   const navigation = navigationQuery.data
-  const item = navigation?.current
+  const item = itemQuery.data ?? navigation?.current
   const queue = queueQuery.data
+  const isInitialLoading =
+    !(item && queue) &&
+    (itemQuery.isLoading || navigationQuery.isLoading || queueQuery.isLoading)
 
-  const goToItem = (nextItemId: string) => {
+  const goToItem = (
+    nextItemId: string,
+    nextSearchParams: URLSearchParams = searchParams
+  ) => {
     navigate({
       pathname: `/projects/${projectId}/evaluation/annotation-queues/${queueId}/items/${nextItemId}/annotate`,
-      search: searchParams.toString(),
+      search: nextSearchParams.toString(),
     })
   }
 
@@ -99,21 +139,24 @@ export function ProjectAnnotationItemAnnotate() {
     input: AnnotationScoreFormInput,
     mode: 'save' | 'saveNext'
   ) => {
-    await saveProjectAnnotationScoresMock(projectId, queueId, itemId, input)
-    await invalidateAnnotation()
+    await saveProjectAnnotationScores($api, projectId, queueId, itemId, input)
+    void invalidateAnnotation()
 
     if (mode === 'saveNext') {
-      const nextNavigation = await getProjectAnnotationNavigationMock(
+      const nextPendingItem = await getNextPendingProjectAnnotationItem(
+        $api,
         projectId,
-        queueId,
-        itemId,
-        queryState
+        queueId
       )
-      if (nextNavigation.next) {
+      if (nextPendingItem) {
+        const pendingSearchParams = new URLSearchParams()
+        pendingSearchParams.set('page', '1')
+        pendingSearchParams.set('pageSize', String(queryState.pageSize))
+        pendingSearchParams.append('status', 'PENDING')
         toast.success('评分已保存，已进入下一条')
-        goToItem(nextNavigation.next.id)
+        goToItem(nextPendingItem.id, pendingSearchParams)
       } else {
-        toast.success('当前结果集已完成，请返回队列选择新的筛选条件或任务')
+        toast.success('当前标注队列已全部完成')
       }
       return
     }
@@ -122,20 +165,47 @@ export function ProjectAnnotationItemAnnotate() {
   }
 
   const handleAddToDataset = async (input: AddAnnotationItemToDatasetInput) => {
-    await addProjectAnnotationItemToDatasetMock(projectId, queueId, itemId, input)
+    await addProjectAnnotationItemToDataset(
+      $api,
+      projectId,
+      queueId,
+      itemId,
+      input
+    )
     await queryClient.invalidateQueries({
       queryKey: ['project-datasets', projectId],
     })
     toast.success('已加入数据集')
   }
 
+  const startResize = () => {
+    const onPointerMove = (event: PointerEvent) => {
+      const rect = splitContainerRef.current?.getBoundingClientRect()
+      if (!rect) return
+      const nextWidth = rect.right - event.clientX
+      setScorePaneWidth(Math.min(720, Math.max(320, nextWidth)))
+    }
+    const stopResize = () => {
+      window.removeEventListener('pointermove', onPointerMove)
+      window.removeEventListener('pointerup', stopResize)
+    }
+    window.addEventListener('pointermove', onPointerMove)
+    window.addEventListener('pointerup', stopResize)
+  }
+
+  const splitStyle = {
+    '--annotation-score-width': `${scorePaneWidth}px`,
+  } as CSSProperties
+
   return (
-    <Page fluid className='flex min-h-[calc(100svh-3.5rem)] flex-col'>
+    <Page fixed fluid className='flex min-h-0 flex-col'>
       <div className='flex min-h-0 flex-1 flex-col gap-4'>
         <PageAction
           showBackButton
           onBack={() =>
-            navigate(`/projects/${projectId}/evaluation/annotation-queues/${queueId}`)
+            navigate(
+              `/projects/${projectId}/evaluation/annotation-queues/${queueId}`
+            )
           }
           buttonGroups={{
             buttons: [
@@ -169,25 +239,41 @@ export function ProjectAnnotationItemAnnotate() {
           {item ? (
             <div className='flex min-w-0 flex-wrap items-center gap-2 text-sm'>
               <span className='font-medium'>{item.id}</span>
-              <span className='text-muted-foreground'>
-                第 {navigation.index + 1} / {navigation.total} 条
-              </span>
+              {navigation ? (
+                <span className='text-muted-foreground'>
+                  第 {navigation.index + 1} / {navigation.total} 条
+                </span>
+              ) : null}
               <span className='text-muted-foreground'>{queue?.name}</span>
             </div>
           ) : null}
         </PageAction>
 
-        {navigationQuery.isLoading || queueQuery.isLoading ? (
+        {isInitialLoading ? (
           <Loading text='加载标注详情中...' className='flex-1' />
         ) : null}
 
         {item && queue ? (
-          <section className='grid min-h-0 flex-1 grid-cols-1 gap-4 xl:grid-cols-[minmax(0,1.15fr)_minmax(380px,.85fr)]'>
+          <section
+            ref={splitContainerRef}
+            style={splitStyle}
+            className='grid min-h-0 flex-1 grid-rows-[minmax(0,1fr)_minmax(0,1fr)] gap-4 overflow-hidden lg:grid-cols-[minmax(520px,1fr)_8px_minmax(320px,var(--annotation-score-width))] lg:grid-rows-1 lg:gap-0'
+          >
             <AnnotationSourcePanel item={item} />
-            <div className='flex min-h-0 flex-col overflow-hidden rounded-lg border bg-card text-card-foreground'>
-              <div className='shrink-0 border-b p-4'>
-                <div className='text-muted-foreground text-xs'>人工标注表单</div>
-                <h2 className='text-base font-semibold'>评分指标</h2>
+            <button
+              type='button'
+              aria-label='调整左右区域宽度'
+              className='hover:bg-accent focus-visible:ring-ring bg-muted/30 hidden cursor-col-resize items-center justify-center border-r border-l focus-visible:ring-2 focus-visible:outline-none lg:flex'
+              onPointerDown={startResize}
+            >
+              <GripVertical className='text-muted-foreground' />
+            </button>
+            <div className='bg-card text-card-foreground flex min-h-0 flex-col overflow-hidden rounded-lg border'>
+              <div className='flex shrink-0 items-center justify-between gap-3 border-b px-3 py-2.5'>
+                <h2 className='text-sm font-semibold'>评分指标</h2>
+                <span className='text-muted-foreground text-xs'>
+                  {queue.scoreConfigs.length} 项
+                </span>
               </div>
               <AnnotationScoreForm
                 item={item}

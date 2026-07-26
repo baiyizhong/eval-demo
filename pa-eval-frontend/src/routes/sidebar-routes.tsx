@@ -33,6 +33,7 @@ import {
   ProjectScoreConfigsSettings,
   ScheduledJobs,
   TaskEvaluators,
+  ProjectSkills,
   TraceDashboard,
   TraceLogs,
 } from './lazy-pages'
@@ -93,6 +94,14 @@ export const sidebarRoutes: RouteObject[] = [
             element: (
               <ProjectRouteGuard access='project:evaluator:view'>
                 <TaskEvaluators navigation='project-evaluation' />
+              </ProjectRouteGuard>
+            ),
+          },
+          {
+            path: 'skills',
+            element: (
+              <ProjectRouteGuard access='project:evaluator:view'>
+                <ProjectSkills />
               </ProjectRouteGuard>
             ),
           },

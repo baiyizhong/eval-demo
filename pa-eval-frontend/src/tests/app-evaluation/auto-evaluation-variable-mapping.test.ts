@@ -46,13 +46,13 @@ test('新建自动评测输出变量只读展示评估器已配置的评分指�
   )
 })
 
-test('新建自动评测查询评估器时同时支持工作流和 OpenJudge SDK', () => {
+test('新建自动评测查询评估器时后端限定工作流类型并保留运行时能力筛选', () => {
   assert.match(formSource, /isAutoEvaluationSupportedEvaluator/)
   assert.match(formSource, /OPENJUDGE/)
   assert.match(formSource, /type:\s*evaluator\.type/)
   assert.match(
     formSource,
-    /filters:\s*\{\}/
+    /listTaskEvaluators\(\$api,\s*\{[\s\S]*filters:\s*\{\s*type:\s*\['WORKFLOW'\]\s*\}/
   )
   assert.match(
     formSource,

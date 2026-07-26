@@ -8,9 +8,11 @@ export { DataTable } from './data-table'
 export { DataTableProvider, useDataTableContext } from './provider'
 export type {
   DataTableFilterBinding,
+  DataTableColumns,
   DataTableListResponse,
   DataTableProps,
   DataTableQueryState,
+  DataTableSelectionState,
   DataTableToolbarFilter,
 } from './data-table'
 export type { DataTableContextValue } from './provider'

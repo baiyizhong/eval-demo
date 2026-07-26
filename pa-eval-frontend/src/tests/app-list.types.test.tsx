@@ -1,7 +1,10 @@
+import React from 'react'
 import {
   AppList,
   type AppListAddFormValues,
 } from '../components/business/app-list'
+
+void React
 
 const addDialogFormId = 'create-app-form'
 

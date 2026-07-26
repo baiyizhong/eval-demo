@@ -49,6 +49,15 @@ class LlmConnectionPayload(BaseModel):
     with_default_models: bool = Field(default=True, alias="withDefaultModels")
 
 
+class ModelDefinitionPayload(BaseModel):
+    model_name: str = Field(alias="modelName", min_length=1, max_length=120)
+    match_pattern: str = Field(default="", alias="matchPattern", max_length=200)
+    unit: str = Field(default="TOKENS", max_length=60)
+    input_price: str = Field(default="", alias="inputPrice", max_length=60)
+    output_price: str = Field(default="", alias="outputPrice", max_length=60)
+    tokenizer_id: str = Field(default="", alias="tokenizerId", max_length=120)
+
+
 def _paginate(items: list[dict[str, Any]], page: int, page_size: int) -> dict[str, Any]:
     start = (page - 1) * page_size
     return {"total": len(items), "datas": items[start : start + page_size]}
@@ -314,6 +323,70 @@ async def delete_project_llm_connection(
     deleted = await reader.delete_project_llm_connection_for_user(
         project_id=project_id,
         connection_id=connection_id,
+        user_id=current_user.user_id,
+        user_email=current_user.email,
+    )
+    return success(deleted)
+
+
+@router.post("/{project_id}/settings/models/definitions")
+async def create_project_model_definition(
+    project_id: str,
+    payload: ModelDefinitionPayload,
+    current_user: CurrentUserContext = Depends(get_current_user_context),
+    reader: LangfuseDatabaseReader = Depends(get_langfuse_db_reader),
+) -> dict[str, Any]:
+    model_definition = await reader.create_project_model_definition_for_user(
+        project_id=project_id,
+        user_id=current_user.user_id,
+        user_email=current_user.email,
+        payload={
+            "modelName": payload.model_name,
+            "matchPattern": payload.match_pattern,
+            "unit": payload.unit,
+            "inputPrice": payload.input_price,
+            "outputPrice": payload.output_price,
+            "tokenizerId": payload.tokenizer_id,
+        },
+    )
+    return success(model_definition)
+
+
+@router.patch("/{project_id}/settings/models/definitions/{model_id}")
+async def update_project_model_definition(
+    project_id: str,
+    model_id: str,
+    payload: ModelDefinitionPayload,
+    current_user: CurrentUserContext = Depends(get_current_user_context),
+    reader: LangfuseDatabaseReader = Depends(get_langfuse_db_reader),
+) -> dict[str, Any]:
+    model_definition = await reader.update_project_model_definition_for_user(
+        project_id=project_id,
+        model_id=model_id,
+        user_id=current_user.user_id,
+        user_email=current_user.email,
+        payload={
+            "modelName": payload.model_name,
+            "matchPattern": payload.match_pattern,
+            "unit": payload.unit,
+            "inputPrice": payload.input_price,
+            "outputPrice": payload.output_price,
+            "tokenizerId": payload.tokenizer_id,
+        },
+    )
+    return success(model_definition)
+
+
+@router.delete("/{project_id}/settings/models/definitions/{model_id}")
+async def delete_project_model_definition(
+    project_id: str,
+    model_id: str,
+    current_user: CurrentUserContext = Depends(get_current_user_context),
+    reader: LangfuseDatabaseReader = Depends(get_langfuse_db_reader),
+) -> dict[str, Any]:
+    deleted = await reader.delete_project_model_definition_for_user(
+        project_id=project_id,
+        model_id=model_id,
         user_id=current_user.user_id,
         user_email=current_user.email,
     )

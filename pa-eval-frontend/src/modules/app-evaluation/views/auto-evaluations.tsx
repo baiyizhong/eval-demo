@@ -1,67 +1,73 @@
 import { useCallback, useMemo, useState } from 'react'
+import { useQueryClient } from '@tanstack/react-query'
 import { Plus, RefreshCw } from 'lucide-react'
-import { useQuery, useQueryClient } from '@tanstack/react-query'
 import { useNavigate, useParams } from 'react-router'
 import { toast } from 'sonner'
-import { useAPI } from '@/hooks/use-api'
 import { confirm } from '@/lib/confirm'
-import { Page } from '@/components/common/page'
+import { createProgressiveRefetchInterval } from '@/lib/progressive-refetch-interval'
+import { useAPI } from '@/hooks/use-api'
+import { usePermission } from '@/hooks/use-permission'
 import { DataTable } from '@/components/common/data-table'
+import { Drawer } from '@/components/common/drawer'
 import { Loading } from '@/components/common/loading'
+import { Page } from '@/components/common/page'
 import {
   deleteProjectAutoEvaluationTask,
-  getProjectAutoEvaluationTaskSummary,
   listProjectAutoEvaluationTasks,
+  rerunProjectAutoEvaluationTask,
 } from '../api/auto-evaluation-api'
 import { createAutoEvaluationColumns } from '../components/auto-evaluation-columns'
-import {
-  AutoEvaluationSummaryCards,
-  type AutoEvaluationSummaryFilter,
-} from '../components/auto-evaluation-summary-cards'
+import { AutoEvaluationTaskForm } from '../components/auto-evaluation-task-form'
 import { EvaluationPageNav } from '../components/evaluation-page-nav'
-import type { AutoEvaluationTaskRecord } from '../types'
+import {
+  autoEvaluationStatusLabels,
+  type AutoEvaluationTaskRecord,
+} from '../types'
+
+const autoEvaluationRefetchInterval = createProgressiveRefetchInterval()
 
 export function ProjectAutoEvaluations() {
   const { projectId = 'project_customer_agent' } = useParams()
   const $api = useAPI()
   const navigate = useNavigate()
   const queryClient = useQueryClient()
-  const [activeFilter, setActiveFilter] =
-    useState<AutoEvaluationSummaryFilter>('all')
+  const { can } = usePermission({ type: 'project', projectId })
+  const canEditAutoEvaluation = can('project:auto-evaluation:edit')
+  const [createOpen, setCreateOpen] = useState(false)
 
-  const invalidateTasks = useCallback(
-    async () => {
-      await queryClient.invalidateQueries({
-        predicate: (query) =>
-          query.queryKey[0] === 'project-auto-evaluations' &&
-          query.queryKey.includes(projectId),
-      })
-      await queryClient.invalidateQueries({
-        predicate: (query) =>
-          query.queryKey[0] === 'project-evaluation-reports' &&
-          query.queryKey.includes(projectId),
-      })
-    },
-    [projectId, queryClient]
-  )
-
-  const summaryQuery = useQuery({
-    queryKey: ['project-auto-evaluations', $api, projectId, 'summary'],
-    queryFn: () => getProjectAutoEvaluationTaskSummary($api, projectId),
-  })
+  const invalidateTasks = useCallback(async () => {
+    await queryClient.invalidateQueries({
+      predicate: (query) =>
+        query.queryKey[0] === 'project-auto-evaluations' &&
+        query.queryKey.includes(projectId),
+    })
+    await queryClient.invalidateQueries({
+      predicate: (query) =>
+        query.queryKey[0] === 'project-auto-evaluation-summary' &&
+        query.queryKey.includes(projectId),
+    })
+    await queryClient.invalidateQueries({
+      predicate: (query) =>
+        query.queryKey[0] === 'project-evaluation-reports' &&
+        query.queryKey.includes(projectId),
+    })
+  }, [projectId, queryClient])
 
   const columns = useMemo(
     () =>
       createAutoEvaluationColumns({
         projectId,
+        readOnly: !canEditAutoEvaluation,
         onRerun: (task) => {
-          void handleRerun(task)
+          if (!canEditAutoEvaluation) return
+          void handleRerun($api, projectId, task, invalidateTasks)
         },
         onDelete: (task) => {
+          if (!canEditAutoEvaluation) return
           void handleDelete($api, projectId, task, invalidateTasks)
         },
       }),
-    [$api, invalidateTasks, projectId]
+    [$api, canEditAutoEvaluation, invalidateTasks, projectId]
   )
 
   const handleRefresh = async () => {
@@ -84,35 +90,22 @@ export function ProjectAutoEvaluations() {
                 size: 'sm',
                 onClick: () => void handleRefresh(),
               },
-              {
-                id: 'create',
-                label: '新建自动评测',
-                icon: Plus,
-                iconPosition: 'start',
-                size: 'sm',
-                onClick: () =>
-                  navigate(
-                    `/projects/${projectId}/evaluation/auto-evaluations/new`
-                  ),
-              },
+              ...(canEditAutoEvaluation
+                ? [
+                    {
+                      id: 'create',
+                      label: '新建自动评测',
+                      icon: Plus,
+                      iconPosition: 'start' as const,
+                      size: 'sm' as const,
+                      onClick: () => setCreateOpen(true),
+                    },
+                  ]
+                : []),
             ],
           }}
         />
-        <AutoEvaluationSummaryCards
-          summary={
-            summaryQuery.data ?? {
-              total: 0,
-              running: 0,
-              completed: 0,
-              failed: 0,
-              notStarted: 0,
-              badcase: 0,
-            }
-          }
-          active={activeFilter}
-          onChange={setActiveFilter}
-        />
-        <section className='flex min-h-0 min-w-0 flex-1 flex-col rounded-lg border bg-card p-4 text-card-foreground'>
+        <section className='bg-card text-card-foreground flex min-h-0 min-w-0 flex-1 flex-col rounded-lg border p-4'>
           <DataTable<AutoEvaluationTaskRecord>
             className='min-h-0 flex-1'
             columns={columns}
@@ -121,22 +114,39 @@ export function ProjectAutoEvaluations() {
                 'project-auto-evaluations',
                 $api,
                 projectId,
-                activeFilter,
                 state,
               ],
               queryFn: (state) =>
-                listProjectAutoEvaluationTasks(
-                  $api,
-                  projectId,
-                  state
-                ),
+                listProjectAutoEvaluationTasks($api, projectId, state),
+              refetchInterval: autoEvaluationRefetchInterval,
             }}
             urlState={{
               defaultPageSize: 10,
               globalFilterKey: 'keyword',
+              filters: [{ fieldId: 'status', type: 'array' }],
             }}
             toolbar={{
               searchPlaceholder: '搜索任务名称',
+              filters: [
+                {
+                  fieldId: 'status',
+                  title: '状态',
+                  options: [
+                    { label: autoEvaluationStatusLabels.RUNNING, value: 'RUNNING' },
+                    {
+                      label: autoEvaluationStatusLabels.COMPLETED,
+                      value: 'COMPLETED',
+                    },
+                    { label: autoEvaluationStatusLabels.FAILED, value: 'FAILED' },
+                    { label: autoEvaluationStatusLabels.DRAFT, value: 'DRAFT' },
+                    { label: autoEvaluationStatusLabels.READY, value: 'READY' },
+                    {
+                      label: autoEvaluationStatusLabels.CANCELLED,
+                      value: 'CANCELLED',
+                    },
+                  ],
+                },
+              ],
               columnLabels: {
                 name: '任务名称',
                 status: '状态',
@@ -156,27 +166,57 @@ export function ProjectAutoEvaluations() {
               />
             }
             emptyText='当前项目下暂无匹配的自动评测任务'
-            minTableWidth={1280}
           />
         </section>
       </div>
+      <Drawer
+        open={canEditAutoEvaluation && createOpen}
+        onOpenChange={setCreateOpen}
+        mode='enhanced'
+        title='新建自动评测'
+        showOverlay={true}
+        showConfirm={false}
+        cancelText='关闭'
+      >
+        <div className='flex min-h-full flex-col p-4'>
+          <AutoEvaluationTaskForm
+            projectId={projectId}
+            onCompleted={(taskId, mode) => {
+              setCreateOpen(false)
+              void invalidateTasks()
+              if (mode === 'run') {
+                navigate(
+                  `/projects/${projectId}/evaluation/auto-evaluations/${taskId}`
+                )
+              }
+            }}
+          />
+        </div>
+      </Drawer>
     </Page>
   )
 }
 
 async function handleRerun(
-  task: AutoEvaluationTaskRecord
+  api: Parameters<typeof rerunProjectAutoEvaluationTask>[0],
+  projectId: string,
+  task: AutoEvaluationTaskRecord,
+  onCompleted: () => Promise<unknown>
 ) {
   if (task.status === 'RUNNING') {
     toast.warning('任务已在运行中')
     return
   }
 
-  await confirm({
+  const confirmed = await confirm({
     title: '确认重新运行该自动评测任务？',
-    desc: '当前真实自动评测任务暂未接入重新运行接口。',
-    confirmText: '知道了',
+    desc: `将基于「${task.name}」当前配置重新创建运行记录并生成报告。确定继续吗？`,
+    confirmText: '重新运行',
   })
+  if (!confirmed) return
+  await rerunProjectAutoEvaluationTask(api, projectId, task.id)
+  await onCompleted()
+  toast.success('已创建新的自动评测任务并开始运行')
 }
 
 async function handleDelete(

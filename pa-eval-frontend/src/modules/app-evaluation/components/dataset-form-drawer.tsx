@@ -1,6 +1,6 @@
+import { useMemo } from 'react'
 import { z } from 'zod'
 import { toast } from 'sonner'
-import type { JsonData } from 'json-edit-react'
 import {
   FormControl,
   FormField,
@@ -20,13 +20,17 @@ import {
 import { Textarea } from '@/components/ui/textarea'
 import { BaseForm } from '@/components/common/base-form'
 import { Drawer } from '@/components/common/drawer'
-import { JsonEditorPanel } from '@/components/common/json-editor'
+import { MixEditor } from '@/components/common/MixEditor'
 import {
   datasetTypeLabels,
   type DatasetFormInput,
   type DatasetRecord,
   type DatasetType,
 } from '../types'
+import {
+  createAvailableResourceNameSchema,
+  type ResourceNameAvailabilityChecker,
+} from '../lib/name-availability'
 
 const jsonObjectSchema = z
   .record(z.string(), z.unknown())
@@ -34,18 +38,28 @@ const jsonObjectSchema = z
     message: '必须是合法 JSON 对象',
   })
 
-const datasetFormSchema = z.object({
-  name: z.string().min(1, '请输入数据集名称'),
+const DATASET_NAME_MAX_LENGTH = 30
+const DATASET_DESCRIPTION_MAX_LENGTH = 200
+
+const datasetFormBaseSchema = z.object({
+  name: z
+    .string()
+    .trim()
+    .min(1, '请输入数据集名称')
+    .max(DATASET_NAME_MAX_LENGTH, '数据集名称不能超过30个字'),
   type: z.enum(['evaluation', 'badcase', 'golden', 'anomaly']),
-  description: z.string(),
+  description: z
+    .string()
+    .max(DATASET_DESCRIPTION_MAX_LENGTH, '数据集描述不能超过200个字'),
   metadata: jsonObjectSchema,
 })
 
-type DatasetFormValues = z.infer<typeof datasetFormSchema>
+type DatasetFormValues = z.infer<typeof datasetFormBaseSchema>
 
 type DatasetFormDrawerProps = {
   open: boolean
   dataset?: DatasetRecord | null
+  checkNameAvailability: ResourceNameAvailabilityChecker
   onOpenChange: (open: boolean) => void
   onSubmit: (input: DatasetFormInput) => Promise<void> | void
 }
@@ -60,11 +74,27 @@ const datasetTypes: DatasetType[] = [
 export function DatasetFormDrawer({
   open,
   dataset,
+  checkNameAvailability,
   onOpenChange,
   onSubmit,
 }: DatasetFormDrawerProps) {
   const formId = dataset ? 'edit-dataset-form' : 'create-dataset-form'
   const defaultValues = getDefaultValues(dataset)
+  const schema = useMemo(
+    () =>
+      dataset
+        ? datasetFormBaseSchema
+        : datasetFormBaseSchema.extend({
+            name: createAvailableResourceNameSchema({
+              requiredMessage: '请输入数据集名称',
+              duplicateMessage: '数据集名称已存在，请修改名称',
+              maxLength: DATASET_NAME_MAX_LENGTH,
+              maxLengthMessage: '数据集名称不能超过30个字',
+              checkAvailability: checkNameAvailability,
+            }),
+          }),
+    [checkNameAvailability, dataset]
+  )
 
   const handleSubmit = async (values: DatasetFormValues) => {
     try {
@@ -96,7 +126,7 @@ export function DatasetFormDrawer({
       <BaseForm
         key={dataset?.id ?? 'create'}
         id={formId}
-        schema={datasetFormSchema}
+        schema={schema}
         defaultValues={defaultValues}
         onSubmit={handleSubmit}
       >
@@ -109,7 +139,20 @@ export function DatasetFormDrawer({
                 <FormItem>
                   <FormLabel>名称</FormLabel>
                   <FormControl>
-                    <Input placeholder='输入数据集名称' {...field} />
+                    <Input
+                      placeholder='输入数据集名称'
+                      maxLength={DATASET_NAME_MAX_LENGTH}
+                      {...field}
+                      aria-invalid={Boolean(form.formState.errors.name)}
+                      onChange={(event) => {
+                        field.onChange(event)
+                        form.clearErrors('name')
+                      }}
+                      onBlur={() => {
+                        field.onBlur()
+                        if (!dataset) void form.trigger('name')
+                      }}
+                    />
                   </FormControl>
                   <FormMessage />
                 </FormItem>
@@ -148,7 +191,11 @@ export function DatasetFormDrawer({
                 <FormItem>
                   <FormLabel>描述</FormLabel>
                   <FormControl>
-                    <Textarea placeholder='输入数据集描述' {...field} />
+                    <Textarea
+                      placeholder='输入数据集描述'
+                      maxLength={DATASET_DESCRIPTION_MAX_LENGTH}
+                      {...field}
+                    />
                   </FormControl>
                   <FormMessage />
                 </FormItem>
@@ -182,12 +229,10 @@ function JsonTextareaField({
       render={({ field }) => (
         <FormItem>
           <FormLabel>{label}</FormLabel>
-          <JsonEditorPanel
-            data={field.value as JsonData}
-            onDataChange={(nextData) => field.onChange(nextData)}
-            rootName={label}
+          <MixEditor
+            value={field.value}
+            onValueChange={field.onChange}
             title={label}
-            height={240}
           />
           <FormMessage />
         </FormItem>

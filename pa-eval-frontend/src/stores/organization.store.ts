@@ -1,5 +1,6 @@
 import type { Organization } from '@/modules/organization-management/data/schema'
 import { create } from 'zustand'
+import { useSessionStore } from '@/stores/session.store'
 
 type OrganizationStoreState = {
   organizations: Organization[]
@@ -22,13 +23,19 @@ export const useOrganizationStore = create<OrganizationStoreState>(
         const hasCurrent = organizations.some(
           (organization) => organization.id === state.currentOrganizationId
         )
+        const sessionOrgId = useSessionStore.getState().currentOrgId
+        const hasSessionOrg = organizations.some(
+          (organization) => organization.id === sessionOrgId
+        )
 
         return {
           organizations,
           isLoaded: true,
           currentOrganizationId: hasCurrent
             ? state.currentOrganizationId
-            : (organizations[0]?.id ?? null),
+            : hasSessionOrg
+              ? sessionOrgId
+              : (organizations[0]?.id ?? null),
         }
       }),
     setCurrentOrganizationId: (currentOrganizationId) =>

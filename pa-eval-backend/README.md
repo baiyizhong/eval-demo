@@ -4,6 +4,26 @@ PA Eval 后端适配层用于代理 PA 前端请求，并通过 Langfuse Admin A
 
 ## 本地启动
 
+推荐使用仓库根目录的长驻启动脚本，前后端会分别运行在 detached
+`screen` session 中，并写入 `.pae-backend.log` / `.pae-frontend.log`：
+
+```bash
+cd ..
+scripts/dev-services.sh start
+scripts/dev-services.sh status
+```
+
+常用操作：
+
+```bash
+scripts/dev-services.sh restart frontend
+scripts/dev-services.sh restart backend
+scripts/dev-services.sh stop
+scripts/dev-services.sh logs frontend
+```
+
+后端手动前台启动命令仅用于临时调试：
+
 ```bash
 cd pa-eval-backend
 uv sync
@@ -16,6 +36,7 @@ uv run uvicorn app.main:app --reload --port 8000
 ```bash
 LANGFUSE_BASE_URL=http://localhost:3000
 LANGFUSE_ADMIN_API_KEY=replace-with-langfuse-admin-api-key
+LANGFUSE_SALT=replace-with-langfuse-salt
 PA_EVAL_CORS_ORIGINS=http://localhost:5173
 ```
 

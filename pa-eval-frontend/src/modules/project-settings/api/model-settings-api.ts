@@ -1,9 +1,10 @@
 import type { ApiMethod } from '@/api/types'
-import type { DefaultModel, LlmConnection } from '../types'
+import type { DefaultModel, LlmConnection, ModelDefinition } from '../types'
 
 export type ProjectModelSettings = {
   defaultModel: DefaultModel
   connections: LlmConnection[]
+  modelDefinitions: ModelDefinition[]
 }
 
 export type DefaultModelPayload = {
@@ -21,12 +22,24 @@ export type LlmConnectionPayload = {
   withDefaultModels: boolean
 }
 
+export type ModelDefinitionPayload = {
+  modelName: string
+  matchPattern: string
+  unit: string
+  inputPrice: string
+  outputPrice: string
+  tokenizerId: string
+}
+
 type ModelSettingsApiClient = {
   getProjectModelSettings: ApiMethod
   updateProjectDefaultModel: ApiMethod
   createProjectLlmConnection: ApiMethod
   updateProjectLlmConnection: ApiMethod
   deleteProjectLlmConnection: ApiMethod
+  createProjectModelDefinition: ApiMethod
+  updateProjectModelDefinition: ApiMethod
+  deleteProjectModelDefinition: ApiMethod
 }
 
 export function getProjectModelSettings(
@@ -79,5 +92,38 @@ export function deleteProjectLlmConnection(
 ) {
   return api.deleteProjectLlmConnection<{ id: string }>({
     path: { projectId, connectionId },
+  })
+}
+
+export function createProjectModelDefinition(
+  api: ModelSettingsApiClient,
+  projectId: string,
+  input: ModelDefinitionPayload
+) {
+  return api.createProjectModelDefinition<ModelDefinition>({
+    path: { projectId },
+    body: input,
+  })
+}
+
+export function updateProjectModelDefinition(
+  api: ModelSettingsApiClient,
+  projectId: string,
+  modelId: string,
+  input: ModelDefinitionPayload
+) {
+  return api.updateProjectModelDefinition<ModelDefinition>({
+    path: { projectId, modelId },
+    body: input,
+  })
+}
+
+export function deleteProjectModelDefinition(
+  api: ModelSettingsApiClient,
+  projectId: string,
+  modelId: string
+) {
+  return api.deleteProjectModelDefinition<{ id: string }>({
+    path: { projectId, modelId },
   })
 }

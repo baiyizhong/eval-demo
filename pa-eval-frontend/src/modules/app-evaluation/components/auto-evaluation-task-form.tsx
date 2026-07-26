@@ -5,12 +5,12 @@ import {
   DoubleArrowLeftIcon,
   DoubleArrowRightIcon,
 } from '@radix-ui/react-icons'
-import { listTaskEvaluators } from '@/modules/tasks/api/evaluator-api'
 import {
   evaluationScenarioLabels,
   evaluationScenarioOptions,
   type EvaluationScenario,
 } from '@/modules/app-evaluation/lib/evaluation-scenarios'
+import { listTaskEvaluators } from '@/modules/tasks/api/evaluator-api'
 import { Info } from 'lucide-react'
 import { useNavigate } from 'react-router'
 import { toast } from 'sonner'
@@ -51,6 +51,11 @@ import {
   TooltipContent,
   TooltipTrigger,
 } from '@/components/ui/tooltip'
+import { DateTimeRangePicker } from '@/components/common/date-time/date-time-range-picker'
+import {
+  fromDateTimePickerValue,
+  toDateTimePickerValue,
+} from '@/components/common/date-time/date-time-utils'
 import { Stepper } from '@/components/common/stepper'
 import {
   countProjectAutoEvaluationTraces,
@@ -69,6 +74,8 @@ import type {
 import { autoEvaluationStepLabels } from './auto-evaluation-steps'
 
 const AUTO_EVALUATION_DEFAULT_TRACE_TIME_RANGE = '1d'
+const AUTO_EVALUATION_NAME_MAX_LENGTH = 40
+const AUTO_EVALUATION_DESCRIPTION_MAX_LENGTH = 200
 const AUTO_EVALUATION_TRACE_QUICK_TIME_RANGE_OPTIONS = [
   { label: '1d', value: '1d' },
   { label: '3d', value: '3d' },
@@ -252,26 +259,26 @@ export function AutoEvaluationTaskForm({
       projectId
     ).then((result) => {
       const nextEvaluators = result.datas
-          .filter(isAutoEvaluationSupportedEvaluator)
-          .map((evaluator) => ({
-            id: evaluator.id,
-            name: evaluator.name,
-            type: evaluator.type,
-            version: evaluator.version,
-            evaluationScenario: evaluator.evaluationScenario,
-            variables: evaluator.variables,
-            outputVariables: evaluator.outputVariables ?? [],
-            outputVariableMappings: evaluator.outputVariableMappings ?? [],
-            description: evaluator.description,
-            updatedAt: evaluator.updatedAt,
-          }))
-          .sort((left, right) => {
-            if (!initialScenario) return 0
-            const leftMatched = left.evaluationScenario === initialScenario
-            const rightMatched = right.evaluationScenario === initialScenario
-            if (leftMatched === rightMatched) return 0
-            return leftMatched ? -1 : 1
-          })
+        .filter(isAutoEvaluationSupportedEvaluator)
+        .map((evaluator) => ({
+          id: evaluator.id,
+          name: evaluator.name,
+          type: evaluator.type,
+          version: evaluator.version,
+          evaluationScenario: evaluator.evaluationScenario,
+          variables: evaluator.variables,
+          outputVariables: evaluator.outputVariables ?? [],
+          outputVariableMappings: evaluator.outputVariableMappings ?? [],
+          description: evaluator.description,
+          updatedAt: evaluator.updatedAt,
+        }))
+        .sort((left, right) => {
+          if (!initialScenario) return 0
+          const leftMatched = left.evaluationScenario === initialScenario
+          const rightMatched = right.evaluationScenario === initialScenario
+          if (leftMatched === rightMatched) return 0
+          return leftMatched ? -1 : 1
+        })
       setEvaluators(nextEvaluators)
       setForm((current) => {
         if (!initialScenario || current.evaluatorId) return current
@@ -538,7 +545,7 @@ export function AutoEvaluationTaskForm({
   }
 
   return (
-    <div className='flex flex-col gap-5'>
+    <div className='flex min-h-full min-w-0 flex-1 flex-col gap-5 overflow-x-clip'>
       {activeScenario && ActiveScenarioIcon ? (
         <section className='bg-card text-card-foreground grid gap-4 rounded-lg border p-4 lg:grid-cols-[minmax(0,1fr)_minmax(280px,360px)]'>
           <div className='flex gap-3'>
@@ -597,6 +604,7 @@ export function AutoEvaluationTaskForm({
             <Field label='任务名称'>
               <Input
                 placeholder='例如：客服回答质量自动评测'
+                maxLength={AUTO_EVALUATION_NAME_MAX_LENGTH}
                 value={form.name}
                 onChange={(event) =>
                   updateForm({ ...form, name: event.target.value })
@@ -607,6 +615,7 @@ export function AutoEvaluationTaskForm({
               <Textarea
                 className='min-h-28 resize-none'
                 placeholder='描述本次自动评测的目标、样本范围或执行策略'
+                maxLength={AUTO_EVALUATION_DESCRIPTION_MAX_LENGTH}
                 value={form.description}
                 onChange={(event) =>
                   updateForm({ ...form, description: event.target.value })
@@ -618,8 +627,8 @@ export function AutoEvaluationTaskForm({
       ) : null}
 
       {step === 1 ? (
-        <section className='grid min-h-0 gap-4 lg:grid-cols-[320px_1fr]'>
-          <div className='bg-card text-card-foreground flex max-h-[min(560px,calc(100vh-320px))] min-h-[420px] flex-col gap-3 rounded-lg border p-4'>
+        <section className='grid w-full max-w-full min-w-0 gap-4 lg:grid-cols-[minmax(0,320px)_minmax(0,1fr)]'>
+          <div className='bg-card text-card-foreground flex min-h-[420px] max-w-full min-w-0 flex-col gap-3 rounded-lg border p-4'>
             <div>
               <h3 className='text-sm font-semibold'>评估器列表</h3>
             </div>
@@ -639,7 +648,9 @@ export function AutoEvaluationTaskForm({
                     onSelect={handleEvaluatorSelect}
                   />
                   {scenarioMatchedEvaluators.length === 0 ? (
-                    <NoScenarioEvaluatorHint scenarioLabel={activeScenario.label} />
+                    <NoScenarioEvaluatorHint
+                      scenarioLabel={activeScenario.label}
+                    />
                   ) : null}
                   {scenarioOtherEvaluators.length ? (
                     <EvaluatorGroup
@@ -668,14 +679,14 @@ export function AutoEvaluationTaskForm({
             </div>
           </div>
 
-          <div className='bg-card text-card-foreground flex min-h-[420px] flex-col gap-4 rounded-lg border p-4'>
+          <div className='bg-card text-card-foreground flex min-h-[420px] max-w-full min-w-0 flex-col gap-4 rounded-lg border p-4'>
             {selectedEvaluator ? (
               <>
-                <div className='flex flex-col gap-1'>
-                  <h3 className='text-sm font-semibold'>
+                <div className='flex min-w-0 flex-col gap-1'>
+                  <h3 className='text-sm font-semibold break-words'>
                     {selectedEvaluator.name}
                   </h3>
-                  <p className='text-muted-foreground text-sm leading-6'>
+                  <p className='text-muted-foreground text-sm leading-6 break-words'>
                     {selectedEvaluator.description || '暂无描述'}
                   </p>
                 </div>
@@ -687,7 +698,9 @@ export function AutoEvaluationTaskForm({
                   />
                   <InfoItem
                     label='场景'
-                    value={getScenarioLabel(selectedEvaluator.evaluationScenario)}
+                    value={getScenarioLabel(
+                      selectedEvaluator.evaluationScenario
+                    )}
                   />
                   <InfoItem
                     label='变量数量'
@@ -712,9 +725,11 @@ export function AutoEvaluationTaskForm({
                   {selectedEvaluator.variables.map((variable) => (
                     <div
                       key={variable}
-                      className='bg-background grid gap-2 rounded-lg border p-3 md:grid-cols-[minmax(160px,220px)_1fr] md:items-center'
+                      className='bg-background grid max-w-full min-w-0 gap-2 rounded-lg border p-3 md:grid-cols-[minmax(0,220px)_minmax(0,1fr)] md:items-center'
                     >
-                      <Label className='text-sm font-medium'>{variable}</Label>
+                      <Label className='min-w-0 truncate text-sm font-medium'>
+                        {variable}
+                      </Label>
                       <Select
                         value={getMappingSelectValue(
                           form.variableMapping[variable]
@@ -729,7 +744,7 @@ export function AutoEvaluationTaskForm({
                           })
                         }
                       >
-                        <SelectTrigger className='w-full'>
+                        <SelectTrigger className='w-full min-w-0'>
                           <SelectValue placeholder='选择字段' />
                         </SelectTrigger>
                         <SelectContent>
@@ -759,9 +774,9 @@ export function AutoEvaluationTaskForm({
                         return (
                           <div
                             key={variable}
-                            className='bg-background grid gap-2 rounded-lg border p-3 md:grid-cols-[minmax(160px,220px)_1fr] md:items-center'
+                            className='bg-background grid max-w-full min-w-0 gap-2 rounded-lg border p-3 md:grid-cols-[minmax(0,220px)_minmax(0,1fr)] md:items-center'
                           >
-                            <Label className='text-sm font-medium'>
+                            <Label className='min-w-0 truncate text-sm font-medium'>
                               {variable}
                             </Label>
                             <div className='flex min-w-0 items-center gap-2'>
@@ -776,7 +791,7 @@ export function AutoEvaluationTaskForm({
                                 {mapping?.scoreConfigName || '未绑定评分指标'}
                               </Badge>
                               {!mapping?.scoreConfigName ? (
-                                <span className='text-muted-foreground text-xs'>
+                                <span className='text-muted-foreground min-w-0 truncate text-xs'>
                                   请先在评估器中完成输出变量绑定
                                 </span>
                               ) : null}
@@ -836,54 +851,32 @@ export function AutoEvaluationTaskForm({
                 <div className='grid gap-4 md:grid-cols-2'>
                   <Field label='时间范围' className='md:col-span-2'>
                     <div className='grid gap-3 lg:grid-cols-[minmax(0,1fr)_auto] lg:items-end'>
-                      <div className='grid gap-3 sm:grid-cols-2'>
-                        <Input
-                          type='datetime-local'
-                          aria-label='开始时间'
-                          value={
-                            form.dataSource.type === 'TRACE_FILTER'
-                              ? (form.dataSource.createdAtRange[0] ?? '')
-                              : ''
-                          }
-                          onChange={(event) => {
-                            if (form.dataSource.type !== 'TRACE_FILTER') return
-                            updateForm({
-                              ...form,
-                              dataSource: {
-                                ...form.dataSource,
-                                timeRange: '',
-                                createdAtRange: [
-                                  event.target.value,
-                                  form.dataSource.createdAtRange[1] ?? '',
-                                ],
-                              },
-                            })
-                          }}
-                        />
-                        <Input
-                          type='datetime-local'
-                          aria-label='结束时间'
-                          value={
-                            form.dataSource.type === 'TRACE_FILTER'
-                              ? (form.dataSource.createdAtRange[1] ?? '')
-                              : ''
-                          }
-                          onChange={(event) => {
-                            if (form.dataSource.type !== 'TRACE_FILTER') return
-                            updateForm({
-                              ...form,
-                              dataSource: {
-                                ...form.dataSource,
-                                timeRange: '',
-                                createdAtRange: [
-                                  form.dataSource.createdAtRange[0] ?? '',
-                                  event.target.value,
-                                ],
-                              },
-                            })
-                          }}
-                        />
-                      </div>
+                      <DateTimeRangePicker
+                        value={
+                          form.dataSource.type === 'TRACE_FILTER'
+                            ? form.dataSource.createdAtRange.map(
+                                toDateTimePickerValue
+                              )
+                            : []
+                        }
+                        showTime
+                        timeFormat='HH:mm'
+                        startPlaceholder='开始时间'
+                        endPlaceholder='结束时间'
+                        onChange={(nextValue) => {
+                          if (form.dataSource.type !== 'TRACE_FILTER') return
+                          updateForm({
+                            ...form,
+                            dataSource: {
+                              ...form.dataSource,
+                              timeRange: '',
+                              createdAtRange: nextValue.map(
+                                fromDateTimePickerValue
+                              ),
+                            },
+                          })
+                        }}
+                      />
                       <ToggleGroup
                         type='single'
                         variant='outline'
@@ -1162,7 +1155,7 @@ export function AutoEvaluationTaskForm({
         </section>
       ) : null}
 
-      <div className='bg-background/95 supports-[backdrop-filter]:bg-background/80 sticky bottom-0 -mx-4 -mb-4 flex flex-wrap justify-between gap-2 border-t px-4 py-4 backdrop-blur'>
+      <div className='bg-background/95 supports-[backdrop-filter]:bg-background/80 sticky bottom-0 -mx-4 mt-auto -mb-4 flex flex-wrap justify-between gap-2 border-t px-4 py-4 backdrop-blur'>
         <div className='ml-auto flex gap-2'>
           <Button
             type='button'
@@ -1391,7 +1384,9 @@ function EvaluatorButton({
 function NoScenarioEvaluatorHint({ scenarioLabel }: { scenarioLabel: string }) {
   return (
     <div className='text-muted-foreground rounded-lg border border-dashed p-4 text-sm leading-6'>
-      当前还没有匹配“{scenarioLabel}”的评估器。可以先选择其他评估器运行，也可以去评估器页面创建该场景的 OpenJudge、Dify 或 SDK 评估器。
+      当前还没有匹配“{scenarioLabel}
+      ”的评估器。可以先选择其他评估器运行，也可以去评估器页面创建该场景的
+      OpenJudge、Dify 或 SDK 评估器。
     </div>
   )
 }
@@ -1505,8 +1500,7 @@ function TracePreviewDialog({
 
           <div className='flex flex-wrap items-center gap-3'>
             <span className='text-muted-foreground text-sm'>
-              共 {total.toLocaleString()} 条，第 {currentPage} / {totalPages}{' '}
-              页
+              共 {total.toLocaleString()} 条，第 {currentPage} / {totalPages} 页
             </span>
             <div className='flex items-center gap-2'>
               <Button
@@ -1591,6 +1585,12 @@ function getStepError(
 ) {
   if (step === 0) {
     if (!form.name.trim()) return '任务名称不能为空'
+    if (form.name.length > AUTO_EVALUATION_NAME_MAX_LENGTH) {
+      return '任务名称不能超过40个字'
+    }
+    if (form.description.length > AUTO_EVALUATION_DESCRIPTION_MAX_LENGTH) {
+      return '任务描述不能超过200个字'
+    }
   }
   if (step === 1) {
     if (!form.evaluatorId) return '请选择评估器'

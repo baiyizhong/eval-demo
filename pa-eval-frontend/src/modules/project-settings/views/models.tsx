@@ -39,14 +39,18 @@ import { ContentSection } from '@/components/common/content-section'
 import { Loading } from '@/components/common/loading'
 import {
   createProjectLlmConnection,
+  createProjectModelDefinition,
   deleteProjectLlmConnection,
+  deleteProjectModelDefinition,
   getProjectModelSettings,
   updateProjectLlmConnection,
   updateProjectDefaultModel,
+  updateProjectModelDefinition,
   type DefaultModelPayload,
   type LlmConnectionPayload,
+  type ModelDefinitionPayload,
 } from '../api/model-settings-api'
-import type { LlmConnection } from '../types'
+import type { LlmConnection, ModelDefinition } from '../types'
 
 type DefaultModelFormState = DefaultModelPayload
 
@@ -58,6 +62,8 @@ type LlmConnectionFormState = {
   customModels: string
   withDefaultModels: string
 }
+
+type ModelDefinitionFormState = ModelDefinitionPayload
 
 const llmAdapterOptions = [
   { value: 'openai', label: 'OpenAI' },
@@ -83,6 +89,15 @@ const emptyLlmForm: LlmConnectionFormState = {
   withDefaultModels: 'true',
 }
 
+const emptyModelForm: ModelDefinitionFormState = {
+  modelName: '',
+  matchPattern: '',
+  unit: 'TOKENS',
+  inputPrice: '',
+  outputPrice: '',
+  tokenizerId: 'openai',
+}
+
 export function ProjectModelsSettings() {
   const { projectId = '' } = useParams()
   const $api = useAPI()
@@ -101,11 +116,19 @@ export function ProjectModelsSettings() {
   const [editingConnection, setEditingConnection] =
     useState<LlmConnection | null>(null)
   const [llmForm, setLlmForm] = useState<LlmConnectionFormState>(emptyLlmForm)
+  const [modelDialogOpen, setModelDialogOpen] = useState(false)
+  const [editingModel, setEditingModel] = useState<ModelDefinition | null>(null)
+  const [modelForm, setModelForm] =
+    useState<ModelDefinitionFormState>(emptyModelForm)
 
   const settings = settingsQuery.data
   const connections = useMemo(
     () => settings?.connections ?? [],
     [settings?.connections]
+  )
+  const modelDefinitions = useMemo(
+    () => settings?.modelDefinitions ?? [],
+    [settings?.modelDefinitions]
   )
   const loadedDefaultModel = useMemo(
     () =>
@@ -165,6 +188,28 @@ export function ProjectModelsSettings() {
       toast.success('LLM 连接已删除')
     },
   })
+  const modelMutation = useMutation({
+    mutationFn: (input: ModelDefinitionPayload) =>
+      editingModel
+        ? updateProjectModelDefinition($api, projectId, editingModel.id, input)
+        : createProjectModelDefinition($api, projectId, input),
+    onSuccess: async () => {
+      await invalidateSettings()
+      setModelDialogOpen(false)
+      setEditingModel(null)
+      setModelForm(emptyModelForm)
+      toast.success(editingModel ? '模型定义已更新' : '模型定义已新增')
+    },
+  })
+  const deleteModelMutation = useMutation({
+    mutationFn: (model: ModelDefinition) =>
+      deleteProjectModelDefinition($api, projectId, model.id),
+    onSuccess: async () => {
+      await invalidateSettings()
+      toast.success('模型定义已删除')
+    },
+  })
+
   const handleDefaultSubmit = async (event: FormEvent<HTMLFormElement>) => {
     event.preventDefault()
     if (!canEditModels) return
@@ -182,10 +227,6 @@ export function ProjectModelsSettings() {
 
     if (!llmForm.provider.trim()) {
       toast.error('请输入 Provider 名称')
-      return
-    }
-    if (!llmForm.secretKey.trim()) {
-      toast.error('请输入 Secret Key')
       return
     }
     await connectionMutation.mutateAsync({
@@ -239,10 +280,67 @@ export function ProjectModelsSettings() {
     }
   }
 
+  const handleModelSubmit = async (event: FormEvent<HTMLFormElement>) => {
+    event.preventDefault()
+    if (!canEditModels) return
+
+    if (!modelForm.modelName.trim()) {
+      toast.error('请输入模型名称')
+      return
+    }
+    await modelMutation.mutateAsync({
+      ...modelForm,
+      modelName: modelForm.modelName.trim(),
+      matchPattern: modelForm.matchPattern.trim(),
+      unit: modelForm.unit.trim() || 'TOKENS',
+      inputPrice: modelForm.inputPrice.trim(),
+      outputPrice: modelForm.outputPrice.trim(),
+      tokenizerId: modelForm.tokenizerId.trim(),
+    })
+  }
+
+  const openCreateModel = () => {
+    if (!canEditModels) return
+
+    setEditingModel(null)
+    setModelForm(emptyModelForm)
+    setModelDialogOpen(true)
+  }
+
+  const openEditModel = (model: ModelDefinition) => {
+    if (!canEditModels) return
+
+    setEditingModel(model)
+    setModelForm({
+      modelName: model.modelName,
+      matchPattern: model.matchPattern,
+      unit: model.unit,
+      inputPrice: model.inputPrice,
+      outputPrice: model.outputPrice,
+      tokenizerId: model.tokenizerId,
+    })
+    setModelDialogOpen(true)
+  }
+
+  const deleteModel = async (model: ModelDefinition) => {
+    if (!canEditModels) return
+
+    if (
+      await confirm({
+        title: '删除模型定义',
+        desc: `确定删除「${model.modelName}」吗？`,
+        confirmText: '删除',
+        destructive: true,
+      })
+    ) {
+      await deleteModelMutation.mutateAsync(model)
+    }
+  }
+
   return (
     <ContentSection
       title='模型设置'
-      desc='配置默认评估模型，并复用 Langfuse LLM Connections 管理连接。'
+      desc='配置默认评估模型、LLM Provider 连接和项目级模型定义。'
     >
       <div className='flex flex-col gap-6'>
         {settingsQuery.isLoading ? (
@@ -450,6 +548,89 @@ export function ProjectModelsSettings() {
                 </div>
               </CardContent>
             </Card>
+
+            <Card>
+              <CardHeader>
+                <div className='flex items-start justify-between gap-4'>
+                  <CardTitle>模型定义</CardTitle>
+                  {canEditModels ? (
+                    <Button type='button' size='sm' onClick={openCreateModel}>
+                      <Plus data-icon='inline-start' />
+                      新增模型
+                    </Button>
+                  ) : null}
+                </div>
+              </CardHeader>
+              <CardContent>
+                <div className='rounded-lg border'>
+                  <Table>
+                    <TableHeader>
+                      <TableRow>
+                        <TableHead>模型名称</TableHead>
+                        <TableHead>匹配规则</TableHead>
+                        <TableHead>价格</TableHead>
+                        <TableHead>Tokenizer</TableHead>
+                        {canEditModels ? (
+                          <TableHead className='w-32 text-right'>操作</TableHead>
+                        ) : null}
+                      </TableRow>
+                    </TableHeader>
+                    <TableBody>
+                      {modelDefinitions.map((model) => (
+                        <TableRow key={model.id}>
+                          <TableCell className='font-medium'>
+                            {model.modelName}
+                          </TableCell>
+                          <TableCell>{model.matchPattern || '-'}</TableCell>
+                          <TableCell>
+                            <div className='flex flex-col gap-1'>
+                              <span>输入：{model.inputPrice || '-'}</span>
+                              <span>输出：{model.outputPrice || '-'}</span>
+                            </div>
+                          </TableCell>
+                          <TableCell>{model.tokenizerId || '-'}</TableCell>
+                          {canEditModels ? (
+                            <TableCell>
+                              <div className='flex justify-end gap-2'>
+                                <Button
+                                  type='button'
+                                  variant='ghost'
+                                  size='icon'
+                                  onClick={() => openEditModel(model)}
+                                  aria-label='编辑模型定义'
+                                >
+                                  <Pencil />
+                                </Button>
+                                <Button
+                                  type='button'
+                                  variant='ghost'
+                                  size='icon'
+                                  disabled={deleteModelMutation.isPending}
+                                  onClick={() => void deleteModel(model)}
+                                  aria-label='删除模型定义'
+                                >
+                                  <Trash2 />
+                                </Button>
+                              </div>
+                            </TableCell>
+                          ) : null}
+                        </TableRow>
+                      ))}
+                      {modelDefinitions.length === 0 ? (
+                        <TableRow>
+                          <TableCell
+                            colSpan={canEditModels ? 5 : 4}
+                            className='text-muted-foreground h-24 text-center'
+                          >
+                            暂无模型定义
+                          </TableCell>
+                        </TableRow>
+                      ) : null}
+                    </TableBody>
+                  </Table>
+                </div>
+              </CardContent>
+            </Card>
           </>
         ) : null}
         <Dialog
@@ -469,7 +650,7 @@ export function ProjectModelsSettings() {
               </DialogTitle>
               <DialogDescription>
                 {editingConnection
-                  ? '通过 Langfuse LLM Connections API 更新连接，需重新输入 Secret Key。'
+                  ? 'Secret Key 留空时保留原密钥；填写后会提交到后端替换保存。'
                   : 'Secret Key 仅提交到后端保存，页面后续只展示脱敏值。'}
               </DialogDescription>
             </DialogHeader>
@@ -587,6 +768,124 @@ export function ProjectModelsSettings() {
                 </Button>
                 <Button type='submit' disabled={connectionMutation.isPending}>
                   {editingConnection ? '保存' : '创建'}
+                </Button>
+              </DialogFooter>
+            </form>
+          </DialogContent>
+        </Dialog>
+
+        <Dialog
+          open={canEditModels && modelDialogOpen}
+          onOpenChange={(open) => {
+            setModelDialogOpen(open)
+            if (!open) {
+              setEditingModel(null)
+              setModelForm(emptyModelForm)
+            }
+          }}
+        >
+          <DialogContent>
+            <DialogHeader>
+              <DialogTitle>
+                {editingModel ? '编辑模型定义' : '新增模型定义'}
+              </DialogTitle>
+              <DialogDescription>
+                用于项目内模型计费、匹配和评估模型候选展示。
+              </DialogDescription>
+            </DialogHeader>
+            <form className='flex flex-col gap-4' onSubmit={handleModelSubmit}>
+              <div className='grid gap-4 sm:grid-cols-2'>
+                <div className='flex flex-col gap-2'>
+                  <Label htmlFor='model-name'>模型名称</Label>
+                  <Input
+                    id='model-name'
+                    value={modelForm.modelName}
+                    onChange={(event) =>
+                      setModelForm((current) => ({
+                        ...current,
+                        modelName: event.target.value,
+                      }))
+                    }
+                  />
+                </div>
+                <div className='flex flex-col gap-2'>
+                  <Label htmlFor='model-pattern'>匹配规则</Label>
+                  <Input
+                    id='model-pattern'
+                    value={modelForm.matchPattern}
+                    onChange={(event) =>
+                      setModelForm((current) => ({
+                        ...current,
+                        matchPattern: event.target.value,
+                      }))
+                    }
+                  />
+                </div>
+              </div>
+              <div className='grid gap-4 sm:grid-cols-3'>
+                <div className='flex flex-col gap-2'>
+                  <Label htmlFor='model-unit'>计量单位</Label>
+                  <Input
+                    id='model-unit'
+                    value={modelForm.unit}
+                    onChange={(event) =>
+                      setModelForm((current) => ({
+                        ...current,
+                        unit: event.target.value,
+                      }))
+                    }
+                  />
+                </div>
+                <div className='flex flex-col gap-2'>
+                  <Label htmlFor='model-input-price'>输入价格</Label>
+                  <Input
+                    id='model-input-price'
+                    value={modelForm.inputPrice}
+                    onChange={(event) =>
+                      setModelForm((current) => ({
+                        ...current,
+                        inputPrice: event.target.value,
+                      }))
+                    }
+                  />
+                </div>
+                <div className='flex flex-col gap-2'>
+                  <Label htmlFor='model-output-price'>输出价格</Label>
+                  <Input
+                    id='model-output-price'
+                    value={modelForm.outputPrice}
+                    onChange={(event) =>
+                      setModelForm((current) => ({
+                        ...current,
+                        outputPrice: event.target.value,
+                      }))
+                    }
+                  />
+                </div>
+              </div>
+              <div className='flex flex-col gap-2'>
+                <Label htmlFor='model-tokenizer'>Tokenizer</Label>
+                <Input
+                  id='model-tokenizer'
+                  value={modelForm.tokenizerId}
+                  onChange={(event) =>
+                    setModelForm((current) => ({
+                      ...current,
+                      tokenizerId: event.target.value,
+                    }))
+                  }
+                />
+              </div>
+              <DialogFooter>
+                <Button
+                  type='button'
+                  variant='outline'
+                  onClick={() => setModelDialogOpen(false)}
+                >
+                  取消
+                </Button>
+                <Button type='submit' disabled={modelMutation.isPending}>
+                  {editingModel ? '保存' : '创建'}
                 </Button>
               </DialogFooter>
             </form>

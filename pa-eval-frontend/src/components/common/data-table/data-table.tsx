@@ -1,5 +1,15 @@
-import { useMemo, useState, type ReactNode } from 'react'
-import { keepPreviousData, useQuery } from '@tanstack/react-query'
+import {
+  useCallback,
+  useEffect,
+  useMemo,
+  useState,
+  type ReactNode,
+} from 'react'
+import {
+  keepPreviousData,
+  useQuery,
+  type UseQueryOptions,
+} from '@tanstack/react-query'
 import {
   flexRender,
   getCoreRowModel,
@@ -10,6 +20,7 @@ import {
   type ColumnFiltersState,
   type OnChangeFn,
   type PaginationState,
+  type RowSelectionState,
   type SortingState,
   type Table as ReactTable,
   type VisibilityState,
@@ -27,6 +38,7 @@ import {
 import {
   FilterPanel,
   type FilterGroup,
+  type FilterChangeMeta,
   type FilterPanelProps,
   type FilterRendererMap,
   type FilterValues,
@@ -34,6 +46,7 @@ import {
 import { getDataTableRootClassName } from './layout'
 import { DataTablePagination } from './pagination'
 import { DataTableProvider, useOptionalDataTableContext } from './provider'
+import { DataTableSelectAllBanner } from './select-all-banner'
 import { DataTableToolbar } from './toolbar'
 
 export type DataTableListResponse<TData> = {
@@ -53,17 +66,31 @@ export type DataTableFilterBinding = {
   fieldId: string
   queryKey?: string
   columnId?: string
-  type: 'string' | 'array'
+  type: 'string' | 'array' | 'json'
 }
 
 export type DataTableToolbarFilter = {
-  columnId: string
+  columnId?: string
+  fieldId?: string
   title: string
+  selectionMode?: 'single' | 'multiple'
+  defaultValue?:
+    | string
+    | string[]
+    | ((filterValues: Record<string, unknown>) => string | string[] | undefined)
   options: {
     label: string
     value: string
     icon?: React.ComponentType<{ className?: string }>
   }[]
+  optionCounts?: Record<string, number>
+}
+
+export type DataTableFilterChangeContext = {
+  source: 'column' | 'filterPanel' | 'toolbar'
+  fieldId: string
+  value: unknown
+  meta?: FilterChangeMeta
 }
 
 type DataTableRequestConfig<TData, TResponse> = {
@@ -71,6 +98,7 @@ type DataTableRequestConfig<TData, TResponse> = {
     readonly unknown[] | ((state: DataTableQueryState) => readonly unknown[])
   queryFn: (state: DataTableQueryState) => Promise<TResponse>
   enabled?: boolean
+  refetchInterval?: UseQueryOptions<TResponse>['refetchInterval']
   selectRows?: (response: TResponse) => TData[]
   selectTotal?: (response: TResponse) => number
 }
@@ -82,6 +110,10 @@ type DataTableUrlStateConfig = {
   sortKey?: string
   defaultPageSize?: number
   filters?: DataTableFilterBinding[]
+  normalizeFilters?: (
+    nextFilters: Record<string, unknown>,
+    context: DataTableFilterChangeContext
+  ) => Record<string, unknown>
 }
 
 type DataTableFilterPanelConfig = {
@@ -101,6 +133,7 @@ type DataTableToolbarConfig = {
   searchPlaceholder?: string
   filters?: DataTableToolbarFilter[]
   columnLabels?: Record<string, string>
+  columnVisibility?: VisibilityState
 }
 
 type DataTableProviderConfig<
@@ -112,19 +145,37 @@ type DataTableProviderConfig<
   initialOpen?: TAction | null
 }
 
+export type DataTableColumns<TData> =
+  | ColumnDef<TData>[]
+  | ((rows: TData[]) => ColumnDef<TData>[])
+
+export type DataTableSelectionState<TData> = {
+  isAllMatchingRowsSelected: boolean
+  selectedRowCount: number
+  selectedPageRowCount: number
+  totalRowCount: number
+  pageCount: number
+  queryState: DataTableQueryState
+  clearSelection: () => void
+  currentPageRows: TData[]
+}
+
 export type DataTableProps<
   TData,
   TResponse = DataTableListResponse<TData>,
   TAction extends string = string,
   TContext extends object = Record<string, never>,
 > = {
-  columns: ColumnDef<TData>[]
+  columns: DataTableColumns<TData>
   request: DataTableRequestConfig<TData, TResponse>
   urlState?: DataTableUrlStateConfig
   filterPanel?: DataTableFilterPanelConfig
   toolbar?: DataTableToolbarConfig
   provider?: DataTableProviderConfig<TAction, TContext>
-  bulkActions?: (table: ReactTable<TData>) => ReactNode
+  bulkActions?: (
+    table: ReactTable<TData>,
+    selection: DataTableSelectionState<TData>
+  ) => ReactNode
   enableRowSelection?: boolean
   emptyText?: string
   errorText?: string
@@ -175,7 +226,7 @@ function DataTableContent<
   emptyText = '暂无结果。',
   errorText = '数据加载失败。',
   loadingText = '正在加载数据...',
-  minTableWidth = 900,
+  minTableWidth = 1024,
   className,
   tableClassName,
 }: DataTableProps<TData, TResponse, TAction, TContext>) {
@@ -183,8 +234,12 @@ function DataTableContent<
   const [filterPanelCollapsed, setFilterPanelCollapsed] = useState(
     filterPanel?.advanceFilterCollapsed ?? true
   )
-  const [rowSelection, setRowSelection] = useState({})
-  const [columnVisibility, setColumnVisibility] = useState<VisibilityState>({})
+  const [rowSelection, setRowSelection] = useState<RowSelectionState>({})
+  const [isAllMatchingRowsSelected, setIsAllMatchingRowsSelected] =
+    useState(false)
+  const [columnVisibility, setColumnVisibility] = useState<VisibilityState>(
+    () => toolbar?.columnVisibility ?? {}
+  )
 
   const pageKey = urlState?.pageKey ?? 'page'
   const pageSizeKey = urlState?.pageSizeKey ?? 'pageSize'
@@ -245,18 +300,52 @@ function DataTableContent<
     queryKey,
     queryFn: () => request.queryFn(queryState),
     enabled: request.enabled ?? true,
+    refetchInterval: request.refetchInterval,
     placeholderData: keepPreviousData,
   })
+
+  const clearSelection = useCallback(() => {
+    setIsAllMatchingRowsSelected(false)
+    setRowSelection({})
+  }, [])
 
   const rows = useMemo(
     () => selectResponseRows(query.data, request.selectRows),
     [query.data, request.selectRows]
+  )
+  const resolvedColumns = useMemo(
+    () => (typeof columns === 'function' ? columns(rows) : columns),
+    [columns, rows]
   )
   const total = useMemo(
     () => selectResponseTotal(query.data, request.selectTotal),
     [query.data, request.selectTotal]
   )
   const pageCount = Math.max(1, Math.ceil(total / pageSize))
+
+  useEffect(() => {
+    clearSelection()
+  }, [clearSelection, filters, keyword, pageSize, sorting])
+
+  useEffect(() => {
+    if (isAllMatchingRowsSelected) {
+      setRowSelection(getPageRowSelection(rows.length))
+      return
+    }
+
+    setRowSelection({})
+  }, [isAllMatchingRowsSelected, page, rows.length])
+
+  useEffect(() => {
+    if (!isAllMatchingRowsSelected || rows.length === 0) {
+      return
+    }
+
+    const selectedCount = countSelectedRows(rowSelection)
+    if (selectedCount < rows.length) {
+      setIsAllMatchingRowsSelected(false)
+    }
+  }, [isAllMatchingRowsSelected, rowSelection, rows.length])
 
   const updateSearchParams = (
     updater: (nextParams: URLSearchParams) => void
@@ -268,6 +357,32 @@ function DataTableContent<
 
   const resetPage = (nextParams: URLSearchParams) => {
     nextParams.delete(pageKey)
+  }
+
+  const normalizeFilters = (
+    nextFilters: Record<string, unknown>,
+    context: DataTableFilterChangeContext
+  ) => urlState?.normalizeFilters?.(nextFilters, context) ?? nextFilters
+
+  const writeFilterParams = (
+    nextParams: URLSearchParams,
+    nextFilters: Record<string, unknown>
+  ) => {
+    filterBindings.forEach((binding) => {
+      const queryKey = binding.queryKey ?? binding.fieldId
+      const value = nextFilters[binding.fieldId]
+
+      if (binding.type === 'array') {
+        updateListParam(nextParams, queryKey, value)
+        return
+      }
+      if (binding.type === 'json') {
+        updateJsonParam(nextParams, queryKey, value)
+        return
+      }
+
+      updateStringParam(nextParams, queryKey, value)
+    })
   }
 
   const onGlobalFilterChange: OnChangeFn<unknown> = (updater) => {
@@ -282,18 +397,20 @@ function DataTableContent<
     const next =
       typeof updater === 'function' ? updater(columnFilters) : updater
     updateSearchParams((nextParams) => {
+      const nextFilterValues = { ...filters }
       filterBindings.forEach((binding) => {
-        const queryKey = binding.queryKey ?? binding.fieldId
         const columnId = binding.columnId ?? binding.fieldId
         const filter = next.find((item) => item.id === columnId)
-
-        if (binding.type === 'array') {
-          updateListParam(nextParams, queryKey, filter?.value)
-          return
-        }
-
-        updateStringParam(nextParams, queryKey, filter?.value)
+        nextFilterValues[binding.fieldId] = filter?.value
       })
+      writeFilterParams(
+        nextParams,
+        normalizeFilters(nextFilterValues, {
+          source: 'column',
+          fieldId: '*',
+          value: next,
+        })
+      )
       resetPage(nextParams)
     })
   }
@@ -315,25 +432,43 @@ function DataTableContent<
   }
 
   const handleFilterPanelChange: FilterPanelProps['onChange'] = (
-    nextValues
+    nextValues,
+    meta
   ) => {
     updateSearchParams((nextParams) => {
+      const normalizedFilters = normalizeFilters(nextValues, {
+        source: 'filterPanel',
+        fieldId: meta.fieldId,
+        value: nextValues[meta.fieldId],
+        meta,
+      })
       updateStringParam(
         nextParams,
         globalFilterKey,
-        nextValues[globalFilterKey]
+        normalizedFilters[globalFilterKey]
       )
-      filterBindings.forEach((binding) => {
-        const queryKey = binding.queryKey ?? binding.fieldId
-        const value = nextValues[binding.fieldId]
+      writeFilterParams(nextParams, normalizedFilters)
+      resetPage(nextParams)
+    })
+  }
 
-        if (binding.type === 'array') {
-          updateListParam(nextParams, queryKey, value)
-          return
+  const handleToolbarFilterValueChange = (
+    fieldId: string,
+    nextValue: unknown
+  ) => {
+    const binding = filterBindings.find((item) => item.fieldId === fieldId)
+    if (!binding) return
+
+    updateSearchParams((nextParams) => {
+      const nextFilterValues = normalizeFilters(
+        { ...filters, [fieldId]: nextValue },
+        {
+          source: 'toolbar',
+          fieldId,
+          value: nextValue,
         }
-
-        updateStringParam(nextParams, queryKey, value)
-      })
+      )
+      writeFilterParams(nextParams, nextFilterValues)
       resetPage(nextParams)
     })
   }
@@ -350,7 +485,7 @@ function DataTableContent<
 
   const table = useReactTable({
     data: rows,
-    columns,
+    columns: resolvedColumns,
     pageCount,
     state: {
       rowSelection,
@@ -376,6 +511,25 @@ function DataTableContent<
   })
 
   const isFilterPanelCollapsed = filterPanel?.collapsed ?? filterPanelCollapsed
+  const selectedPageRowCount = table.getFilteredSelectedRowModel().rows.length
+  const currentPageRowCount = table.getRowModel().rows.length
+  const canSelectAllMatchingRows =
+    enableRowSelection && currentPageRowCount > 0 && total > currentPageRowCount
+  const shouldShowSelectAllBanner =
+    canSelectAllMatchingRows &&
+    (isAllMatchingRowsSelected || table.getIsAllPageRowsSelected())
+  const selectionState: DataTableSelectionState<TData> = {
+    isAllMatchingRowsSelected,
+    selectedRowCount: isAllMatchingRowsSelected
+      ? total
+      : selectedPageRowCount,
+    selectedPageRowCount,
+    totalRowCount: total,
+    pageCount,
+    queryState,
+    clearSelection,
+    currentPageRows: rows,
+  }
 
   return (
     <div
@@ -420,10 +574,26 @@ function DataTableContent<
           }
           onReset={handleResetFilters}
           filters={toolbar?.filters}
+          filterValues={filters}
+          onFilterValueChange={handleToolbarFilterValueChange}
           columnLabels={toolbar?.columnLabels}
         />
 
-        <div className='min-h-0 flex-1 overflow-x-auto rounded-md border'>
+        {shouldShowSelectAllBanner ? (
+          <DataTableSelectAllBanner
+            isAllSelected={isAllMatchingRowsSelected}
+            selectedPageCount={selectedPageRowCount}
+            totalCount={total}
+            pageCount={pageCount}
+            onSelectAll={() => {
+              setIsAllMatchingRowsSelected(true)
+              setRowSelection(getPageRowSelection(rows.length))
+            }}
+            onClear={clearSelection}
+          />
+        ) : null}
+
+        <div className='min-h-0 flex-1 overflow-hidden rounded-md border [&_[data-slot=table-container]]:h-full'>
           <Table
             className={cn(tableClassName)}
             style={{ minWidth: normalizeWidth(minTableWidth) }}
@@ -453,11 +623,11 @@ function DataTableContent<
             </TableHeader>
             <TableBody>
               {query.isLoading ? (
-                <TableMessage colSpan={columns.length}>
+                <TableMessage colSpan={resolvedColumns.length}>
                   {loadingText}
                 </TableMessage>
               ) : query.isError ? (
-                <TableMessage colSpan={columns.length}>
+                <TableMessage colSpan={resolvedColumns.length}>
                   {errorText}
                 </TableMessage>
               ) : table.getRowModel().rows.length ? (
@@ -483,7 +653,7 @@ function DataTableContent<
                   </TableRow>
                 ))
               ) : (
-                <TableMessage colSpan={columns.length}>
+                <TableMessage colSpan={resolvedColumns.length}>
                   {emptyText}
                 </TableMessage>
               )}
@@ -491,8 +661,12 @@ function DataTableContent<
           </Table>
         </div>
 
-        <DataTablePagination table={table} className='mt-auto' />
-        {bulkActions ? bulkActions(table) : null}
+        <DataTablePagination
+          table={table}
+          totalRows={total}
+          className='mt-auto'
+        />
+        {bulkActions ? bulkActions(table, selectionState) : null}
       </div>
     </div>
   )
@@ -525,10 +699,15 @@ function readFiltersFromSearchParams(
 ) {
   return bindings.reduce<Record<string, unknown>>((filters, binding) => {
     const queryKey = binding.queryKey ?? binding.fieldId
-    filters[binding.fieldId] =
-      binding.type === 'array'
-        ? searchParams.getAll(queryKey)
-        : (searchParams.get(queryKey) ?? '')
+    if (binding.type === 'array') {
+      filters[binding.fieldId] = searchParams.getAll(queryKey)
+      return filters
+    }
+    if (binding.type === 'json') {
+      filters[binding.fieldId] = parseJsonFilterParam(searchParams.get(queryKey))
+      return filters
+    }
+    filters[binding.fieldId] = searchParams.get(queryKey) ?? ''
     return filters
   }, {})
 }
@@ -587,6 +766,35 @@ function updateListParam(
     .forEach((item) => searchParams.append(key, item))
 }
 
+function updateJsonParam(
+  searchParams: URLSearchParams,
+  key: string,
+  value: unknown
+) {
+  if (value === undefined || value === null || value === '') {
+    searchParams.delete(key)
+    return
+  }
+
+  if (Array.isArray(value) && value.length === 0) {
+    searchParams.delete(key)
+    return
+  }
+
+  searchParams.set(key, JSON.stringify(value))
+}
+
+function parseJsonFilterParam(value: string | null) {
+  if (!value) {
+    return []
+  }
+  try {
+    return JSON.parse(value)
+  } catch {
+    return []
+  }
+}
+
 function updateNumberParam(
   searchParams: URLSearchParams,
   key: string,
@@ -626,6 +834,20 @@ function serializeSorting(sorting: SortingState) {
 
 function normalizeWidth(width: number | string) {
   return typeof width === 'number' ? `${width}px` : width
+}
+
+function getPageRowSelection(rowCount: number): RowSelectionState {
+  return Array.from({ length: rowCount }).reduce<RowSelectionState>(
+    (selection, _, index) => {
+      selection[String(index)] = true
+      return selection
+    },
+    {}
+  )
+}
+
+function countSelectedRows(rowSelection: RowSelectionState) {
+  return Object.values(rowSelection).filter(Boolean).length
 }
 
 function selectResponseRows<TData, TResponse>(

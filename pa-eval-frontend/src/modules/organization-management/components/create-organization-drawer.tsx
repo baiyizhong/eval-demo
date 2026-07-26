@@ -1,9 +1,18 @@
 import { useId } from 'react'
-import { useMutation, useQueryClient } from '@tanstack/react-query'
 import { z } from 'zod'
+import { useMutation, useQueryClient } from '@tanstack/react-query'
+import {
+  createOrganizationPayloadSchema,
+  normalizeOrganizationOwnerAccount,
+  type CreateOrganizationPayload,
+  type Organization,
+} from '@/modules/organization-management/data/schema'
+import { organizationsQueryKey } from '@/modules/organization-management/hooks/use-organizations'
 import { toast } from 'sonner'
-import { BaseForm } from '@/components/common/base-form'
-import { Drawer } from '@/components/common/drawer'
+import { refreshSessionStore } from '@/lib/session-refresh'
+import { useOrganizationStore } from '@/stores/organization.store'
+import { useSessionStore } from '@/stores/session.store'
+import { useAPI } from '@/hooks/use-api'
 import {
   FormControl,
   FormField,
@@ -13,19 +22,18 @@ import {
 } from '@/components/ui/form'
 import { Input } from '@/components/ui/input'
 import { Textarea } from '@/components/ui/textarea'
-import { useAPI } from '@/hooks/use-api'
-import { organizationsQueryKey } from '@/modules/organization-management/hooks/use-organizations'
-import {
-  createOrganizationPayloadSchema,
-  type CreateOrganizationPayload,
-  type Organization,
-} from '@/modules/organization-management/data/schema'
-import { useOrganizationStore } from '@/stores/organization.store'
+import { BaseForm } from '@/components/common/base-form'
+import { Drawer } from '@/components/common/drawer'
 
 const createOrganizationFormSchema = createOrganizationPayloadSchema.extend({
   name: z.string().trim().min(1, '请输入组织名称'),
   subsystem: z.string().trim().min(1, '请输入所属子系统'),
   description: z.string().trim().optional(),
+  defaultOwnerAccount: z
+    .string()
+    .trim()
+    .min(1, '请输入默认 Owner 登录账号')
+    .regex(/^[a-z0-9]+$/, '账号只允许输入英文和数字'),
 })
 
 type CreateOrganizationDrawerProps = {
@@ -54,8 +62,12 @@ export function CreateOrganizationDrawer({
       }),
     onSuccess: async (organization) => {
       upsertOrganization(organization)
+      await Promise.all([
+        queryClient.invalidateQueries({ queryKey: organizationsQueryKey }),
+        refreshSessionStore($api),
+      ])
       setCurrentOrganizationId(organization.id)
-      await queryClient.invalidateQueries({ queryKey: organizationsQueryKey })
+      useSessionStore.getState().setCurrentOrgId(organization.id)
       toast.success('组织创建成功')
       onOpenChange(false)
     },
@@ -90,6 +102,7 @@ export function CreateOrganizationDrawer({
           name: '',
           subsystem: '',
           description: '',
+          defaultOwnerAccount: '',
         }}
         onSubmit={handleSubmit}
         className='gap-4 overflow-visible'
@@ -117,6 +130,27 @@ export function CreateOrganizationDrawer({
                   <FormLabel>所属子系统</FormLabel>
                   <FormControl>
                     <Input placeholder='输入所属子系统' {...field} />
+                  </FormControl>
+                  <FormMessage />
+                </FormItem>
+              )}
+            />
+            <FormField
+              control={form.control}
+              name='defaultOwnerAccount'
+              render={({ field }) => (
+                <FormItem>
+                  <FormLabel>默认 Owner 登录账号</FormLabel>
+                  <FormControl>
+                    <Input
+                      placeholder='输入英文和数字账号'
+                      {...field}
+                      onChange={(event) =>
+                        field.onChange(
+                          normalizeOrganizationOwnerAccount(event.target.value)
+                        )
+                      }
+                    />
                   </FormControl>
                   <FormMessage />
                 </FormItem>

@@ -1,9 +1,11 @@
 from typing import Any
 
 from fastapi import APIRouter, Depends, Query
+from pydantic import BaseModel, Field
 
 from app.auth_context import CurrentUserContext, get_current_user_context
-from app.errors import BusinessError, UnsupportedOperationError
+from app.config import Settings, get_settings
+from app.errors import BusinessError
 from app.langfuse_db import LangfuseDatabaseReader, get_langfuse_db_reader
 from app.response import success
 from app.schemas import (
@@ -13,6 +15,20 @@ from app.schemas import (
 )
 
 router = APIRouter(prefix="/api/organizations", tags=["organizations"])
+
+
+class OrganizationMemberPayload(BaseModel):
+    email: str = Field(pattern=r"^[^@\s]+@[^@\s]+\.[^@\s]+$")
+    name: str | None = Field(default=None, max_length=120)
+    role: str = Field(pattern="^(OWNER|ADMIN|MEMBER|VIEWER|NONE)$")
+
+
+class UpdateOrganizationMemberPayload(BaseModel):
+    role: str = Field(pattern="^(OWNER|ADMIN|MEMBER|VIEWER|NONE)$")
+
+
+class ImportOrganizationMembersPayload(BaseModel):
+    members: list[OrganizationMemberPayload] = Field(default_factory=list)
 
 
 def _metadata(value: dict[str, Any] | None) -> dict[str, Any]:
@@ -86,6 +102,11 @@ def _merge_pa_eval_metadata(
     return merged
 
 
+def _default_owner_email(account: str, settings: Settings) -> str:
+    domain = settings.pa_eval_default_owner_email_domain.strip().lower()
+    return f"{account}@{domain}"
+
+
 @router.get("")
 async def list_organizations(
     page: int = Query(default=1, ge=1),
@@ -94,10 +115,21 @@ async def list_organizations(
     current_user: CurrentUserContext = Depends(get_current_user_context),
     reader: LangfuseDatabaseReader = Depends(get_langfuse_db_reader),
 ) -> dict[str, Any]:
-    rows = await reader.list_organizations_for_user(current_user.user_id)
+    if await reader.is_super_admin(current_user.user_id):
+        rows = await reader.list_organizations()
+    else:
+        rows = await reader.list_organizations_for_user(current_user.user_id)
     organizations = [_to_pa_organization(raw) for raw in rows]
     filtered = [item for item in organizations if _matches_keyword(item, keyword)]
     return success(_paginate(filtered, page, page_size))
+
+
+@router.get("/member-email-settings")
+async def get_member_email_settings(
+    settings: Settings = Depends(get_settings),
+) -> dict[str, Any]:
+    domain = settings.pa_eval_default_owner_email_domain.strip().lower()
+    return success({"defaultEmailDomain": domain.removeprefix("@")})
 
 
 @router.post("")
@@ -105,7 +137,10 @@ async def create_organization(
     payload: CreateOrganizationPayload,
     current_user: CurrentUserContext = Depends(get_current_user_context),
     reader: LangfuseDatabaseReader = Depends(get_langfuse_db_reader),
+    settings: Settings = Depends(get_settings),
 ) -> dict[str, Any]:
+    owner_account = payload.default_owner_account
+    owner_email = _default_owner_email(owner_account, settings)
     create_payload = {
         "name": payload.name,
         "default_project_name": f"{payload.name} 默认项目",
@@ -120,8 +155,8 @@ async def create_organization(
     }
     created = await reader.create_organization_with_default_project(
         create_payload,
-        current_user.user_id,
-        current_user.email,
+        owner_account,
+        owner_email,
     )
     return success(_to_pa_organization(created))
 
@@ -188,13 +223,77 @@ async def list_organization_members(
 
 
 @router.post("/{organization_id}/members")
-async def create_organization_member_not_supported() -> None:
-    raise UnsupportedOperationError("组织成员接口暂未接入 Langfuse Admin API")
+async def create_organization_member(
+    organization_id: str,
+    payload: OrganizationMemberPayload,
+    current_user: CurrentUserContext = Depends(get_current_user_context),
+    reader: LangfuseDatabaseReader = Depends(get_langfuse_db_reader),
+) -> dict[str, Any]:
+    member = await reader.create_organization_member(
+        organization_id,
+        current_user.user_id,
+        payload.model_dump(),
+    )
+    return success(member)
 
 
-@router.api_route(
-    "/{organization_id}/members/{member_id}",
-    methods=["PATCH", "DELETE"],
-)
-async def organization_member_not_supported() -> None:
-    raise UnsupportedOperationError("组织成员接口暂未接入 Langfuse Admin API")
+@router.post("/{organization_id}/members/import")
+async def import_organization_members(
+    organization_id: str,
+    payload: ImportOrganizationMembersPayload,
+    current_user: CurrentUserContext = Depends(get_current_user_context),
+    reader: LangfuseDatabaseReader = Depends(get_langfuse_db_reader),
+) -> dict[str, Any]:
+    members: list[dict[str, Any]] = []
+    failures: list[dict[str, Any]] = []
+    for index, member_payload in enumerate(payload.members, start=1):
+        member_data = member_payload.model_dump()
+        try:
+            members.append(
+                await reader.create_organization_member(
+                    organization_id,
+                    current_user.user_id,
+                    member_data,
+                )
+            )
+        except BusinessError as exc:
+            failures.append(
+                {
+                    "row": index,
+                    "email": member_data["email"],
+                    "reason": exc.message,
+                }
+            )
+    return success({"total": len(members), "datas": members, "failures": failures})
+
+
+@router.patch("/{organization_id}/members/{member_id}")
+async def update_organization_member(
+    organization_id: str,
+    member_id: str,
+    payload: UpdateOrganizationMemberPayload,
+    current_user: CurrentUserContext = Depends(get_current_user_context),
+    reader: LangfuseDatabaseReader = Depends(get_langfuse_db_reader),
+) -> dict[str, Any]:
+    member = await reader.update_organization_member(
+        organization_id,
+        member_id,
+        current_user.user_id,
+        payload.model_dump(),
+    )
+    return success(member)
+
+
+@router.delete("/{organization_id}/members/{member_id}")
+async def delete_organization_member(
+    organization_id: str,
+    member_id: str,
+    current_user: CurrentUserContext = Depends(get_current_user_context),
+    reader: LangfuseDatabaseReader = Depends(get_langfuse_db_reader),
+) -> dict[str, Any]:
+    deleted = await reader.delete_organization_member(
+        organization_id,
+        member_id,
+        current_user.user_id,
+    )
+    return success(deleted)

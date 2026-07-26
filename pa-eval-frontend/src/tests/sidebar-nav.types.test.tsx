@@ -1,5 +1,8 @@
+import React from 'react'
 import { Wrench } from 'lucide-react'
 import { SidebarNav } from '@/components/common/sidebar-nav'
+
+void React
 
 const sidebarNavItems = [
   {

@@ -15,7 +15,6 @@ import {
 } from '../api/evaluation-report-api'
 import { EvaluationReportAnalysis } from '../components/evaluation-report-analysis'
 import { EvaluationReportBadcaseTable } from '../components/evaluation-report-badcase-table'
-import { EvaluationReportItemTable } from '../components/evaluation-report-item-table'
 import { EvaluationReportSourceBadge } from '../components/evaluation-report-source-badge'
 import { EvaluationReportStatusBadge } from '../components/evaluation-report-status-badge'
 import { EvaluationReportSummary } from '../components/evaluation-report-summary'
@@ -45,16 +44,12 @@ export function ProjectEvaluationReportDetail() {
     await queryClient.invalidateQueries({
       queryKey: ['project-evaluation-report-badcases', projectId, reportId],
     })
-    await queryClient.invalidateQueries({
-      queryKey: ['project-evaluation-report-items', projectId, reportId],
-    })
   }
 
   const report = reportQuery.data
   const activeTab = searchParams.get('tab') ?? 'overview'
   const sections = report?.reportTemplateSnapshot?.sections
   const showBadcases = sections?.badcases ?? true
-  const showItems = sections?.items ?? true
 
   const handleExport = async () => {
     if (!report) return
@@ -145,9 +140,6 @@ export function ProjectEvaluationReportDetail() {
               <TabsList>
                 <TabsTrigger value='overview'>概览</TabsTrigger>
                 <TabsTrigger value='analysis'>分析</TabsTrigger>
-                {showItems ? (
-                  <TabsTrigger value='items'>评测数据</TabsTrigger>
-                ) : null}
                 {showBadcases ? (
                   <TabsTrigger value='badcases'>Badcase</TabsTrigger>
                 ) : null}
@@ -157,14 +149,6 @@ export function ProjectEvaluationReportDetail() {
               </TabsContent>
               <TabsContent value='analysis'>
                 <EvaluationReportAnalysis report={report} />
-              </TabsContent>
-              <TabsContent value='items' className='min-h-0'>
-                <EvaluationReportItemTable
-                  projectId={projectId}
-                  reportId={reportId}
-                  reportTitle={report.title}
-                  canEdit={canEditReport}
-                />
               </TabsContent>
               <TabsContent value='badcases' className='min-h-0'>
                 <EvaluationReportBadcaseTable

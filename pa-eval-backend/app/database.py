@@ -4,6 +4,7 @@ import psycopg_pool
 import httpx
 from psycopg.rows import dict_row
 from app.config import Settings
+from app.data_access.postgres import connect_postgres
 
 logger = logging.getLogger(__name__)
 
@@ -71,8 +72,7 @@ async def get_db_connection(settings: Settings):
         connection = await pool_ctx.__aenter__()
         return PooledConnectionWrapper(pool_ctx, connection)
     else:
-        conn = await psycopg.AsyncConnection.connect(
+        return await connect_postgres(
             settings.langfuse_database_url,
             row_factory=dict_row,
         )
-        return conn

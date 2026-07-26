@@ -1,27 +1,17 @@
 import { useMemo, useState, type ReactNode } from 'react'
 import * as Accordion from '@radix-ui/react-accordion'
-import * as Checkbox from '@radix-ui/react-checkbox'
 import * as Slider from '@radix-ui/react-slider'
-import * as ToggleGroup from '@radix-ui/react-toggle-group'
-import {
-  CalendarIcon,
-  Check,
-  ChevronDown,
-  ChevronUp,
-  Filter,
-  Search,
-} from 'lucide-react'
-import type { DateRange } from 'react-day-picker'
+import { ChevronDown, ChevronUp, Filter, Search } from 'lucide-react'
 import { cn } from '@/lib/utils'
 import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
-import { Calendar } from '@/components/ui/calendar'
+import { Checkbox } from '@/components/ui/checkbox'
 import { Input } from '@/components/ui/input'
-import {
-  Popover,
-  PopoverContent,
-  PopoverTrigger,
-} from '@/components/ui/popover'
+import { Separator } from '@/components/ui/separator'
+import { ToggleGroup, ToggleGroupItem } from '@/components/ui/toggle-group'
+import { DateTimePicker } from '@/components/common/date-time/date-time-picker'
+import { DateTimeRangePicker } from '@/components/common/date-time/date-time-range-picker'
+import type { DateTimeConfig } from '@/components/common/date-time/date-time.types'
 
 export type FilterValues = Record<string, unknown>
 
@@ -71,13 +61,6 @@ export type TagsFilterField = BaseFilterField & {
   options: FilterOption[]
 }
 
-type DateTimeConfig = {
-  placeholder?: string
-  showTime?: boolean
-  timeStep?: number
-  timeFormat?: 'HH:mm' | 'HH:mm:ss'
-}
-
 export type DateFilterField = BaseFilterField &
   DateTimeConfig & {
     type: 'date'
@@ -86,6 +69,8 @@ export type DateFilterField = BaseFilterField &
 export type DateRangeFilterField = BaseFilterField &
   DateTimeConfig & {
     type: 'dateRange'
+    startPlaceholder?: string
+    endPlaceholder?: string
   }
 
 export type FilterRendererContext<TField extends FilterField = FilterField> = {
@@ -176,9 +161,6 @@ export function FilterPanel({
   )
   const [openGroups, setOpenGroups] = useState<string[]>(initialOpenGroups)
   const [searchQuery, setSearchQuery] = useState('')
-  const [draftDateRanges, setDraftDateRanges] = useState<
-    Record<string, DateRange>
-  >({})
   const visibleGroups = useMemo(
     () => filterGroupsByQuery(groups, searchQuery),
     [groups, searchQuery]
@@ -217,7 +199,6 @@ export function FilterPanel({
       })
     })
 
-    setDraftDateRanges({})
     onChange(nextValue, {
       groupId: '*',
       fieldId: '*',
@@ -229,7 +210,7 @@ export function FilterPanel({
   return (
     <div
       className={cn(
-        'w-[280px] overflow-x-hidden overflow-y-auto rounded-md border border-gray-200 opacity-100 transition-[width,opacity,border-color] duration-300 ease-in-out',
+        'w-[280px] overflow-x-hidden overflow-y-auto rounded-md border opacity-100 transition-[width,opacity,border-color] duration-300 ease-in-out',
         collapsed && 'pointer-events-none border-transparent opacity-0',
         className
       )}
@@ -245,47 +226,42 @@ export function FilterPanel({
       }}
     >
       <div className='flex items-center justify-between px-5 pt-5 pb-4'>
-        <div className='flex items-center'>
-          <span className='flex size-7 shrink-0 items-center justify-center rounded-md border-gray-200 bg-white text-gray-900'>
+        <div className='flex items-center gap-2'>
+          <span className='bg-background text-foreground flex size-7 shrink-0 items-center justify-center rounded-md border'>
             <Filter size={16} />
           </span>
-          <span className='text-sm font-semibold tracking-tight whitespace-nowrap text-gray-900'>
+          <span className='text-sm font-semibold tracking-tight whitespace-nowrap'>
             {title}
           </span>
         </div>
-        <button
-          type='button'
-          onClick={clearAll}
-          className='text-sm text-gray-400 transition-colors hover:text-gray-600'
-        >
+        <Button type='button' variant='ghost' size='sm' onClick={clearAll}>
           清空
-        </button>
+        </Button>
       </div>
 
       <div className='px-5 pb-4'>
-        <div className='flex items-center gap-2.5 rounded-md bg-gray-100 px-3.5 py-2.5'>
+        <div className='relative'>
           <Search
+            className='text-muted-foreground pointer-events-none absolute top-1/2 left-3 -translate-y-1/2'
             size={16}
-            strokeWidth={2}
-            className='shrink-0 text-gray-400'
           />
-          <input
+          <Input
             type='text'
             value={searchQuery}
             onChange={(event) => setSearchQuery(event.target.value)}
             placeholder={searchPlaceholder}
-            className='min-w-0 flex-1 bg-transparent text-sm text-gray-700 outline-none placeholder:text-gray-400'
+            className='pl-9'
           />
         </div>
       </div>
 
-      <div className='border-t border-gray-100' />
+      <Separator />
 
       <Accordion.Root
         type='multiple'
         value={openGroups}
         onValueChange={setOpenGroups}
-        className='divide-y divide-gray-100'
+        className='divide-border divide-y'
       >
         {visibleGroups.map((group) => {
           const isOpen = openGroups.includes(group.id)
@@ -297,9 +273,9 @@ export function FilterPanel({
             <Accordion.Item key={group.id} value={group.id}>
               <Accordion.Header>
                 <Accordion.Trigger className='group flex w-full items-center justify-between px-5 py-4 focus:outline-none'>
-                  <div className='flex min-w-0 items-center gap-3 text-gray-900'>
+                  <div className='text-foreground flex min-w-0 items-center gap-3'>
                     {group.icon ? (
-                      <span className='shrink-0 text-gray-500'>
+                      <span className='text-muted-foreground shrink-0'>
                         {group.icon}
                       </span>
                     ) : null}
@@ -316,7 +292,7 @@ export function FilterPanel({
                         {activeCount}
                       </Badge>
                     ) : null}
-                    <span className='text-gray-400'>
+                    <span className='text-muted-foreground'>
                       {isOpen ? (
                         <ChevronUp size={16} />
                       ) : (
@@ -337,18 +313,6 @@ export function FilterPanel({
                         values: value,
                         fieldValue: value[field.id],
                         renderers,
-                        draftDateRange: draftDateRanges[field.id],
-                        setDraftDateRange: (nextDraft) =>
-                          setDraftDateRanges((prev) => ({
-                            ...prev,
-                            [field.id]: nextDraft,
-                          })),
-                        clearDraftDateRange: () =>
-                          setDraftDateRanges((prev) => {
-                            const next = { ...prev }
-                            delete next[field.id]
-                            return next
-                          }),
                         setFieldValue: (nextFieldValue, action) =>
                           setFieldValue(group, field, nextFieldValue, action),
                         clearFieldValue: () => clearFieldValue(group, field),
@@ -363,7 +327,9 @@ export function FilterPanel({
       </Accordion.Root>
 
       {visibleGroups.length === 0 ? (
-        <p className='px-5 py-4 text-sm text-gray-400'>没有匹配的筛选项</p>
+        <p className='text-muted-foreground px-5 py-4 text-sm'>
+          没有匹配的筛选项
+        </p>
       ) : null}
 
       <div className='h-2' />
@@ -383,11 +349,9 @@ function FieldFrame({
       {field.type !== 'custom' ? (
         <div className='flex items-start justify-between gap-3'>
           <div className='min-w-0'>
-            <div className='text-sm font-medium text-gray-800'>
-              {field.label}
-            </div>
+            <div className='text-sm font-medium'>{field.label}</div>
             {field.description ? (
-              <div className='mt-1 text-xs leading-5 text-gray-400'>
+              <div className='text-muted-foreground mt-1 text-xs leading-5'>
                 {field.description}
               </div>
             ) : null}
@@ -409,9 +373,6 @@ function renderField({
   values,
   fieldValue,
   renderers,
-  draftDateRange,
-  setDraftDateRange,
-  clearDraftDateRange,
   setFieldValue,
   clearFieldValue,
 }: {
@@ -420,9 +381,6 @@ function renderField({
   values: FilterValues
   fieldValue: unknown
   renderers?: FilterRendererMap
-  draftDateRange?: DateRange
-  setDraftDateRange: (nextDraft: DateRange) => void
-  clearDraftDateRange: () => void
   setFieldValue: (nextValue: unknown, action: string) => void
   clearFieldValue: () => void
 }) {
@@ -443,7 +401,7 @@ function renderField({
         onChange={(event) => setFieldValue(event.target.value, 'input')}
         placeholder={(field as InputFilterField).placeholder}
         disabled={field.disabled}
-        className='h-10 rounded-md border-gray-200 bg-gray-50 text-sm'
+        className='h-10 text-sm'
       />
     )
   }
@@ -479,23 +437,34 @@ function renderField({
   }
 
   if (field.type === 'date') {
+    const dateField = field as DateFilterField
+
     return (
-      <DateControl
-        field={field as DateFilterField}
+      <DateTimePicker
         value={typeof fieldValue === 'string' ? fieldValue : ''}
+        disabled={dateField.disabled}
+        placeholder={dateField.placeholder}
+        showTime={dateField.showTime}
+        timeStep={dateField.timeStep}
+        timeFormat={dateField.timeFormat}
         onChange={(nextValue) => setFieldValue(nextValue, 'date')}
       />
     )
   }
 
   if (field.type === 'dateRange') {
+    const dateRangeField = field as DateRangeFilterField
+
     return (
-      <DateRangeControl
-        field={field as DateRangeFilterField}
+      <DateTimeRangePicker
         value={toStringArray(fieldValue)}
-        draftRange={draftDateRange}
-        setDraftRange={setDraftDateRange}
-        clearDraftRange={clearDraftDateRange}
+        disabled={dateRangeField.disabled}
+        placeholder={dateRangeField.placeholder}
+        startPlaceholder={dateRangeField.startPlaceholder}
+        endPlaceholder={dateRangeField.endPlaceholder}
+        showTime={dateRangeField.showTime}
+        timeStep={dateRangeField.timeStep}
+        timeFormat={dateRangeField.timeFormat}
         onChange={(nextValue) => setFieldValue(nextValue, 'dateRange')}
       />
     )
@@ -521,7 +490,7 @@ function renderField({
   }
 
   return (
-    <div className='rounded-md border border-dashed border-gray-200 px-3 py-2 text-sm text-gray-400'>
+    <div className='text-muted-foreground rounded-md border border-dashed px-3 py-2 text-sm'>
       未配置字段渲染器：{field.type}
     </div>
   )
@@ -551,19 +520,15 @@ function CheckboxList({
         <li key={option.value}>
           <label className='group flex cursor-pointer items-center justify-between'>
             <div className='flex min-w-0 items-center gap-3'>
-              <Checkbox.Root
+              <Checkbox
                 checked={value.includes(option.value)}
                 disabled={field.disabled || option.disabled}
                 onCheckedChange={(checked) =>
                   toggleOption(option.value, checked === true)
                 }
-                className='flex h-5 w-5 shrink-0 items-center justify-center rounded-md border-2 border-gray-300 bg-white transition-colors focus:outline-none focus-visible:ring-2 focus-visible:ring-gray-400 disabled:cursor-not-allowed disabled:opacity-50 data-[state=checked]:border-gray-900 data-[state=checked]:bg-gray-900'
-              >
-                <Checkbox.Indicator>
-                  <Check size={12} strokeWidth={3} className='text-white' />
-                </Checkbox.Indicator>
-              </Checkbox.Root>
-              <span className='truncate text-sm text-gray-700 transition-colors group-hover:text-gray-900'>
+                className='size-5'
+              />
+              <span className='text-muted-foreground group-hover:text-foreground truncate text-sm transition-colors'>
                 {option.label}
               </span>
             </div>
@@ -597,17 +562,17 @@ function RangeControl({
         onValueChange={(nextValue) => onChange(toRangeValue(nextValue, field))}
         className='relative flex w-full touch-none items-center select-none'
       >
-        <Slider.Track className='relative h-2 w-full grow overflow-hidden rounded-md bg-gray-100'>
-          <Slider.Range className='absolute h-full bg-gray-900' />
+        <Slider.Track className='bg-muted relative h-2 w-full grow overflow-hidden rounded-md'>
+          <Slider.Range className='bg-primary absolute h-full' />
         </Slider.Track>
         {value.map((_, index) => (
           <Slider.Thumb
             key={index}
-            className='block h-4 w-4 rounded-md border border-gray-900 bg-white shadow-sm transition-shadow hover:ring-4 hover:ring-gray-200 focus:outline-none focus-visible:ring-4 focus-visible:ring-gray-200 disabled:pointer-events-none disabled:opacity-50'
+            className='border-primary bg-background focus-visible:ring-ring hover:ring-ring/20 block size-4 rounded-md border shadow-sm transition-shadow hover:ring-4 focus:outline-none focus-visible:ring-4 disabled:pointer-events-none disabled:opacity-50'
           />
         ))}
       </Slider.Root>
-      <div className='flex items-center justify-between text-xs text-gray-500'>
+      <div className='text-muted-foreground flex items-center justify-between text-xs'>
         <span>{formatValue(value[0])}</span>
         <span>{formatValue(value[1])}</span>
       </div>
@@ -625,210 +590,26 @@ function TagsControl({
   onChange: (nextValue: string[]) => void
 }) {
   return (
-    <ToggleGroup.Root
+    <ToggleGroup
       type='multiple'
       value={value}
       onValueChange={onChange}
       disabled={field.disabled}
       className='flex flex-wrap gap-2'
+      variant='outline'
+      size='sm'
+      spacing={2}
     >
       {field.options.map((option) => (
-        <ToggleGroup.Item
+        <ToggleGroupItem
           key={option.value}
           value={option.value}
           disabled={option.disabled}
-          className='rounded-md border border-gray-200 px-3 py-1.5 text-sm text-gray-600 transition-colors hover:border-gray-300 hover:text-gray-900 focus:outline-none focus-visible:ring-2 focus-visible:ring-gray-400 disabled:cursor-not-allowed disabled:opacity-50 data-[state=on]:border-gray-900 data-[state=on]:bg-gray-900 data-[state=on]:text-white'
         >
           {option.label}
-        </ToggleGroup.Item>
+        </ToggleGroupItem>
       ))}
-    </ToggleGroup.Root>
-  )
-}
-
-function DateControl({
-  field,
-  value,
-  onChange,
-}: {
-  field: DateFilterField
-  value: string
-  onChange: (nextValue: string) => void
-}) {
-  const datePart = getDatePart(value)
-  const selectedDate = parseDate(datePart)
-  const timeValue = getTimePart(value, field)
-
-  const updateDate = (date?: Date) => {
-    if (!date) {
-      onChange('')
-      return
-    }
-
-    const nextDate = formatDate(date)
-    onChange(
-      field.showTime ? joinDateTime(nextDate, timeValue, field) : nextDate
-    )
-  }
-
-  const updateTime = (time: string) => {
-    if (!datePart) {
-      return
-    }
-
-    onChange(joinDateTime(datePart, normalizeTime(time, field), field))
-  }
-
-  return (
-    <Popover>
-      <PopoverTrigger asChild>
-        <Button
-          type='button'
-          variant='outline'
-          className={cn(
-            'h-10 justify-start rounded-md border-gray-200 bg-gray-50 px-3 text-left font-normal',
-            !value && 'text-gray-400'
-          )}
-          disabled={field.disabled}
-        >
-          <CalendarIcon size={16} strokeWidth={1.75} />
-          <span className='truncate'>
-            {value || field.placeholder || '选择日期'}
-          </span>
-        </Button>
-      </PopoverTrigger>
-      <PopoverContent align='start' className='w-auto p-0'>
-        <Calendar
-          mode='single'
-          selected={selectedDate}
-          onSelect={updateDate}
-          initialFocus
-        />
-        {field.showTime ? (
-          <div className='border-t border-gray-100 p-3'>
-            <Input
-              type='time'
-              step={
-                field.timeStep ?? (field.timeFormat === 'HH:mm:ss' ? 1 : 60)
-              }
-              value={timeValue}
-              disabled={!datePart}
-              onChange={(event) => updateTime(event.target.value)}
-            />
-          </div>
-        ) : null}
-      </PopoverContent>
-    </Popover>
-  )
-}
-
-function DateRangeControl({
-  field,
-  value,
-  draftRange,
-  setDraftRange,
-  clearDraftRange,
-  onChange,
-}: {
-  field: DateRangeFilterField
-  value: string[]
-  draftRange?: DateRange
-  setDraftRange: (nextRange: DateRange) => void
-  clearDraftRange: () => void
-  onChange: (nextValue: string[]) => void
-}) {
-  const selectedRange = draftRange ?? toDateRange(value)
-  const displayText =
-    value.length > 0 ? value.join(' 至 ') : field.placeholder || '选择日期区间'
-  const startDate = getDatePart(value[0])
-  const endDate = getDatePart(value[1])
-
-  const updateRange = (range?: DateRange) => {
-    if (!range?.from) {
-      clearDraftRange()
-      onChange([])
-      return
-    }
-
-    if (!range.to) {
-      setDraftRange(range)
-      return
-    }
-
-    clearDraftRange()
-    const start = formatDate(range.from)
-    const end = formatDate(range.to)
-    const startTime = getTimePart(value[0], field, 'start')
-    const endTime = getTimePart(value[1], field, 'end')
-
-    onChange(
-      field.showTime
-        ? [
-            joinDateTime(start, startTime, field),
-            joinDateTime(end, endTime, field),
-          ]
-        : [start, end]
-    )
-  }
-
-  const updateTime = (index: 0 | 1, time: string) => {
-    if (!startDate || !endDate) {
-      return
-    }
-
-    const nextValue = [...value]
-    const date = index === 0 ? startDate : endDate
-    nextValue[index] = joinDateTime(date, normalizeTime(time, field), field)
-    onChange(nextValue)
-  }
-
-  return (
-    <Popover>
-      <PopoverTrigger asChild>
-        <Button
-          type='button'
-          variant='outline'
-          className={cn(
-            'h-auto min-h-10 justify-start rounded-md border-gray-200 bg-gray-50 px-3 text-left font-normal',
-            value.length === 0 && 'text-gray-400'
-          )}
-          disabled={field.disabled}
-        >
-          <CalendarIcon size={16} strokeWidth={1.75} />
-          <span className='truncate'>{displayText}</span>
-        </Button>
-      </PopoverTrigger>
-      <PopoverContent align='start' className='w-auto p-0'>
-        <Calendar
-          mode='range'
-          selected={selectedRange}
-          onSelect={updateRange}
-          initialFocus
-        />
-        {field.showTime ? (
-          <div className='grid grid-cols-2 gap-2 border-t border-gray-100 p-3'>
-            <Input
-              type='time'
-              step={
-                field.timeStep ?? (field.timeFormat === 'HH:mm:ss' ? 1 : 60)
-              }
-              value={getTimePart(value[0], field, 'start')}
-              disabled={!startDate || !endDate}
-              onChange={(event) => updateTime(0, event.target.value)}
-            />
-            <Input
-              type='time'
-              step={
-                field.timeStep ?? (field.timeFormat === 'HH:mm:ss' ? 1 : 60)
-              }
-              value={getTimePart(value[1], field, 'end')}
-              disabled={!startDate || !endDate}
-              onChange={(event) => updateTime(1, event.target.value)}
-            />
-          </div>
-        ) : null}
-      </PopoverContent>
-    </Popover>
+    </ToggleGroup>
   )
 }
 
@@ -963,71 +744,4 @@ function toRangeValue(
   const end = typeof fieldValue[1] === 'number' ? fieldValue[1] : fallback[1]
 
   return [start, end]
-}
-
-function parseDate(value?: string) {
-  if (!value) {
-    return undefined
-  }
-
-  const [year, month, day] = value.split('-').map(Number)
-
-  if (!year || !month || !day) {
-    return undefined
-  }
-
-  return new Date(year, month - 1, day)
-}
-
-function formatDate(date: Date) {
-  const year = date.getFullYear()
-  const month = String(date.getMonth() + 1).padStart(2, '0')
-  const day = String(date.getDate()).padStart(2, '0')
-
-  return `${year}-${month}-${day}`
-}
-
-function getDatePart(value?: string) {
-  return typeof value === 'string' ? value.split(' ')[0] || '' : ''
-}
-
-function getTimePart(
-  value: unknown,
-  field: DateTimeConfig,
-  rangeSide: 'start' | 'end' = 'start'
-) {
-  if (!field.showTime) {
-    return ''
-  }
-
-  const fallback = rangeSide === 'end' ? '23:59:59' : '00:00:00'
-  const rawTime =
-    typeof value === 'string' && value.includes(' ')
-      ? value.split(' ')[1]
-      : fallback
-
-  return normalizeTime(rawTime, field)
-}
-
-function normalizeTime(value: string, field: DateTimeConfig) {
-  const withSeconds = field.timeFormat === 'HH:mm:ss'
-  const [hour = '00', minute = '00', second = '00'] = value.split(':')
-  const normalized = `${hour.padStart(2, '0')}:${minute.padStart(2, '0')}:${second.padStart(2, '0')}`
-
-  return withSeconds ? normalized : normalized.slice(0, 5)
-}
-
-function joinDateTime(date: string, time: string, field: DateTimeConfig) {
-  return `${date} ${normalizeTime(time, field)}`
-}
-
-function toDateRange(value: string[]): DateRange | undefined {
-  const from = parseDate(getDatePart(value[0]))
-  const to = parseDate(getDatePart(value[1]))
-
-  if (!from) {
-    return undefined
-  }
-
-  return { from, to }
 }

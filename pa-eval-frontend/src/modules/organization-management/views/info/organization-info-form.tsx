@@ -3,8 +3,16 @@ import { z } from 'zod'
 import { useForm } from 'react-hook-form'
 import { zodResolver } from '@hookform/resolvers/zod'
 import { useMutation, useQueryClient } from '@tanstack/react-query'
+import {
+  type Organization,
+  type UpdateOrganizationPayload,
+} from '@/modules/organization-management/data/schema'
+import { organizationsQueryKey } from '@/modules/organization-management/hooks/use-organizations'
 import { Save } from 'lucide-react'
 import { toast } from 'sonner'
+import { useOrganizationStore } from '@/stores/organization.store'
+import { useAPI } from '@/hooks/use-api'
+import { usePermission } from '@/hooks/use-permission'
 import { Button } from '@/components/ui/button'
 import {
   Form,
@@ -16,18 +24,27 @@ import {
 } from '@/components/ui/form'
 import { Input } from '@/components/ui/input'
 import { Textarea } from '@/components/ui/textarea'
-import { useAPI } from '@/hooks/use-api'
-import { organizationsQueryKey } from '@/modules/organization-management/hooks/use-organizations'
-import {
-  type Organization,
-  type UpdateOrganizationPayload,
-} from '@/modules/organization-management/data/schema'
-import { useOrganizationStore } from '@/stores/organization.store'
+
+const ORGANIZATION_NAME_MAX_LENGTH = 40
+const ORGANIZATION_SUBSYSTEM_MAX_LENGTH = 40
+const ORGANIZATION_DESCRIPTION_MAX_LENGTH = 200
 
 const organizationInfoFormSchema = z.object({
-  name: z.string().trim().min(2, '请输入至少 2 个字符的组织名称'),
-  subsystem: z.string().trim().optional(),
-  description: z.string().trim().optional(),
+  name: z
+    .string()
+    .trim()
+    .min(2, '请输入至少 2 个字符的组织名称')
+    .max(ORGANIZATION_NAME_MAX_LENGTH, '组织名称不能超过40个字'),
+  subsystem: z
+    .string()
+    .trim()
+    .max(ORGANIZATION_SUBSYSTEM_MAX_LENGTH, '所属子系统不能超过40个字')
+    .optional(),
+  description: z
+    .string()
+    .trim()
+    .max(ORGANIZATION_DESCRIPTION_MAX_LENGTH, '组织描述不能超过200个字')
+    .optional(),
 })
 
 type OrganizationInfoFormValues = z.infer<typeof organizationInfoFormSchema>
@@ -36,9 +53,13 @@ type OrganizationInfoFormProps = {
   organization: Organization
 }
 
-export function OrganizationInfoForm({ organization }: OrganizationInfoFormProps) {
+export function OrganizationInfoForm({
+  organization,
+}: OrganizationInfoFormProps) {
   const $api = useAPI()
   const queryClient = useQueryClient()
+  const { can } = usePermission({ type: 'org', orgId: organization.id })
+  const canEditOrganization = can('org:organization:edit')
   const upsertOrganization = useOrganizationStore(
     (state) => state.upsertOrganization
   )
@@ -80,6 +101,8 @@ export function OrganizationInfoForm({ organization }: OrganizationInfoFormProps
   })
 
   const onSubmit = async (values: OrganizationInfoFormValues) => {
+    if (!canEditOrganization) return
+
     await updateOrganizationMutation.mutateAsync({
       ...values,
       subsystem: values.subsystem || undefined,
@@ -88,7 +111,10 @@ export function OrganizationInfoForm({ organization }: OrganizationInfoFormProps
 
   return (
     <Form {...form}>
-      <form onSubmit={form.handleSubmit(onSubmit)} className='flex flex-col gap-6'>
+      <form
+        onSubmit={form.handleSubmit(onSubmit)}
+        className='flex flex-col gap-6'
+      >
         <FormField
           control={form.control}
           name='name'
@@ -96,7 +122,12 @@ export function OrganizationInfoForm({ organization }: OrganizationInfoFormProps
             <FormItem>
               <FormLabel>组织名称</FormLabel>
               <FormControl>
-                <Input placeholder='输入组织名称' {...field} />
+                <Input
+                  placeholder='输入组织名称'
+                  disabled={!canEditOrganization}
+                  maxLength={ORGANIZATION_NAME_MAX_LENGTH}
+                  {...field}
+                />
               </FormControl>
               <FormMessage />
             </FormItem>
@@ -109,7 +140,12 @@ export function OrganizationInfoForm({ organization }: OrganizationInfoFormProps
             <FormItem>
               <FormLabel>所属子系统</FormLabel>
               <FormControl>
-                <Input placeholder='输入所属子系统' {...field} />
+                <Input
+                  placeholder='输入所属子系统'
+                  disabled={!canEditOrganization}
+                  maxLength={ORGANIZATION_SUBSYSTEM_MAX_LENGTH}
+                  {...field}
+                />
               </FormControl>
               <FormMessage />
             </FormItem>
@@ -125,6 +161,8 @@ export function OrganizationInfoForm({ organization }: OrganizationInfoFormProps
                 <Textarea
                   placeholder='输入组织描述'
                   className='min-h-28 resize-none'
+                  disabled={!canEditOrganization}
+                  maxLength={ORGANIZATION_DESCRIPTION_MAX_LENGTH}
                   {...field}
                 />
               </FormControl>
@@ -132,12 +170,17 @@ export function OrganizationInfoForm({ organization }: OrganizationInfoFormProps
             </FormItem>
           )}
         />
-        <div className='flex justify-end'>
-          <Button type='submit' disabled={updateOrganizationMutation.isPending}>
-            <Save data-icon='inline-start' />
-            保存
-          </Button>
-        </div>
+        {canEditOrganization ? (
+          <div className='flex justify-end'>
+            <Button
+              type='submit'
+              disabled={updateOrganizationMutation.isPending}
+            >
+              <Save data-icon='inline-start' />
+              保存
+            </Button>
+          </div>
+        ) : null}
       </form>
     </Form>
   )

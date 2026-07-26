@@ -1,3 +1,7 @@
+import type {
+  TraceListResponse,
+  TraceLogRow,
+} from '@/modules/app-observability/types'
 import type { ApiMethod } from '@/api/types'
 import type {
   DataTableListResponse,
@@ -14,9 +18,11 @@ type AutoEvaluationApiClient = {
   getAutoEvaluationTasks: ApiMethod
   createAutoEvaluationTask: ApiMethod
   countProjectTraces: ApiMethod
+  listProjectTraces: ApiMethod
   getAutoEvaluationSummary: ApiMethod
   getAutoEvaluationTask: ApiMethod
   deleteAutoEvaluationTask: ApiMethod
+  rerunAutoEvaluationTask: ApiMethod
   getAutoEvaluationLatestReport: ApiMethod
   getAutoEvaluationRuns: ApiMethod
 }
@@ -28,8 +34,10 @@ export function createProjectAutoEvaluationTask(
     name: string
     description: string
     scoreName: string
+    scoreMapping: AutoEvaluationTaskFormInput['scoreMapping']
     evaluatorId: string
     sampleRate: number
+    badcase: AutoEvaluationTaskFormInput['badcase']
     dataSource: AutoEvaluationTaskFormInput['dataSource']
     variableMapping: AutoEvaluationTaskFormInput['variableMapping']
     reportTemplateId: string
@@ -61,12 +69,58 @@ export function countProjectAutoEvaluationTraces(
   })
 }
 
+export function listProjectAutoEvaluationTracePreview(
+  api: AutoEvaluationApiClient,
+  projectId: string,
+  traceFilter: Extract<
+    AutoEvaluationTaskFormInput['dataSource'],
+    { type: 'TRACE_FILTER' }
+  >,
+  options: { page?: number; pageSize?: number } = {}
+) {
+  return api.listProjectTraces<TraceListResponse>({
+    path: { projectId },
+    query: buildAutoEvaluationTraceListQuery(traceFilter, options),
+  })
+}
+
+function buildAutoEvaluationTraceListQuery(
+  traceFilter: Extract<
+    AutoEvaluationTaskFormInput['dataSource'],
+    { type: 'TRACE_FILTER' }
+  >,
+  options: { page?: number; pageSize?: number }
+) {
+  const userId = traceFilter.userId.trim()
+  const sessionId = traceFilter.sessionId.trim()
+  const createdAtRange = traceFilter.createdAtRange
+    .map((value) => value.trim())
+    .filter(Boolean)
+
+  return {
+    page: options.page ?? 1,
+    pageSize: options.pageSize ?? 10,
+    ...(createdAtRange.length === 2
+      ? { createdAtRange }
+      : { timeRange: traceFilter.timeRange || '1d' }),
+    ...(traceFilter.environments.length
+      ? { environments: traceFilter.environments }
+      : {}),
+    ...(userId ? { userId } : {}),
+    ...(sessionId ? { sessionId } : {}),
+    ...(traceFilter.tags.length ? { tags: traceFilter.tags } : {}),
+  }
+}
+
+export type { TraceLogRow }
+
 export function listProjectAutoEvaluationTasks(
   api: AutoEvaluationApiClient,
   projectId: string,
   query: DataTableQueryState
 ) {
   const keyword = query.keyword.trim()
+  const status = query.filters.status as string[] | undefined
 
   return api.getAutoEvaluationTasks<
     DataTableListResponse<AutoEvaluationTaskRecord>
@@ -76,6 +130,7 @@ export function listProjectAutoEvaluationTasks(
       page: query.page,
       pageSize: query.pageSize,
       ...(keyword ? { keyword } : {}),
+      ...(status?.length ? { status } : {}),
     },
   })
 }
@@ -114,14 +169,26 @@ export function deleteProjectAutoEvaluationTask(
   })
 }
 
+export function rerunProjectAutoEvaluationTask(
+  api: AutoEvaluationApiClient,
+  projectId: string,
+  taskId: string
+) {
+  return api.rerunAutoEvaluationTask<AutoEvaluationTaskRecord>({
+    path: { projectId, taskId },
+  })
+}
+
 export function getProjectAutoEvaluationLatestReport(
   api: AutoEvaluationApiClient,
   projectId: string,
   taskId: string
 ) {
-  return api.getAutoEvaluationLatestReport<AutoEvaluationLatestReportSummary | null>({
-    path: { projectId, taskId },
-  })
+  return api.getAutoEvaluationLatestReport<AutoEvaluationLatestReportSummary | null>(
+    {
+      path: { projectId, taskId },
+    }
+  )
 }
 
 export function listProjectAutoEvaluationRuns(

@@ -1,6 +1,6 @@
 import type { ReactNode } from 'react'
 import { usePermission } from '@/hooks/use-permission'
-import { usePermissionScope } from './permission-scope'
+import { usePermissionScope } from './permission-scope-context'
 
 interface CanProps {
   permission: string
@@ -9,8 +9,8 @@ interface CanProps {
 }
 
 export function Can({ permission, fallback = null, children }: CanProps) {
-  const { projectId } = usePermissionScope()
-  const { can } = usePermission(projectId)
+  const scope = usePermissionScope()
+  const { can } = usePermission(scope)
 
   return can(permission) ? <>{children}</> : <>{fallback}</>
 }
