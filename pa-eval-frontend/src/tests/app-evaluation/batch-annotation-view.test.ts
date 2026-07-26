@@ -1,0 +1,234 @@
+import assert from 'node:assert/strict'
+import { readFileSync } from 'node:fs'
+import { test } from 'node:test'
+
+const apiSource = readFileSync(
+  'src/modules/app-evaluation/api/annotation-api.ts',
+  'utf8'
+)
+const registrySource = readFileSync('src/api/registry.ts', 'utf8')
+const routesSource = readFileSync('src/routes/sidebar-routes.tsx', 'utf8')
+const queueColumnsSource = readFileSync(
+  'src/modules/app-evaluation/components/annotation-queue-columns.tsx',
+  'utf8'
+)
+const queueRowActionsSource = readFileSync(
+  'src/modules/app-evaluation/components/annotation-queue-row-actions.tsx',
+  'utf8'
+)
+const queueDetailSource = readFileSync(
+  'src/modules/app-evaluation/views/annotation-queue-detail.tsx',
+  'utf8'
+)
+const queueListSource = readFileSync(
+  'src/modules/app-evaluation/views/annotation-queues.tsx',
+  'utf8'
+)
+const annotationBatchSource = readFileSync(
+  'src/modules/app-evaluation/views/annotation-batch.tsx',
+  'utf8'
+)
+
+test('annotation queue list exposes the batch annotation entry', () => {
+  assert.match(queueColumnsSource, /开始标注/)
+  assert.match(queueColumnsSource, /继续标注/)
+  assert.match(queueColumnsSource, /completedCount >= 1/)
+  assert.match(queueColumnsSource, /canEdit\?: boolean/)
+  assert.match(queueColumnsSource, /if \(canEdit\)/)
+  assert.match(queueColumnsSource, /annotation-queues/)
+  assert.match(
+    queueColumnsSource,
+    /onExport\?: \(queue: AnnotationQueueRecord\) => void/
+  )
+  assert.match(queueColumnsSource, /onExport={onExport}/)
+  assert.match(queueRowActionsSource, /导出数据/)
+  assert.match(queueListSource, /AnnotationExportDialog/)
+  assert.match(queueListSource, /exportingQueue/)
+  assert.doesNotMatch(queueListSource, /downloadJson/)
+  assert.doesNotMatch(queueDetailSource, /全量导出/)
+  assert.doesNotMatch(queueColumnsSource, /进入标注/)
+  assert.doesNotMatch(queueColumnsSource, /数据管理/)
+  assert.doesNotMatch(queueColumnsSource, /row\.original\.id}\/batch-annotate/)
+})
+
+test('batch annotation page is routed with PRD path', () => {
+  assert.match(routesSource, /ProjectAnnotationBatch/)
+  assert.match(routesSource, /manual-annotations\/:queueId\/batch/)
+  assert.match(routesSource, /annotation-queues\/:queueId\/batch-annotate/)
+})
+
+test('batch annotation api helpers call preview and submit endpoints', () => {
+  assert.match(apiSource, /previewProjectAnnotationBatch/)
+  assert.match(apiSource, /saveProjectAnnotationBatchScores/)
+  assert.match(apiSource, /api\.previewProjectAnnotationBatch/)
+  assert.match(apiSource, /api\.saveProjectAnnotationBatchScores/)
+  assert.match(apiSource, /JSON\.stringify\(metadataFilters\)/)
+  assert.match(apiSource, /JSON\.stringify\(inputFilters\)/)
+  assert.match(apiSource, /JSON\.stringify\(outputFilters\)/)
+  assert.match(registrySource, /previewProjectAnnotationBatch/)
+  assert.match(registrySource, /saveProjectAnnotationBatchScores/)
+  assert.match(registrySource, /batch-preview/)
+  assert.match(registrySource, /batch-scores/)
+})
+
+test('batch annotation workspace focuses on pending item scoring layout', () => {
+  const pageSource = annotationBatchSource
+  const scoreFormSource = readFileSync(
+    'src/modules/app-evaluation/components/annotation-score-form.tsx',
+    'utf8'
+  )
+
+  assert.match(pageSource, /批量标注工作台/)
+  assert.match(scoreFormSource, /保存并下一条/)
+  assert.match(scoreFormSource, /showAddToDataset/)
+  assert.match(pageSource, /TableHeader/)
+  assert.match(pageSource, /AnnotationItemTableRows/)
+  assert.match(pageSource, /高级筛选/)
+  assert.match(pageSource, /BatchAdvancedFilterPopover/)
+  assert.match(pageSource, /BatchViewOptions/)
+  assert.match(pageSource, /添加 Metadata 条件/)
+  assert.match(pageSource, /添加 Input 条件/)
+  assert.match(pageSource, /添加 Output 条件/)
+  assert.match(pageSource, /inputFilters/)
+  assert.match(pageSource, /outputFilters/)
+  assert.match(pageSource, /assigneeIds/)
+  assert.match(pageSource, /selectedAssigneeId/)
+  assert.match(pageSource, /预设处理人/)
+  assert.match(pageSource, /全部预设处理人/)
+  assert.match(pageSource, /listProjectAnnotationUsers/)
+  assert.match(pageSource, /getProjectAnnotationQueueItemFilterCounts/)
+  assert.match(pageSource, /createBatchAssigneeOptions/)
+  assert.doesNotMatch(pageSource, /queue\.assignees\.map/)
+  assert.match(pageSource, /assigneeId: selectedAssigneeId/)
+  assert.match(pageSource, /filterMockBatchItems\([\s\S]*selectedAssigneeId/)
+  assert.match(pageSource, /saveProjectAnnotationScores/)
+  assert.match(pageSource, /saveProjectAnnotationBatchScores/)
+  assert.match(pageSource, /expectedMatchCount:\s*targetIds\.length/)
+  assert.match(pageSource, /filters:\s*\{\s*itemIds:\s*targetIds\s*\}/)
+  assert.doesNotMatch(
+    pageSource,
+    /filters:\s*\{\s*status:\s*\['PENDING'\],\s*itemIds:\s*targetIds/
+  )
+  assert.match(pageSource, /successItemIds/)
+  assert.match(pageSource, /上一页/)
+  assert.match(pageSource, /下一页/)
+  assert.match(pageSource, /调整左右区域宽度/)
+  assert.match(pageSource, /scorePaneWidth/)
+  assert.match(pageSource, /useState\(400\)/)
+  assert.match(pageSource, /--annotation-score-width/)
+  assert.match(pageSource, /minmax\(320px,var\(--annotation-score-width\)\)/)
+  assert.match(pageSource, /HoverPreviewCell/)
+  assert.match(pageSource, /批量保存/)
+  assert.match(pageSource, /本次批量保存指标/)
+  assert.match(pageSource, /batchScoreConfigId/)
+  assert.match(pageSource, /effectiveBatchScoreConfigId/)
+  assert.match(pageSource, /input\.scores\.filter/)
+  assert.match(pageSource, /score\.configId === effectiveBatchScoreConfigId/)
+  assert.match(pageSource, /将批量保存已选中的/)
+  assert.doesNotMatch(pageSource, /应用到选中项/)
+  assert.doesNotMatch(pageSource, /将应用到已选中的/)
+  assert.match(pageSource, /showSaveNext/)
+  assert.match(pageSource, /sourceDataId: '源数据 ID'/)
+  assert.match(pageSource, /assignee: '预设处理人'/)
+  assert.match(pageSource, /columnVisibility\.sourceDataId/)
+  assert.match(pageSource, /columnVisibility\.assignee/)
+  assert.match(pageSource, /item\.assignee\?\.name/)
+  assert.doesNotMatch(pageSource, /source: '源对象'/)
+  assert.match(pageSource, /类型/)
+  assert.match(pageSource, /状态/)
+  assert.match(pageSource, /Input/)
+  assert.match(pageSource, /Output/)
+  assert.match(pageSource, /Metadata/)
+  assert.match(pageSource, /保存后自动移出左侧列表/)
+  assert.match(pageSource, /useSearchParams/)
+  assert.match(pageSource, /metadataFilters/)
+  assert.match(pageSource, /AnnotationScoreForm/)
+  assert.doesNotMatch(pageSource, /源对象摘要/)
+  assert.doesNotMatch(pageSource, /placeholder='Metadata key'/)
+  assert.doesNotMatch(pageSource, /placeholder='Metadata value'/)
+  assert.doesNotMatch(pageSource, /AnnotationSourcePanel/)
+  assert.doesNotMatch(pageSource, /AnnotationDatasetDialog/)
+  assert.doesNotMatch(pageSource, /按当前筛选批量标注/)
+  assert.doesNotMatch(pageSource, /上次提交结果/)
+  assert.doesNotMatch(pageSource, /confirm\(/)
+})
+
+test('batch annotation hides locally completed items only in pending view', () => {
+  assert.match(
+    annotationBatchSource,
+    /const hideLocallyCompletedItems = statusView === 'PENDING'/
+  )
+  assert.match(
+    annotationBatchSource,
+    /hideLocallyCompletedItems\s*\?\s*\(itemDatas \?\? \[\]\)\.filter/
+  )
+  assert.doesNotMatch(
+    annotationBatchSource,
+    /\(itemDatas \?\? \[\]\)\.filter\(\(item\) => !completedItemIds\.includes\(item\.id\)\)/
+  )
+})
+
+test('batch annotation applies selection when exactly one item is checked', () => {
+  assert.match(
+    annotationBatchSource,
+    /const isBatchScoring = selectedItemsOnPage\.length > 0/
+  )
+  assert.doesNotMatch(
+    annotationBatchSource,
+    /const isBatchScoring = selectedItemsOnPage\.length > 1/
+  )
+})
+
+test('batch annotation source data id does not use hover preview', () => {
+  const sourceDataIdBranch = [
+    ...annotationBatchSource.matchAll(
+      /\{columnVisibility\.sourceDataId \? \(([\s\S]*?)\) : null\}/g
+    ),
+  ]
+    .map((match) => match[1])
+    .find((branch) => /item\.objectId/.test(branch))
+
+  assert.ok(sourceDataIdBranch)
+  assert.match(sourceDataIdBranch, /<TableCell/)
+  assert.match(sourceDataIdBranch, /item\.objectId/)
+  assert.match(sourceDataIdBranch, /truncate/)
+  assert.doesNotMatch(sourceDataIdBranch, /SummaryTableCell|HoverPreviewCell/)
+  assert.match(
+    annotationBatchSource,
+    /function SummaryTableCell[\s\S]*<HoverPreviewCell/
+  )
+})
+
+test('batch advanced filters are edited as drafts and applied explicitly', () => {
+  assert.match(annotationBatchSource, /draftMetadataFilters/)
+  assert.match(annotationBatchSource, /draftInputFilters/)
+  assert.match(annotationBatchSource, /draftOutputFilters/)
+  assert.match(annotationBatchSource, /const applyDraftFilters = \(\) =>/)
+  assert.match(annotationBatchSource, />\s*应用\s*</)
+
+  assert.match(
+    annotationBatchSource,
+    /title='Metadata'[\s\S]*filters=\{draftMetadataFilters\}[\s\S]*onChange=\{setDraftMetadataFilters\}/
+  )
+  assert.match(
+    annotationBatchSource,
+    /title='Input'[\s\S]*filters=\{draftInputFilters\}[\s\S]*onChange=\{setDraftInputFilters\}/
+  )
+  assert.match(
+    annotationBatchSource,
+    /title='Output'[\s\S]*filters=\{draftOutputFilters\}[\s\S]*onChange=\{setDraftOutputFilters\}/
+  )
+
+  assert.doesNotMatch(
+    annotationBatchSource,
+    /title='Metadata'[\s\S]*onChange=\{onMetadataFiltersChange\}/
+  )
+  assert.doesNotMatch(
+    annotationBatchSource,
+    /title='Input'[\s\S]*onChange=\{onInputFiltersChange\}/
+  )
+  assert.doesNotMatch(
+    annotationBatchSource,
+    /title='Output'[\s\S]*onChange=\{onOutputFiltersChange\}/
+  )
+})

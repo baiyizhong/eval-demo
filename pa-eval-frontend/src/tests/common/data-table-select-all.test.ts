@@ -1,0 +1,47 @@
+import assert from 'node:assert/strict'
+import { readFileSync } from 'node:fs'
+import { test } from 'node:test'
+
+const dataTableSource = readFileSync(
+  new URL('../../components/common/data-table/data-table.tsx', import.meta.url),
+  'utf8'
+)
+const selectAllBannerSource = readFileSync(
+  new URL(
+    '../../components/common/data-table/select-all-banner.tsx',
+    import.meta.url
+  ),
+  'utf8'
+)
+const traceBulkActionsSource = readFileSync(
+  new URL(
+    '../../modules/app-observability/components/trace-log-bulk-actions.tsx',
+    import.meta.url
+  ),
+  'utf8'
+)
+
+test('data table select-all banner uses Chinese copy for page and cross-page selection', () => {
+  assert.match(selectAllBannerSource, /已选择本页全部/)
+  assert.match(selectAllBannerSource, /选择符合当前筛选条件的全部/)
+  assert.match(selectAllBannerSource, /已选择符合当前筛选条件的全部/)
+  assert.match(selectAllBannerSource, /清除选择/)
+})
+
+test('data table passes cross-page selection state to bulk actions', () => {
+  assert.match(dataTableSource, /isAllMatchingRowsSelected/)
+  assert.match(dataTableSource, /bulkActions\(table, selectionState\)/)
+})
+
+test('trace bulk mutations submit a filter snapshot without enumerating all matching traces', () => {
+  assert.match(traceBulkActionsSource, /shouldUseAllMatchingRows/)
+  assert.match(traceBulkActionsSource, /selection\?\.isAllMatchingRowsSelected/)
+  assert.match(traceBulkActionsSource, /type: 'FILTER'/)
+  assert.match(traceBulkActionsSource, /excludedTraceIds: \[\]/)
+  assert.match(traceBulkActionsSource, /buildTraceListQuery/)
+  assert.doesNotMatch(traceBulkActionsSource, /resolveSelectedTraceIds/)
+  assert.doesNotMatch(
+    traceBulkActionsSource,
+    /table\.getIsAllPageRowsSelected\(\)/
+  )
+})

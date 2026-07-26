@@ -1,0 +1,8 @@
+services:
+  langfuse-worker:
+    environment:
+      CLICKHOUSE_DISABLE_LAZY_MATERIALIZATION: "true"
+
+  langfuse-web:
+    environment:
+      CLICKHOUSE_DISABLE_LAZY_MATERIALIZATION: "true"
