@@ -6,9 +6,17 @@ from pydantic import BaseModel, ConfigDict, Field, model_validator
 from app.auth_context import CurrentUserContext, get_current_user_context
 from app.errors import BusinessError
 from app.langfuse_db import LangfuseDatabaseReader, get_langfuse_db_reader
+from app.langfuse.evaluation_adapter import LangfuseEvaluationAdapter
 from app.response import success
 
 router = APIRouter(prefix="/api/evaluators", tags=["evaluators"])
+
+
+def get_langfuse_evaluation_adapter(
+    db_reader: LangfuseDatabaseReader = Depends(get_langfuse_db_reader),
+) -> LangfuseEvaluationAdapter:
+    return LangfuseEvaluationAdapter(db_reader, db_reader)
+
 
 EvaluatorType = Literal["LLM_AS_JUDGE", "CODE", "WORKFLOW", "SDK"]
 EvaluatorProvider = Literal["LANGFUSE", "DIFY", "HIAGENT", "N8N", "OPENJUDGE"]
@@ -119,10 +127,6 @@ class CreateEvaluatorPayload(BaseModel):
 
         return self
 
-
-def _serialized_variables_length(variables: list[str]) -> int:
-    return sum(len(variable) for variable in variables) + max(len(variables) - 1, 0)
-
     def to_storage_payload(self) -> dict[str, Any]:
         base = {
             "name": self.name,
@@ -186,6 +190,10 @@ def _serialized_variables_length(variables: list[str]) -> int:
         ]
 
 
+def _serialized_variables_length(variables: list[str]) -> int:
+    return sum(len(variable) for variable in variables) + max(len(variables) - 1, 0)
+
+
 def _paginate(items: list[dict[str, Any]], page: int, page_size: int) -> dict[str, Any]:
     start = (page - 1) * page_size
     return {"total": len(items), "datas": items[start : start + page_size]}
@@ -234,14 +242,15 @@ async def create_evaluator(
     payload: CreateEvaluatorPayload,
     current_user: CurrentUserContext = Depends(get_current_user_context),
     reader: LangfuseDatabaseReader = Depends(get_langfuse_db_reader),
+    adapter: LangfuseEvaluationAdapter = Depends(get_langfuse_evaluation_adapter),
 ) -> dict[str, Any]:
     storage_payload = payload.to_storage_payload()
 
     if payload.type in {"LLM_AS_JUDGE", "CODE"}:
-        evaluator = await reader.create_langfuse_evaluator(
-            storage_payload,
+        evaluator = await adapter.create_langfuse_evaluator(
+            payload.project_id,
             current_user.user_id,
-            current_user.email,
+            storage_payload,
         )
     else:
         evaluator = await reader.create_pa_evaluator(
@@ -298,17 +307,19 @@ async def delete_evaluator(
     evaluator_id: str,
     current_user: CurrentUserContext = Depends(get_current_user_context),
     reader: LangfuseDatabaseReader = Depends(get_langfuse_db_reader),
+    adapter: LangfuseEvaluationAdapter = Depends(get_langfuse_evaluation_adapter),
 ) -> dict[str, Any]:
     evaluator = await reader.get_evaluator_for_user(
         evaluator_id,
         current_user.user_id,
     )
     if evaluator["provider"] == "LANGFUSE":
-        raise BusinessError(
-            4018,
-            "Langfuse 原生评估器由 Langfuse 管理，请在 Langfuse 中删除",
-            409,
+        await adapter.delete_langfuse_evaluator(
+            evaluator.get("projectId", ""),
+            current_user.user_id,
+            evaluator_id,
         )
+        return success({"id": evaluator_id})
 
     await reader.delete_pa_evaluator_for_user(evaluator_id, current_user.user_id)
     return success({"id": evaluator_id})

@@ -1,4 +1,4 @@
-import { useEffect, useState, type InputHTMLAttributes } from 'react'
+import { useState, type InputHTMLAttributes } from 'react'
 import { Plus, Trash2 } from 'lucide-react'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
@@ -372,16 +372,11 @@ function ScoreTextInput({
 }) {
   const [draftValue, setDraftValue] = useState(value)
   const [isComposing, setIsComposing] = useState(false)
-
-  useEffect(() => {
-    if (!isComposing) {
-      setDraftValue(value)
-    }
-  }, [isComposing, value])
+  const inputValue = isComposing ? draftValue : value
 
   return (
     <Input
-      value={draftValue}
+      value={inputValue}
       disabled={disabled}
       inputMode={inputMode}
       placeholder={placeholder}

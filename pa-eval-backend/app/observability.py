@@ -12,6 +12,7 @@ from app.langfuse_clickhouse import (
     get_langfuse_clickhouse_reader,
 )
 from app.langfuse_db import LangfuseDatabaseReader, get_langfuse_db_reader
+from app.langfuse.observability_adapter import LangfuseObservabilityAdapter
 from app.response import success
 
 router = APIRouter(prefix="/api/projects/{project_id}", tags=["observability"])
@@ -25,6 +26,12 @@ class TracePatchPayload(BaseModel):
     metadata: dict[str, Any] = Field(default_factory=dict)
 
 
+def get_langfuse_observability_adapter(
+    db_reader: LangfuseDatabaseReader = Depends(get_langfuse_db_reader),
+) -> LangfuseObservabilityAdapter:
+    return LangfuseObservabilityAdapter(db_reader)
+
+
 @router.get("/trace-metrics")
 async def get_trace_metrics(
     project_id: str,
@@ -32,12 +39,15 @@ async def get_trace_metrics(
     environment: str = Query(default="all"),
     current_user: CurrentUserContext = Depends(get_current_user_context),
     db_reader: LangfuseDatabaseReader = Depends(get_langfuse_db_reader),
-    trace_reader: LangfuseClickHouseReader = Depends(get_langfuse_clickhouse_reader),
+    observability_adapter: LangfuseObservabilityAdapter = Depends(
+        get_langfuse_observability_adapter
+    ),
 ) -> dict[str, Any]:
     await db_reader.ensure_project_visible(project_id, current_user.user_id)
     try:
-        metrics = await trace_reader.get_trace_metrics(
+        metrics = await observability_adapter.get_trace_metrics(
             project_id,
+            current_user.user_id,
             time_range=time_range,
             environment=environment,
         )
@@ -94,7 +104,9 @@ async def list_traces(
     ),
     current_user: CurrentUserContext = Depends(get_current_user_context),
     db_reader: LangfuseDatabaseReader = Depends(get_langfuse_db_reader),
-    trace_reader: LangfuseClickHouseReader = Depends(get_langfuse_clickhouse_reader),
+    observability_adapter: LangfuseObservabilityAdapter = Depends(
+        get_langfuse_observability_adapter
+    ),
 ) -> dict[str, Any]:
     project = await db_reader.get_project_for_user(project_id, current_user.user_id)
     resolved_statuses = _first_non_empty_list(statuses, statuses_bracket)
@@ -130,8 +142,9 @@ async def list_traces(
         numeric_score_filters=parsed_numeric_score_filters,
     )
     try:
-        traces = await trace_reader.list_traces(
+        traces = await observability_adapter.list_traces(
             project_id,
+            current_user.user_id,
             page=page,
             page_size=page_size,
             keyword=keyword,
@@ -142,7 +155,7 @@ async def list_traces(
             anchor_trace_id=anchor_trace_id,
             cursor_created_at=cursor_created_at,
             cursor_trace_id=cursor_trace_id,
-            user_id=user_id,
+            user_id_filter=user_id,
             business_id=business_id,
             latency_min=latency_min,
             latency_max=latency_max,
@@ -170,10 +183,16 @@ async def get_trace(
     trace_id: str,
     current_user: CurrentUserContext = Depends(get_current_user_context),
     db_reader: LangfuseDatabaseReader = Depends(get_langfuse_db_reader),
-    trace_reader: LangfuseClickHouseReader = Depends(get_langfuse_clickhouse_reader),
+    observability_adapter: LangfuseObservabilityAdapter = Depends(
+        get_langfuse_observability_adapter
+    ),
 ) -> dict[str, Any]:
     project = await db_reader.get_project_for_user(project_id, current_user.user_id)
-    trace = await trace_reader.get_trace(project_id, trace_id)
+    trace = await observability_adapter.get_trace(
+        project_id,
+        current_user.user_id,
+        trace_id,
+    )
     return success(_with_project_name(trace, project["name"]))
 
 
@@ -184,11 +203,14 @@ async def get_trace_observation(
     observation_id: str,
     current_user: CurrentUserContext = Depends(get_current_user_context),
     db_reader: LangfuseDatabaseReader = Depends(get_langfuse_db_reader),
-    trace_reader: LangfuseClickHouseReader = Depends(get_langfuse_clickhouse_reader),
+    observability_adapter: LangfuseObservabilityAdapter = Depends(
+        get_langfuse_observability_adapter
+    ),
 ) -> dict[str, Any]:
     project = await db_reader.get_project_for_user(project_id, current_user.user_id)
-    observation = await trace_reader.get_observation(
+    observation = await observability_adapter.get_observation(
         project_id,
+        current_user.user_id,
         trace_id,
         observation_id,
     )
@@ -203,13 +225,16 @@ async def patch_trace(
     current_user: CurrentUserContext = Depends(get_current_user_context),
     db_reader: LangfuseDatabaseReader = Depends(get_langfuse_db_reader),
     trace_reader: LangfuseClickHouseReader = Depends(get_langfuse_clickhouse_reader),
+    observability_adapter: LangfuseObservabilityAdapter = Depends(
+        get_langfuse_observability_adapter
+    ),
 ) -> dict[str, Any]:
     await db_reader.ensure_project_visible(project_id, current_user.user_id)
     current_detail = await trace_reader.get_trace(project_id, trace_id)
-    patched = await db_reader.patch_trace_for_user(
+    patched = await observability_adapter.patch_trace(
         project_id,
-        trace_id,
         current_user.user_id,
+        trace_id,
         payload.model_dump(),
     )
     return success({**current_detail, **patched})

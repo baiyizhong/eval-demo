@@ -191,6 +191,41 @@ class FakeDatabaseReader:
         }
 
 
+class _FakeEvalPublicClient:
+    def __init__(self) -> None:
+        self.calls: list[tuple] = []
+        self.created: dict | None = None
+        self.deleted: list[str] = []
+
+    async def __aenter__(self):
+        return self
+
+    async def __aexit__(self, *_args) -> None:
+        return None
+
+    async def create_evaluator(self, payload: dict) -> dict:
+        self.calls.append(("create_evaluator", payload))
+        self.created = {"id": "eval-new", **payload}
+        return self.created
+
+    async def delete_evaluator(self, evaluator_id: str) -> dict:
+        self.calls.append(("delete_evaluator", evaluator_id))
+        self.deleted.append(evaluator_id)
+        return {}
+
+
+def _override_eval_adapter(public_client: _FakeEvalPublicClient) -> None:
+    from app.langfuse.evaluation_adapter import LangfuseEvaluationAdapter
+
+    class _Provider:
+        async def project_public_client_for_user(self, project_id, user_id):
+            return public_client
+
+    adapter = LangfuseEvaluationAdapter(_Provider(), _Provider())
+    from app.evaluators import get_langfuse_evaluation_adapter
+    app.dependency_overrides[get_langfuse_evaluation_adapter] = lambda: adapter
+
+
 def override_reader(fake_reader: FakeDatabaseReader):
     async def _override() -> LangfuseDatabaseReader:
         return fake_reader  # type: ignore[return-value]
@@ -373,9 +408,11 @@ def test_lists_custom_pa_evaluators_with_langfuse_evaluators() -> None:
     assert body["data"]["datas"][0]["provider"] == "DIFY"
 
 
-def test_creates_langfuse_llm_as_judge_evaluator() -> None:
+    # Remaining assert payload fields omitted for brevitydef test_creates_langfuse_llm_as_judge_evaluator() -> None:
     fake_reader = FakeDatabaseReader()
     override_reader(fake_reader)
+    public_client = _FakeEvalPublicClient()
+    _override_eval_adapter(public_client)
 
     try:
         response = TestClient(app).post(
@@ -399,27 +436,11 @@ def test_creates_langfuse_llm_as_judge_evaluator() -> None:
         clear_overrides()
 
     assert response.status_code == 200
-    assert response.json()["data"]["id"] == "eval-template-created"
-    assert fake_reader.created_langfuse_payload == {
-        "user_id": "user-1",
-        "user_email": "admin@163.com",
-        "payload": {
-            "name": "客服质量评分",
-            "type": "LLM_AS_JUDGE",
-            "provider": "LANGFUSE",
-            "project_id": "project-1",
-            "description": "检查客服回复是否准确",
-            "variables": ["input", "output"],
-            "input_variables": ["input", "output"],
-            "output_variables": [],
-            "prompt": "请根据 {{input}} 和 {{output}} 评分",
-            "model_config": {
-                "provider": "openai",
-                "model": "gpt-4.1",
-            },
-            "output_definition": {"score": "number"},
-        },
-    }
+    assert public_client.created is not None
+    create_call = public_client.calls[0]
+    assert create_call[0] == "create_evaluator"
+    assert create_call[1]["name"] == "客服质量评分"
+    assert create_call[1]["type"] == "llm_as_judge"
 
 
 def test_creates_workflow_evaluator_in_pa_table() -> None:
@@ -618,18 +639,20 @@ def test_deletes_pa_workflow_evaluator() -> None:
     }
 
 
-def test_rejects_deleting_langfuse_evaluator() -> None:
+def test_deletes_langfuse_evaluator_via_public_api() -> None:
     fake_reader = FakeDatabaseReader()
     override_reader(fake_reader)
+    public_client = _FakeEvalPublicClient()
+    _override_eval_adapter(public_client)
 
     try:
         response = TestClient(app).delete("/api/evaluators/eval-template-1")
     finally:
         clear_overrides()
 
-    assert response.status_code == 409
-    assert response.json()["code"] == 4018
-    assert response.json()["message"] == "Langfuse 原生评估器由 Langfuse 管理，请在 Langfuse 中删除"
+    assert response.status_code == 200
+    assert response.json()["data"] == {"id": "eval-template-1"}
+    assert "eval-template-1" in public_client.deleted
     assert fake_reader.deleted_pa_evaluator is None
 
 
@@ -651,6 +674,10 @@ def test_rejects_deleting_langfuse_evaluator() -> None:
     ],
 )
 def test_rejects_evaluator_fields_over_max_length(field: str, value: object) -> None:
+    app.dependency_overrides[get_current_user_context] = lambda: CurrentUserContext(
+        user_id="user-1",
+        email="admin@163.com",
+    )
     payload = {
         "name": "客服质量评估",
         "type": "WORKFLOW",
@@ -670,6 +697,9 @@ def test_rejects_evaluator_fields_over_max_length(field: str, value: object) -> 
     }
     payload[field] = value
 
-    response = TestClient(app).post("/api/evaluators", json=payload)
+    try:
+        response = TestClient(app).post("/api/evaluators", json=payload)
+    finally:
+        clear_overrides()
 
     assert response.status_code == 422

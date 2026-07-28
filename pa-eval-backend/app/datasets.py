@@ -10,6 +10,7 @@ from app.config import Settings, get_settings
 from app.dataset_exports import generate_dataset_export_file
 from app.errors import BusinessError
 from app.langfuse_db import LangfuseDatabaseReader, get_langfuse_db_reader
+from app.langfuse.datasets_adapter import LangfuseDatasetsAdapter
 from app.response import success
 
 router = APIRouter(prefix="/api/projects/{project_id}/datasets", tags=["datasets"])
@@ -23,6 +24,13 @@ EXPORT_MEDIA_TYPES = {
     "csv": "text/csv; charset=utf-8",
     "txt": "text/plain; charset=utf-8",
 }
+
+
+def get_langfuse_datasets_adapter(
+    db_reader: LangfuseDatabaseReader = Depends(get_langfuse_db_reader),
+) -> LangfuseDatasetsAdapter:
+    return LangfuseDatasetsAdapter(db_reader)
+
 
 
 class DatasetPayload(BaseModel):
@@ -169,9 +177,11 @@ async def list_datasets(
     dataset_type: DatasetType | None = Query(default=None, alias="type"),
     current_user: CurrentUserContext = Depends(get_current_user_context),
     reader: LangfuseDatabaseReader = Depends(get_langfuse_db_reader),
+    adapter: LangfuseDatasetsAdapter = Depends(get_langfuse_datasets_adapter),
 ) -> dict[str, Any]:
+    await reader.ensure_project_visible(project_id, current_user.user_id)
     return success(
-        await reader.list_datasets_for_user(
+        await adapter.list_datasets(
             project_id,
             current_user.user_id,
             page=page,
@@ -189,11 +199,13 @@ async def create_dataset_item(
     payload: DatasetItemPayload,
     current_user: CurrentUserContext = Depends(get_current_user_context),
     reader: LangfuseDatabaseReader = Depends(get_langfuse_db_reader),
+    adapter: LangfuseDatasetsAdapter = Depends(get_langfuse_datasets_adapter),
 ) -> dict[str, Any]:
-    item = await reader.create_dataset_item_for_user(
+    await reader.ensure_project_visible(project_id, current_user.user_id)
+    item = await adapter.create_dataset_item(
         project_id,
-        dataset_id,
         current_user.user_id,
+        dataset_id,
         _to_dataset_item_payload(payload),
     )
     return success(item)
@@ -207,12 +219,14 @@ async def update_dataset_item(
     payload: DatasetItemPayload,
     current_user: CurrentUserContext = Depends(get_current_user_context),
     reader: LangfuseDatabaseReader = Depends(get_langfuse_db_reader),
+    adapter: LangfuseDatasetsAdapter = Depends(get_langfuse_datasets_adapter),
 ) -> dict[str, Any]:
-    item = await reader.update_dataset_item_for_user(
+    await reader.ensure_project_visible(project_id, current_user.user_id)
+    item = await adapter.update_dataset_item(
         project_id,
+        current_user.user_id,
         dataset_id,
         item_id,
-        current_user.user_id,
         _to_dataset_item_payload(payload),
     )
     return success(item)
@@ -225,12 +239,11 @@ async def archive_dataset_item(
     item_id: str,
     current_user: CurrentUserContext = Depends(get_current_user_context),
     reader: LangfuseDatabaseReader = Depends(get_langfuse_db_reader),
+    adapter: LangfuseDatasetsAdapter = Depends(get_langfuse_datasets_adapter),
 ) -> dict[str, Any]:
-    item = await reader.archive_dataset_item_for_user(
-        project_id,
-        dataset_id,
-        item_id,
-        current_user.user_id,
+    await reader.ensure_project_visible(project_id, current_user.user_id)
+    item = await adapter.archive_dataset_item(
+        project_id, current_user.user_id, dataset_id, item_id
     )
     return success(item)
 
@@ -242,12 +255,11 @@ async def delete_dataset_item(
     item_id: str,
     current_user: CurrentUserContext = Depends(get_current_user_context),
     reader: LangfuseDatabaseReader = Depends(get_langfuse_db_reader),
+    adapter: LangfuseDatasetsAdapter = Depends(get_langfuse_datasets_adapter),
 ) -> dict[str, Any]:
-    await reader.delete_dataset_item_for_user(
-        project_id,
-        dataset_id,
-        item_id,
-        current_user.user_id,
+    await reader.ensure_project_visible(project_id, current_user.user_id)
+    await adapter.delete_dataset_item(
+        project_id, current_user.user_id, dataset_id, item_id
     )
     return success({"id": item_id})
 
@@ -258,8 +270,10 @@ async def create_dataset(
     payload: DatasetPayload,
     current_user: CurrentUserContext = Depends(get_current_user_context),
     reader: LangfuseDatabaseReader = Depends(get_langfuse_db_reader),
+    adapter: LangfuseDatasetsAdapter = Depends(get_langfuse_datasets_adapter),
 ) -> dict[str, Any]:
-    dataset = await reader.create_dataset_for_user(
+    await reader.ensure_project_visible(project_id, current_user.user_id)
+    dataset = await adapter.create_dataset(
         project_id,
         current_user.user_id,
         _to_dataset_payload(payload),
@@ -273,8 +287,10 @@ async def get_dataset_name_availability(
     name: str = Query(min_length=1),
     current_user: CurrentUserContext = Depends(get_current_user_context),
     reader: LangfuseDatabaseReader = Depends(get_langfuse_db_reader),
+    adapter: LangfuseDatasetsAdapter = Depends(get_langfuse_datasets_adapter),
 ) -> dict[str, Any]:
-    available = await reader.is_dataset_name_available_for_user(
+    await reader.ensure_project_visible(project_id, current_user.user_id)
+    available = await adapter.is_dataset_name_available(
         project_id,
         current_user.user_id,
         name.strip(),
@@ -288,12 +304,10 @@ async def get_dataset(
     dataset_id: str,
     current_user: CurrentUserContext = Depends(get_current_user_context),
     reader: LangfuseDatabaseReader = Depends(get_langfuse_db_reader),
+    adapter: LangfuseDatasetsAdapter = Depends(get_langfuse_datasets_adapter),
 ) -> dict[str, Any]:
-    dataset = await reader.get_dataset_for_user(
-        project_id,
-        dataset_id,
-        current_user.user_id,
-    )
+    await reader.ensure_project_visible(project_id, current_user.user_id)
+    dataset = await adapter.get_dataset(project_id, current_user.user_id, dataset_id)
     return success(dataset)
 
 
@@ -304,8 +318,10 @@ async def update_dataset(
     payload: DatasetPayload,
     current_user: CurrentUserContext = Depends(get_current_user_context),
     reader: LangfuseDatabaseReader = Depends(get_langfuse_db_reader),
+    adapter: LangfuseDatasetsAdapter = Depends(get_langfuse_datasets_adapter),
 ) -> dict[str, Any]:
-    dataset = await reader.update_dataset_for_user(
+    await reader.ensure_project_visible(project_id, current_user.user_id)
+    dataset = await adapter.update_dataset(
         project_id,
         dataset_id,
         current_user.user_id,
@@ -320,12 +336,10 @@ async def delete_dataset(
     dataset_id: str,
     current_user: CurrentUserContext = Depends(get_current_user_context),
     reader: LangfuseDatabaseReader = Depends(get_langfuse_db_reader),
+    adapter: LangfuseDatasetsAdapter = Depends(get_langfuse_datasets_adapter),
 ) -> dict[str, Any]:
-    await reader.delete_dataset_for_user(
-        project_id,
-        dataset_id,
-        current_user.user_id,
-    )
+    await reader.ensure_project_visible(project_id, current_user.user_id)
+    await adapter.delete_dataset(project_id, dataset_id, current_user.user_id)
     return success({"id": dataset_id})
 
 
@@ -335,11 +349,11 @@ async def get_dataset_metrics(
     dataset_id: str,
     current_user: CurrentUserContext = Depends(get_current_user_context),
     reader: LangfuseDatabaseReader = Depends(get_langfuse_db_reader),
+    adapter: LangfuseDatasetsAdapter = Depends(get_langfuse_datasets_adapter),
 ) -> dict[str, Any]:
-    metrics = await reader.get_dataset_metric_summary_for_user(
-        project_id,
-        dataset_id,
-        current_user.user_id,
+    await reader.ensure_project_visible(project_id, current_user.user_id)
+    metrics = await adapter.get_dataset_metrics(
+        project_id, current_user.user_id, dataset_id
     )
     return success(metrics)
 
@@ -351,12 +365,14 @@ async def count_dataset_item_statuses(
     keyword: str | None = Query(default=None),
     current_user: CurrentUserContext = Depends(get_current_user_context),
     reader: LangfuseDatabaseReader = Depends(get_langfuse_db_reader),
+    adapter: LangfuseDatasetsAdapter = Depends(get_langfuse_datasets_adapter),
 ) -> dict[str, Any]:
+    await reader.ensure_project_visible(project_id, current_user.user_id)
     return success(
-        await reader.count_dataset_item_statuses_for_user(
+        await adapter.count_dataset_item_statuses(
             project_id,
-            dataset_id,
             current_user.user_id,
+            dataset_id,
             keyword=keyword,
         )
     )
@@ -372,12 +388,14 @@ async def list_dataset_items(
     status: list[str] | None = Query(default=None),
     current_user: CurrentUserContext = Depends(get_current_user_context),
     reader: LangfuseDatabaseReader = Depends(get_langfuse_db_reader),
+    adapter: LangfuseDatasetsAdapter = Depends(get_langfuse_datasets_adapter),
 ) -> dict[str, Any]:
+    await reader.ensure_project_visible(project_id, current_user.user_id)
     return success(
-        await reader.list_dataset_items_for_user(
+        await adapter.list_dataset_items(
             project_id,
-            dataset_id,
             current_user.user_id,
+            dataset_id,
             page=page,
             page_size=page_size,
             keyword=keyword,

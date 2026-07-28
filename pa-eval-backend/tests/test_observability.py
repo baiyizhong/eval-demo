@@ -1,4 +1,5 @@
 from datetime import datetime
+import inspect
 
 import pytest
 from fastapi.testclient import TestClient
@@ -15,6 +16,19 @@ from app.langfuse_clickhouse import (
 )
 from app.langfuse_db import LangfuseDatabaseReader, get_langfuse_db_reader
 from app.main import app
+from app import observability
+
+
+def test_observability_routes_depend_on_langfuse_public_adapter() -> None:
+    for handler in (
+        observability.get_trace_metrics,
+        observability.list_traces,
+        observability.get_trace,
+        observability.get_trace_observation,
+    ):
+        parameters = inspect.signature(handler).parameters
+        assert "observability_adapter" in parameters
+        assert "trace_reader" not in parameters
 
 
 class FakeDatabaseReader:
@@ -69,8 +83,14 @@ class FakeTraceReader:
         self.observation_id = None
         self.metrics_kwargs = None
         self.list_kwargs = None
+        self.patched_trace_payload = None
 
-    async def get_trace_metrics(self, project_id: str, **kwargs) -> dict:
+    async def get_trace_metrics(
+        self,
+        project_id: str,
+        user_id: str | None = None,
+        **kwargs,
+    ) -> dict:
         self.project_id = project_id
         self.metrics_kwargs = kwargs
         return {
@@ -89,7 +109,12 @@ class FakeTraceReader:
             "slowTraces": [],
         }
 
-    async def list_traces(self, project_id: str, **kwargs) -> dict:
+    async def list_traces(
+        self,
+        project_id: str,
+        user_id: str | None = None,
+        **kwargs,
+    ) -> dict:
         self.project_id = project_id
         self.list_kwargs = kwargs
         return {
@@ -111,8 +136,14 @@ class FakeTraceReader:
             ],
         }
 
-    async def get_trace(self, project_id: str, trace_id: str) -> dict:
+    async def get_trace(
+        self,
+        project_id: str,
+        user_or_trace_id: str,
+        trace_id: str | None = None,
+    ) -> dict:
         self.project_id = project_id
+        trace_id = trace_id or user_or_trace_id
         return {
             "traceId": trace_id,
             "sessionId": "",
@@ -135,10 +166,13 @@ class FakeTraceReader:
     async def get_observation(
         self,
         project_id: str,
-        trace_id: str,
-        observation_id: str,
+        user_or_trace_id: str,
+        trace_or_observation_id: str,
+        observation_id: str | None = None,
     ) -> dict:
         self.project_id = project_id
+        trace_id = trace_or_observation_id if observation_id else user_or_trace_id
+        observation_id = observation_id or trace_or_observation_id
         self.observation_id = observation_id
         return {
             "id": observation_id,
@@ -175,14 +209,46 @@ class FakeTraceReader:
             ],
         }
 
+    async def patch_trace(
+        self,
+        project_id: str,
+        user_id: str,
+        trace_id: str,
+        payload: dict,
+    ) -> dict:
+        self.project_id = project_id
+        self.patched_trace_payload = {
+            "project_id": project_id,
+            "trace_id": trace_id,
+            "user_id": user_id,
+            "payload": payload,
+        }
+        return {
+            "traceId": trace_id,
+            "input": payload["input"],
+            "output": payload["output"],
+            "metadata": payload["metadata"],
+            "updatedAt": "2026-07-05T01:37:02.000Z",
+        }
+
 
 class FailingTraceReader(FakeTraceReader):
-    async def get_trace_metrics(self, project_id: str, **kwargs) -> dict:
+    async def get_trace_metrics(
+        self,
+        project_id: str,
+        user_id: str | None = None,
+        **kwargs,
+    ) -> dict:
         self.project_id = project_id
         self.metrics_kwargs = kwargs
         raise LangfuseUpstreamError("Langfuse ClickHouse 查询失败")
 
-    async def list_traces(self, project_id: str, **kwargs) -> dict:
+    async def list_traces(
+        self,
+        project_id: str,
+        user_id: str | None = None,
+        **kwargs,
+    ) -> dict:
         self.project_id = project_id
         self.list_kwargs = kwargs
         raise LangfuseUpstreamError("Langfuse ClickHouse 查询失败")
@@ -197,6 +263,9 @@ def override_readers(fake_db: FakeDatabaseReader, fake_trace: FakeTraceReader):
 
     app.dependency_overrides[get_langfuse_db_reader] = _db_override
     app.dependency_overrides[get_langfuse_clickhouse_reader] = _trace_override
+    app.dependency_overrides[observability.get_langfuse_observability_adapter] = (
+        _trace_override
+    )
     app.dependency_overrides[get_current_user_context] = lambda: CurrentUserContext(
         user_id="user-1",
         email="admin@163.com",
@@ -205,6 +274,29 @@ def override_readers(fake_db: FakeDatabaseReader, fake_trace: FakeTraceReader):
 
 def clear_overrides() -> None:
     app.dependency_overrides.clear()
+
+
+def _stub_list_trace_enrichment(
+    reader: LangfuseClickHouseReader,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    async def one_trace(*args, **kwargs):
+        return 1
+
+    async def empty_page_summaries(*args, **kwargs):
+        return {}
+
+    async def empty_scores(*args, **kwargs):
+        return {}
+
+    monkeypatch.setattr(reader, "_count_trace_rows", one_trace)
+    monkeypatch.setattr(
+        reader,
+        "_fetch_page_observation_summaries",
+        empty_page_summaries,
+    )
+    monkeypatch.setattr(reader, "_fetch_scores_by_trace", empty_scores)
+    monkeypatch.setattr(reader, "_fetch_evaluator_scores_by_trace", empty_scores)
 
 
 def test_lists_project_traces_after_project_visibility_check() -> None:
@@ -603,7 +695,8 @@ def test_patches_project_trace_and_returns_merged_detail() -> None:
     assert body["data"]["callChain"] == []
     assert fake_db.project_id == "project-1"
     assert fake_db.user_id == "user-1"
-    assert fake_db.patched_trace_payload == {
+    assert fake_db.patched_trace_payload is None
+    assert fake_trace.patched_trace_payload == {
         "project_id": "project-1",
         "trace_id": "trace-1",
         "user_id": "user-1",
@@ -765,6 +858,7 @@ async def test_fetches_trace_rows_with_session_filter_and_optional_io_fields(mon
 @pytest.mark.anyio
 async def test_list_traces_includes_input_and_output_when_io_fields_requested(monkeypatch) -> None:
     reader = LangfuseClickHouseReader(Settings())
+    _stub_list_trace_enrichment(reader, monkeypatch)
 
     captured: dict[str, object] = {}
 
@@ -821,6 +915,7 @@ async def test_list_traces_includes_input_and_output_when_io_fields_requested(mo
 @pytest.mark.anyio
 async def test_list_traces_filters_by_tags(monkeypatch) -> None:
     reader = LangfuseClickHouseReader(Settings())
+    _stub_list_trace_enrichment(reader, monkeypatch)
 
     async def fake_count_trace_rows(*args, **kwargs):
         return 1
@@ -859,6 +954,7 @@ async def test_list_traces_filters_by_tags(monkeypatch) -> None:
 @pytest.mark.anyio
 async def test_list_traces_only_fetches_payloads_for_current_page(monkeypatch) -> None:
     reader = LangfuseClickHouseReader(Settings())
+    _stub_list_trace_enrichment(reader, monkeypatch)
     captured: dict[str, object] = {}
 
     async def fake_count_trace_rows(*args, **kwargs):
@@ -1288,6 +1384,7 @@ async def test_list_traces_orders_session_results_by_created_at_before_paginatio
     monkeypatch,
 ) -> None:
     reader = LangfuseClickHouseReader(Settings())
+    _stub_list_trace_enrichment(reader, monkeypatch)
 
     async def fake_count_trace_rows(*args, **kwargs):
         return 3
@@ -1563,6 +1660,7 @@ async def test_list_traces_by_ids_loads_scores_when_requested(
 @pytest.mark.anyio
 async def test_clickhouse_reader_filters_traces_by_score_values(monkeypatch) -> None:
     reader = LangfuseClickHouseReader(Settings())
+    _stub_list_trace_enrichment(reader, monkeypatch)
 
     async def fake_count_trace_rows(*args, **kwargs):
         return 1

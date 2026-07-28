@@ -1,6 +1,6 @@
 import { useCallback, useMemo, useState } from 'react'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
-import { Plus } from 'lucide-react'
+import { Download, Plus } from 'lucide-react'
 import { useNavigate, useParams, useSearchParams } from 'react-router'
 import { toast } from 'sonner'
 import { confirm } from '@/lib/confirm'
@@ -37,6 +37,7 @@ import { DatasetTypeBadge } from '../components/dataset-type-badge'
 import { downloadBlob, formatDateTime } from '../components/format'
 import { getDatasetExportFileName } from '../lib/dataset-item-export'
 import type {
+  DatasetExportFormat,
   DatasetItemFormInput,
   DatasetItemRecord,
   DatasetRecord,
@@ -237,7 +238,8 @@ export function ProjectDatasetDetail() {
   const handleExportAllMatching = useCallback(
     async (
       dataset: DatasetRecord,
-      query: Parameters<typeof listProjectDatasetItems>[3]
+      query: Parameters<typeof listProjectDatasetItems>[3],
+      format: DatasetExportFormat = 'xlsx'
     ) => {
       if (isExportingSelection) {
         throw new Error('已有数据集导出任务正在处理中')
@@ -252,7 +254,7 @@ export function ProjectDatasetDetail() {
           $api,
           projectId,
           dataset.id,
-          'xlsx',
+          format,
           { keyword: query.keyword, status: statuses }
         )
         toast.info('导出任务已创建，正在生成文件')
@@ -275,7 +277,7 @@ export function ProjectDatasetDetail() {
         )
         downloadBlob(
           blob,
-          completedJob.fileName || getDatasetExportFileName(dataset, 'xlsx')
+          completedJob.fileName || getDatasetExportFileName(dataset, format)
         )
         toast.success(`已导出 ${completedJob.exportedCount} 条数据项`)
       } finally {
@@ -287,6 +289,29 @@ export function ProjectDatasetDetail() {
 
   const dataset = datasetQuery.data
   const metrics = metricQuery.data
+
+  const handleExportDataset = useCallback(
+    async (format: DatasetExportFormat) => {
+      if (!dataset) return
+
+      try {
+        await handleExportAllMatching(
+          dataset,
+          {
+            page: 1,
+            pageSize: 10,
+            keyword: itemKeyword,
+            filters: {},
+            sorting: [],
+          },
+          format
+        )
+      } catch (error) {
+        toast.error(error instanceof Error ? error.message : '数据集导出失败')
+      }
+    },
+    [dataset, handleExportAllMatching, itemKeyword]
+  )
 
   const columns = useMemo(
     () =>
@@ -343,6 +368,36 @@ export function ProjectDatasetDetail() {
                     iconPosition: 'start',
                     size: 'sm',
                     onClick: handleCreateItem,
+                  },
+                  {
+                    id: 'export-dataset-xlsx',
+                    label: '导出数据集 Excel',
+                    icon: Download,
+                    iconPosition: 'start',
+                    variant: 'outline',
+                    size: 'sm',
+                    disabled: isExportingSelection || !dataset,
+                    onClick: () => void handleExportDataset('xlsx'),
+                  },
+                  {
+                    id: 'export-dataset-csv',
+                    label: '导出数据集 CSV',
+                    icon: Download,
+                    iconPosition: 'start',
+                    variant: 'outline',
+                    size: 'sm',
+                    disabled: isExportingSelection || !dataset,
+                    onClick: () => void handleExportDataset('csv'),
+                  },
+                  {
+                    id: 'export-dataset-txt',
+                    label: '导出数据集 TXT',
+                    icon: Download,
+                    iconPosition: 'start',
+                    variant: 'outline',
+                    size: 'sm',
+                    disabled: isExportingSelection || !dataset,
+                    onClick: () => void handleExportDataset('txt'),
                   },
                 ]
               : [],
@@ -428,7 +483,7 @@ export function ProjectDatasetDetail() {
                       selection={selection}
                       dataset={dataset}
                       onExportAllMatching={(query) =>
-                        handleExportAllMatching(dataset, query)
+                        handleExportAllMatching(dataset, query, 'xlsx')
                       }
                     />
                   )

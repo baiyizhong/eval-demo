@@ -48,6 +48,9 @@ def test_pa_schema_migrations_are_defined_in_order() -> None:
         "20260711_0012_create_pa_annotation_export_jobs.py",
         "20260714_0013_add_evaluator_outputs_and_score_mapping.py",
         "20260719_0014_create_pa_trace_bulk_jobs.py",
+        "20260723_0015_create_consolidated_pa_tables.py",
+        "20260723_0016_contract_legacy_pa_tables.py",
+        "20260723_0017_drop_model_setting_shadow_tables.py",
     ]
 
 
@@ -182,7 +185,6 @@ def test_pa_tables_use_physical_delete_and_uniform_audit_fields() -> None:
     ]
     content = "\n".join(contents)
 
-    assert "deleted_at" not in content
     assert "ON DELETE CASCADE" in content or 'ondelete="CASCADE"' in content
 
     for column in AUDIT_COLUMNS:
@@ -191,6 +193,7 @@ def test_pa_tables_use_physical_delete_and_uniform_audit_fields() -> None:
     for table_name in PA_TABLES:
         table_block = _find_table_block(contents, table_name)
 
+        assert "deleted_at" not in table_block
         assert "*_audit_columns()" in table_block
 
 
@@ -241,6 +244,18 @@ def test_final_migration_does_not_use_incremental_column_patches() -> None:
 
     assert "_add_column_once" not in content
     assert "op.add_column" not in content
+
+
+def test_legacy_alignment_guards_optional_legacy_columns_for_fresh_databases() -> None:
+    migration = MIGRATIONS_DIR / "20260707_0003_align_legacy_pa_tables.py"
+    content = migration.read_text(encoding="utf-8")
+
+    assert "def _execute_if_columns_exist" in content
+    assert "_execute_if_columns_exist(\n        \"pa_auto_evaluation_tasks\"" in content
+    assert "_execute_if_columns_exist(\n        \"pa_auto_evaluation_runs\"" in content
+    assert "_execute_if_columns_exist(\n        \"pa_evaluation_reports\"" in content
+    assert "_execute_if_columns_exist(\n        \"pa_evaluation_report_items\"" in content
+    assert "NULLIF(created_by" in content
 
 
 def _find_table_block(contents: list[str], table_name: str) -> str:

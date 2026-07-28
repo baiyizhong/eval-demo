@@ -70,7 +70,7 @@ export function getProjectSettingsPageLinks(projectId: string) {
 
   return [
     {
-      title: '项目首页',
+      title: '项目管理',
       href: '/apps',
       isActive: true,
       disabled: false,

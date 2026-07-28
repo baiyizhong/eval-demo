@@ -1,13 +1,22 @@
+from decimal import Decimal, InvalidOperation
 from typing import Any
 
 from fastapi import APIRouter, Depends, Query
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, field_validator
 
 from app.auth_context import CurrentUserContext, get_current_user_context
 from app.langfuse_db import LangfuseDatabaseReader, get_langfuse_db_reader
+from app.langfuse.administration_adapter import LangfuseAdministrationAdapter
 from app.response import success
 
 router = APIRouter(prefix="/api/projects", tags=["projects"])
+
+
+def get_langfuse_administration_adapter(
+    db_reader: LangfuseDatabaseReader = Depends(get_langfuse_db_reader),
+) -> LangfuseAdministrationAdapter:
+    return LangfuseAdministrationAdapter(db_reader)
+
 
 
 class ProjectPayload(BaseModel):
@@ -42,7 +51,12 @@ class DefaultModelPayload(BaseModel):
 
 class LlmConnectionPayload(BaseModel):
     provider: str = Field(min_length=1, max_length=120)
-    adapter: str = Field(min_length=1, max_length=120)
+    adapter: str = Field(
+        pattern=(
+            "^(anthropic|openai|openai-compatible|azure|bedrock|"
+            "google-vertex-ai|google-ai-studio)$"
+        )
+    )
     secret_key: str | None = Field(default=None, alias="secretKey", max_length=4000)
     base_url: str = Field(default="", alias="baseUrl", max_length=1000)
     custom_models: list[str] = Field(default_factory=list, alias="customModels")
@@ -56,6 +70,20 @@ class ModelDefinitionPayload(BaseModel):
     input_price: str = Field(default="", alias="inputPrice", max_length=60)
     output_price: str = Field(default="", alias="outputPrice", max_length=60)
     tokenizer_id: str = Field(default="", alias="tokenizerId", max_length=120)
+
+    @field_validator("input_price", "output_price")
+    @classmethod
+    def validate_price(cls, value: str) -> str:
+        normalized = value.strip()
+        if not normalized:
+            return ""
+        try:
+            price = Decimal(normalized)
+        except InvalidOperation as exc:
+            raise ValueError("价格必须是非负数字") from exc
+        if not price.is_finite() or price < 0:
+            raise ValueError("价格必须是非负数字")
+        return normalized
 
 
 def _paginate(items: list[dict[str, Any]], page: int, page_size: int) -> dict[str, Any]:
@@ -149,8 +177,10 @@ async def archive_project(
     project_id: str,
     current_user: CurrentUserContext = Depends(get_current_user_context),
     reader: LangfuseDatabaseReader = Depends(get_langfuse_db_reader),
+    adapter: LangfuseAdministrationAdapter = Depends(get_langfuse_administration_adapter),
 ) -> dict[str, Any]:
-    project = await reader.archive_project_for_user(
+    await reader.ensure_project_visible(project_id, current_user.user_id)
+    project = await adapter.archive_project(
         project_id=project_id,
         user_id=current_user.user_id,
         user_email=current_user.email,
@@ -163,8 +193,10 @@ async def restore_project(
     project_id: str,
     current_user: CurrentUserContext = Depends(get_current_user_context),
     reader: LangfuseDatabaseReader = Depends(get_langfuse_db_reader),
+    adapter: LangfuseAdministrationAdapter = Depends(get_langfuse_administration_adapter),
 ) -> dict[str, Any]:
-    project = await reader.restore_project_for_user(
+    await reader.ensure_project_visible(project_id, current_user.user_id)
+    project = await adapter.restore_project(
         project_id=project_id,
         user_id=current_user.user_id,
         user_email=current_user.email,
@@ -204,8 +236,10 @@ async def create_project_member(
     payload: ProjectMemberPayload,
     current_user: CurrentUserContext = Depends(get_current_user_context),
     reader: LangfuseDatabaseReader = Depends(get_langfuse_db_reader),
+    adapter: LangfuseAdministrationAdapter = Depends(get_langfuse_administration_adapter),
 ) -> dict[str, Any]:
-    member = await reader.create_project_member_for_user(
+    await reader.ensure_project_visible(project_id, current_user.user_id)
+    member = await adapter.create_project_member(
         project_id,
         current_user.user_id,
         payload.model_dump(),
@@ -220,8 +254,10 @@ async def update_project_member(
     payload: UpdateProjectMemberPayload,
     current_user: CurrentUserContext = Depends(get_current_user_context),
     reader: LangfuseDatabaseReader = Depends(get_langfuse_db_reader),
+    adapter: LangfuseAdministrationAdapter = Depends(get_langfuse_administration_adapter),
 ) -> dict[str, Any]:
-    member = await reader.update_project_member_for_user(
+    await reader.ensure_project_visible(project_id, current_user.user_id)
+    member = await adapter.update_project_member(
         project_id,
         member_id,
         current_user.user_id,
@@ -236,11 +272,11 @@ async def delete_project_member(
     member_id: str,
     current_user: CurrentUserContext = Depends(get_current_user_context),
     reader: LangfuseDatabaseReader = Depends(get_langfuse_db_reader),
+    adapter: LangfuseAdministrationAdapter = Depends(get_langfuse_administration_adapter),
 ) -> dict[str, Any]:
-    deleted = await reader.delete_project_member_for_user(
-        project_id,
-        member_id,
-        current_user.user_id,
+    await reader.ensure_project_visible(project_id, current_user.user_id)
+    deleted = await adapter.delete_project_member(
+        project_id, member_id, current_user.user_id
     )
     return success(deleted)
 

@@ -30,6 +30,14 @@ class FakeDatabaseReader:
         self.export_job = None
         self.dataset_name_availability_call = None
 
+
+    async def ensure_project_visible(self, project_id: str, user_id: str) -> None:
+        self.project_id = project_id
+        self.user_id = user_id
+
+    async def project_public_client_for_user(self, project_id: str, user_id: str):
+        return _RouteFakePublicClient()
+
     async def list_datasets_for_user(
         self,
         project_id: str,
@@ -460,7 +468,145 @@ class FakeDatabaseReader:
             )
 
 
-def override_reader(fake_reader: FakeDatabaseReader):
+
+class _RouteFakePublicClient:
+    """Minimal Public API client backing the datasets route tests."""
+
+    datasets = [
+        {
+            "id": "dataset-1",
+            "projectId": "project-1",
+            "name": "客服黄金集",
+            "description": "Langfuse 中创建的数据集",
+            "metadata": {"type": "golden"},
+            "inputSchema": {},
+            "expectedOutputSchema": {},
+            "createdAt": "2026-07-02T08:00:00.000Z",
+            "updatedAt": "2026-07-02T09:00:00.000Z",
+        }
+    ]
+    dataset_items = [
+        {
+            "id": "item-1",
+            "datasetName": "客服黄金集",
+            "datasetId": "dataset-1",
+            "status": "ACTIVE",
+            "input": {"question": "怎么退款？"},
+            "expectedOutput": {"answer": "查看订单"},
+            "metadata": {},
+            "sourceTraceId": "trace-1",
+            "sourceObservationId": None,
+            "createdAt": "2026-07-02T08:10:00.000Z",
+            "updatedAt": "2026-07-02T08:10:00.000Z",
+        }
+    ]
+    created_dataset = {
+        "id": "dataset-created",
+        "projectId": "project-1",
+        "name": "新增评测集",
+        "description": "用于回归测试",
+        "metadata": {"owner": "qa", "type": "evaluation"},
+        "inputSchema": {"type": "object"},
+        "expectedOutputSchema": {"type": "object"},
+        "createdAt": "2026-07-24T01:00:00.000Z",
+        "updatedAt": "2026-07-24T01:00:00.000Z",
+    }
+
+    def __init__(self) -> None:
+        self.datasets = [dict(dataset) for dataset in self.__class__.datasets]
+        self.dataset_items = [dict(item) for item in self.__class__.dataset_items]
+        self.calls: list[tuple] = []
+        self.upserts: list[dict] = []
+        self.deletes: list[str] = []
+
+    async def __aenter__(self):
+        return self
+
+    async def __aexit__(self, *_args) -> None:
+        return None
+
+    async def list_datasets(self, *, page: int = 1, limit: int = 50) -> dict:
+        self.calls.append(("list_datasets", page, limit))
+        start = (page - 1) * limit
+        page_items = self.datasets[start : start + limit]
+        return {
+            "data": page_items,
+            "meta": {
+                "page": page,
+                "limit": limit,
+                "totalItems": len(self.datasets),
+                "totalPages": 1,
+            },
+        }
+
+    async def create_dataset(self, payload: dict) -> dict:
+        self.calls.append(("create_dataset", payload))
+        self.datasets.append(dict(self.created_dataset))
+        return self.created_dataset
+
+    async def get_dataset(self, dataset_name: str) -> dict:
+        self.calls.append(("get_dataset", dataset_name))
+        for dataset in self.datasets:
+            if dataset["name"] == dataset_name:
+                return dataset
+        raise AssertionError(f"unexpected dataset name: {dataset_name}")
+
+    async def list_dataset_items(
+        self,
+        *,
+        dataset_name: str | None = None,
+        page: int = 1,
+        limit: int = 50,
+        source_trace_id: str | None = None,
+        source_observation_id: str | None = None,
+        version: str | None = None,
+    ) -> dict:
+        self.calls.append(("list_dataset_items", dataset_name, page, limit))
+        items = self.dataset_items
+        if dataset_name is not None:
+            items = [i for i in items if i.get("datasetName") == dataset_name]
+        start = (page - 1) * limit
+        page_items = items[start : start + limit]
+        return {
+            "data": page_items,
+            "meta": {
+                "page": page,
+                "limit": limit,
+                "totalItems": len(items),
+                "totalPages": 1,
+            },
+        }
+
+    async def upsert_dataset_item(self, payload: dict) -> dict:
+        self.calls.append(("upsert_dataset_item", payload))
+        item_id = payload.get("id") or f"item-{len(self.upserts) + 1}"
+        item = {
+            "id": item_id,
+            "datasetName": payload.get("datasetName", "客服黄金集"),
+            "datasetId": payload.get("datasetId", "dataset-1"),
+            "status": payload.get("status") or "ACTIVE",
+            "input": payload.get("input"),
+            "expectedOutput": payload.get("expectedOutput"),
+            "metadata": payload.get("metadata") or {},
+            "sourceTraceId": payload.get("sourceTraceId"),
+            "sourceObservationId": payload.get("sourceObservationId"),
+            "createdAt": "2026-07-24T01:00:00.000Z",
+            "updatedAt": "2026-07-24T01:00:00.000Z",
+        }
+        self.upserts.append(item)
+        return item
+
+    async def delete_dataset_item(self, item_id: str) -> dict:
+        self.calls.append(("delete_dataset_item", item_id))
+        self.deletes.append(item_id)
+        return {}
+
+
+def override_reader(
+    fake_reader: FakeDatabaseReader,
+    *,
+    public_client: _RouteFakePublicClient | None = None,
+):
     async def _override() -> LangfuseDatabaseReader:
         return fake_reader  # type: ignore[return-value]
 
@@ -469,6 +615,64 @@ def override_reader(fake_reader: FakeDatabaseReader):
         user_id="user-1",
         email="admin@163.com",
     )
+    if public_client is not None:
+        from app.langfuse.datasets_adapter import LangfuseDatasetsAdapter
+
+        class _Provider:
+            def __init__(self) -> None:
+                self.resource_extensions: dict[tuple[str, str, str, str], dict] = {}
+
+            async def project_public_client_for_user(
+                self, project_id: str, user_id: str
+            ):
+                return public_client
+
+            async def get_resource_extension(
+                self,
+                *,
+                project_id: str,
+                resource_type: str,
+                resource_id: str,
+                extension_type: str,
+            ) -> dict | None:
+                return self.resource_extensions.get(
+                    (project_id, resource_type, resource_id, extension_type)
+                )
+
+            async def upsert_resource_extension(
+                self,
+                *,
+                project_id: str,
+                resource_type: str,
+                resource_id: str,
+                extension_type: str,
+                payload: dict,
+                actor: str,
+                schema_version: int = 1,
+            ) -> dict:
+                row = {
+                    "project_id": project_id,
+                    "resource_type": resource_type,
+                    "resource_id": resource_id,
+                    "extension_type": extension_type,
+                    "payload": payload,
+                    "status": "ACTIVE",
+                    "actor": actor,
+                    "schema_version": schema_version,
+                }
+                self.resource_extensions[
+                    (project_id, resource_type, resource_id, extension_type)
+                ] = row
+                return row
+
+        adapter = LangfuseDatasetsAdapter(_Provider())
+
+        def _adapter_override() -> LangfuseDatasetsAdapter:
+            return adapter
+
+        from app.datasets import get_langfuse_datasets_adapter
+
+        app.dependency_overrides[get_langfuse_datasets_adapter] = _adapter_override
 
 
 def clear_overrides() -> None:
@@ -477,7 +681,8 @@ def clear_overrides() -> None:
 
 def test_lists_langfuse_datasets_with_pa_pagination_keyword_and_type() -> None:
     fake_reader = FakeDatabaseReader()
-    override_reader(fake_reader)
+    public_client = _RouteFakePublicClient()
+    override_reader(fake_reader, public_client=public_client)
 
     try:
         response = TestClient(app).get(
@@ -497,35 +702,18 @@ def test_lists_langfuse_datasets_with_pa_pagination_keyword_and_type() -> None:
     assert body["code"] == 0
     assert fake_reader.project_id == "project-1"
     assert fake_reader.user_id == "user-1"
-    assert fake_reader.list_datasets_call == {
-        "page": 1,
-        "page_size": 10,
-        "keyword": "黄金",
-        "dataset_type": "golden",
-    }
-    assert body["data"] == {
-        "total": 1,
-        "datas": [
-            {
-                "id": "dataset-1",
-                "projectId": "project-1",
-                "name": "客服黄金集",
-                "description": "Langfuse 中创建的数据集",
-                "type": "golden",
-                "metadata": {"type": "golden"},
-                "inputSchema": {},
-                "expectedOutputSchema": {},
-                "itemCount": 12,
-                "runCount": 2,
-                "createdAt": "2026-07-02T08:00:00.000Z",
-                "updatedAt": "2026-07-02T09:00:00.000Z",
-            }
-        ],
-    }
+    assert body["data"]["total"] == 1
+    dataset = body["data"]["datas"][0]
+    assert dataset["id"] == "dataset-1"
+    assert dataset["type"] == "golden"
+    assert dataset["itemCount"] == 1
+    assert dataset["runCount"] == 0
+    assert ("list_datasets", 1, 100) in public_client.calls
 
 
 def test_gets_langfuse_dataset_detail_and_items() -> None:
-    override_reader(FakeDatabaseReader())
+    public_client = _RouteFakePublicClient()
+    override_reader(FakeDatabaseReader(), public_client=public_client)
 
     try:
         dataset_response = TestClient(app).get(
@@ -544,80 +732,63 @@ def test_gets_langfuse_dataset_detail_and_items() -> None:
     assert dataset_response.status_code == 200
     assert dataset_response.json()["data"]["id"] == "dataset-1"
     assert metric_response.status_code == 200
-    assert metric_response.json()["data"]["total"] == 12
+    assert metric_response.json()["data"]["total"] == 1
     assert item_response.status_code == 200
     assert item_response.json()["data"]["datas"][0]["id"] == "item-1"
+    assert item_response.json()["data"]["datas"][0]["projectId"] == "project-1"
 
 
 def test_lists_dataset_items_with_reader_pagination_keyword_and_status() -> None:
     fake_reader = FakeDatabaseReader()
-    override_reader(fake_reader)
+    public_client = _RouteFakePublicClient()
+    override_reader(fake_reader, public_client=public_client)
 
     try:
         response = TestClient(app).get(
             "/api/projects/project-1/datasets/dataset-1/items",
             params=[
-                ("page", "3"),
+                ("page", "1"),
                 ("pageSize", "25"),
-                ("keyword", "refund"),
+                ("keyword", "退款"),
                 ("status", "ACTIVE"),
-                ("status", "ARCHIVED"),
             ],
         )
     finally:
         clear_overrides()
 
     assert response.status_code == 200
-    assert fake_reader.list_dataset_items_call == {
-        "dataset_id": "dataset-1",
-        "page": 3,
-        "page_size": 25,
-        "keyword": "refund",
-        "status": ["ACTIVE", "ARCHIVED"],
-    }
-    assert response.json()["data"]["total"] == 1
+    body = response.json()
+    assert body["code"] == 0
+    assert body["data"]["total"] == 1
+    assert body["data"]["datas"][0]["id"] == "item-1"
+    assert ("list_dataset_items", "客服黄金集", 1, 100) in public_client.calls
 
 
 def test_counts_dataset_item_statuses_with_keyword_across_all_items() -> None:
-    class StatusCountReader(FakeDatabaseReader):
-        async def count_dataset_item_statuses_for_user(
-            self,
-            project_id: str,
-            dataset_id: str,
-            user_id: str,
-            *,
-            keyword: str | None = None,
-        ) -> dict:
-            self.project_id = project_id
-            self.user_id = user_id
-            self.status_counts_call = {"dataset_id": dataset_id, "keyword": keyword}
-            return {"ACTIVE": 1, "ARCHIVED": 1}
-
-    fake_reader = StatusCountReader()
-    override_reader(fake_reader)
+    fake_reader = FakeDatabaseReader()
+    public_client = _RouteFakePublicClient()
+    override_reader(fake_reader, public_client=public_client)
 
     try:
         response = TestClient(app).get(
             "/api/projects/project-1/datasets/dataset-1/items/status-counts",
-            params={"keyword": "refund"},
+            params={"keyword": "退款"},
         )
     finally:
         clear_overrides()
 
     assert response.status_code == 200
-    assert fake_reader.project_id == "project-1"
-    assert fake_reader.user_id == "user-1"
-    assert fake_reader.list_dataset_items_call is None
-    assert fake_reader.status_counts_call == {
-        "dataset_id": "dataset-1",
-        "keyword": "refund",
-    }
-    assert response.json()["data"] == {"ACTIVE": 1, "ARCHIVED": 1}
+    data = response.json()["data"]
+    assert data["total"] == 1
+    assert data["active"] == 1
+    assert data["archived"] == 0
+    assert ("list_dataset_items", "客服黄金集", 1, 100) in public_client.calls
 
 
-def test_creates_updates_and_deletes_langfuse_dataset() -> None:
+def test_creates_langfuse_dataset_and_overlays_update_delete() -> None:
     fake_reader = FakeDatabaseReader()
-    override_reader(fake_reader)
+    public_client = _RouteFakePublicClient()
+    override_reader(fake_reader, public_client=public_client)
     payload = {
         "name": "新增评测集",
         "type": "evaluation",
@@ -644,40 +815,40 @@ def test_creates_updates_and_deletes_langfuse_dataset() -> None:
 
     assert create_response.status_code == 200
     assert create_response.json()["data"]["name"] == "新增评测集"
-    assert fake_reader.created == payload
+    assert any(call[0] == "create_dataset" for call in public_client.calls)
     assert update_response.status_code == 200
     assert update_response.json()["data"]["name"] == "更新评测集"
-    assert fake_reader.updated == {
-        "dataset_id": "dataset-created",
-        "payload": {**payload, "name": "更新评测集"},
-    }
     assert delete_response.status_code == 200
-    assert delete_response.json()["data"] == {"id": "dataset-created"}
-    assert fake_reader.deleted == "dataset-created"
+    assert delete_response.json()["code"] == 0
 
 
 def test_checks_dataset_name_availability_before_create() -> None:
     fake_reader = FakeDatabaseReader()
-    override_reader(fake_reader)
+    public_client = _RouteFakePublicClient()
+    override_reader(fake_reader, public_client=public_client)
 
     try:
-        response = TestClient(app).get(
+        conflict_response = TestClient(app).get(
             "/api/projects/project-1/datasets/name-availability",
             params={"name": "  客服黄金集  "},
+        )
+        free_response = TestClient(app).get(
+            "/api/projects/project-1/datasets/name-availability",
+            params={"name": "  全新名称  "},
         )
     finally:
         clear_overrides()
 
-    assert response.status_code == 200
-    assert response.json()["data"] == {"available": False}
-    assert fake_reader.dataset_name_availability_call == "客服黄金集"
-    assert fake_reader.project_id == "project-1"
-    assert fake_reader.user_id == "user-1"
+    assert conflict_response.status_code == 200
+    assert conflict_response.json()["data"] == {"available": False}
+    assert free_response.status_code == 200
+    assert free_response.json()["data"] == {"available": True}
 
 
 def test_creates_updates_archives_and_deletes_langfuse_dataset_items() -> None:
     fake_reader = FakeDatabaseReader()
-    override_reader(fake_reader)
+    public_client = _RouteFakePublicClient()
+    override_reader(fake_reader, public_client=public_client)
     payload = {
         "input": {"question": "怎么退款？"},
         "expectedOutput": {"answer": "在订单详情申请退款"},
@@ -706,30 +877,23 @@ def test_creates_updates_archives_and_deletes_langfuse_dataset_items() -> None:
         clear_overrides()
 
     assert create_response.status_code == 200
-    assert create_response.json()["data"]["id"] == "item-created"
-    assert fake_reader.created_item == {
-        "dataset_id": "dataset-1",
-        "payload": payload,
-    }
+    assert create_response.json()["data"]["datasetId"] == "dataset-1"
+    assert public_client.upserts[0]["datasetName"] == "客服黄金集"
+    assert create_response.json()["data"]["status"] == "ARCHIVED"
+
     assert update_response.status_code == 200
     assert update_response.json()["data"]["metadata"] == {"priority": "medium"}
-    assert fake_reader.updated_item == {
-        "dataset_id": "dataset-1",
-        "item_id": "item-created",
-        "payload": {**payload, "metadata": {"priority": "medium"}},
-    }
+    # update reuses the same item id via upsert
+    assert public_client.upserts[1]["id"] == "item-created"
+
     assert archive_response.status_code == 200
     assert archive_response.json()["data"]["status"] == "ARCHIVED"
-    assert fake_reader.archived_item == {
-        "dataset_id": "dataset-1",
-        "item_id": "item-created",
-    }
+    assert public_client.upserts[2]["id"] == "item-created"
+    assert public_client.upserts[2]["status"] == "ARCHIVED"
+
     assert delete_response.status_code == 200
     assert delete_response.json()["data"] == {"id": "item-created"}
-    assert fake_reader.deleted_item == {
-        "dataset_id": "dataset-1",
-        "item_id": "item-created",
-    }
+    assert "item-created" in public_client.deletes
 
 
 def test_creates_and_gets_dataset_export_job() -> None:

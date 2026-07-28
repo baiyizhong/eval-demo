@@ -36,7 +36,7 @@ export function ProjectEvaluationReportDetail() {
 
   const invalidateReport = async () => {
     await queryClient.invalidateQueries({
-      queryKey: ['project-evaluation-report', projectId, reportId],
+      queryKey: ['project-evaluation-report', $api, projectId, reportId],
     })
     await queryClient.invalidateQueries({
       queryKey: ['project-evaluation-reports', projectId],

@@ -114,7 +114,7 @@ test('evaluation report badcase table reuses trace log columns', () => {
 test('evaluation report tables use stable query keys that can be invalidated by detail page', () => {
   assert.equal(
     source.includes("'project-evaluation-report-items',\n            $api,"),
-    false
+    true
   )
   assert.equal(
     badcaseSource.includes(

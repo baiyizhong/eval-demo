@@ -17,6 +17,7 @@ from app.scheduled_jobs import (
     _normalize_auto_evaluation_data_source,
     _normalize_variable_mapping,
     _scheduled_job_insert_params,
+    _scheduled_job_write_row,
 )
 
 
@@ -33,8 +34,13 @@ class FakeCursor:
 
     async def execute(self, sql: str, params: dict[str, Any] | None = None) -> None:
         self.executions.append((sql, params or {}))
-        if "INSERT INTO pa_scheduled_job_execution_logs" in sql:
-            self._next_fetchone = {"id": "pajoblog_failure"}
+        if "RETURNING" in sql and "pa_job_executions" in sql:
+            self._next_fetchone = {
+                "id": (params or {}).get("id"),
+                "legacy_source_id": (params or {}).get("legacy_source_id"),
+            }
+        elif "RETURNING" in sql and "pa_evaluation_jobs" in sql:
+            self._next_fetchone = {"id": (params or {}).get("id")}
         elif "SELECT COUNT" in sql:
             self._next_fetchone = {"total": 0}
         else:
@@ -184,6 +190,12 @@ def test_fire_key_is_stable_for_same_scheduled_fire_time() -> None:
     )
 
 
+def test_due_job_claim_ignores_expired_running_execution_leases() -> None:
+    sql = _build_due_job_claim_sql()
+
+    assert "execution.lock_until > %(now)s" in sql
+
+
 def test_job_triggered_auto_evaluation_name_uses_required_format() -> None:
     name = _build_job_triggered_auto_evaluation_name(
         "每日客服质量评测",
@@ -279,12 +291,56 @@ def test_due_job_claim_sql_uses_postgres_skip_locked_and_lease() -> None:
     sql = _build_due_job_claim_sql()
 
     assert "FOR UPDATE SKIP LOCKED" in sql
-    assert "lock_until" in sql
+    assert "update_date <= %(stale_before)s" in sql
     assert "scheduler_enabled IS TRUE" in sql
     assert "NOT EXISTS" in sql
-    assert "pa_scheduled_job_execution_logs" in sql
-    assert "logs.status = 'RUNNING'" in sql
-    assert "RETURNING sj.*" in sql
+    assert "pa_job_executions" in sql
+    assert "execution.status = 'RUNNING'" in sql
+    assert "RETURNING job.*" in sql
+
+
+def test_scheduled_job_update_preserves_runtime_and_creator_state() -> None:
+    payload = scheduled_jobs.UpdateScheduledJobPayload.model_validate(
+        {
+            "name": "每日评测",
+            "scoreName": "quality",
+            "runMode": "RECURRING",
+            "frequency": {"kind": "EVERY_MINUTES", "intervalMinutes": 10},
+            "evaluatorId": "evaluator-1",
+            "dataSource": {"type": "TRACE_FILTER"},
+        }
+    )
+    row = _scheduled_job_write_row(
+        job_id="job-1",
+        project_id="project-1",
+        payload=payload,
+        evaluator={
+            "id": "evaluator-1",
+            "name": "Evaluator",
+            "type": "WORKFLOW",
+            "provider": "DIFY",
+            "version": 1,
+        },
+        report_template_snapshot={"id": "default"},
+        next_run_at=None,
+        status="SUCCEEDED",
+        user=scheduled_jobs.CurrentUserContext(
+            user_id="editor-1",
+            email="editor@example.com",
+            name="Editor",
+        ),
+        existing={
+            "created_user_id": "creator-1",
+            "last_run_at": "last-run",
+            "latest_execution_id": "execution-1",
+            "latest_report_id": "report-1",
+        },
+    )
+
+    assert row["created_user_id"] == "creator-1"
+    assert row["last_run_at"] == "last-run"
+    assert row["latest_execution_id"] == "execution-1"
+    assert row["latest_report_id"] == "report-1"
 
 
 def test_unsupported_cron_expression_is_rejected() -> None:
@@ -294,6 +350,72 @@ def test_unsupported_cron_expression_is_rejected() -> None:
             "Asia/Shanghai",
             datetime(2026, 7, 9, 1, 0, tzinfo=timezone.utc),
         )
+
+
+@pytest.mark.anyio
+async def test_failed_trigger_does_not_overwrite_a_paused_scheduled_job() -> None:
+    cursor = FakeCursor()
+
+    await scheduled_jobs._mark_scheduled_job_trigger_failed(
+        cursor,
+        project_id="project-1",
+        job={
+            "id": "job-1",
+            "run_mode": "RECURRING",
+            "frequency": {"kind": "EVERY_MINUTES", "intervalMinutes": 10},
+            "timezone": "Asia/Shanghai",
+        },
+        log_id="log-1",
+        fire_at=datetime(2026, 7, 9, 1, 0, tzinfo=timezone.utc),
+        fire_key="fire-1",
+        started_at=datetime(2026, 7, 9, 1, 0, tzinfo=timezone.utc),
+        error_message="failed",
+        updated_by="worker",
+    )
+
+    updates = [sql for sql, _ in cursor.executions if "UPDATE pa_evaluation_jobs" in sql]
+    assert len(updates) == 1
+    assert "status != 'PAUSED'" in updates[0]
+    assert "latest_execution_id" in updates[0]
+
+
+@pytest.mark.anyio
+async def test_completion_callback_does_not_overwrite_a_paused_scheduled_job(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    class TaskCursor(FakeCursor):
+        async def execute(
+            self, sql: str, params: dict[str, Any] | None = None
+        ) -> None:
+            await super().execute(sql, params)
+            if "legacy_source_type = 'AUTO_EVALUATION_TASK'" in sql:
+                self._next_fetchone = {
+                    "status": "COMPLETED",
+                    "latest_report_id": "report-1",
+                    "sample_count": 3,
+                }
+
+    cursor = TaskCursor()
+
+    async def fake_connect(settings: Settings) -> FakeConnection:
+        return FakeConnection(cursor)
+
+    monkeypatch.setattr(scheduled_jobs, "_connect", fake_connect)
+
+    await scheduled_jobs._sync_execution_log_from_auto_evaluation(
+        Settings(),
+        project_id="project-1",
+        job_id="job-1",
+        log_id="log-1",
+        auto_task_id="task-1",
+        updated_by="worker",
+        started_at=datetime(2026, 7, 9, 1, 0, tzinfo=timezone.utc),
+    )
+
+    updates = [sql for sql, _ in cursor.executions if "UPDATE pa_evaluation_jobs" in sql]
+    assert len(updates) == 1
+    assert "status != 'PAUSED'" in updates[0]
+    assert "latest_execution_id" in updates[0]
 
 
 @pytest.mark.anyio
@@ -345,19 +467,152 @@ async def test_trigger_marks_execution_log_failed_when_auto_evaluation_setup_fai
     failure_updates = [
         (sql, params)
         for sql, params in cursor.executions
-        if "UPDATE pa_scheduled_job_execution_logs" in sql
+        if "UPDATE pa_job_executions" in sql
         and params.get("status") == "FAILED"
     ]
     job_updates = [
         (sql, params)
         for sql, params in cursor.executions
-        if "UPDATE pa_scheduled_jobs" in sql and params.get("status") == "FAILED"
+        if "UPDATE pa_evaluation_jobs" in sql and params.get("status") == "FAILED"
     ]
 
     assert failure_updates
     assert job_updates
     assert "evaluator provider unavailable" in failure_updates[-1][1]["error_message"]
     assert job_updates[-1][1]["next_run_at"] is not None
+
+
+@pytest.mark.anyio
+async def test_trigger_recovers_expired_execution_with_same_fire_key(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    class StaleExecutionCursor(FakeCursor):
+        async def execute(
+            self, sql: str, params: dict[str, Any] | None = None
+        ) -> None:
+            await super().execute(sql, params)
+            if "INSERT INTO pa_job_executions" in sql:
+                self._next_fetchone = {
+                    "id": "paexec_scheduled_old-log",
+                    "legacy_source_id": "old-log",
+                    "status": "RUNNING",
+                    "lock_until": datetime(2026, 7, 9, 0, 59, tzinfo=timezone.utc),
+                }
+            elif "status = 'RUNNING'" in sql and "lock_until <=" in sql:
+                self._next_fetchone = {"id": "paexec_scheduled_old-log"}
+
+    cursor = StaleExecutionCursor()
+    evaluator_lookups = 0
+
+    async def fake_connect(settings: Settings) -> FakeConnection:
+        return FakeConnection(cursor)
+
+    async def track_evaluator_lookup(*args: object, **kwargs: object) -> dict[str, Any]:
+        nonlocal evaluator_lookups
+        evaluator_lookups += 1
+        return {}
+
+    monkeypatch.setattr(scheduled_jobs, "_connect", fake_connect)
+    monkeypatch.setattr(scheduled_jobs, "_get_pa_evaluator", track_evaluator_lookup)
+
+    await scheduled_jobs._trigger_scheduled_job(
+        settings=Settings(pa_eval_scheduler_instance_id="test-scheduler"),
+        project_id="project-1",
+        job={
+            "id": "pajob_1",
+            "project_id": "project-1",
+            "name": "每日质量评测",
+            "run_mode": "RECURRING",
+            "frequency": {"kind": "EVERY_MINUTES", "intervalMinutes": 10},
+            "timezone": "Asia/Shanghai",
+            "evaluator_id": "evaluator-1",
+            "created_user_id": "user-1",
+        },
+        trigger_type="JOB",
+        triggered_by="owner@example.com",
+        scheduled_fire_at=datetime(2026, 7, 9, 1, 0, tzinfo=timezone.utc),
+        manual_fire_key=None,
+    )
+
+    failed_execution_updates = [
+        (sql, params)
+        for sql, params in cursor.executions
+        if "UPDATE pa_job_executions" in sql and "lock_until <=" in sql
+    ]
+    advanced_job_updates = [
+        params
+        for sql, params in cursor.executions
+        if "UPDATE pa_evaluation_jobs" in sql and params.get("status") == "FAILED"
+    ]
+    assert failed_execution_updates[-1][1]["id"] == "paexec_scheduled_old-log"
+    assert advanced_job_updates[-1]["next_run_at"] is not None
+    assert evaluator_lookups == 0
+    stale_update_sql = next(
+        sql
+        for sql, _ in cursor.executions
+        if "UPDATE pa_job_executions" in sql and "lock_until <=" in sql
+    )
+    assert "status = 'RUNNING'" in stale_update_sql
+    assert "lock_owner = ''" in stale_update_sql
+    assert "lock_owner = NULL" not in stale_update_sql
+
+
+@pytest.mark.anyio
+@pytest.mark.parametrize(
+    ("existing_status", "existing_lock_until"),
+    [
+        ("SUCCEEDED", datetime(2026, 7, 9, 0, 59, tzinfo=timezone.utc)),
+        ("RUNNING", datetime(2099, 7, 9, 1, 0, tzinfo=timezone.utc)),
+    ],
+)
+async def test_trigger_does_not_fail_completed_or_leased_execution_on_fire_key_conflict(
+    monkeypatch: pytest.MonkeyPatch,
+    existing_status: str,
+    existing_lock_until: datetime,
+) -> None:
+    class ConflictCursor(FakeCursor):
+        async def execute(
+            self, sql: str, params: dict[str, Any] | None = None
+        ) -> None:
+            await super().execute(sql, params)
+            if "INSERT INTO pa_job_executions" in sql:
+                self._next_fetchone = {
+                    "id": "paexec_scheduled_existing-log",
+                    "legacy_source_id": "existing-log",
+                    "status": existing_status,
+                    "lock_until": existing_lock_until,
+                }
+
+    cursor = ConflictCursor()
+
+    async def fake_connect(settings: Settings) -> FakeConnection:
+        return FakeConnection(cursor)
+
+    monkeypatch.setattr(scheduled_jobs, "_connect", fake_connect)
+
+    await scheduled_jobs._trigger_scheduled_job(
+        settings=Settings(pa_eval_scheduler_instance_id="test-scheduler"),
+        project_id="project-1",
+        job={
+            "id": "pajob_1",
+            "project_id": "project-1",
+            "name": "每日质量评测",
+            "run_mode": "RECURRING",
+            "frequency": {"kind": "EVERY_MINUTES", "intervalMinutes": 10},
+            "timezone": "Asia/Shanghai",
+            "evaluator_id": "evaluator-1",
+            "created_user_id": "user-1",
+        },
+        trigger_type="JOB",
+        triggered_by="owner@example.com",
+        scheduled_fire_at=datetime(2026, 7, 9, 1, 0, tzinfo=timezone.utc),
+        manual_fire_key=None,
+    )
+
+    assert not any(
+        params.get("status") == "FAILED" for _, params in cursor.executions
+    )
+    assert not any("UPDATE pa_evaluation_jobs" in sql for sql, _ in cursor.executions)
 
 
 @pytest.mark.anyio
@@ -392,6 +647,74 @@ async def test_list_scheduled_jobs_passes_status_filter_to_query(
     select_params = cursor.executions[-1][1]
     assert select_params["status"] == ["RUNNING", "FAILED"]
 
+
+@pytest.mark.anyio
+async def test_consolidated_scheduled_job_logs_read_from_job_executions(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    cursor = FakeCursor()
+
+    async def fake_connect(settings: Settings) -> FakeConnection:
+        return FakeConnection(cursor)
+
+    async def fake_ensure_access(*args: object, **kwargs: object) -> None:
+        return None
+
+    monkeypatch.setattr(scheduled_jobs, "_connect", fake_connect)
+    monkeypatch.setattr(scheduled_jobs, "_ensure_project_access", fake_ensure_access)
+
+    await scheduled_jobs.list_scheduled_job_logs(
+        project_id="project-1",
+        page=1,
+        page_size=10,
+        job_id=None,
+        keyword=None,
+        status=[],
+        trigger_type=[],
+        current_user=scheduled_jobs.CurrentUserContext(
+            user_id="user-1",
+            email="owner@example.com",
+            name="Owner",
+        ),
+        settings=Settings(),
+    )
+
+    sql_text = "\n".join(sql for sql, _ in cursor.executions)
+    assert "FROM pa_job_executions execution" in sql_text
+
+
+@pytest.mark.anyio
+async def test_delete_scheduled_job_does_not_run_execution_log_read_query(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    cursor = FakeCursor()
+    cursor._next_fetchone = {"id": "job-1"}
+
+    async def fake_connect(settings: Settings) -> FakeConnection:
+        return FakeConnection(cursor)
+
+    async def fake_ensure_access(*args: object, **kwargs: object) -> None:
+        return None
+
+    monkeypatch.setattr(scheduled_jobs, "_connect", fake_connect)
+    monkeypatch.setattr(scheduled_jobs, "_ensure_project_access", fake_ensure_access)
+
+    response = await scheduled_jobs.delete_scheduled_job(
+        project_id="project-1",
+        job_id="job-1",
+        current_user=scheduled_jobs.CurrentUserContext(
+            user_id="user-1",
+            email="owner@example.com",
+            name="Owner",
+        ),
+        settings=Settings(),
+    )
+
+    sql_text = "\n".join(sql for sql, _ in cursor.executions)
+    assert response["data"] == {"id": "job-1"}
+    assert "DELETE FROM pa_job_executions" in sql_text
+    assert "DELETE FROM pa_evaluation_jobs" in sql_text
+    assert "FROM pa_job_executions execution" not in sql_text
 
 @pytest.mark.anyio
 async def test_list_scheduled_job_logs_passes_status_and_trigger_filters_to_query(
@@ -462,10 +785,7 @@ async def test_list_scheduled_job_logs_searches_joined_auto_evaluation_task_name
 
     count_sql = cursor.executions[-2][0]
     select_sql = cursor.executions[-1][0]
-    assert "LEFT JOIN pa_auto_evaluation_tasks" in count_sql
-    assert "LEFT JOIN pa_auto_evaluation_tasks" in select_sql
-    assert "COALESCE(auto_tasks.name, logs.auto_evaluation_task_name)" in select_sql
-    assert (
-        "COALESCE(auto_tasks.name, logs.auto_evaluation_task_name) ILIKE %(like)s"
-        in count_sql
-    )
+    assert "FROM pa_job_executions execution" in count_sql
+    assert "FROM pa_job_executions execution" in select_sql
+    assert "autoEvaluationTaskName" in select_sql
+    assert "auto_evaluation_task_name ILIKE %(like)s" in count_sql

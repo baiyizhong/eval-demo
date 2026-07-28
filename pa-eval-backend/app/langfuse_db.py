@@ -1,5 +1,6 @@
 import json
 import hashlib
+import mimetypes
 from datetime import datetime, timedelta, timezone
 from collections.abc import AsyncIterator
 from typing import Any
@@ -17,8 +18,16 @@ from app.annotation_assignment import (
     plan_annotation_assignments,
 )
 from app.config import Settings, get_settings
+from app.consolidation.models import (
+    JobExecutionStatus,
+    JobExecutionType,
+    ResourceExtensionType,
+)
+from app.consolidation.repository import ConsolidationRepository
+from app.langfuse.public_client import LangfusePublicClient, normalize_llm_adapter
+from app.langfuse.encryption import decrypt_langfuse_secret
 from app.data_access.postgres import connect_postgres
-from app.errors import BusinessError
+from app.errors import BusinessError, LangfuseResourceConflictError
 from app.score_configs import (
     PA_BOOLEAN_SCORE_CONFIG_REPAIR_MARKER,
     PA_CLICKHOUSE_SCORE_VALUE,
@@ -265,9 +274,16 @@ class LangfuseDatabaseReader:
                 p.created_at,
                 p.updated_at,
                 p.deleted_at,
-                p.metadata
+                p.metadata,
+                archive_extension.payload AS archive_state
             FROM projects p
             JOIN organizations o ON o.id = p.org_id
+            LEFT JOIN pa_resource_extensions archive_extension
+              ON archive_extension.project_id = p.id
+             AND archive_extension.resource_type = 'PROJECT'
+             AND archive_extension.resource_id = p.id
+             AND archive_extension.extension_type = 'PROJECT_ARCHIVE_STATE'
+             AND archive_extension.status = 'ACTIVE'
             ORDER BY p.created_at DESC, p.id DESC
             """
         )
@@ -285,9 +301,16 @@ class LangfuseDatabaseReader:
                 p.created_at,
                 p.updated_at,
                 p.deleted_at,
-                p.metadata
+                p.metadata,
+                archive_extension.payload AS archive_state
             FROM projects p
             JOIN organizations o ON o.id = p.org_id
+            LEFT JOIN pa_resource_extensions archive_extension
+              ON archive_extension.project_id = p.id
+             AND archive_extension.resource_type = 'PROJECT'
+             AND archive_extension.resource_id = p.id
+             AND archive_extension.extension_type = 'PROJECT_ARCHIVE_STATE'
+             AND archive_extension.status = 'ACTIVE'
             WHERE {PROJECT_ACCESS_EXISTS_SQL}
             ORDER BY p.created_at DESC, p.id DESC
             """,
@@ -418,9 +441,16 @@ class LangfuseDatabaseReader:
                 p.created_at,
                 p.updated_at,
                 p.deleted_at,
-                p.metadata
+                p.metadata,
+                archive_extension.payload AS archive_state
             FROM projects p
             JOIN organizations o ON o.id = p.org_id
+            LEFT JOIN pa_resource_extensions archive_extension
+              ON archive_extension.project_id = p.id
+             AND archive_extension.resource_type = 'PROJECT'
+             AND archive_extension.resource_id = p.id
+             AND archive_extension.extension_type = 'PROJECT_ARCHIVE_STATE'
+             AND archive_extension.status = 'ACTIVE'
             WHERE p.id = %(project_id)s
               AND {PROJECT_ACCESS_EXISTS_SQL}
             LIMIT 1
@@ -627,6 +657,66 @@ class LangfuseDatabaseReader:
     async def ensure_project_visible(self, project_id: str, user_id: str) -> None:
         await self._ensure_project_visible(project_id, user_id)
 
+    async def get_resource_extension(
+        self,
+        *,
+        project_id: str,
+        resource_type: str,
+        resource_id: str,
+        extension_type: ResourceExtensionType | str,
+    ) -> dict[str, Any] | None:
+        rows = await self._fetch_all(
+            """
+            SELECT *
+            FROM pa_resource_extensions
+            WHERE project_id = %(project_id)s
+              AND resource_type = %(resource_type)s
+              AND resource_id = %(resource_id)s
+              AND extension_type = %(extension_type)s
+              AND status = 'ACTIVE'
+            LIMIT 1
+            """,
+            {
+                "project_id": project_id,
+                "resource_type": resource_type,
+                "resource_id": resource_id,
+                "extension_type": ResourceExtensionType(extension_type).value,
+            },
+        )
+        return rows[0] if rows else None
+
+    async def upsert_resource_extension(
+        self,
+        *,
+        project_id: str,
+        resource_type: str,
+        resource_id: str,
+        extension_type: ResourceExtensionType | str,
+        payload: dict[str, Any],
+        actor: str,
+        schema_version: int = 1,
+    ) -> dict[str, Any]:
+        if not self._database_url:
+            raise LangfuseDatabaseConfigError()
+
+        normalized_type = ResourceExtensionType(extension_type)
+        async with await connect_postgres(
+            self._database_url,
+            row_factory=dict_row,
+        ) as connection:
+            async with connection.cursor() as cursor:
+                row = await ConsolidationRepository(cursor).upsert_resource_extension(
+                    extension_id=f"paext_{resource_type.lower()}_{resource_id}_{normalized_type.value.lower()}",
+                    project_id=project_id,
+                    resource_type=resource_type,
+                    resource_id=resource_id,
+                    extension_type=normalized_type,
+                    schema_version=schema_version,
+                    payload=payload,
+                    actor=actor,
+                )
+        return row
+
     async def list_project_api_keys(
         self,
         project_id: str,
@@ -661,20 +751,36 @@ class LangfuseDatabaseReader:
     ) -> dict[str, Any]:
         if not self._database_url:
             raise LangfuseDatabaseConfigError()
-        if not self._langfuse_salt:
-            raise LangfuseSaltConfigError()
 
+        await self._ensure_project_visible(project_id, user_id)
         key_id = _new_langfuse_id("papikey")
-        public_key = f"pk-lf-{uuid4()}"
-        secret_key = f"sk-lf-{uuid4()}"
+        client = LangfusePublicClient(
+            base_url=self._settings.langfuse_base_url,
+            organization_api_key=self._settings.langfuse_organization_api_key,
+            timeout=self._settings.pa_eval_api_timeout,
+        )
+        native_key_id = ""
+        try:
+            native = await client.create_project_api_key(
+                project_id,
+                {"note": note},
+            )
+            native_key_id = str(native.get("id") or "")
+            public_key = str(native.get("publicKey") or "")
+            secret_key = str(native.get("secretKey") or "")
+            if not native_key_id or not public_key or not secret_key:
+                raise BusinessError(2013, "Langfuse 未返回完整 API Key", 502)
+        finally:
+            await client.aclose()
 
-        async with await connect_postgres(
-            self._database_url,
-            row_factory=dict_row,
-        ) as connection:
-            async with connection.cursor() as cursor:
-                await self._get_project_for_user(cursor, project_id, user_id)
-                await cursor.execute(
+        try:
+            async with await connect_postgres(
+                self._database_url,
+                row_factory=dict_row,
+            ) as connection:
+                async with connection.cursor() as cursor:
+                    await self._get_project_for_user(cursor, project_id, user_id)
+                    await cursor.execute(
                     """
                     INSERT INTO pa_project_api_keys (
                         id,
@@ -718,15 +824,21 @@ class LangfuseDatabaseReader:
                         "update_by": user_email,
                     },
                 )
-                row = await cursor.fetchone()
-                await self._insert_langfuse_project_api_key(
-                    cursor=cursor,
-                    key_id=key_id,
-                    project_id=project_id,
-                    note=note,
-                    public_key=public_key,
-                    secret_key=secret_key,
+                    row = await cursor.fetchone()
+                    if row is None:
+                        raise RuntimeError("项目 API Key 创建后未返回记录")
+        except Exception:
+            if native_key_id:
+                client = LangfusePublicClient(
+                    base_url=self._settings.langfuse_base_url,
+                    organization_api_key=self._settings.langfuse_organization_api_key,
+                    timeout=self._settings.pa_eval_api_timeout,
                 )
+                try:
+                    await client.delete_project_api_key(project_id, native_key_id)
+                finally:
+                    await client.aclose()
+            raise
 
         assert row is not None
         return self._to_project_api_key_payload(row)
@@ -793,13 +905,47 @@ class LangfuseDatabaseReader:
         if not self._database_url:
             raise LangfuseDatabaseConfigError()
 
-        async with await connect_postgres(
-            self._database_url,
-            row_factory=dict_row,
-        ) as connection:
-            async with connection.cursor() as cursor:
-                await self._get_project_for_user(cursor, project_id, user_id)
-                await cursor.execute(
+        await self._ensure_project_visible(project_id, user_id)
+        native_key_id = ""
+        old_rows = await self._fetch_all(
+            """
+            SELECT note, public_key, secret_key
+            FROM pa_project_api_keys
+            WHERE project_id = %(project_id)s AND id = %(key_id)s
+            LIMIT 1
+            """,
+            {"project_id": project_id, "key_id": key_id},
+        )
+        if not old_rows:
+            raise BusinessError(1012, "项目 API Key 不存在或无访问权限", 404)
+        client = LangfusePublicClient(
+            base_url=self._settings.langfuse_base_url,
+            organization_api_key=self._settings.langfuse_organization_api_key,
+            timeout=self._settings.pa_eval_api_timeout,
+        )
+        try:
+            listed = await client.list_project_api_keys(project_id)
+            native_key_id = next(
+                (
+                    str(item.get("id") or "")
+                    for item in (listed.get("apiKeys") or listed.get("data") or [])
+                    if item.get("publicKey") == old_rows[0]["public_key"]
+                ),
+                "",
+            )
+            if native_key_id:
+                await client.delete_project_api_key(project_id, native_key_id)
+        finally:
+            await client.aclose()
+
+        try:
+            async with await connect_postgres(
+                self._database_url,
+                row_factory=dict_row,
+            ) as connection:
+                async with connection.cursor() as cursor:
+                    await self._get_project_for_user(cursor, project_id, user_id)
+                    await cursor.execute(
                     """
                     DELETE FROM pa_project_api_keys
                     WHERE id = %(id)s
@@ -808,575 +954,15 @@ class LangfuseDatabaseReader:
                     """,
                     {"id": key_id, "project_id": project_id},
                 )
-                row = await cursor.fetchone()
-                if row is not None:
-                    await cursor.execute(
-                        """
-                        DELETE FROM api_keys
-                        WHERE project_id = %(project_id)s
-                          AND public_key = %(public_key)s
-                          AND scope = 'PROJECT'
-                        """,
-                        {
-                            "project_id": project_id,
-                            "public_key": row["public_key"],
-                        },
-                    )
-
-        if row is None:
-            raise BusinessError(
-                code=1012,
-                message="项目 API Key 不存在或无访问权限",
-                status_code=404,
-            )
-        return {"id": row["id"]}
-
-    async def _insert_langfuse_project_api_key(
-        self,
-        *,
-        cursor: Any,
-        key_id: str,
-        project_id: str,
-        note: str,
-        public_key: str,
-        secret_key: str,
-    ) -> None:
-        await cursor.execute(
-            """
-            INSERT INTO api_keys (
-                id,
-                created_at,
-                note,
-                public_key,
-                hashed_secret_key,
-                display_secret_key,
-                project_id,
-                fast_hashed_secret_key,
-                scope,
-                is_in_app_agent_key
-            )
-            VALUES (
-                %(id)s,
-                NOW(),
-                %(note)s,
-                %(public_key)s,
-                %(hashed_secret_key)s,
-                %(display_secret_key)s,
-                %(project_id)s,
-                %(fast_hashed_secret_key)s,
-                'PROJECT',
-                false
-            )
-            """,
-            {
-                "id": key_id,
-                "note": note,
-                "public_key": public_key,
-                "hashed_secret_key": f"pa-eval-placeholder-{uuid4()}",
-                "display_secret_key": _display_secret_key(secret_key),
-                "project_id": project_id,
-                "fast_hashed_secret_key": _create_sha_hash(
-                    secret_key,
-                    self._langfuse_salt,
-                ),
-            },
-        )
-
-    async def get_project_model_settings_for_user(
-        self,
-        project_id: str,
-        user_id: str,
-    ) -> dict[str, Any]:
-        await self._ensure_project_visible(project_id, user_id)
-        connections = await self._fetch_all(
-            """
-            SELECT
-                id,
-                provider,
-                adapter,
-                secret_key,
-                base_url,
-                custom_models,
-                with_default_models
-            FROM pa_project_llm_connections
-            WHERE project_id = %(project_id)s
-              AND status = 'ACTIVE'
-            ORDER BY update_date DESC, create_date DESC, id DESC
-            """,
-            {"project_id": project_id},
-        )
-        definitions = await self._fetch_all(
-            """
-            SELECT
-                id,
-                model_name,
-                match_pattern,
-                unit,
-                input_price,
-                output_price,
-                tokenizer_id
-            FROM pa_project_model_definitions
-            WHERE project_id = %(project_id)s
-              AND status = 'ACTIVE'
-            ORDER BY update_date DESC, create_date DESC, id DESC
-            """,
-            {"project_id": project_id},
-        )
-        settings_rows = await self._fetch_all(
-            """
-            SELECT
-                pms.id,
-                pms.llm_connection_id,
-                pms.model,
-                pms.temperature,
-                plc.provider,
-                plc.adapter
-            FROM pa_project_model_settings pms
-            LEFT JOIN pa_project_llm_connections plc
-              ON plc.project_id = pms.project_id
-             AND plc.id = pms.llm_connection_id
-            WHERE pms.project_id = %(project_id)s
-            LIMIT 1
-            """,
-            {"project_id": project_id},
-        )
-        connection_payloads = [
-            self._to_llm_connection_payload(row) for row in connections
-        ]
-        default_model = self._to_default_model_payload(
-            settings_rows[0] if settings_rows else None,
-            connection_payloads[0] if connection_payloads else None,
-            project_id,
-        )
-        return {
-            "defaultModel": default_model,
-            "connections": connection_payloads,
-            "modelDefinitions": [
-                self._to_model_definition_payload(row) for row in definitions
-            ],
-        }
-
-    async def update_project_default_model_for_user(
-        self,
-        project_id: str,
-        user_id: str,
-        user_email: str,
-        payload: dict[str, Any],
-    ) -> dict[str, Any]:
-        if not self._database_url:
-            raise LangfuseDatabaseConfigError()
-
-        setting_id = f"pamodeldefault_{project_id}"
-        async with await connect_postgres(
-            self._database_url,
-            row_factory=dict_row,
-        ) as connection:
-            async with connection.cursor() as cursor:
-                await self._get_project_for_user(cursor, project_id, user_id)
-                connection_row = await self._get_llm_connection_row(
-                    cursor,
-                    project_id,
-                    payload["llmConnectionId"],
-                )
-                await cursor.execute(
-                    """
-                    INSERT INTO pa_project_model_settings (
-                        id,
-                        project_id,
-                        llm_connection_id,
-                        model,
-                        temperature,
-                        create_by,
-                        create_date,
-                        update_by,
-                        update_date
-                    )
-                    VALUES (
-                        %(id)s,
-                        %(project_id)s,
-                        %(llm_connection_id)s,
-                        %(model)s,
-                        %(temperature)s,
-                        %(create_by)s,
-                        NOW(),
-                        %(update_by)s,
-                        NOW()
-                    )
-                    ON CONFLICT (project_id) DO UPDATE
-                    SET
-                        llm_connection_id = EXCLUDED.llm_connection_id,
-                        model = EXCLUDED.model,
-                        temperature = EXCLUDED.temperature,
-                        update_by = EXCLUDED.update_by,
-                        update_date = NOW()
-                    RETURNING id, llm_connection_id, model, temperature
-                    """,
-                    {
-                        "id": setting_id,
-                        "project_id": project_id,
-                        "llm_connection_id": payload["llmConnectionId"],
-                        "model": payload["model"],
-                        "temperature": payload["temperature"],
-                        "create_by": user_email,
-                        "update_by": user_email,
-                    },
-                )
-                row = await cursor.fetchone()
-
-        assert row is not None
-        return self._to_default_model_payload(
-            {
-                **row,
-                "provider": connection_row["provider"],
-                "adapter": connection_row["adapter"],
-            },
-            None,
-            project_id,
-        )
-
-    async def create_project_llm_connection_for_user(
-        self,
-        project_id: str,
-        user_id: str,
-        user_email: str,
-        payload: dict[str, Any],
-    ) -> dict[str, Any]:
-        if not self._database_url:
-            raise LangfuseDatabaseConfigError()
-
-        connection_id = _new_langfuse_id("pallm")
-        async with await connect_postgres(
-            self._database_url,
-            row_factory=dict_row,
-        ) as connection:
-            async with connection.cursor() as cursor:
-                await self._get_project_for_user(cursor, project_id, user_id)
-                await cursor.execute(
-                    """
-                    INSERT INTO pa_project_llm_connections (
-                        id,
-                        project_id,
-                        provider,
-                        adapter,
-                        secret_key,
-                        base_url,
-                        custom_models,
-                        with_default_models,
-                        create_by,
-                        create_date,
-                        update_by,
-                        update_date
-                    )
-                    VALUES (
-                        %(id)s,
-                        %(project_id)s,
-                        %(provider)s,
-                        %(adapter)s,
-                        %(secret_key)s,
-                        %(base_url)s,
-                        %(custom_models)s,
-                        %(with_default_models)s,
-                        %(create_by)s,
-                        NOW(),
-                        %(update_by)s,
-                        NOW()
-                    )
-                    RETURNING
-                        id,
-                        provider,
-                        adapter,
-                        secret_key,
-                        base_url,
-                        custom_models,
-                        with_default_models
-                    """,
-                    {
-                        "id": connection_id,
-                        "project_id": project_id,
-                        "provider": payload["provider"],
-                        "adapter": payload["adapter"],
-                        "secret_key": payload.get("secretKey") or "",
-                        "base_url": payload.get("baseUrl") or "",
-                        "custom_models": Jsonb(payload.get("customModels") or []),
-                        "with_default_models": bool(
-                            payload.get("withDefaultModels", True)
-                        ),
-                        "create_by": user_email,
-                        "update_by": user_email,
-                    },
-                )
-                row = await cursor.fetchone()
-
-        assert row is not None
-        return self._to_llm_connection_payload(row)
-
-    async def update_project_llm_connection_for_user(
-        self,
-        project_id: str,
-        connection_id: str,
-        user_id: str,
-        user_email: str,
-        payload: dict[str, Any],
-    ) -> dict[str, Any]:
-        if not self._database_url:
-            raise LangfuseDatabaseConfigError()
-
-        async with await connect_postgres(
-            self._database_url,
-            row_factory=dict_row,
-        ) as connection:
-            async with connection.cursor() as cursor:
-                await self._get_project_for_user(cursor, project_id, user_id)
-                await cursor.execute(
-                    """
-                    UPDATE pa_project_llm_connections
-                    SET provider = %(provider)s,
-                        adapter = %(adapter)s,
-                        secret_key = CASE
-                            WHEN %(secret_key)s = '' THEN secret_key
-                            ELSE %(secret_key)s
-                        END,
-                        base_url = %(base_url)s,
-                        custom_models = %(custom_models)s,
-                        with_default_models = %(with_default_models)s,
-                        update_by = %(update_by)s,
-                        update_date = NOW()
-                    WHERE project_id = %(project_id)s
-                      AND id = %(connection_id)s
-                      AND status = 'ACTIVE'
-                    RETURNING
-                        id,
-                        provider,
-                        adapter,
-                        secret_key,
-                        base_url,
-                        custom_models,
-                        with_default_models
-                    """,
-                    {
-                        "project_id": project_id,
-                        "connection_id": connection_id,
-                        "provider": payload["provider"],
-                        "adapter": payload["adapter"],
-                        "secret_key": payload.get("secretKey") or "",
-                        "base_url": payload.get("baseUrl") or "",
-                        "custom_models": Jsonb(payload.get("customModels") or []),
-                        "with_default_models": bool(
-                            payload.get("withDefaultModels", True)
-                        ),
-                        "update_by": user_email,
-                    },
-                )
-                row = await cursor.fetchone()
-        if row is None:
-            raise BusinessError(1013, "LLM 连接不存在或已不可用", 404)
-        return self._to_llm_connection_payload(row)
-
-    async def delete_project_llm_connection_for_user(
-        self,
-        project_id: str,
-        connection_id: str,
-        user_id: str,
-        user_email: str,
-    ) -> dict[str, Any]:
-        if not self._database_url:
-            raise LangfuseDatabaseConfigError()
-
-        async with await connect_postgres(
-            self._database_url,
-            row_factory=dict_row,
-        ) as connection:
-            async with connection.cursor() as cursor:
-                await self._get_project_for_user(cursor, project_id, user_id)
-                await cursor.execute(
-                    """
-                    UPDATE pa_project_llm_connections
-                    SET status = 'ARCHIVED',
-                        update_by = %(update_by)s,
-                        update_date = NOW()
-                    WHERE project_id = %(project_id)s
-                      AND id = %(connection_id)s
-                      AND status = 'ACTIVE'
-                    RETURNING id
-                    """,
-                    {
-                        "project_id": project_id,
-                        "connection_id": connection_id,
-                        "update_by": user_email,
-                    },
-                )
-                row = await cursor.fetchone()
-        if row is None:
-            raise BusinessError(1013, "LLM 连接不存在或已不可用", 404)
-        return {"id": row["id"]}
-
-    async def create_project_model_definition_for_user(
-        self,
-        project_id: str,
-        user_id: str,
-        user_email: str,
-        payload: dict[str, Any],
-    ) -> dict[str, Any]:
-        if not self._database_url:
-            raise LangfuseDatabaseConfigError()
-
-        model_id = _new_langfuse_id("pamodel")
-        async with await connect_postgres(
-            self._database_url,
-            row_factory=dict_row,
-        ) as connection:
-            async with connection.cursor() as cursor:
-                await self._get_project_for_user(cursor, project_id, user_id)
-                await cursor.execute(
-                    """
-                    INSERT INTO pa_project_model_definitions (
-                        id,
-                        project_id,
-                        model_name,
-                        match_pattern,
-                        unit,
-                        input_price,
-                        output_price,
-                        tokenizer_id,
-                        create_by,
-                        create_date,
-                        update_by,
-                        update_date
-                    )
-                    VALUES (
-                        %(id)s,
-                        %(project_id)s,
-                        %(model_name)s,
-                        %(match_pattern)s,
-                        %(unit)s,
-                        %(input_price)s,
-                        %(output_price)s,
-                        %(tokenizer_id)s,
-                        %(create_by)s,
-                        NOW(),
-                        %(update_by)s,
-                        NOW()
-                    )
-                    RETURNING
-                        id,
-                        model_name,
-                        match_pattern,
-                        unit,
-                        input_price,
-                        output_price,
-                        tokenizer_id
-                    """,
-                    {
-                        "id": model_id,
-                        "project_id": project_id,
-                        "model_name": payload["modelName"],
-                        "match_pattern": payload.get("matchPattern") or "",
-                        "unit": payload.get("unit") or "TOKENS",
-                        "input_price": payload.get("inputPrice") or "",
-                        "output_price": payload.get("outputPrice") or "",
-                        "tokenizer_id": payload.get("tokenizerId") or "",
-                        "create_by": user_email,
-                        "update_by": user_email,
-                    },
-                )
-                row = await cursor.fetchone()
-
-        assert row is not None
-        return self._to_model_definition_payload(row)
-
-    async def update_project_model_definition_for_user(
-        self,
-        project_id: str,
-        model_id: str,
-        user_id: str,
-        user_email: str,
-        payload: dict[str, Any],
-    ) -> dict[str, Any]:
-        if not self._database_url:
-            raise LangfuseDatabaseConfigError()
-
-        async with await connect_postgres(
-            self._database_url,
-            row_factory=dict_row,
-        ) as connection:
-            async with connection.cursor() as cursor:
-                await self._get_project_for_user(cursor, project_id, user_id)
-                await cursor.execute(
-                    """
-                    UPDATE pa_project_model_definitions
-                    SET model_name = %(model_name)s,
-                        match_pattern = %(match_pattern)s,
-                        unit = %(unit)s,
-                        input_price = %(input_price)s,
-                        output_price = %(output_price)s,
-                        tokenizer_id = %(tokenizer_id)s,
-                        update_by = %(update_by)s,
-                        update_date = NOW()
-                    WHERE project_id = %(project_id)s
-                      AND id = %(model_id)s
-                      AND status = 'ACTIVE'
-                    RETURNING
-                        id,
-                        model_name,
-                        match_pattern,
-                        unit,
-                        input_price,
-                        output_price,
-                        tokenizer_id
-                    """,
-                    {
-                        "project_id": project_id,
-                        "model_id": model_id,
-                        "model_name": payload["modelName"],
-                        "match_pattern": payload.get("matchPattern") or "",
-                        "unit": payload.get("unit") or "TOKENS",
-                        "input_price": payload.get("inputPrice") or "",
-                        "output_price": payload.get("outputPrice") or "",
-                        "tokenizer_id": payload.get("tokenizerId") or "",
-                        "update_by": user_email,
-                    },
-                )
-                row = await cursor.fetchone()
-        if row is None:
-            raise BusinessError(1014, "模型定义不存在或已不可用", 404)
-        return self._to_model_definition_payload(row)
-
-    async def delete_project_model_definition_for_user(
-        self,
-        project_id: str,
-        model_id: str,
-        user_id: str,
-        user_email: str,
-    ) -> dict[str, Any]:
-        if not self._database_url:
-            raise LangfuseDatabaseConfigError()
-
-        async with await connect_postgres(
-            self._database_url,
-            row_factory=dict_row,
-        ) as connection:
-            async with connection.cursor() as cursor:
-                await self._get_project_for_user(cursor, project_id, user_id)
-                await cursor.execute(
-                    """
-                    UPDATE pa_project_model_definitions
-                    SET status = 'ARCHIVED',
-                        update_by = %(update_by)s,
-                        update_date = NOW()
-                    WHERE project_id = %(project_id)s
-                      AND id = %(model_id)s
-                      AND status = 'ACTIVE'
-                    RETURNING id
-                    """,
-                    {
-                        "project_id": project_id,
-                        "model_id": model_id,
-                        "update_by": user_email,
-                    },
-                )
-                row = await cursor.fetchone()
-        if row is None:
-            raise BusinessError(1014, "模型定义不存在或已不可用", 404)
+                    row = await cursor.fetchone()
+                    if row is None:
+                        raise BusinessError(
+                            code=1012,
+                            message="项目 API Key 不存在或无访问权限",
+                            status_code=404,
+                        )
+        except Exception:
+            raise
         return {"id": row["id"]}
 
     async def list_evaluators_for_user(self, user_id: str) -> list[dict[str, Any]]:
@@ -1553,69 +1139,6 @@ class LangfuseDatabaseReader:
             "updatedAt": _format_datetime(row.get("updated_at")),
         }
 
-    async def create_dataset_for_user(
-        self,
-        project_id: str,
-        user_id: str,
-        payload: dict[str, Any],
-    ) -> dict[str, Any]:
-        if not self._database_url:
-            raise LangfuseDatabaseConfigError()
-
-        dataset_id = _new_langfuse_id("dataset")
-        try:
-            async with await connect_postgres(
-                self._database_url,
-                row_factory=dict_row,
-            ) as connection:
-                async with connection.cursor() as cursor:
-                    await self._get_project_for_user(cursor, project_id, user_id)
-                    await cursor.execute(
-                        """
-                        INSERT INTO datasets (
-                            id,
-                            project_id,
-                            name,
-                            description,
-                            metadata,
-                            input_schema,
-                            expected_output_schema,
-                            created_at,
-                            updated_at
-                        )
-                        VALUES (
-                            %(id)s,
-                            %(project_id)s,
-                            %(name)s,
-                            %(description)s,
-                            %(metadata)s,
-                            %(input_schema)s,
-                            %(expected_output_schema)s,
-                            NOW(),
-                            NOW()
-                        )
-                        """,
-                        {
-                            "id": dataset_id,
-                            "project_id": project_id,
-                            "name": payload["name"],
-                            "description": payload.get("description") or "",
-                            "metadata": Jsonb(payload.get("metadata") or {}),
-                            "input_schema": Jsonb(payload.get("inputSchema") or {}),
-                            "expected_output_schema": Jsonb(
-                                payload.get("expectedOutputSchema") or {}
-                            ),
-                        },
-                    )
-        except psycopg.errors.UniqueViolation as exc:
-            raise BusinessError(
-                code=1013,
-                message="数据集名称已存在",
-                status_code=409,
-            ) from exc
-
-        return await self.get_dataset_for_user(project_id, dataset_id, user_id)
-
     async def is_dataset_name_available_for_user(
         self,
         project_id: str,
@@ -1635,98 +1158,6 @@ class LangfuseDatabaseReader:
             {"project_id": project_id, "name": name},
         )
         return bool(rows and rows[0].get("available"))
-
-    async def update_dataset_for_user(
-        self,
-        project_id: str,
-        dataset_id: str,
-        user_id: str,
-        payload: dict[str, Any],
-    ) -> dict[str, Any]:
-        if not self._database_url:
-            raise LangfuseDatabaseConfigError()
-
-        try:
-            async with await connect_postgres(
-                self._database_url,
-                row_factory=dict_row,
-            ) as connection:
-                async with connection.cursor() as cursor:
-                    await self._get_project_for_user(cursor, project_id, user_id)
-                    await cursor.execute(
-                        """
-                        UPDATE datasets
-                        SET
-                            name = %(name)s,
-                            description = %(description)s,
-                            metadata = %(metadata)s,
-                            input_schema = %(input_schema)s,
-                            expected_output_schema = %(expected_output_schema)s,
-                            updated_at = NOW()
-                        WHERE id = %(id)s
-                          AND project_id = %(project_id)s
-                        RETURNING id
-                        """,
-                        {
-                            "id": dataset_id,
-                            "project_id": project_id,
-                            "name": payload["name"],
-                            "description": payload.get("description") or "",
-                            "metadata": Jsonb(payload.get("metadata") or {}),
-                            "input_schema": Jsonb(payload.get("inputSchema") or {}),
-                            "expected_output_schema": Jsonb(
-                                payload.get("expectedOutputSchema") or {}
-                            ),
-                        },
-                    )
-                    row = await cursor.fetchone()
-        except psycopg.errors.UniqueViolation as exc:
-            raise BusinessError(
-                code=1013,
-                message="数据集名称已存在",
-                status_code=409,
-            ) from exc
-
-        if row is None:
-            raise BusinessError(
-                code=1011,
-                message="数据集不存在或无访问权限",
-                status_code=404,
-            )
-        return await self.get_dataset_for_user(project_id, dataset_id, user_id)
-
-    async def delete_dataset_for_user(
-        self,
-        project_id: str,
-        dataset_id: str,
-        user_id: str,
-    ) -> None:
-        if not self._database_url:
-            raise LangfuseDatabaseConfigError()
-
-        async with await connect_postgres(
-            self._database_url,
-            row_factory=dict_row,
-        ) as connection:
-            async with connection.cursor() as cursor:
-                await self._get_project_for_user(cursor, project_id, user_id)
-                await cursor.execute(
-                    """
-                    DELETE FROM datasets
-                    WHERE id = %(id)s
-                      AND project_id = %(project_id)s
-                    RETURNING id
-                    """,
-                    {"id": dataset_id, "project_id": project_id},
-                )
-                row = await cursor.fetchone()
-
-        if row is None:
-            raise BusinessError(
-                code=1011,
-                message="数据集不存在或无访问权限",
-                status_code=404,
-            )
 
     async def get_dataset_metric_summary_for_user(
         self,
@@ -1931,260 +1362,6 @@ class LangfuseDatabaseReader:
                 "id": last_row["id"],
             }
 
-    async def create_dataset_item_for_user(
-        self,
-        project_id: str,
-        dataset_id: str,
-        user_id: str,
-        payload: dict[str, Any],
-    ) -> dict[str, Any]:
-        if not self._database_url:
-            raise LangfuseDatabaseConfigError()
-
-        item_id = _new_langfuse_id("datasetitem")
-        async with await connect_postgres(
-            self._database_url,
-            row_factory=dict_row,
-        ) as connection:
-            async with connection.cursor() as cursor:
-                await self._get_project_for_user(cursor, project_id, user_id)
-                await self._ensure_dataset_exists(cursor, project_id, dataset_id)
-                await cursor.execute(
-                    """
-                    INSERT INTO dataset_items (
-                        id,
-                        project_id,
-                        dataset_id,
-                        status,
-                        input,
-                        expected_output,
-                        metadata,
-                        source_trace_id,
-                        source_observation_id,
-                        created_at,
-                        updated_at,
-                        valid_from,
-                        is_deleted
-                    )
-                    VALUES (
-                        %(id)s,
-                        %(project_id)s,
-                        %(dataset_id)s,
-                        %(status)s::"DatasetStatus",
-                        %(input)s,
-                        %(expected_output)s,
-                        %(metadata)s,
-                        %(source_trace_id)s,
-                        %(source_observation_id)s,
-                        NOW(),
-                        NOW(),
-                        NOW(),
-                        FALSE
-                    )
-                    RETURNING
-                        id,
-                        project_id,
-                        dataset_id,
-                        status::text AS status,
-                        input,
-                        expected_output,
-                        metadata,
-                        source_trace_id,
-                        source_observation_id,
-                        is_deleted,
-                        created_at,
-                        updated_at
-                    """,
-                    {
-                        "id": item_id,
-                        "project_id": project_id,
-                        "dataset_id": dataset_id,
-                        "status": payload.get("status") or "ACTIVE",
-                        "input": Jsonb(payload.get("input")),
-                        "expected_output": Jsonb(payload.get("expectedOutput")),
-                        "metadata": Jsonb(payload.get("metadata") or {}),
-                        "source_trace_id": payload.get("sourceTraceId") or "",
-                        "source_observation_id": payload.get("sourceObservationId")
-                        or "",
-                    },
-                )
-                row = await cursor.fetchone()
-
-        assert row is not None
-        return self._to_dataset_item_payload(row)
-
-    async def update_dataset_item_for_user(
-        self,
-        project_id: str,
-        dataset_id: str,
-        item_id: str,
-        user_id: str,
-        payload: dict[str, Any],
-    ) -> dict[str, Any]:
-        if not self._database_url:
-            raise LangfuseDatabaseConfigError()
-
-        async with await connect_postgres(
-            self._database_url,
-            row_factory=dict_row,
-        ) as connection:
-            async with connection.cursor() as cursor:
-                await self._get_project_for_user(cursor, project_id, user_id)
-                await self._ensure_dataset_exists(cursor, project_id, dataset_id)
-                await cursor.execute(
-                    """
-                    UPDATE dataset_items
-                    SET
-                        input = %(input)s,
-                        expected_output = %(expected_output)s,
-                        metadata = %(metadata)s,
-                        status = COALESCE(%(status)s::"DatasetStatus", status),
-                        source_trace_id = COALESCE(%(source_trace_id)s, source_trace_id),
-                        source_observation_id = COALESCE(%(source_observation_id)s, source_observation_id),
-                        updated_at = NOW()
-                    WHERE project_id = %(project_id)s
-                      AND dataset_id = %(dataset_id)s
-                      AND id = %(id)s
-                      AND valid_to IS NULL
-                    RETURNING
-                        id,
-                        project_id,
-                        dataset_id,
-                        status::text AS status,
-                        input,
-                        expected_output,
-                        metadata,
-                        source_trace_id,
-                        source_observation_id,
-                        is_deleted,
-                        created_at,
-                        updated_at
-                    """,
-                    {
-                        "id": item_id,
-                        "project_id": project_id,
-                        "dataset_id": dataset_id,
-                        "status": payload.get("status"),
-                        "input": Jsonb(payload.get("input")),
-                        "expected_output": Jsonb(payload.get("expectedOutput")),
-                        "metadata": Jsonb(payload.get("metadata") or {}),
-                        "source_trace_id": payload.get("sourceTraceId"),
-                        "source_observation_id": payload.get("sourceObservationId"),
-                    },
-                )
-                row = await cursor.fetchone()
-
-        if row is None:
-            raise BusinessError(
-                code=1012,
-                message="数据项不存在或无访问权限",
-                status_code=404,
-            )
-        return self._to_dataset_item_payload(row)
-
-    async def archive_dataset_item_for_user(
-        self,
-        project_id: str,
-        dataset_id: str,
-        item_id: str,
-        user_id: str,
-    ) -> dict[str, Any]:
-        if not self._database_url:
-            raise LangfuseDatabaseConfigError()
-
-        async with await connect_postgres(
-            self._database_url,
-            row_factory=dict_row,
-        ) as connection:
-            async with connection.cursor() as cursor:
-                await self._get_project_for_user(cursor, project_id, user_id)
-                await self._ensure_dataset_exists(cursor, project_id, dataset_id)
-                await cursor.execute(
-                    """
-                    UPDATE dataset_items
-                    SET
-                        status = 'ARCHIVED'::"DatasetStatus",
-                        is_deleted = TRUE,
-                        updated_at = NOW()
-                    WHERE project_id = %(project_id)s
-                      AND dataset_id = %(dataset_id)s
-                      AND id = %(id)s
-                      AND valid_to IS NULL
-                    RETURNING
-                        id,
-                        project_id,
-                        dataset_id,
-                        status::text AS status,
-                        input,
-                        expected_output,
-                        metadata,
-                        source_trace_id,
-                        source_observation_id,
-                        is_deleted,
-                        created_at,
-                        updated_at
-                    """,
-                    {
-                        "id": item_id,
-                        "project_id": project_id,
-                        "dataset_id": dataset_id,
-                    },
-                )
-                row = await cursor.fetchone()
-
-        if row is None:
-            raise BusinessError(
-                code=1012,
-                message="数据项不存在或无访问权限",
-                status_code=404,
-            )
-        return self._to_dataset_item_payload(row)
-
-    async def delete_dataset_item_for_user(
-        self,
-        project_id: str,
-        dataset_id: str,
-        item_id: str,
-        user_id: str,
-    ) -> None:
-        if not self._database_url:
-            raise LangfuseDatabaseConfigError()
-
-        async with await connect_postgres(
-            self._database_url,
-            row_factory=dict_row,
-        ) as connection:
-            async with connection.cursor() as cursor:
-                await self._get_project_for_user(cursor, project_id, user_id)
-                await self._ensure_dataset_exists(cursor, project_id, dataset_id)
-                await cursor.execute(
-                    """
-                    UPDATE dataset_items
-                    SET
-                        is_deleted = TRUE,
-                        valid_to = NOW(),
-                        updated_at = NOW()
-                    WHERE project_id = %(project_id)s
-                      AND dataset_id = %(dataset_id)s
-                      AND id = %(id)s
-                      AND valid_to IS NULL
-                    RETURNING id
-                    """,
-                    {
-                        "id": item_id,
-                        "project_id": project_id,
-                        "dataset_id": dataset_id,
-                    },
-                )
-                row = await cursor.fetchone()
-
-        if row is None:
-            raise BusinessError(
-                code=1012,
-                message="数据项不存在或无访问权限",
-                status_code=404,
-            )
-
     async def create_dataset_export_job_for_user(
         self,
         project_id: str,
@@ -2204,37 +1381,17 @@ class LangfuseDatabaseReader:
             async with connection.cursor() as cursor:
                 await self._get_project_for_user(cursor, project_id, user_id)
                 await self._ensure_dataset_exists(cursor, project_id, dataset_id)
-                await cursor.execute(
-                    """
-                    INSERT INTO pa_dataset_export_jobs (
-                        create_by,
-                        update_by,
-                        id,
-                        project_id,
-                        dataset_id,
-                        format,
-                        status,
-                        expires_at
-                    )
-                    VALUES (
-                        %(user_id)s,
-                        %(user_id)s,
-                        %(id)s,
-                        %(project_id)s,
-                        %(dataset_id)s,
-                        %(format)s,
-                        'PENDING',
-                        %(expires_at)s
-                    )
-                    """,
-                    {
-                        "id": job_id,
-                        "project_id": project_id,
-                        "dataset_id": dataset_id,
-                        "user_id": user_id,
-                        "format": export_format,
-                        "expires_at": expires_at,
-                    },
+                await ConsolidationRepository(cursor).create_execution(
+                    execution_id=f"paexec_dataset_export_{job_id}",
+                    project_id=project_id,
+                    job_type=JobExecutionType.DATASET_EXPORT,
+                    definition_id=None,
+                    idempotency_key=job_id,
+                    request_payload={"datasetId": dataset_id, "format": export_format},
+                    legacy_source_type="DATASET_EXPORT_JOB",
+                    legacy_source_id=job_id,
+                    actor=user_id,
+                    expires_at=expires_at,
                 )
                 return await self._get_dataset_export_job_payload_cursor(
                     cursor,
@@ -2283,6 +1440,7 @@ class LangfuseDatabaseReader:
             update_date = NOW()
             """,
             {},
+            consolidated_status=JobExecutionStatus.RUNNING,
         )
 
     async def mark_dataset_export_job_succeeded(
@@ -2317,6 +1475,18 @@ class LangfuseDatabaseReader:
                 "file_path": file_path,
                 "file_size": file_size,
             },
+            consolidated_status=JobExecutionStatus.SUCCEEDED,
+            consolidated_total_count=total_count,
+            consolidated_completed_count=total_count,
+            consolidated_success_count=total_count,
+            consolidated_result_payload={"exportedCount": total_count},
+            consolidated_artifact={
+                "uri": file_path,
+                "name": file_name,
+                "contentType": mimetypes.guess_type(file_name)[0]
+                or "application/octet-stream",
+                "size": file_size,
+            },
         )
 
     async def mark_dataset_export_job_failed(
@@ -2337,6 +1507,8 @@ class LangfuseDatabaseReader:
             update_date = NOW()
             """,
             {"error_message": error_message[:1000]},
+            consolidated_status=JobExecutionStatus.FAILED,
+            consolidated_error_message=error_message[:1000],
         )
 
     async def create_annotation_export_job_for_user(
@@ -2371,46 +1543,32 @@ class LangfuseDatabaseReader:
             async with connection.cursor() as cursor:
                 await self._get_project_for_user(cursor, project_id, user_id)
                 await self._get_annotation_queue_row(cursor, project_id, queue_id)
-                await cursor.execute(
-                    """
-                    INSERT INTO pa_annotation_export_jobs (
-                        create_by,
-                        update_by,
-                        id,
-                        project_id,
-                        queue_id,
-                        scope,
-                        format,
-                        status,
-                        file_name,
-                        expires_at,
-                        metadata
-                    )
-                    VALUES (
-                        %(user_id)s,
-                        %(user_id)s,
-                        %(id)s,
-                        %(project_id)s,
-                        %(queue_id)s,
-                        %(scope)s,
-                        %(format)s,
-                        'PENDING',
-                        %(file_name)s,
-                        %(expires_at)s,
-                        %(metadata)s
-                    )
-                    """,
-                    {
-                        "id": job_id,
-                        "project_id": project_id,
-                        "queue_id": queue_id,
-                        "user_id": user_id,
+                repository = ConsolidationRepository(cursor)
+                await repository.create_execution(
+                    execution_id=f"paexec_annotation_export_{job_id}",
+                    project_id=project_id,
+                    job_type=JobExecutionType.ANNOTATION_EXPORT,
+                    definition_id=None,
+                    idempotency_key=job_id,
+                    request_payload={
+                        "queueId": queue_id,
                         "scope": scope,
                         "format": export_format,
-                        "file_name": file_name,
-                        "expires_at": expires_at,
-                        "metadata": Jsonb(metadata),
+                        "metadata": metadata,
                     },
+                    legacy_source_type="ANNOTATION_EXPORT_JOB",
+                    legacy_source_id=job_id,
+                    actor=user_id,
+                    expires_at=expires_at,
+                )
+                await repository.sync_export_artifact_from_legacy(
+                    execution_id=f"paexec_annotation_export_{job_id}",
+                    project_id=project_id,
+                    artifact_uri="",
+                    artifact_name=file_name,
+                    artifact_content_type="",
+                    artifact_size=0,
+                    actor=user_id,
                 )
                 return await self._get_annotation_export_job_payload_cursor(
                     cursor,
@@ -2436,57 +1594,44 @@ class LangfuseDatabaseReader:
         ) as connection:
             async with connection.cursor() as cursor:
                 await self._get_project_for_user(cursor, project_id, user_id)
-                await cursor.execute(
-                    """
-                    INSERT INTO pa_trace_bulk_jobs (
-                        create_by,
-                        update_by,
-                        id,
-                        project_id,
-                        user_id,
-                        job_type,
-                        status,
-                        selection_type,
-                        selection_payload,
-                        operation_payload,
-                        result_payload,
-                        total_count,
-                        expires_at
-                    )
-                    VALUES (
-                        %(user_id)s,
-                        %(user_id)s,
-                        %(id)s,
-                        %(project_id)s,
-                        %(user_id)s,
-                        %(job_type)s,
-                        'PENDING',
-                        %(selection_type)s,
-                        %(selection_payload)s,
-                        %(operation_payload)s,
-                        %(result_payload)s,
-                        %(total_count)s,
-                        %(expires_at)s
-                    )
-                    RETURNING *
-                    """,
-                    {
-                        "id": job_id,
-                        "project_id": project_id,
-                        "user_id": user_id,
-                        "job_type": payload["jobType"],
-                        "selection_type": payload["selectionType"],
-                        "selection_payload": Jsonb(payload["selectionPayload"]),
-                        "operation_payload": Jsonb(payload["operationPayload"]),
-                        "result_payload": Jsonb(payload.get("resultPayload") or {}),
-                        "total_count": int(payload.get("totalCount") or 0),
-                        "expires_at": expires_at,
-                    },
+                job_type = (
+                    JobExecutionType.TRACE_DATASET_IMPORT
+                    if payload["jobType"] == "DATASET_IMPORT"
+                    else JobExecutionType.TRACE_ANNOTATION_IMPORT
                 )
-                row = await cursor.fetchone()
+                repository = ConsolidationRepository(cursor)
+                row = await repository.create_execution(
+                    execution_id=f"paexec_trace_bulk_{job_id}",
+                    project_id=project_id,
+                    job_type=job_type,
+                    definition_id=None,
+                    idempotency_key=job_id,
+                    request_payload={
+                        "selectionType": payload["selectionType"],
+                        "selectionPayload": payload["selectionPayload"],
+                        "operationPayload": payload["operationPayload"],
+                        "userId": user_id,
+                    },
+                    legacy_source_type="TRACE_BULK_JOB",
+                    legacy_source_id=job_id,
+                    actor=user_id,
+                    expires_at=expires_at,
+                )
+                row = await repository.sync_execution_from_legacy(
+                    execution_id=f"paexec_trace_bulk_{job_id}",
+                    project_id=project_id,
+                    status=JobExecutionStatus.PENDING,
+                    total_count=int(payload.get("totalCount") or 0),
+                    completed_count=0,
+                    success_count=0,
+                    failure_count=0,
+                    result_payload=payload.get("resultPayload") or {},
+                    actor=user_id,
+                )
 
-        assert row is not None
-        return self._to_trace_bulk_job_payload(row)
+        return self._to_trace_bulk_job_payload(
+            _trace_bulk_execution_to_legacy_row(row)
+        )
 
     async def get_trace_bulk_job_for_user(
         self,
@@ -2504,21 +1649,48 @@ class LangfuseDatabaseReader:
             async with connection.cursor() as cursor:
                 await self._get_project_for_user(cursor, project_id, user_id)
                 await cursor.execute(
-                    """
-                    SELECT *
-                    FROM pa_trace_bulk_jobs
-                    WHERE id = %(job_id)s
-                      AND project_id = %(project_id)s
-                      AND user_id = %(user_id)s
-                      AND expires_at > NOW()
-                    LIMIT 1
-                    """,
-                    {
-                        "job_id": job_id,
-                        "project_id": project_id,
-                        "user_id": user_id,
-                    },
-                )
+                        """
+                        SELECT
+                            legacy_source_id AS id,
+                            project_id,
+                            request_payload ->> 'userId' AS user_id,
+                            CASE job_type
+                                WHEN 'TRACE_DATASET_IMPORT' THEN 'DATASET_IMPORT'
+                                ELSE 'ANNOTATION_TASK'
+                            END AS job_type,
+                            status,
+                            request_payload ->> 'selectionType' AS selection_type,
+                            request_payload -> 'selectionPayload' AS selection_payload,
+                            request_payload -> 'operationPayload' AS operation_payload,
+                            cursor_payload,
+                            result_payload,
+                            total_count,
+                            completed_count,
+                            success_count,
+                            failure_count,
+                            attempt_count,
+                            error_message,
+                            create_date,
+                            update_date,
+                            started_at,
+                            completed_at,
+                            expires_at,
+                            lock_owner,
+                            lock_until
+                        FROM pa_job_executions
+                        WHERE project_id = %(project_id)s
+                          AND legacy_source_type = 'TRACE_BULK_JOB'
+                          AND legacy_source_id = %(job_id)s
+                          AND request_payload ->> 'userId' = %(user_id)s
+                          AND expires_at > NOW()
+                        LIMIT 1
+                        """,
+                        {
+                            "job_id": job_id,
+                            "project_id": project_id,
+                            "user_id": user_id,
+                        },
+                    )
                 row = await cursor.fetchone()
 
         if row is None:
@@ -2544,8 +1716,9 @@ class LangfuseDatabaseReader:
                     """
                     WITH candidate AS (
                         SELECT id
-                        FROM pa_trace_bulk_jobs
-                        WHERE id = %(job_id)s
+                        FROM pa_job_executions
+                        WHERE legacy_source_type = 'TRACE_BULK_JOB'
+                          AND legacy_source_id = %(job_id)s
                           AND expires_at > NOW()
                           AND (
                               status = 'PENDING'
@@ -2556,7 +1729,7 @@ class LangfuseDatabaseReader:
                           )
                         FOR UPDATE SKIP LOCKED
                     )
-                    UPDATE pa_trace_bulk_jobs job
+                    UPDATE pa_job_executions job
                     SET
                         status = 'RUNNING',
                         lock_owner = %(lock_owner)s,
@@ -2577,7 +1750,11 @@ class LangfuseDatabaseReader:
                 )
                 row = await cursor.fetchone()
 
-        return self._to_trace_bulk_job_payload(row) if row else None
+        return (
+            self._to_trace_bulk_job_payload(_trace_bulk_execution_to_legacy_row(row))
+            if row
+            else None
+        )
 
     async def claim_trace_bulk_jobs(
         self,
@@ -2598,8 +1775,9 @@ class LangfuseDatabaseReader:
                     """
                     WITH candidates AS (
                         SELECT id
-                        FROM pa_trace_bulk_jobs
+                        FROM pa_job_executions
                         WHERE expires_at > NOW()
+                          AND legacy_source_type = 'TRACE_BULK_JOB'
                           AND (
                               status = 'PENDING'
                               OR (
@@ -2611,7 +1789,7 @@ class LangfuseDatabaseReader:
                         FOR UPDATE SKIP LOCKED
                         LIMIT %(limit)s
                     )
-                    UPDATE pa_trace_bulk_jobs job
+                    UPDATE pa_job_executions job
                     SET
                         status = 'RUNNING',
                         lock_owner = %(lock_owner)s,
@@ -2632,7 +1810,10 @@ class LangfuseDatabaseReader:
                 )
                 rows = await cursor.fetchall()
 
-        return [self._to_trace_bulk_job_payload(row) for row in rows]
+        return [
+            self._to_trace_bulk_job_payload(_trace_bulk_execution_to_legacy_row(row))
+            for row in rows
+        ]
 
     async def renew_trace_bulk_job_lease(
         self,
@@ -2651,15 +1832,17 @@ class LangfuseDatabaseReader:
             async with connection.cursor() as cursor:
                 await cursor.execute(
                     """
-                    UPDATE pa_trace_bulk_jobs
+                    UPDATE pa_job_executions
                     SET
                         lock_until = %(lease_until)s,
                         update_by = %(lock_owner)s,
                         update_date = NOW()
-                    WHERE id = %(job_id)s
+                    WHERE legacy_source_type = 'TRACE_BULK_JOB'
+                      AND legacy_source_id = %(job_id)s
                       AND status = 'RUNNING'
                       AND lock_owner = %(lock_owner)s
                       AND expires_at > NOW()
+                    RETURNING project_id
                     """,
                     {
                         "job_id": job_id,
@@ -2667,7 +1850,8 @@ class LangfuseDatabaseReader:
                         "lease_until": lease_until,
                     },
                 )
-                return cursor.rowcount > 0
+                row = await cursor.fetchone()
+                return row is not None
 
     async def update_trace_bulk_job(
         self,
@@ -2690,12 +1874,16 @@ class LangfuseDatabaseReader:
             async with connection.cursor() as cursor:
                 await cursor.execute(
                     """
-                    UPDATE pa_trace_bulk_jobs
+                    UPDATE pa_job_executions
                     SET
                         status = %(status)s,
-                        operation_payload = %(operation_payload)s,
+                        request_payload = jsonb_set(
+                            request_payload,
+                            '{operationPayload}',
+                            %(operation_payload)s
+                        ),
                         cursor_payload = %(cursor_payload)s,
-                        result_payload = %(result_payload)s,
+                        result_payload = pa_job_executions.result_payload || %(result_payload)s,
                         total_count = %(total_count)s,
                         completed_count = %(completed_count)s,
                         success_count = %(success_count)s,
@@ -2706,7 +1894,8 @@ class LangfuseDatabaseReader:
                         lock_until = %(lock_until)s,
                         update_by = %(lock_owner)s,
                         update_date = NOW()
-                    WHERE id = %(job_id)s
+                    WHERE legacy_source_type = 'TRACE_BULK_JOB'
+                      AND legacy_source_id = %(job_id)s
                       AND lock_owner = %(lock_owner)s
                     RETURNING *
                     """,
@@ -2735,7 +1924,7 @@ class LangfuseDatabaseReader:
 
         if row is None:
             raise BusinessError(1035, "批量任务租约已失效", 409)
-        return self._to_trace_bulk_job_payload(row)
+        return self._to_trace_bulk_job_payload(_trace_bulk_execution_to_legacy_row(row))
 
     async def get_annotation_export_job_for_user(
         self,
@@ -2771,13 +1960,8 @@ class LangfuseDatabaseReader:
             project_id,
             queue_id,
             job_id,
-            """
-            status = 'RUNNING',
-            started_at = COALESCE(started_at, NOW()),
-            update_date = NOW()
-            """,
-            {},
             status_condition_sql="AND status = 'PENDING'",
+            consolidated_status=JobExecutionStatus.RUNNING,
         )
 
     async def mark_annotation_export_job_succeeded(
@@ -2795,24 +1979,19 @@ class LangfuseDatabaseReader:
             project_id,
             queue_id,
             job_id,
-            """
-            status = 'SUCCEEDED',
-            total_count = %(total_count)s,
-            exported_count = %(total_count)s,
-            file_name = %(file_name)s,
-            file_path = %(file_path)s,
-            file_size = %(file_size)s,
-            error_message = '',
-            completed_at = NOW(),
-            update_date = NOW()
-            """,
-            {
-                "total_count": total_count,
-                "file_name": file_name,
-                "file_path": file_path,
-                "file_size": file_size,
-            },
             status_condition_sql="AND status IN ('PENDING', 'RUNNING')",
+            consolidated_status=JobExecutionStatus.SUCCEEDED,
+            consolidated_total_count=total_count,
+            consolidated_completed_count=total_count,
+            consolidated_success_count=total_count,
+            consolidated_result_payload={"exportedCount": total_count},
+            consolidated_artifact={
+                "uri": file_path,
+                "name": file_name,
+                "contentType": mimetypes.guess_type(file_name)[0]
+                or "application/octet-stream",
+                "size": file_size,
+            },
         )
 
     async def mark_annotation_export_job_failed(
@@ -2826,14 +2005,9 @@ class LangfuseDatabaseReader:
             project_id,
             queue_id,
             job_id,
-            """
-            status = 'FAILED',
-            error_message = %(error_message)s,
-            completed_at = NOW(),
-            update_date = NOW()
-            """,
-            {"error_message": error_message[:1000]},
             status_condition_sql="AND status IN ('PENDING', 'RUNNING')",
+            consolidated_status=JobExecutionStatus.FAILED,
+            consolidated_error_message=error_message[:1000],
         )
 
     async def list_score_configs_for_user(
@@ -2901,198 +2075,6 @@ class LangfuseDatabaseReader:
             "total": int(total_rows[0]["total"]) if total_rows else 0,
             "datas": [self._to_score_config_payload(row) for row in rows],
         }
-
-    async def ensure_default_score_config_for_user(
-        self,
-        project_id: str,
-        user_id: str,
-    ) -> dict[str, Any]:
-        if not self._database_url:
-            raise LangfuseDatabaseConfigError()
-
-        async with await connect_postgres(
-            self._database_url,
-            row_factory=dict_row,
-        ) as connection:
-            async with connection.cursor() as cursor:
-                await self._get_project_for_user(cursor, project_id, user_id)
-                score_config_ids = await self._ensure_default_score_configs(
-                    cursor,
-                    project_id,
-                )
-                await cursor.execute(
-                    """
-                    SELECT
-                        id,
-                        project_id,
-                        name,
-                        data_type::text AS data_type,
-                        description,
-                        min_value,
-                        max_value,
-                        categories,
-                        is_archived,
-                        created_at,
-                        updated_at
-                    FROM score_configs
-                    WHERE project_id = %(project_id)s
-                      AND id = %(score_config_id)s
-                    LIMIT 1
-                    """,
-                    {
-                        "project_id": project_id,
-                        "score_config_id": score_config_ids[0],
-                    },
-                )
-                row = await cursor.fetchone()
-
-        if row is None:
-            raise BusinessError(
-                code=1024,
-                message="评分指标不存在或无访问权限",
-                status_code=400,
-            )
-        return self._to_score_config_payload(row)
-
-    async def create_score_config_for_user(
-        self,
-        project_id: str,
-        user_id: str,
-        payload: dict[str, Any],
-    ) -> dict[str, Any]:
-        if not self._database_url:
-            raise LangfuseDatabaseConfigError()
-
-        config_id = _new_langfuse_id("scorecfg")
-        async with await connect_postgres(
-            self._database_url,
-            row_factory=dict_row,
-        ) as connection:
-            async with connection.cursor() as cursor:
-                await self._get_project_for_user(cursor, project_id, user_id)
-                await cursor.execute(
-                    """
-                    INSERT INTO score_configs (
-                        id,
-                        project_id,
-                        name,
-                        data_type,
-                        description,
-                        min_value,
-                        max_value,
-                        categories,
-                        is_archived,
-                        created_at,
-                        updated_at
-                    )
-                    VALUES (
-                        %(id)s,
-                        %(project_id)s,
-                        %(name)s,
-                        %(data_type)s::"ScoreConfigDataType",
-                        %(description)s,
-                        %(min_value)s,
-                        %(max_value)s,
-                        %(categories)s,
-                        FALSE,
-                        NOW(),
-                        NOW()
-                    )
-                    """,
-                    {
-                        "id": config_id,
-                        "project_id": project_id,
-                        **_score_config_storage_payload(payload),
-                    },
-                )
-                return await self._get_score_config_payload_cursor(
-                    cursor,
-                    project_id,
-                    config_id,
-                )
-
-    async def update_score_config_for_user(
-        self,
-        project_id: str,
-        config_id: str,
-        user_id: str,
-        payload: dict[str, Any],
-    ) -> dict[str, Any]:
-        if not self._database_url:
-            raise LangfuseDatabaseConfigError()
-
-        async with await connect_postgres(
-            self._database_url,
-            row_factory=dict_row,
-        ) as connection:
-            async with connection.cursor() as cursor:
-                await self._get_project_for_user(cursor, project_id, user_id)
-                await cursor.execute(
-                    """
-                    UPDATE score_configs
-                    SET name = %(name)s,
-                        data_type = %(data_type)s::"ScoreConfigDataType",
-                        description = %(description)s,
-                        min_value = %(min_value)s,
-                        max_value = %(max_value)s,
-                        categories = %(categories)s,
-                        updated_at = NOW()
-                    WHERE project_id = %(project_id)s
-                      AND id = %(config_id)s
-                    RETURNING id
-                    """,
-                    {
-                        "project_id": project_id,
-                        "config_id": config_id,
-                        **_score_config_storage_payload(payload),
-                    },
-                )
-                if await cursor.fetchone() is None:
-                    raise BusinessError(1024, "评分指标不存在或无访问权限", 404)
-                return await self._get_score_config_payload_cursor(
-                    cursor,
-                    project_id,
-                    config_id,
-                )
-
-    async def set_score_config_archived_for_user(
-        self,
-        project_id: str,
-        config_id: str,
-        user_id: str,
-        archived: bool,
-    ) -> dict[str, Any]:
-        if not self._database_url:
-            raise LangfuseDatabaseConfigError()
-
-        async with await connect_postgres(
-            self._database_url,
-            row_factory=dict_row,
-        ) as connection:
-            async with connection.cursor() as cursor:
-                await self._get_project_for_user(cursor, project_id, user_id)
-                await cursor.execute(
-                    """
-                    UPDATE score_configs
-                    SET is_archived = %(archived)s,
-                        updated_at = NOW()
-                    WHERE project_id = %(project_id)s
-                      AND id = %(config_id)s
-                    RETURNING id
-                    """,
-                    {
-                        "project_id": project_id,
-                        "config_id": config_id,
-                        "archived": archived,
-                    },
-                )
-                if await cursor.fetchone() is None:
-                    raise BusinessError(1024, "评分指标不存在或无访问权限", 404)
-                return await self._get_score_config_payload_cursor(
-                    cursor,
-                    project_id,
-                    config_id,
-                )
 
     async def list_project_users_for_user(
         self,
@@ -3697,79 +2679,6 @@ class LangfuseDatabaseReader:
             )
         return self._to_annotation_queue_payload(rows[0])
 
-    async def create_annotation_queue_for_user(
-        self,
-        project_id: str,
-        user_id: str,
-        payload: dict[str, Any],
-    ) -> dict[str, Any]:
-        if not self._database_url:
-            raise LangfuseDatabaseConfigError()
-
-        queue_id = _new_langfuse_id("annqueue")
-        try:
-            async with await connect_postgres(
-                self._database_url,
-                row_factory=dict_row,
-            ) as connection:
-                async with connection.cursor() as cursor:
-                    await self._get_project_for_user(cursor, project_id, user_id)
-                    await self._validate_score_configs(
-                        cursor,
-                        project_id,
-                        payload["scoreConfigIds"],
-                    )
-                    await cursor.execute(
-                        """
-                        INSERT INTO annotation_queues (
-                            id,
-                            project_id,
-                            name,
-                            description,
-                            score_config_ids,
-                            created_at,
-                            updated_at
-                        )
-                        VALUES (
-                            %(id)s,
-                            %(project_id)s,
-                            %(name)s,
-                            %(description)s,
-                            %(score_config_ids)s,
-                            NOW(),
-                            NOW()
-                        )
-                        """,
-                        {
-                            "id": queue_id,
-                            "project_id": project_id,
-                            "name": payload["name"],
-                            "description": payload.get("description") or "",
-                            "score_config_ids": payload["scoreConfigIds"],
-                        },
-                    )
-                    await self._replace_annotation_assignments(
-                        cursor,
-                        project_id,
-                        queue_id,
-                        payload.get("assigneeIds") or [],
-                    )
-                    await self._upsert_annotation_queue_settings(
-                        cursor,
-                        project_id,
-                        queue_id,
-                        user_id,
-                        payload,
-                    )
-        except psycopg.errors.UniqueViolation as exc:
-            raise BusinessError(
-                code=1022,
-                message="人工标注任务名称已存在",
-                status_code=409,
-            ) from exc
-
-        return await self.get_annotation_queue_for_user(project_id, queue_id, user_id)
-
     async def is_annotation_queue_name_available_for_user(
         self,
         project_id: str,
@@ -3789,142 +2698,6 @@ class LangfuseDatabaseReader:
             {"project_id": project_id, "name": name},
         )
         return bool(rows and rows[0].get("available"))
-
-    async def update_annotation_queue_for_user(
-        self,
-        project_id: str,
-        queue_id: str,
-        user_id: str,
-        payload: dict[str, Any],
-    ) -> dict[str, Any]:
-        if not self._database_url:
-            raise LangfuseDatabaseConfigError()
-
-        try:
-            async with await connect_postgres(
-                self._database_url,
-                row_factory=dict_row,
-            ) as connection:
-                async with connection.cursor() as cursor:
-                    await self._get_project_for_user(cursor, project_id, user_id)
-                    await self._validate_score_configs(
-                        cursor,
-                        project_id,
-                        payload["scoreConfigIds"],
-                    )
-                    await cursor.execute(
-                        """
-                        UPDATE annotation_queues
-                        SET
-                            name = %(name)s,
-                            description = %(description)s,
-                            score_config_ids = %(score_config_ids)s,
-                            updated_at = NOW()
-                        WHERE id = %(id)s
-                          AND project_id = %(project_id)s
-                        RETURNING id
-                        """,
-                        {
-                            "id": queue_id,
-                            "project_id": project_id,
-                            "name": payload["name"],
-                            "description": payload.get("description") or "",
-                            "score_config_ids": payload["scoreConfigIds"],
-                        },
-                    )
-                    updated = await cursor.fetchone()
-                    if updated is None:
-                        raise BusinessError(
-                            code=1021,
-                            message="人工标注任务不存在或无访问权限",
-                            status_code=404,
-                        )
-                    await self._replace_annotation_assignments(
-                        cursor,
-                        project_id,
-                        queue_id,
-                        payload.get("assigneeIds") or [],
-                    )
-                    await self._upsert_annotation_queue_settings(
-                        cursor,
-                        project_id,
-                        queue_id,
-                        user_id,
-                        payload,
-                    )
-        except psycopg.errors.UniqueViolation as exc:
-            raise BusinessError(
-                code=1022,
-                message="人工标注任务名称已存在",
-                status_code=409,
-            ) from exc
-
-        return await self.get_annotation_queue_for_user(project_id, queue_id, user_id)
-
-    async def delete_annotation_queue_for_user(
-        self,
-        project_id: str,
-        queue_id: str,
-        user_id: str,
-    ) -> None:
-        if not self._database_url:
-            raise LangfuseDatabaseConfigError()
-
-        async with await connect_postgres(
-            self._database_url,
-            row_factory=dict_row,
-        ) as connection:
-            async with connection.cursor() as cursor:
-                await self._get_project_for_user(cursor, project_id, user_id)
-                await cursor.execute(
-                    """
-                    DELETE FROM annotation_queue_assignments
-                    WHERE project_id = %(project_id)s
-                      AND queue_id = %(queue_id)s
-                    """,
-                    {"project_id": project_id, "queue_id": queue_id},
-                )
-                await cursor.execute(
-                    """
-                    DELETE FROM annotation_queue_items
-                    WHERE project_id = %(project_id)s
-                      AND queue_id = %(queue_id)s
-                    """,
-                    {"project_id": project_id, "queue_id": queue_id},
-                )
-                await cursor.execute(
-                    """
-                    DELETE FROM pa_annotation_queue_item_assignments
-                    WHERE project_id = %(project_id)s
-                      AND queue_id = %(queue_id)s
-                    """,
-                    {"project_id": project_id, "queue_id": queue_id},
-                )
-                await cursor.execute(
-                    """
-                    DELETE FROM pa_annotation_queue_settings
-                    WHERE project_id = %(project_id)s
-                      AND queue_id = %(queue_id)s
-                    """,
-                    {"project_id": project_id, "queue_id": queue_id},
-                )
-                await cursor.execute(
-                    """
-                    DELETE FROM annotation_queues
-                    WHERE project_id = %(project_id)s
-                      AND id = %(queue_id)s
-                    RETURNING id
-                    """,
-                    {"project_id": project_id, "queue_id": queue_id},
-                )
-                deleted = await cursor.fetchone()
-
-        if deleted is None:
-            raise BusinessError(
-                code=1021,
-                message="人工标注任务不存在或无访问权限",
-                status_code=404,
-            )
 
     async def get_annotation_queue_metrics_for_user(
         self,
@@ -4280,152 +3053,6 @@ class LangfuseDatabaseReader:
             )
         return self._to_annotation_item_payload(rows[0])
 
-    async def create_annotation_queue_item_for_user(
-        self,
-        project_id: str,
-        queue_id: str,
-        user_id: str,
-        payload: dict[str, Any],
-    ) -> dict[str, Any]:
-        if not self._database_url:
-            raise LangfuseDatabaseConfigError()
-
-        item_id = _new_langfuse_id("annitem")
-        async with await connect_postgres(
-            self._database_url,
-            row_factory=dict_row,
-        ) as connection:
-            async with connection.cursor() as cursor:
-                await self._get_project_for_user(cursor, project_id, user_id)
-                queue = await self._get_annotation_queue_row(
-                    cursor, project_id, queue_id
-                )
-                await cursor.execute(
-                    """
-                    SELECT id
-                    FROM annotation_queue_items
-                    WHERE project_id = %(project_id)s
-                      AND queue_id = %(queue_id)s
-                      AND object_id = %(object_id)s
-                      AND object_type::text = %(object_type)s
-                    LIMIT 1
-                    """,
-                    {
-                        "project_id": project_id,
-                        "queue_id": queue_id,
-                        "object_id": payload["objectId"],
-                        "object_type": payload["objectType"],
-                    },
-                )
-                existing = await cursor.fetchone()
-                if existing is not None:
-                    item_id = existing["id"]
-                else:
-                    await cursor.execute(
-                        """
-                        INSERT INTO annotation_queue_items (
-                            id,
-                            project_id,
-                            queue_id,
-                            object_id,
-                            object_type,
-                            status,
-                            created_at,
-                            updated_at
-                        )
-                        VALUES (
-                            %(id)s,
-                            %(project_id)s,
-                            %(queue_id)s,
-                            %(object_id)s,
-                            %(object_type)s::"AnnotationQueueObjectType",
-                            'PENDING'::"AnnotationQueueStatus",
-                            NOW(),
-                            NOW()
-                        )
-                        """,
-                        {
-                            "id": item_id,
-                            "project_id": project_id,
-                            "queue_id": queue_id,
-                            "object_id": payload["objectId"],
-                            "object_type": payload["objectType"],
-                        },
-                    )
-                    await self._assign_annotation_queue_items(
-                        cursor,
-                        project_id,
-                        queue_id,
-                        user_id,
-                        [item_id],
-                    )
-                    await _copy_existing_annotation_scores_for_item(
-                        cursor,
-                        project_id=project_id,
-                        queue_id=queue_id,
-                        item_id=item_id,
-                        object_id=payload["objectId"],
-                        object_type=payload["objectType"],
-                        score_config_ids=queue.get("score_config_ids") or [],
-                    )
-
-        return await self.get_annotation_queue_item_for_user(
-            project_id,
-            queue_id,
-            item_id,
-            user_id,
-        )
-
-    async def delete_annotation_queue_items_for_user(
-        self,
-        project_id: str,
-        queue_id: str,
-        user_id: str,
-        item_ids: list[str],
-    ) -> list[str]:
-        if not self._database_url:
-            raise LangfuseDatabaseConfigError()
-
-        async with await connect_postgres(
-            self._database_url,
-            row_factory=dict_row,
-        ) as connection:
-            async with connection.cursor() as cursor:
-                await self._get_project_for_user(cursor, project_id, user_id)
-                await self._get_annotation_queue_row(cursor, project_id, queue_id)
-                await cursor.execute(
-                    """
-                    DELETE FROM annotation_queue_items
-                    WHERE project_id = %(project_id)s
-                      AND queue_id = %(queue_id)s
-                      AND id = ANY(%(item_ids)s)
-                    RETURNING id
-                    """,
-                    {
-                        "project_id": project_id,
-                        "queue_id": queue_id,
-                        "item_ids": item_ids,
-                    },
-                )
-                rows = list(await cursor.fetchall())
-                deleted_ids = [row["id"] for row in rows]
-                if deleted_ids:
-                    await cursor.execute(
-                        """
-                        DELETE FROM pa_annotation_queue_item_assignments
-                        WHERE project_id = %(project_id)s
-                          AND queue_id = %(queue_id)s
-                          AND item_id = ANY(%(item_ids)s)
-                        """,
-                        {
-                            "project_id": project_id,
-                            "queue_id": queue_id,
-                            "item_ids": deleted_ids,
-                        },
-                    )
-
-        return deleted_ids
-
     async def update_annotation_queue_item_assignees_for_user(
         self,
         project_id: str,
@@ -4519,17 +3146,6 @@ class LangfuseDatabaseReader:
                         },
                     )
 
-                if updated_item_ids:
-                    await cursor.execute(
-                        """
-                        UPDATE annotation_queues
-                        SET updated_at = NOW()
-                        WHERE project_id = %(project_id)s
-                          AND id = %(queue_id)s
-                        """,
-                        {"project_id": project_id, "queue_id": queue_id},
-                    )
-
         return {
             "assigneeUserId": assignee_user_id,
             "requestedCount": len(unique_item_ids),
@@ -4538,180 +3154,6 @@ class LangfuseDatabaseReader:
             "updatedItemIds": updated_item_ids,
             "skippedItemIds": skipped_item_ids,
         }
-
-    async def create_trace_annotation_task_for_user(
-        self,
-        project_id: str,
-        user_id: str,
-        payload: dict[str, Any],
-    ) -> dict[str, Any]:
-        if not self._database_url:
-            raise LangfuseDatabaseConfigError()
-
-        trace_ids = list(dict.fromkeys(payload.get("traceIds") or []))
-        async with await connect_postgres(
-            self._database_url,
-            row_factory=dict_row,
-        ) as connection:
-            async with connection.cursor() as cursor:
-                await self._get_project_for_user(cursor, project_id, user_id)
-                score_config_ids = await self._ensure_default_score_configs(
-                    cursor,
-                    project_id,
-                )
-                queue_id = payload.get("queueId")
-                if queue_id:
-                    queue = await self._get_annotation_queue_row(
-                        cursor, project_id, queue_id
-                    )
-                    score_config_ids = queue.get("score_config_ids") or []
-                else:
-                    queue_name = payload.get("queueName") or "Trace 人工标注"
-                    queue_id = await self._get_or_create_annotation_queue(
-                        cursor,
-                        project_id,
-                        queue_name,
-                        score_config_ids,
-                        user_id,
-                    )
-                    queue = await self._get_annotation_queue_row(
-                        cursor, project_id, queue_id
-                    )
-                    score_config_ids = queue.get("score_config_ids") or []
-                if payload.get("assigneeIds"):
-                    await self._replace_annotation_assignments(
-                        cursor,
-                        project_id,
-                        queue_id,
-                        payload.get("assigneeIds") or [],
-                    )
-                    await self._upsert_annotation_queue_settings(
-                        cursor,
-                        project_id,
-                        queue_id,
-                        user_id,
-                        payload,
-                    )
-
-                await cursor.execute(
-                    """
-                    SELECT object_id
-                    FROM annotation_queue_items
-                    WHERE project_id = %(project_id)s
-                      AND queue_id = %(queue_id)s
-                      AND object_id = ANY(%(trace_ids)s)
-                      AND object_type::text = 'TRACE'
-                    """,
-                    {
-                        "project_id": project_id,
-                        "queue_id": queue_id,
-                        "trace_ids": trace_ids,
-                    },
-                )
-                existing_trace_ids = {
-                    str(row.get("object_id") or "") for row in await cursor.fetchall()
-                }
-                trace_ids_to_create = [
-                    trace_id
-                    for trace_id in trace_ids
-                    if trace_id not in existing_trace_ids
-                ]
-
-                created_item_ids: list[str] = []
-                created_items: list[dict[str, str]] = []
-                for batch in _chunk_items(trace_ids_to_create, 500):
-                    values_sql: list[str] = []
-                    params: dict[str, Any] = {
-                        "project_id": project_id,
-                        "queue_id": queue_id,
-                    }
-                    batch_items: list[dict[str, str]] = []
-                    for index, trace_id in enumerate(batch):
-                        item_id = _new_langfuse_id("annitem")
-                        params[f"id_{index}"] = item_id
-                        params[f"trace_id_{index}"] = trace_id
-                        values_sql.append(
-                            f"""
-                            (
-                                %(id_{index})s,
-                                %(project_id)s,
-                                %(queue_id)s,
-                                %(trace_id_{index})s,
-                                'TRACE'::"AnnotationQueueObjectType",
-                                'PENDING'::"AnnotationQueueStatus",
-                                NOW(),
-                                NOW()
-                            )
-                            """
-                        )
-                        batch_items.append({"itemId": item_id, "traceId": trace_id})
-
-                    await cursor.execute(
-                        f"""
-                        INSERT INTO annotation_queue_items (
-                            id,
-                            project_id,
-                            queue_id,
-                            object_id,
-                            object_type,
-                            status,
-                            created_at,
-                            updated_at
-                        )
-                        VALUES {", ".join(values_sql)}
-                        """,
-                        params,
-                    )
-                    created_item_ids.extend(item["itemId"] for item in batch_items)
-                    created_items.extend(batch_items)
-
-                await self._assign_annotation_queue_items(
-                    cursor,
-                    project_id,
-                    queue_id,
-                    user_id,
-                    created_item_ids,
-                )
-
-                await cursor.execute(
-                    """
-                    UPDATE annotation_queues
-                    SET updated_at = NOW()
-                    WHERE project_id = %(project_id)s
-                      AND id = %(queue_id)s
-                    """,
-                    {"project_id": project_id, "queue_id": queue_id},
-                )
-
-                return {
-                    "queueId": queue_id,
-                    "createdCount": len(created_items),
-                    "skippedCount": len(existing_trace_ids),
-                    "createdItems": created_items,
-                    "scoreConfigIds": score_config_ids,
-                }
-
-    async def save_annotation_scores_for_user(
-        self,
-        project_id: str,
-        queue_id: str,
-        item_id: str,
-        user_id: str,
-        payload: dict[str, Any],
-    ) -> dict[str, Any]:
-        await self.prepare_annotation_score_payloads_for_user(
-            project_id,
-            queue_id,
-            item_id,
-            user_id,
-            payload,
-        )
-        return await self.complete_annotation_queue_item_for_user(
-            project_id,
-            queue_id,
-            item_id,
-            user_id,
-        )
 
     async def prepare_annotation_score_payloads_for_user(
         self,
@@ -4881,105 +3323,6 @@ class LangfuseDatabaseReader:
                         )
         return score_payloads
 
-    async def complete_annotation_queue_item_for_user(
-        self,
-        project_id: str,
-        queue_id: str,
-        item_id: str,
-        user_id: str,
-    ) -> dict[str, Any]:
-        if not self._database_url:
-            raise LangfuseDatabaseConfigError()
-
-        async with await connect_postgres(
-            self._database_url,
-            row_factory=dict_row,
-        ) as connection:
-            async with connection.cursor() as cursor:
-                await self._get_project_for_user(cursor, project_id, user_id)
-                await cursor.execute(
-                    """
-                    UPDATE annotation_queue_items
-                    SET
-                        status = 'COMPLETED'::"AnnotationQueueStatus",
-                        annotator_user_id = %(user_id)s,
-                        completed_at = COALESCE(completed_at, NOW()),
-                        updated_at = NOW()
-                    WHERE project_id = %(project_id)s
-                      AND queue_id = %(queue_id)s
-                      AND id = %(item_id)s
-                    """,
-                    {
-                        "project_id": project_id,
-                        "queue_id": queue_id,
-                        "item_id": item_id,
-                        "user_id": user_id,
-                    },
-                )
-                await cursor.execute(
-                    """
-                    UPDATE annotation_queues
-                    SET updated_at = NOW()
-                    WHERE project_id = %(project_id)s
-                      AND id = %(queue_id)s
-                    """,
-                    {"project_id": project_id, "queue_id": queue_id},
-                )
-
-        return await self.get_annotation_queue_item_for_user(
-            project_id,
-            queue_id,
-            item_id,
-            user_id,
-        )
-
-    async def complete_annotation_queue_items_for_user(
-        self,
-        project_id: str,
-        queue_id: str,
-        item_ids: list[str],
-        user_id: str,
-    ) -> None:
-        unique_item_ids = list(dict.fromkeys(item_ids))
-        if not unique_item_ids:
-            return
-        if not self._database_url:
-            raise LangfuseDatabaseConfigError()
-        async with await connect_postgres(
-            self._database_url,
-            row_factory=dict_row,
-        ) as connection:
-            async with connection.cursor() as cursor:
-                await self._get_project_for_user(cursor, project_id, user_id)
-                await cursor.execute(
-                    """
-                    UPDATE annotation_queue_items
-                    SET
-                        status = 'COMPLETED'::"AnnotationQueueStatus",
-                        annotator_user_id = %(user_id)s,
-                        completed_at = COALESCE(completed_at, NOW()),
-                        updated_at = NOW()
-                    WHERE project_id = %(project_id)s
-                      AND queue_id = %(queue_id)s
-                      AND id = ANY(%(item_ids)s)
-                    """,
-                    {
-                        "project_id": project_id,
-                        "queue_id": queue_id,
-                        "item_ids": unique_item_ids,
-                        "user_id": user_id,
-                    },
-                )
-                await cursor.execute(
-                    """
-                    UPDATE annotation_queues
-                    SET updated_at = NOW()
-                    WHERE project_id = %(project_id)s
-                      AND id = %(queue_id)s
-                    """,
-                    {"project_id": project_id, "queue_id": queue_id},
-                )
-
     async def get_project_api_key_credentials_for_user(
         self,
         project_id: str,
@@ -4997,259 +3340,149 @@ class LangfuseDatabaseReader:
             "secretKey": keys[0]["secretKey"],
         }
 
-    async def add_annotation_item_to_dataset_for_user(
+    async def _project_public_client_for_user(
         self,
         project_id: str,
-        queue_id: str,
-        item_id: str,
         user_id: str,
-        payload: dict[str, Any],
-    ) -> dict[str, Any]:
-        if not self._database_url:
-            raise LangfuseDatabaseConfigError()
+    ) -> LangfusePublicClient:
+        credentials = await self.get_project_api_key_credentials_for_user(
+            project_id,
+            user_id,
+        )
+        return LangfusePublicClient(
+            base_url=self._settings.langfuse_base_url,
+            public_key=credentials["publicKey"],
+            secret_key=credentials["secretKey"],
+            timeout=self._settings.pa_eval_api_timeout,
+        )
 
-        dataset_item_id = _new_langfuse_id("datasetitem")
+    async def project_public_client_for_user(
+        self,
+        project_id: str,
+        user_id: str,
+    ) -> LangfusePublicClient:
+        """Return a project-authenticated Public API client after access checks."""
+        return await self._project_public_client_for_user(project_id, user_id)
+
+    def organization_public_client(self) -> LangfusePublicClient:
+        """Return an organization-authenticated Public API client."""
+        return LangfusePublicClient(
+            base_url=self._settings.langfuse_base_url,
+            organization_api_key=self._settings.langfuse_organization_api_key,
+            timeout=self._settings.pa_eval_api_timeout,
+        )
+
+    async def _start_native_resource_sync(
+        self,
+        *,
+        project_id: str,
+        user_id: str,
+        actor: str,
+        resource_type: str,
+        operation: str,
+        local_resource_id: str,
+        provider: str = "",
+    ) -> str:
+        operation_id = _new_langfuse_id("panativesync")
+        execution_id = f"paexec_native_{operation_id}"
         async with await connect_postgres(
             self._database_url,
             row_factory=dict_row,
         ) as connection:
             async with connection.cursor() as cursor:
                 await self._get_project_for_user(cursor, project_id, user_id)
-                item = await self._get_annotation_item_score_context(
-                    cursor,
-                    project_id,
-                    queue_id,
-                    item_id,
-                )
-                await cursor.execute(
-                    """
-                    SELECT id
-                    FROM datasets
-                    WHERE project_id = %(project_id)s
-                      AND id = %(dataset_id)s
-                    LIMIT 1
-                    """,
-                    {
-                        "project_id": project_id,
-                        "dataset_id": payload["datasetId"],
+                repository = ConsolidationRepository(cursor)
+                await repository.create_execution(
+                    execution_id=execution_id,
+                    project_id=project_id,
+                    job_type=JobExecutionType.NATIVE_RESOURCE_SYNC,
+                    definition_id=None,
+                    idempotency_key=operation_id,
+                    request_payload={
+                        "resourceType": resource_type,
+                        "operation": operation,
+                        "localResourceId": local_resource_id,
+                        "provider": provider,
                     },
+                    legacy_source_type="NATIVE_RESOURCE_OPERATION",
+                    legacy_source_id=operation_id,
+                    actor=actor,
                 )
-                if await cursor.fetchone() is None:
-                    raise BusinessError(
-                        code=1011,
-                        message="数据集不存在或无访问权限",
-                        status_code=404,
-                    )
-
-                source_trace_id = item.get("resolved_trace_id") or ""
-                source_observation_id = (
-                    item["object_id"] if item["object_type"] == "OBSERVATION" else ""
+                await repository.sync_execution_from_legacy(
+                    execution_id=execution_id,
+                    project_id=project_id,
+                    status=JobExecutionStatus.RUNNING,
+                    total_count=1,
+                    completed_count=0,
+                    success_count=0,
+                    failure_count=0,
+                    result_payload={},
+                    actor=actor,
                 )
-                await cursor.execute(
-                    """
-                    INSERT INTO dataset_items (
-                        id,
-                        project_id,
-                        dataset_id,
-                        status,
-                        input,
-                        expected_output,
-                        metadata,
-                        source_trace_id,
-                        source_observation_id,
-                        created_at,
-                        updated_at,
-                        valid_from,
-                        is_deleted
-                    )
-                    VALUES (
-                        %(id)s,
-                        %(project_id)s,
-                        %(dataset_id)s,
-                        'ACTIVE'::"DatasetStatus",
-                        %(input)s,
-                        %(expected_output)s,
-                        %(metadata)s,
-                        %(source_trace_id)s,
-                        %(source_observation_id)s,
-                        NOW(),
-                        NOW(),
-                        NOW(),
-                        FALSE
-                    )
-                    RETURNING
-                        id,
-                        project_id,
-                        dataset_id,
-                        status::text AS status,
-                        input,
-                        expected_output,
-                        metadata,
-                        source_trace_id,
-                        source_observation_id,
-                        is_deleted,
-                        created_at,
-                        updated_at
-                    """,
-                    {
-                        "id": dataset_item_id,
-                        "project_id": project_id,
-                        "dataset_id": payload["datasetId"],
-                        "input": Jsonb(payload.get("input")),
-                        "expected_output": Jsonb(payload.get("expectedOutput")),
-                        "metadata": Jsonb(payload.get("metadata") or {}),
-                        "source_trace_id": source_trace_id,
-                        "source_observation_id": source_observation_id,
-                    },
-                )
-                row = await cursor.fetchone()
+        return execution_id
 
-        assert row is not None
-        return self._to_dataset_item_payload(row)
-
-    async def add_traces_to_dataset_for_user(
+    async def _finish_native_resource_sync(
         self,
+        *,
         project_id: str,
-        user_id: str,
-        payload: dict[str, Any],
-    ) -> dict[str, Any]:
-        if not self._database_url:
-            raise LangfuseDatabaseConfigError()
-
-        traces = _unique_traces_by_trace_id(payload.get("traces") or [])
-        item_ids: list[str] = []
+        execution_id: str,
+        actor: str,
+        succeeded: bool,
+        external_resource_id: str = "",
+        compensated: bool = False,
+    ) -> None:
         async with await connect_postgres(
             self._database_url,
             row_factory=dict_row,
         ) as connection:
             async with connection.cursor() as cursor:
-                await self._get_project_for_user(cursor, project_id, user_id)
-                await cursor.execute(
-                    """
-                    SELECT id
-                    FROM datasets
-                    WHERE project_id = %(project_id)s
-                      AND id = %(dataset_id)s
-                    LIMIT 1
-                    """,
-                    {
-                        "project_id": project_id,
-                        "dataset_id": payload["datasetId"],
+                await ConsolidationRepository(cursor).sync_execution_from_legacy(
+                    execution_id=execution_id,
+                    project_id=project_id,
+                    status=(
+                        JobExecutionStatus.SUCCEEDED
+                        if succeeded
+                        else JobExecutionStatus.FAILED
+                    ),
+                    total_count=1,
+                    completed_count=1,
+                    success_count=1 if succeeded else 0,
+                    failure_count=0 if succeeded else 1,
+                    result_payload={
+                        "externalResourceId": external_resource_id,
+                        "compensated": compensated,
                     },
+                    error_message="" if succeeded else "Langfuse 原生资源同步失败",
+                    actor=actor,
                 )
-                if await cursor.fetchone() is None:
-                    raise BusinessError(
-                        code=1011,
-                        message="数据集不存在或无访问权限",
-                        status_code=404,
-                    )
 
-                for batch in _chunk_items(traces, TRACE_DATASET_INSERT_BATCH_SIZE):
-                    source_trace_ids = [
-                        str(trace.get("traceId") or "")
-                        for trace in batch
-                        if trace.get("traceId")
-                    ]
-                    await cursor.execute(
-                        """
-                        SELECT source_trace_id
-                        FROM dataset_items
-                        WHERE project_id = %(project_id)s
-                          AND dataset_id = %(dataset_id)s
-                          AND is_deleted IS FALSE
-                          AND source_trace_id = ANY(%(source_trace_ids)s)
-                        """,
-                        {
-                            "project_id": project_id,
-                            "dataset_id": payload["datasetId"],
-                            "source_trace_ids": source_trace_ids,
-                        },
-                    )
-                    existing_source_trace_ids = {
-                        str(row.get("source_trace_id") or "")
-                        for row in await cursor.fetchall()
-                    }
-                    batch = [
-                        trace
-                        for trace in batch
-                        if str(trace.get("traceId") or "")
-                        not in existing_source_trace_ids
-                    ]
-                    if not batch:
-                        continue
-
-                    values_sql: list[str] = []
-                    params: dict[str, Any] = {
-                        "project_id": project_id,
-                        "dataset_id": payload["datasetId"],
-                    }
-                    batch_item_ids: list[str] = []
-
-                    for index, trace in enumerate(batch):
-                        item_id = _new_langfuse_id("datasetitem")
-                        batch_item_ids.append(item_id)
-                        params[f"id_{index}"] = item_id
-                        params[f"input_{index}"] = Jsonb(
-                            {
-                                "input": _decode_jsonish(trace.get("input")),
-                                "output": _decode_jsonish(trace.get("output")),
-                            }
-                        )
-                        params[f"expected_output_{index}"] = Jsonb({})
-                        params[f"metadata_{index}"] = Jsonb(
-                            _trace_dataset_metadata(trace)
-                        )
-                        params[f"source_trace_id_{index}"] = trace.get("traceId") or ""
-                        values_sql.append(
-                            f"""
-                            (
-                                %(id_{index})s,
-                                %(project_id)s,
-                                %(dataset_id)s,
-                                'ACTIVE'::"DatasetStatus",
-                                %(input_{index})s,
-                                %(expected_output_{index})s,
-                                %(metadata_{index})s,
-                                %(source_trace_id_{index})s,
-                                '',
-                                NOW(),
-                                NOW(),
-                                NOW(),
-                                FALSE
-                            )
-                            """
-                        )
-
-                    await cursor.execute(
-                        f"""
-                        INSERT INTO dataset_items (
-                            id,
-                            project_id,
-                            dataset_id,
-                            status,
-                            input,
-                            expected_output,
-                            metadata,
-                            source_trace_id,
-                            source_observation_id,
-                            created_at,
-                            updated_at,
-                            valid_from,
-                            is_deleted
-                        )
-                        VALUES {", ".join(values_sql)}
-                        """,
-                        params,
-                    )
-                    item_ids.extend(batch_item_ids)
-
-        return {
-            "datasetId": payload["datasetId"],
-            "successCount": len(item_ids),
-            "failureCount": 0,
-            "itemIds": item_ids,
-            "failures": [],
-        }
+    async def _get_native_resource_id(
+        self,
+        *,
+        project_id: str,
+        resource_type: str,
+        local_resource_id: str,
+    ) -> str:
+        rows = await self._fetch_all(
+            """
+            SELECT result_payload ->> 'externalResourceId' AS external_resource_id
+            FROM pa_job_executions
+            WHERE project_id = %(project_id)s
+              AND job_type = 'NATIVE_RESOURCE_SYNC'
+              AND status = 'SUCCEEDED'
+              AND request_payload ->> 'resourceType' = %(resource_type)s
+              AND request_payload ->> 'localResourceId' = %(local_resource_id)s
+              AND COALESCE(result_payload ->> 'externalResourceId', '') <> ''
+            ORDER BY update_date DESC, id DESC
+            LIMIT 1
+            """,
+            {
+                "project_id": project_id,
+                "resource_type": resource_type,
+                "local_resource_id": local_resource_id,
+            },
+        )
+        return str(rows[0]["external_resource_id"]) if rows else ""
 
     async def _list_langfuse_evaluators_for_user(
         self, user_id: str
@@ -5520,116 +3753,6 @@ class LangfuseDatabaseReader:
             "sourceCode": row.get("source_code"),
             "sourceCodeLanguage": row.get("source_code_language"),
         }
-
-    async def create_langfuse_evaluator(
-        self,
-        payload: dict[str, Any],
-        user_id: str,
-        user_email: str,
-    ) -> dict[str, Any]:
-        if not self._database_url:
-            raise LangfuseDatabaseConfigError()
-
-        evaluator_id = _new_langfuse_id("evaltmpl")
-        async with await connect_postgres(
-            self._database_url,
-            row_factory=dict_row,
-        ) as connection:
-            async with connection.cursor() as cursor:
-                project = await self._get_project_for_user(
-                    cursor,
-                    payload["project_id"],
-                    user_id,
-                )
-                latest_version = await self._get_latest_evaluator_version(
-                    cursor,
-                    payload["project_id"],
-                    payload["name"],
-                    payload["type"],
-                )
-                version = latest_version + 1
-                model_config = payload.get("model_config") or {}
-                variables = payload.get("variables") or []
-                if payload["type"] == "CODE" and not variables:
-                    variables = [
-                        "input",
-                        "output",
-                        "metadata",
-                        "experimentItemExpectedOutput",
-                        "experimentItemMetadata",
-                    ]
-
-                await cursor.execute(
-                    """
-                    INSERT INTO eval_templates (
-                        id,
-                        project_id,
-                        name,
-                        version,
-                        prompt,
-                        type,
-                        provider,
-                        model,
-                        model_params,
-                        vars,
-                        output_schema,
-                        source_code,
-                        source_code_language
-                    )
-                    VALUES (
-                        %(id)s,
-                        %(project_id)s,
-                        %(name)s,
-                        %(version)s,
-                        %(prompt)s,
-                        %(type)s::"EvalTemplateType",
-                        %(provider)s,
-                        %(model)s,
-                        %(model_params)s,
-                        %(vars)s,
-                        %(output_schema)s,
-                        %(source_code)s,
-                        %(source_code_language)s::"EvalTemplateSourceCodeLanguage"
-                    )
-                    RETURNING
-                        id,
-                        name,
-                        type::text AS type,
-                        version,
-                        vars,
-                        provider,
-                        model,
-                        partner,
-                        source_code_language::text AS source_code_language,
-                        project_id,
-                        updated_at
-                    """,
-                    {
-                        "id": evaluator_id,
-                        "project_id": payload["project_id"],
-                        "name": payload["name"],
-                        "version": version,
-                        "prompt": payload.get("prompt"),
-                        "type": payload["type"],
-                        "provider": model_config.get("provider"),
-                        "model": model_config.get("model"),
-                        "model_params": Jsonb({}),
-                        "vars": variables,
-                        "output_schema": Jsonb(payload.get("output_definition") or {}),
-                        "source_code": payload.get("source_code"),
-                        "source_code_language": payload.get("source_code_language"),
-                    },
-                )
-                evaluator = await cursor.fetchone()
-
-        assert evaluator is not None
-        return self._to_evaluator_payload(
-            {
-                **evaluator,
-                "project_name": project["name"],
-                "usage_count": 0,
-            }
-        )
 
     async def create_pa_evaluator(
         self,
@@ -6498,9 +4621,22 @@ class LangfuseDatabaseReader:
             }
         )
 
-    @staticmethod
-    def _annotation_queue_select_sql() -> str:
-        return """
+    def _annotation_queue_select_sql(self) -> str:
+        assignment_strategy_sql = """
+            COALESCE(extension.payload->>'assignmentStrategy', 'average')
+        """
+        assignment_weights_sql = """
+            COALESCE(extension.payload->'assignmentWeights', '{}'::jsonb)
+        """
+        extension_join_sql = """
+            LEFT JOIN pa_resource_extensions extension
+              ON extension.project_id = aq.project_id
+             AND extension.resource_type = 'ANNOTATION_QUEUE'
+             AND extension.resource_id = aq.id
+             AND extension.extension_type = 'ITEM_ASSIGNMENT_POLICY'
+             AND extension.status = 'ACTIVE'
+        """
+        return f"""
             SELECT
                 aq.id,
                 aq.project_id,
@@ -6513,8 +4649,8 @@ class LangfuseDatabaseReader:
                 COALESCE(counts.pending_count, 0)::int AS pending_count,
                 COALESCE(assignments.assignee_ids, ARRAY[]::text[]) AS assignee_ids,
                 COALESCE(assignments.assignees, '[]'::jsonb) AS assignees,
-                COALESCE(settings.assignment_strategy, 'average') AS assignment_strategy,
-                COALESCE(settings.assignment_weights, '{}'::jsonb) AS assignment_weights,
+                {assignment_strategy_sql} AS assignment_strategy,
+                {assignment_weights_sql} AS assignment_weights,
                 COALESCE(score_configs.score_configs, '[]'::jsonb) AS score_configs
             FROM annotation_queues aq
             LEFT JOIN LATERAL (
@@ -6544,9 +4680,7 @@ class LangfuseDatabaseReader:
                 WHERE aqa.project_id = aq.project_id
                   AND aqa.queue_id = aq.id
             ) assignments ON TRUE
-            LEFT JOIN pa_annotation_queue_settings settings
-              ON settings.project_id = aq.project_id
-             AND settings.queue_id = aq.id
+            {extension_join_sql}
             LEFT JOIN LATERAL (
                 SELECT JSONB_AGG(
                     JSONB_BUILD_OBJECT(
@@ -7268,32 +5402,6 @@ class LangfuseDatabaseReader:
         )
 
     @staticmethod
-    async def _get_llm_connection_row(
-        cursor: psycopg.AsyncCursor[dict[str, Any]],
-        project_id: str,
-        connection_id: str,
-    ) -> dict[str, Any]:
-        await cursor.execute(
-            """
-            SELECT id, provider, adapter
-            FROM pa_project_llm_connections
-            WHERE project_id = %(project_id)s
-              AND id = %(connection_id)s
-              AND status = 'ACTIVE'
-            LIMIT 1
-            """,
-            {"project_id": project_id, "connection_id": connection_id},
-        )
-        row = await cursor.fetchone()
-        if row is None:
-            raise BusinessError(
-                code=1013,
-                message="LLM 连接不存在或已不可用",
-                status_code=404,
-            )
-        return row
-
-    @staticmethod
     async def _get_project_for_user(
         cursor: psycopg.AsyncCursor[dict[str, Any]],
         project_id: str,
@@ -7349,38 +5457,39 @@ class LangfuseDatabaseReader:
         job_id: str,
     ) -> dict[str, Any]:
         await cursor.execute(
-            """
-            SELECT
-                id,
-                project_id,
-                dataset_id,
-                format,
-                status,
-                total_count,
-                exported_count,
-                file_name,
-                file_path,
-                file_size,
-                error_message,
-                create_date,
-                update_date,
-                expires_at
-            FROM pa_dataset_export_jobs
-            WHERE project_id = %(project_id)s
-              AND dataset_id = %(dataset_id)s
-              AND id = %(job_id)s
-            LIMIT 1
-            """,
-            {
-                "project_id": project_id,
-                "dataset_id": dataset_id,
-                "job_id": job_id,
-            },
-        )
-        row = await cursor.fetchone()
-        if row is None:
+                """
+                SELECT
+                    legacy_source_id AS id,
+                    project_id,
+                    request_payload ->> 'datasetId' AS dataset_id,
+                    request_payload ->> 'format' AS format,
+                    status,
+                    total_count,
+                    success_count AS exported_count,
+                    artifact_name AS file_name,
+                    artifact_uri AS file_path,
+                    artifact_size AS file_size,
+                    error_message,
+                    create_date,
+                    update_date,
+                    expires_at
+                FROM pa_job_executions
+                WHERE project_id = %(project_id)s
+                  AND legacy_source_type = 'DATASET_EXPORT_JOB'
+                  AND legacy_source_id = %(job_id)s
+                  AND request_payload ->> 'datasetId' = %(dataset_id)s
+                LIMIT 1
+                """,
+                {
+                    "project_id": project_id,
+                    "dataset_id": dataset_id,
+                    "job_id": job_id,
+                },
+            )
+        consolidated = await cursor.fetchone()
+        if consolidated is None:
             raise BusinessError(1027, "数据集导出任务不存在或无访问权限", 404)
-        return self._to_dataset_export_job_payload(row)
+        return self._to_dataset_export_job_payload(consolidated)
 
     async def _execute_dataset_export_job_update(
         self,
@@ -7389,6 +5498,14 @@ class LangfuseDatabaseReader:
         job_id: str,
         assignments_sql: str,
         params: dict[str, Any],
+        *,
+        consolidated_status: JobExecutionStatus | None = None,
+        consolidated_total_count: int = 0,
+        consolidated_completed_count: int = 0,
+        consolidated_success_count: int = 0,
+        consolidated_result_payload: dict[str, Any] | None = None,
+        consolidated_error_message: str = "",
+        consolidated_artifact: dict[str, Any] | None = None,
     ) -> None:
         if not self._database_url:
             raise LangfuseDatabaseConfigError()
@@ -7398,21 +5515,36 @@ class LangfuseDatabaseReader:
             row_factory=dict_row,
         ) as connection:
             async with connection.cursor() as cursor:
-                await cursor.execute(
-                    f"""
-                    UPDATE pa_dataset_export_jobs
-                    SET {assignments_sql}
-                    WHERE project_id = %(project_id)s
-                      AND dataset_id = %(dataset_id)s
-                      AND id = %(job_id)s
-                    """,
-                    {
-                        **params,
-                        "project_id": project_id,
-                        "dataset_id": dataset_id,
-                        "job_id": job_id,
-                    },
-                )
+                if consolidated_status is not None:
+                    repository = ConsolidationRepository(cursor)
+                    await repository.sync_execution_from_legacy(
+                        execution_id=f"paexec_dataset_export_{job_id}",
+                        project_id=project_id,
+                        status=consolidated_status,
+                        total_count=consolidated_total_count,
+                        completed_count=consolidated_completed_count,
+                        success_count=consolidated_success_count,
+                        failure_count=(
+                            1
+                            if consolidated_status == JobExecutionStatus.FAILED
+                            else 0
+                        ),
+                        result_payload=consolidated_result_payload or {},
+                        error_message=consolidated_error_message,
+                        actor="system:dataset-export-worker",
+                    )
+                    if consolidated_artifact is not None:
+                        await repository.sync_export_artifact_from_legacy(
+                            execution_id=f"paexec_dataset_export_{job_id}",
+                            project_id=project_id,
+                            artifact_uri=str(consolidated_artifact["uri"]),
+                            artifact_name=str(consolidated_artifact["name"]),
+                            artifact_content_type=str(
+                                consolidated_artifact["contentType"]
+                            ),
+                            artifact_size=int(consolidated_artifact["size"]),
+                            actor="system:dataset-export-worker",
+                        )
 
     async def _get_annotation_export_job_payload_cursor(
         self,
@@ -7422,50 +5554,56 @@ class LangfuseDatabaseReader:
         job_id: str,
     ) -> dict[str, Any]:
         await cursor.execute(
-            """
-            SELECT
-                id,
-                project_id,
-                queue_id,
-                scope,
-                format,
-                status,
-                total_count,
-                exported_count,
-                file_name,
-                file_path,
-                file_size,
-                error_message,
-                metadata,
-                create_date,
-                update_date,
-                expires_at
-            FROM pa_annotation_export_jobs
-            WHERE project_id = %(project_id)s
-              AND queue_id = %(queue_id)s
-              AND id = %(job_id)s
-            LIMIT 1
-            """,
-            {
-                "project_id": project_id,
-                "queue_id": queue_id,
-                "job_id": job_id,
-            },
-        )
-        row = await cursor.fetchone()
-        if row is None:
+                """
+                SELECT
+                    legacy_source_id AS id,
+                    project_id,
+                    request_payload ->> 'queueId' AS queue_id,
+                    request_payload ->> 'scope' AS scope,
+                    request_payload ->> 'format' AS format,
+                    status,
+                    total_count,
+                    success_count AS exported_count,
+                    artifact_name AS file_name,
+                    artifact_uri AS file_path,
+                    artifact_size AS file_size,
+                    error_message,
+                    COALESCE(request_payload -> 'metadata', '{}'::jsonb) AS metadata,
+                    create_date,
+                    update_date,
+                    expires_at
+                FROM pa_job_executions
+                WHERE project_id = %(project_id)s
+                  AND legacy_source_type = 'ANNOTATION_EXPORT_JOB'
+                  AND legacy_source_id = %(job_id)s
+                  AND request_payload ->> 'queueId' = %(queue_id)s
+                LIMIT 1
+                """,
+                {
+                    "project_id": project_id,
+                    "queue_id": queue_id,
+                    "job_id": job_id,
+                },
+            )
+        consolidated = await cursor.fetchone()
+        if consolidated is None:
             raise BusinessError(1032, "标注导出任务不存在或无访问权限", 404)
-        return self._to_annotation_export_job_payload(row)
+        return self._to_annotation_export_job_payload(consolidated)
 
     async def _execute_annotation_export_job_update(
         self,
         project_id: str,
         queue_id: str,
         job_id: str,
-        assignments_sql: str,
-        params: dict[str, Any],
         *,
         status_condition_sql: str = "",
+        consolidated_status: JobExecutionStatus | None = None,
+        consolidated_total_count: int = 0,
+        consolidated_completed_count: int = 0,
+        consolidated_success_count: int = 0,
+        consolidated_result_payload: dict[str, Any] | None = None,
+        consolidated_error_message: str = "",
+        consolidated_artifact: dict[str, Any] | None = None,
     ) -> None:
         if not self._database_url:
             raise LangfuseDatabaseConfigError()
@@ -7475,42 +5613,113 @@ class LangfuseDatabaseReader:
             row_factory=dict_row,
         ) as connection:
             async with connection.cursor() as cursor:
+                if consolidated_status is not None:
+                    terminal = consolidated_status in {
+                        JobExecutionStatus.SUCCEEDED,
+                        JobExecutionStatus.PARTIAL_FAILED,
+                        JobExecutionStatus.FAILED,
+                        JobExecutionStatus.CANCELLED,
+                    }
+                    update_counts = consolidated_status in {
+                        JobExecutionStatus.SUCCEEDED,
+                        JobExecutionStatus.PARTIAL_FAILED,
+                    }
+                    artifact = consolidated_artifact or {}
+                    await cursor.execute(
+                        f"""
+                        UPDATE pa_job_executions
+                        SET status = %(status)s,
+                            total_count = CASE WHEN %(update_counts)s
+                                THEN %(total_count)s ELSE total_count END,
+                            completed_count = CASE WHEN %(update_counts)s
+                                THEN %(completed_count)s ELSE completed_count END,
+                            success_count = CASE WHEN %(update_counts)s
+                                THEN %(success_count)s ELSE success_count END,
+                            failure_count = CASE WHEN %(failed)s
+                                THEN GREATEST(failure_count, 1)
+                                WHEN %(update_counts)s
+                                THEN GREATEST(%(total_count)s - %(success_count)s, 0)
+                                ELSE failure_count END,
+                            progress_percent = CASE WHEN %(terminal)s THEN 100
+                                ELSE progress_percent END,
+                            result_payload = CASE WHEN %(update_result)s
+                                THEN result_payload || %(result_payload)s
+                                ELSE result_payload END,
+                            error_message = CASE WHEN %(failed)s
+                                THEN %(error_message)s
+                                WHEN %(succeeded)s THEN '' ELSE error_message END,
+                            started_at = CASE WHEN %(running)s
+                                THEN COALESCE(started_at, NOW()) ELSE started_at END,
+                            completed_at = CASE WHEN %(terminal)s
+                                THEN NOW() ELSE completed_at END,
+                            artifact_uri = CASE WHEN %(update_artifact)s
+                                THEN %(artifact_uri)s ELSE artifact_uri END,
+                            artifact_name = CASE WHEN %(update_artifact)s
+                                THEN %(artifact_name)s ELSE artifact_name END,
+                            artifact_content_type = CASE WHEN %(update_artifact)s
+                                THEN %(artifact_content_type)s ELSE artifact_content_type END,
+                            artifact_size = CASE WHEN %(update_artifact)s
+                                THEN %(artifact_size)s ELSE artifact_size END,
+                            update_by = 'system:annotation-export-worker',
+                            update_date = NOW()
+                        WHERE project_id = %(project_id)s
+                          AND legacy_source_type = 'ANNOTATION_EXPORT_JOB'
+                          AND legacy_source_id = %(job_id)s
+                          AND request_payload ->> 'queueId' = %(queue_id)s
+                          {status_condition_sql}
+                        RETURNING id
+                        """,
+                        {
+                            "project_id": project_id,
+                            "queue_id": queue_id,
+                            "job_id": job_id,
+                            "status": consolidated_status.value,
+                            "update_counts": update_counts,
+                            "total_count": consolidated_total_count,
+                            "completed_count": consolidated_completed_count,
+                            "success_count": consolidated_success_count,
+                            "failed": consolidated_status == JobExecutionStatus.FAILED,
+                            "succeeded": consolidated_status
+                            == JobExecutionStatus.SUCCEEDED,
+                            "terminal": terminal,
+                            "running": consolidated_status
+                            == JobExecutionStatus.RUNNING,
+                            "update_result": consolidated_result_payload is not None,
+                            "result_payload": Jsonb(
+                                consolidated_result_payload or {}
+                            ),
+                            "error_message": consolidated_error_message,
+                            "update_artifact": consolidated_artifact is not None,
+                            "artifact_uri": str(artifact.get("uri") or ""),
+                            "artifact_name": str(artifact.get("name") or ""),
+                            "artifact_content_type": str(
+                                artifact.get("contentType") or ""
+                            ),
+                            "artifact_size": int(artifact.get("size") or 0),
+                        },
+                    )
+                    if await cursor.fetchone() is not None:
+                        return
+
                 await cursor.execute(
-                    f"""
-                    UPDATE pa_annotation_export_jobs
-                    SET {assignments_sql}
+                    """
+                    SELECT 1
+                    FROM pa_job_executions
                     WHERE project_id = %(project_id)s
-                      AND queue_id = %(queue_id)s
-                      AND id = %(job_id)s
-                      {status_condition_sql}
+                      AND legacy_source_type = 'ANNOTATION_EXPORT_JOB'
+                      AND legacy_source_id = %(job_id)s
+                      AND request_payload ->> 'queueId' = %(queue_id)s
+                    LIMIT 1
                     """,
                     {
-                        **params,
                         "project_id": project_id,
                         "queue_id": queue_id,
                         "job_id": job_id,
                     },
                 )
-                if cursor.rowcount == 0:
-                    if status_condition_sql:
-                        await cursor.execute(
-                            """
-                            SELECT 1
-                            FROM pa_annotation_export_jobs
-                            WHERE project_id = %(project_id)s
-                              AND queue_id = %(queue_id)s
-                              AND id = %(job_id)s
-                            LIMIT 1
-                            """,
-                            {
-                                "project_id": project_id,
-                                "queue_id": queue_id,
-                                "job_id": job_id,
-                            },
-                        )
-                        if await cursor.fetchone() is not None:
-                            return
-                    raise BusinessError(1032, "标注导出任务不存在或无访问权限", 404)
+                if status_condition_sql and await cursor.fetchone() is not None:
+                    return
+                raise BusinessError(1032, "标注导出任务不存在或无访问权限", 404)
 
     @staticmethod
     async def _get_latest_evaluator_version(
@@ -7563,51 +5772,8 @@ class LangfuseDatabaseReader:
                 status_code=400,
             )
 
-    @staticmethod
-    async def _replace_annotation_assignments(
-        cursor: psycopg.AsyncCursor[dict[str, Any]],
-        project_id: str,
-        queue_id: str,
-        assignee_ids: list[str],
-    ) -> None:
-        await cursor.execute(
-            """
-            DELETE FROM annotation_queue_assignments
-            WHERE project_id = %(project_id)s
-              AND queue_id = %(queue_id)s
-            """,
-            {"project_id": project_id, "queue_id": queue_id},
-        )
-        for assignee_id in dict.fromkeys(assignee_ids):
-            await cursor.execute(
-                """
-                INSERT INTO annotation_queue_assignments (
-                    id,
-                    project_id,
-                    queue_id,
-                    user_id,
-                    created_at,
-                    updated_at
-                )
-                VALUES (
-                    %(id)s,
-                    %(project_id)s,
-                    %(queue_id)s,
-                    %(user_id)s,
-                    NOW(),
-                    NOW()
-                )
-                """,
-                {
-                    "id": _new_langfuse_id("annassign"),
-                    "project_id": project_id,
-                    "queue_id": queue_id,
-                    "user_id": assignee_id,
-                },
-            )
-
-    @staticmethod
     async def _upsert_annotation_queue_settings(
+        self,
         cursor: psycopg.AsyncCursor[dict[str, Any]],
         project_id: str,
         queue_id: str,
@@ -7623,39 +5789,18 @@ class LangfuseDatabaseReader:
             assignee_ids,
             payload.get("assignmentWeights") or {},
         )
-        await cursor.execute(
-            """
-            INSERT INTO pa_annotation_queue_settings (
-                create_by,
-                update_by,
-                queue_id,
-                project_id,
-                assignment_strategy,
-                assignment_weights
-            )
-            VALUES (
-                %(user_id)s,
-                %(user_id)s,
-                %(queue_id)s,
-                %(project_id)s,
-                %(assignment_strategy)s,
-                %(assignment_weights)s
-            )
-            ON CONFLICT (queue_id)
-            DO UPDATE SET
-                update_by = EXCLUDED.update_by,
-                update_date = NOW(),
-                project_id = EXCLUDED.project_id,
-                assignment_strategy = EXCLUDED.assignment_strategy,
-                assignment_weights = EXCLUDED.assignment_weights
-            """,
-            {
-                "user_id": user_id,
-                "project_id": project_id,
-                "queue_id": queue_id,
-                "assignment_strategy": strategy,
-                "assignment_weights": Jsonb(weights),
+        await ConsolidationRepository(cursor).upsert_resource_extension(
+            extension_id=f"paext_queue_{queue_id}",
+            project_id=project_id,
+            resource_type="ANNOTATION_QUEUE",
+            resource_id=queue_id,
+            extension_type=ResourceExtensionType.ITEM_ASSIGNMENT_POLICY,
+            schema_version=1,
+            payload={
+                "assignmentStrategy": strategy,
+                "assignmentWeights": weights,
             },
+            actor=user_id,
         )
 
     async def _assign_annotation_queue_items(
@@ -7750,8 +5895,8 @@ class LangfuseDatabaseReader:
         )
         return [row["user_id"] for row in await cursor.fetchall()]
 
-    @staticmethod
     async def _get_annotation_queue_assignment_settings(
+        self,
         cursor: psycopg.AsyncCursor[dict[str, Any]],
         project_id: str,
         queue_id: str,
@@ -7759,22 +5904,26 @@ class LangfuseDatabaseReader:
     ) -> tuple[str, dict[str, int]]:
         await cursor.execute(
             """
-            SELECT assignment_strategy, assignment_weights
-            FROM pa_annotation_queue_settings
+            SELECT payload
+            FROM pa_resource_extensions
             WHERE project_id = %(project_id)s
-              AND queue_id = %(queue_id)s
+              AND resource_type = 'ANNOTATION_QUEUE'
+              AND resource_id = %(queue_id)s
+              AND extension_type = 'ITEM_ASSIGNMENT_POLICY'
+              AND status = 'ACTIVE'
             LIMIT 1
             """,
             {"project_id": project_id, "queue_id": queue_id},
         )
-        row = await cursor.fetchone()
+        extension = await cursor.fetchone()
+        payload = extension.get("payload") if extension else {}
         strategy = normalize_assignment_strategy(
             assignee_ids,
-            row.get("assignment_strategy") if row else None,
+            payload.get("assignmentStrategy") if payload else None,
         )
         weights = normalize_assignment_weights(
             assignee_ids,
-            row.get("assignment_weights") if row else {},
+            payload.get("assignmentWeights") if payload else {},
         )
         return strategy, weights
 
@@ -7822,131 +5971,6 @@ class LangfuseDatabaseReader:
                 status_code=404,
             )
         return row
-
-    @staticmethod
-    async def _ensure_default_score_configs(
-        cursor: psycopg.AsyncCursor[dict[str, Any]],
-        project_id: str,
-    ) -> list[str]:
-        await cursor.execute(
-            """
-            SELECT id
-            FROM score_configs
-            WHERE project_id = %(project_id)s
-              AND is_archived IS FALSE
-            ORDER BY created_at ASC, id ASC
-            """,
-            {"project_id": project_id},
-        )
-        rows = await cursor.fetchall()
-        if rows:
-            return [row["id"] for row in rows]
-
-        config_id = _new_langfuse_id("scorecfg")
-        await cursor.execute(
-            """
-            INSERT INTO score_configs (
-                id,
-                project_id,
-                name,
-                data_type,
-                description,
-                min_value,
-                max_value,
-                is_archived,
-                created_at,
-                updated_at
-            )
-            VALUES (
-                %(id)s,
-                %(project_id)s,
-                '人工质量评分',
-                'NUMERIC'::"ScoreConfigDataType",
-                'Trace 人工标注默认评分指标',
-                1,
-                5,
-                FALSE,
-                NOW(),
-                NOW()
-            )
-            """,
-            {"id": config_id, "project_id": project_id},
-        )
-        return [config_id]
-
-    @staticmethod
-    async def _get_or_create_annotation_queue(
-        cursor: psycopg.AsyncCursor[dict[str, Any]],
-        project_id: str,
-        queue_name: str,
-        score_config_ids: list[str],
-        user_id: str,
-    ) -> str:
-        await cursor.execute(
-            """
-            SELECT id, score_config_ids
-            FROM annotation_queues
-            WHERE project_id = %(project_id)s
-              AND name = %(name)s
-            LIMIT 1
-            """,
-            {"project_id": project_id, "name": queue_name},
-        )
-        existing = await cursor.fetchone()
-        if existing is not None:
-            if not existing.get("score_config_ids"):
-                await cursor.execute(
-                    """
-                    UPDATE annotation_queues
-                    SET score_config_ids = %(score_config_ids)s,
-                        updated_at = NOW()
-                    WHERE project_id = %(project_id)s
-                      AND id = %(id)s
-                    """,
-                    {
-                        "project_id": project_id,
-                        "id": existing["id"],
-                        "score_config_ids": score_config_ids,
-                    },
-                )
-            return existing["id"]
-
-        queue_id = _new_langfuse_id("annqueue")
-        await cursor.execute(
-            """
-            INSERT INTO annotation_queues (
-                id,
-                project_id,
-                name,
-                description,
-                score_config_ids,
-                created_at,
-                updated_at
-            )
-            VALUES (
-                %(id)s,
-                %(project_id)s,
-                %(name)s,
-                '从 Trace 页面批量创建的人工标注任务',
-                %(score_config_ids)s,
-                NOW(),
-                NOW()
-            )
-            """,
-            {
-                "id": queue_id,
-                "project_id": project_id,
-                "name": queue_name,
-                "score_config_ids": score_config_ids,
-            },
-        )
-        await LangfuseDatabaseReader._replace_annotation_assignments(
-            cursor,
-            project_id,
-            queue_id,
-            [user_id],
-        )
-        return queue_id
 
     @staticmethod
     async def _get_annotation_item_score_context(
@@ -8102,6 +6126,814 @@ class LangfuseDatabaseReader:
             return (0.0, text_value or None)
         return None, string_value or None
 
+    async def _get_native_llm_connection_secret(
+        self,
+        project_id: str,
+        connection_id: str,
+    ) -> str:
+        if not self._settings.langfuse_encryption_key:
+            raise BusinessError(2012, "Langfuse ENCRYPTION_KEY 未配置", 500)
+        rows = await self._fetch_all(
+            """
+            SELECT secret_key
+            FROM llm_api_keys
+            WHERE project_id = %(project_id)s
+              AND id = %(connection_id)s
+            LIMIT 1
+            """,
+            {"project_id": project_id, "connection_id": connection_id},
+        )
+        if not rows:
+            raise BusinessError(1013, "LLM 连接不存在或已不可用", 404)
+        try:
+            return decrypt_langfuse_secret(
+                str(rows[0]["secret_key"]),
+                self._settings.langfuse_encryption_key,
+            )
+        except ValueError as exc:
+            raise BusinessError(2012, "Langfuse LLM 连接密钥无法解密", 500) from exc
+
+    async def _acquire_native_provider_lock(
+        self,
+        project_id: str,
+        provider: str,
+    ) -> tuple[Any, psycopg.AsyncConnection[Any]]:
+        return await self._acquire_native_transaction_lock(
+            f"pa-native-llm:{project_id}:{provider}"
+        )
+
+    async def _acquire_native_model_lock(
+        self,
+        project_id: str,
+    ) -> tuple[Any, psycopg.AsyncConnection[Any]]:
+        return await self._acquire_native_transaction_lock(
+            f"pa-native-model:{project_id}"
+        )
+
+    async def _acquire_native_transaction_lock(
+        self,
+        lock_key: str,
+    ) -> tuple[Any, psycopg.AsyncConnection[Any]]:
+        connection_context = await connect_postgres(
+            self._database_url,
+            row_factory=dict_row,
+        )
+        connection = await connection_context.__aenter__()
+        try:
+            await connection.execute(
+                "SELECT pg_advisory_xact_lock(hashtextextended(%s, 0))",
+                (lock_key,),
+            )
+            return connection_context, connection
+        except BaseException as exc:
+            await connection_context.__aexit__(type(exc), exc, exc.__traceback__)
+            raise
+
+    @staticmethod
+    async def _release_native_provider_lock(
+        handle: tuple[Any, psycopg.AsyncConnection[Any]],
+        _project_id: str,
+        _provider: str,
+    ) -> None:
+        await LangfuseDatabaseReader._release_native_transaction_lock(handle)
+
+    @staticmethod
+    async def _release_native_model_lock(
+        handle: tuple[Any, psycopg.AsyncConnection[Any]],
+    ) -> None:
+        await LangfuseDatabaseReader._release_native_transaction_lock(handle)
+
+    @staticmethod
+    async def _release_native_transaction_lock(
+        handle: tuple[Any, psycopg.AsyncConnection[Any]],
+    ) -> None:
+        connection_context, _connection = handle
+        await connection_context.__aexit__(None, None, None)
+
+    async def _replace_default_connection_reference(
+        self,
+        project_id: str,
+        old_connection_id: str,
+        new_connection_id: str,
+        actor: str,
+    ) -> None:
+        async with await connect_postgres(
+            self._database_url,
+            row_factory=dict_row,
+        ) as connection:
+            async with connection.cursor() as cursor:
+                await cursor.execute(
+                    """
+                    UPDATE pa_resource_extensions
+                    SET payload = jsonb_set(
+                            payload,
+                            '{llmConnectionId}',
+                            to_jsonb(%(new_connection_id)s::text),
+                            true
+                        ),
+                        update_by = %(actor)s,
+                        update_date = NOW()
+                    WHERE project_id = %(project_id)s
+                      AND extension_type = 'DEFAULT_EVALUATION_MODEL'
+                      AND status = 'ACTIVE'
+                      AND payload ->> 'llmConnectionId' = %(old_connection_id)s
+                    """,
+                    {
+                        "project_id": project_id,
+                        "old_connection_id": old_connection_id,
+                        "new_connection_id": new_connection_id,
+                        "actor": actor,
+                    },
+                )
+
+    async def get_project_model_settings_for_user(
+        self,
+        project_id: str,
+        user_id: str,
+    ) -> dict[str, Any]:
+        await self._ensure_project_visible(project_id, user_id)
+        client = await self._project_public_client_for_user(project_id, user_id)
+        try:
+            connections = await client.list_all_llm_connections()
+            models = await client.list_all_models()
+        finally:
+            await client.aclose()
+
+        connection_payloads = [
+            self._to_llm_connection_payload(row) for row in connections
+        ]
+        model_payloads = [
+            self._to_model_definition_payload(row)
+            for row in models
+            if not bool(row.get("isLangfuseManaged"))
+        ]
+        extension_rows = await self._fetch_all(
+            """
+            SELECT id, payload
+            FROM pa_resource_extensions
+            WHERE project_id = %(project_id)s
+              AND resource_type = 'PROJECT'
+              AND resource_id = %(project_id)s
+              AND extension_type = 'DEFAULT_EVALUATION_MODEL'
+              AND status = 'ACTIVE'
+            LIMIT 1
+            """,
+            {"project_id": project_id},
+        )
+        default_row: dict[str, Any] | None = None
+        if extension_rows:
+            extension = extension_rows[0]
+            extension_payload = extension.get("payload") or {}
+            connection_id = str(extension_payload.get("llmConnectionId") or "")
+            selected = next(
+                (item for item in connection_payloads if item["id"] == connection_id),
+                {},
+            )
+            default_row = {
+                "id": extension_payload.get("legacyId") or extension["id"],
+                "llm_connection_id": connection_id,
+                "model": extension_payload.get("model") or "",
+                "temperature": extension_payload.get("temperature") or "0.2",
+                "provider": selected.get("provider") or "",
+                "adapter": selected.get("adapter") or "",
+            }
+        return {
+            "defaultModel": self._to_default_model_payload(
+                default_row,
+                connection_payloads[0] if connection_payloads else None,
+                project_id,
+            ),
+            "connections": connection_payloads,
+            "modelDefinitions": model_payloads,
+        }
+
+    async def update_project_default_model_for_user(
+        self,
+        project_id: str,
+        user_id: str,
+        user_email: str,
+        payload: dict[str, Any],
+    ) -> dict[str, Any]:
+        await self._ensure_project_visible(project_id, user_id)
+        client = await self._project_public_client_for_user(project_id, user_id)
+        try:
+            connections = await client.list_all_llm_connections()
+        finally:
+            await client.aclose()
+        connection_payloads = [
+            self._to_llm_connection_payload(row) for row in connections
+        ]
+        selected = next(
+            (
+                item
+                for item in connection_payloads
+                if item["id"] == payload["llmConnectionId"]
+            ),
+            None,
+        )
+        if selected is None:
+            raise BusinessError(1013, "LLM 连接不存在或已不可用", 404)
+
+        setting_id = f"paext_model_{project_id}"
+        async with await connect_postgres(
+            self._database_url,
+            row_factory=dict_row,
+        ) as connection:
+            async with connection.cursor() as cursor:
+                await self._get_project_for_user(cursor, project_id, user_id)
+                extension_row = await ConsolidationRepository(
+                    cursor
+                ).upsert_resource_extension(
+                    extension_id=setting_id,
+                    project_id=project_id,
+                    resource_type="PROJECT",
+                    resource_id=project_id,
+                    extension_type=ResourceExtensionType.DEFAULT_EVALUATION_MODEL,
+                    schema_version=1,
+                    payload={
+                        "llmConnectionId": payload["llmConnectionId"],
+                        "model": payload["model"],
+                        "temperature": payload["temperature"],
+                    },
+                    actor=user_email,
+                )
+        extension_payload = extension_row.get("payload") or {}
+        return self._to_default_model_payload(
+            {
+                "id": extension_payload.get("legacyId")
+                or extension_row.get("id")
+                or setting_id,
+                "llm_connection_id": payload["llmConnectionId"],
+                "model": payload["model"],
+                "temperature": payload["temperature"],
+                "provider": selected["provider"],
+                "adapter": selected["adapter"],
+            },
+            None,
+            project_id,
+        )
+
+    async def create_project_llm_connection_for_user(
+        self,
+        project_id: str,
+        user_id: str,
+        user_email: str,
+        payload: dict[str, Any],
+    ) -> dict[str, Any]:
+        await self._ensure_project_visible(project_id, user_id)
+        provider = str(payload["provider"])
+        provider_lock = await self._acquire_native_provider_lock(project_id, provider)
+        try:
+            client = await self._project_public_client_for_user(project_id, user_id)
+        except BaseException:
+            await self._release_native_provider_lock(
+                provider_lock, project_id, provider
+            )
+            raise
+        try:
+            connections = await client.list_all_llm_connections()
+            existing = next(
+                (
+                    item
+                    for item in connections
+                    if item.get("provider") == payload["provider"]
+                ),
+                None,
+            )
+            if existing is not None:
+                raise LangfuseResourceConflictError(
+                    f"Provider {payload['provider']} 的 LLM 连接已存在"
+                )
+        except BaseException:
+            try:
+                await client.aclose()
+            finally:
+                await self._release_native_provider_lock(
+                    provider_lock, project_id, provider
+                )
+            raise
+        try:
+            execution_id = await self._start_native_resource_sync(
+                project_id=project_id,
+                user_id=user_id,
+                actor=user_email,
+                resource_type="LLM_CONNECTION",
+                operation="CREATE",
+                local_resource_id=f"provider:{payload['provider']}",
+                provider=payload["provider"],
+            )
+        except BaseException:
+            try:
+                await client.aclose()
+            finally:
+                await self._release_native_provider_lock(
+                    provider_lock, project_id, provider
+                )
+            raise
+        native: dict[str, Any] = {}
+        try:
+            native = await client.upsert_llm_connection(
+                _to_public_llm_connection_payload(payload)
+            )
+            native_id = str(native.get("id") or "")
+            if not native_id:
+                raise BusinessError(2010, "Langfuse 未返回连接 ID", 502)
+            await self._finish_native_resource_sync(
+                project_id=project_id,
+                execution_id=execution_id,
+                actor=user_email,
+                succeeded=True,
+                external_resource_id=native_id,
+            )
+            return self._to_llm_connection_payload(native)
+        except BaseException:
+            native_id = str(native.get("id") or "")
+            compensated = False
+            try:
+                if not native_id:
+                    candidates = await client.list_all_llm_connections()
+                    created = next(
+                        (
+                            item
+                            for item in candidates
+                            if item.get("provider") == payload["provider"]
+                        ),
+                        None,
+                    )
+                    native_id = str((created or {}).get("id") or "")
+                if native_id:
+                    await client.delete_llm_connection(native_id)
+                    compensated = True
+            except BaseException:
+                compensated = False
+            finally:
+                await self._finish_native_resource_sync(
+                    project_id=project_id,
+                    execution_id=execution_id,
+                    actor=user_email,
+                    succeeded=False,
+                    external_resource_id=native_id,
+                    compensated=compensated,
+                )
+            raise
+        finally:
+            try:
+                await client.aclose()
+            finally:
+                await self._release_native_provider_lock(
+                    provider_lock, project_id, provider
+                )
+
+    async def update_project_llm_connection_for_user(
+        self,
+        project_id: str,
+        connection_id: str,
+        user_id: str,
+        user_email: str,
+        payload: dict[str, Any],
+    ) -> dict[str, Any]:
+        await self._ensure_project_visible(project_id, user_id)
+        provider = str(payload["provider"])
+        provider_lock = await self._acquire_native_provider_lock(project_id, provider)
+        try:
+            client = await self._project_public_client_for_user(project_id, user_id)
+        except BaseException:
+            await self._release_native_provider_lock(
+                provider_lock, project_id, provider
+            )
+            raise
+        reference_replaced = False
+        native: dict[str, Any] = {}
+        try:
+            connections = await client.list_all_llm_connections()
+            existing = next(
+                (item for item in connections if item.get("id") == connection_id),
+                None,
+            )
+            if existing is None:
+                raise BusinessError(1013, "LLM 连接不存在或已不可用", 404)
+            if (
+                payload["provider"] != existing.get("provider")
+                or normalize_llm_adapter(payload["adapter"])
+                != existing.get("adapter")
+            ):
+                raise LangfuseResourceConflictError(
+                    "LLM 连接的 Provider 和 Adapter 不允许修改"
+                )
+            old_secret = await self._get_native_llm_connection_secret(
+                project_id, connection_id
+            )
+            effective_payload = {**payload}
+            if not effective_payload.get("secretKey"):
+                effective_payload["secretKey"] = old_secret
+            execution_id = await self._start_native_resource_sync(
+                project_id=project_id,
+                user_id=user_id,
+                actor=user_email,
+                resource_type="LLM_CONNECTION",
+                operation="UPDATE",
+                local_resource_id=connection_id,
+                provider=payload["provider"],
+            )
+            try:
+                native = await client.upsert_llm_connection(
+                    _to_public_llm_connection_payload(effective_payload)
+                )
+                native_id = str(native.get("id") or "")
+                if not native_id:
+                    raise BusinessError(2010, "Langfuse 未返回连接 ID", 502)
+                if native_id != connection_id:
+                    await self._replace_default_connection_reference(
+                        project_id,
+                        connection_id,
+                        native_id,
+                        user_email,
+                    )
+                    reference_replaced = True
+                    await client.delete_llm_connection(connection_id)
+                await self._finish_native_resource_sync(
+                    project_id=project_id,
+                    execution_id=execution_id,
+                    actor=user_email,
+                    succeeded=True,
+                    external_resource_id=native_id,
+                )
+                return self._to_llm_connection_payload(native)
+            except BaseException:
+                native_id = str(native.get("id") or "")
+                compensated = False
+                try:
+                    if reference_replaced:
+                        await self._replace_default_connection_reference(
+                            project_id,
+                            native_id,
+                            connection_id,
+                            user_email,
+                        )
+                    if native_id and native_id != connection_id:
+                        await client.delete_llm_connection(native_id)
+                    restored = await client.upsert_llm_connection(
+                        _native_connection_to_public_payload(existing, old_secret)
+                    )
+                    compensated = bool(restored.get("id"))
+                finally:
+                    await self._finish_native_resource_sync(
+                        project_id=project_id,
+                        execution_id=execution_id,
+                        actor=user_email,
+                        succeeded=False,
+                        external_resource_id=native_id,
+                        compensated=compensated,
+                    )
+                raise
+        finally:
+            try:
+                await client.aclose()
+            finally:
+                await self._release_native_provider_lock(
+                    provider_lock, project_id, provider
+                )
+
+    async def delete_project_llm_connection_for_user(
+        self,
+        project_id: str,
+        connection_id: str,
+        user_id: str,
+        user_email: str,
+    ) -> dict[str, Any]:
+        await self._ensure_project_visible(project_id, user_id)
+        client = await self._project_public_client_for_user(project_id, user_id)
+        provider_lock: tuple[Any, psycopg.AsyncConnection[Any]] | None = None
+        provider = ""
+        try:
+            connections = await client.list_all_llm_connections()
+            existing = next(
+                (item for item in connections if item.get("id") == connection_id),
+                None,
+            )
+            if existing is None:
+                raise BusinessError(1013, "LLM 连接不存在或已不可用", 404)
+            provider = str(existing.get("provider") or "")
+            provider_lock = await self._acquire_native_provider_lock(
+                project_id, provider
+            )
+            connections = await client.list_all_llm_connections()
+            existing = next(
+                (item for item in connections if item.get("id") == connection_id),
+                None,
+            )
+            if existing is None:
+                raise BusinessError(1013, "LLM 连接不存在或已不可用", 404)
+            old_secret = await self._get_native_llm_connection_secret(
+                project_id, connection_id
+            )
+            execution_id = await self._start_native_resource_sync(
+                project_id=project_id,
+                user_id=user_id,
+                actor=user_email,
+                resource_type="LLM_CONNECTION",
+                operation="DELETE",
+                local_resource_id=connection_id,
+                provider=str(existing.get("provider") or ""),
+            )
+            try:
+                await client.delete_llm_connection(connection_id)
+                await self._finish_native_resource_sync(
+                    project_id=project_id,
+                    execution_id=execution_id,
+                    actor=user_email,
+                    succeeded=True,
+                    external_resource_id=connection_id,
+                )
+            except BaseException:
+                compensated = False
+                try:
+                    restored = await client.upsert_llm_connection(
+                        _native_connection_to_public_payload(existing, old_secret)
+                    )
+                    compensated = bool(restored.get("id"))
+                except BaseException:
+                    compensated = False
+                await self._finish_native_resource_sync(
+                    project_id=project_id,
+                    execution_id=execution_id,
+                    actor=user_email,
+                    succeeded=False,
+                    external_resource_id=connection_id,
+                    compensated=compensated,
+                )
+                raise
+            return {"id": connection_id}
+        finally:
+            try:
+                await client.aclose()
+            finally:
+                if provider_lock is not None:
+                    await self._release_native_provider_lock(
+                        provider_lock, project_id, provider
+                    )
+
+    async def create_project_model_definition_for_user(
+        self,
+        project_id: str,
+        user_id: str,
+        user_email: str,
+        payload: dict[str, Any],
+    ) -> dict[str, Any]:
+        await self._ensure_project_visible(project_id, user_id)
+        model_lock = await self._acquire_native_model_lock(project_id)
+        try:
+            client = await self._project_public_client_for_user(project_id, user_id)
+        except BaseException:
+            await self._release_native_model_lock(model_lock)
+            raise
+        try:
+            preexisting_models = await client.list_all_models()
+            preexisting_model_ids = {
+                str(item.get("id") or "") for item in preexisting_models
+            }
+            execution_id = await self._start_native_resource_sync(
+                project_id=project_id,
+                user_id=user_id,
+                actor=user_email,
+                resource_type="MODEL",
+                operation="CREATE",
+                local_resource_id=f"model:{payload['modelName']}",
+            )
+        except BaseException:
+            try:
+                await client.aclose()
+            finally:
+                await self._release_native_model_lock(model_lock)
+            raise
+        native: dict[str, Any] = {}
+        try:
+            native = await client.create_model(_to_public_model_payload(payload))
+            native_id = str(native.get("id") or "")
+            if not native_id:
+                raise BusinessError(2011, "Langfuse 未返回模型 ID", 502)
+            await self._finish_native_resource_sync(
+                project_id=project_id,
+                execution_id=execution_id,
+                actor=user_email,
+                succeeded=True,
+                external_resource_id=native_id,
+            )
+            return self._to_model_definition_payload(native)
+        except BaseException:
+            native_id = str(native.get("id") or "")
+            compensated = False
+            try:
+                if not native_id:
+                    candidates = await client.list_all_models()
+                    created = next(
+                        (
+                            item
+                            for item in candidates
+                            if str(item.get("id") or "")
+                            not in preexisting_model_ids
+                            and _native_model_matches_public_payload(item, payload)
+                        ),
+                        None,
+                    )
+                    native_id = str((created or {}).get("id") or "")
+                if native_id:
+                    await client.delete_model(native_id)
+                    compensated = True
+            except BaseException:
+                compensated = False
+            finally:
+                await self._finish_native_resource_sync(
+                    project_id=project_id,
+                    execution_id=execution_id,
+                    actor=user_email,
+                    succeeded=False,
+                    external_resource_id=native_id,
+                    compensated=compensated,
+                )
+            raise
+        finally:
+            try:
+                await client.aclose()
+            finally:
+                await self._release_native_model_lock(model_lock)
+
+    async def update_project_model_definition_for_user(
+        self,
+        project_id: str,
+        model_id: str,
+        user_id: str,
+        user_email: str,
+        payload: dict[str, Any],
+    ) -> dict[str, Any]:
+        await self._ensure_project_visible(project_id, user_id)
+        model_lock = await self._acquire_native_model_lock(project_id)
+        try:
+            client = await self._project_public_client_for_user(project_id, user_id)
+        except BaseException:
+            await self._release_native_model_lock(model_lock)
+            raise
+        try:
+            preexisting_models = await client.list_all_models()
+            preexisting_model_ids = {
+                str(item.get("id") or "") for item in preexisting_models
+            }
+            execution_id = await self._start_native_resource_sync(
+                project_id=project_id,
+                user_id=user_id,
+                actor=user_email,
+                resource_type="MODEL",
+                operation="UPDATE",
+                local_resource_id=model_id,
+            )
+        except BaseException:
+            try:
+                await client.aclose()
+            finally:
+                await self._release_native_model_lock(model_lock)
+            raise
+        old: dict[str, Any] = {}
+        new: dict[str, Any] = {}
+        old_deleted = False
+        try:
+            old = await client.get_model(model_id)
+            if bool(old.get("isLangfuseManaged")):
+                raise BusinessError(1014, "模型定义不存在或已不可用", 404)
+            same_name = old.get("modelName") == payload["modelName"]
+            if same_name:
+                await client.delete_model(model_id)
+                old_deleted = True
+            new = await client.create_model(_to_public_model_payload(payload))
+            new_id = str(new.get("id") or "")
+            if not new_id:
+                raise BusinessError(2011, "Langfuse 未返回模型 ID", 502)
+            if not same_name:
+                await client.delete_model(model_id)
+                old_deleted = True
+            await self._finish_native_resource_sync(
+                project_id=project_id,
+                execution_id=execution_id,
+                actor=user_email,
+                succeeded=True,
+                external_resource_id=new_id,
+            )
+            return self._to_model_definition_payload(new)
+        except BaseException:
+            new_id = str(new.get("id") or "")
+            compensated = False
+            try:
+                if not new_id:
+                    try:
+                        candidates = await client.list_all_models()
+                        created = next(
+                            (
+                                item
+                                for item in candidates
+                                if str(item.get("id") or "")
+                                not in preexisting_model_ids
+                                and _native_model_matches_public_payload(item, payload)
+                            ),
+                            None,
+                        )
+                        new_id = str((created or {}).get("id") or "")
+                    except BaseException:
+                        new_id = ""
+                if new_id:
+                    await client.delete_model(new_id)
+                if old_deleted and old:
+                    restored = await client.create_model(
+                        _native_model_to_public_payload(old)
+                    )
+                    compensated = bool(restored.get("id"))
+            except BaseException:
+                compensated = False
+            finally:
+                await self._finish_native_resource_sync(
+                    project_id=project_id,
+                    execution_id=execution_id,
+                    actor=user_email,
+                    succeeded=False,
+                    external_resource_id=new_id,
+                    compensated=compensated,
+                )
+            raise
+        finally:
+            try:
+                await client.aclose()
+            finally:
+                await self._release_native_model_lock(model_lock)
+
+    async def delete_project_model_definition_for_user(
+        self,
+        project_id: str,
+        model_id: str,
+        user_id: str,
+        user_email: str,
+    ) -> dict[str, Any]:
+        await self._ensure_project_visible(project_id, user_id)
+        model_lock = await self._acquire_native_model_lock(project_id)
+        try:
+            client = await self._project_public_client_for_user(project_id, user_id)
+        except BaseException:
+            await self._release_native_model_lock(model_lock)
+            raise
+        try:
+            execution_id = await self._start_native_resource_sync(
+                project_id=project_id,
+                user_id=user_id,
+                actor=user_email,
+                resource_type="MODEL",
+                operation="DELETE",
+                local_resource_id=model_id,
+            )
+        except BaseException:
+            try:
+                await client.aclose()
+            finally:
+                await self._release_native_model_lock(model_lock)
+            raise
+        old: dict[str, Any] = {}
+        delete_attempted = False
+        try:
+            old = await client.get_model(model_id)
+            if bool(old.get("isLangfuseManaged")):
+                raise BusinessError(1014, "模型定义不存在或已不可用", 404)
+            delete_attempted = True
+            await client.delete_model(model_id)
+            await self._finish_native_resource_sync(
+                project_id=project_id,
+                execution_id=execution_id,
+                actor=user_email,
+                succeeded=True,
+                external_resource_id=model_id,
+            )
+            return {"id": model_id}
+        except BaseException:
+            compensated = False
+            try:
+                if delete_attempted and old:
+                    restored = await client.create_model(
+                        _native_model_to_public_payload(old)
+                    )
+                    compensated = bool(restored.get("id"))
+            except BaseException:
+                compensated = False
+            finally:
+                await self._finish_native_resource_sync(
+                    project_id=project_id,
+                    execution_id=execution_id,
+                    actor=user_email,
+                    succeeded=False,
+                    external_resource_id=model_id,
+                    compensated=compensated,
+                )
+            raise
+        finally:
+            try:
+                await client.aclose()
+            finally:
+                await self._release_native_model_lock(model_lock)
+
     @staticmethod
     def _to_organization_payload(row: dict[str, Any]) -> dict[str, Any]:
         return {
@@ -8120,6 +6952,12 @@ class LangfuseDatabaseReader:
         description = pa_eval.get("description") if isinstance(pa_eval, dict) else None
         retention_days = row.get("retention_days")
         organization_name = row["organization_name"]
+        archive_state = row.get("archive_state") or {}
+        archived = (
+            archive_state.get("archived") is True
+            if isinstance(archive_state, dict)
+            else bool(row.get("deleted_at"))
+        )
 
         return {
             "id": row["id"],
@@ -8128,7 +6966,7 @@ class LangfuseDatabaseReader:
             "organizationName": organization_name,
             "description": description or f"所属组织：{organization_name}",
             "retentionDays": retention_days if retention_days is not None else 14,
-            "status": "archived" if row.get("deleted_at") else "active",
+            "status": "archived" if archived else "active",
             "createdAt": _format_datetime(row["created_at"]),
             "updatedAt": _format_datetime(row["updated_at"]),
         }
@@ -8148,27 +6986,38 @@ class LangfuseDatabaseReader:
 
     @staticmethod
     def _to_llm_connection_payload(row: dict[str, Any]) -> dict[str, Any]:
-        custom_models = row.get("custom_models") or []
+        custom_models = row.get("customModels", row.get("custom_models")) or []
         return {
             "id": row["id"],
             "provider": row["provider"],
             "adapter": row["adapter"],
-            "displaySecretKey": _mask_secret(row.get("secret_key") or ""),
-            "baseUrl": row.get("base_url") or "",
+            "displaySecretKey": row.get("displaySecretKey")
+            or _mask_secret(row.get("secret_key") or ""),
+            "baseUrl": row.get("baseURL", row.get("base_url")) or "",
             "customModels": custom_models if isinstance(custom_models, list) else [],
-            "withDefaultModels": bool(row.get("with_default_models")),
+            "withDefaultModels": bool(
+                row.get("withDefaultModels", row.get("with_default_models"))
+            ),
         }
 
     @staticmethod
     def _to_model_definition_payload(row: dict[str, Any]) -> dict[str, Any]:
         return {
             "id": row["id"],
-            "modelName": row["model_name"],
-            "matchPattern": row.get("match_pattern") or "",
+            "modelName": row.get("modelName", row.get("model_name")) or "",
+            "matchPattern": row.get("matchPattern", row.get("match_pattern")) or "",
             "unit": row.get("unit") or "TOKENS",
-            "inputPrice": row.get("input_price") or "",
-            "outputPrice": row.get("output_price") or "",
-            "tokenizerId": row.get("tokenizer_id") or "",
+            "inputPrice": str(
+                row.get("inputPrice", row.get("input_price"))
+                if row.get("inputPrice", row.get("input_price")) is not None
+                else ""
+            ),
+            "outputPrice": str(
+                row.get("outputPrice", row.get("output_price"))
+                if row.get("outputPrice", row.get("output_price")) is not None
+                else ""
+            ),
+            "tokenizerId": row.get("tokenizerId", row.get("tokenizer_id")) or "",
         }
 
     @staticmethod
@@ -8618,6 +7467,131 @@ def _create_sha_hash(secret_key: str, salt: str) -> str:
 
 def _display_secret_key(secret_key: str) -> str:
     return f"{secret_key[:6]}...{secret_key[-4:]}"
+
+
+def _trace_bulk_execution_to_legacy_row(
+    row: dict[str, Any],
+) -> dict[str, Any]:
+    request_payload = row.get("request_payload") or {}
+    return {
+        **row,
+        "id": row.get("legacy_source_id") or row.get("id"),
+        "user_id": request_payload.get("userId") or "",
+        "job_type": (
+            "DATASET_IMPORT"
+            if row.get("job_type") == JobExecutionType.TRACE_DATASET_IMPORT.value
+            else "ANNOTATION_TASK"
+        ),
+        "selection_type": request_payload.get("selectionType") or "EXPLICIT",
+        "selection_payload": request_payload.get("selectionPayload") or {},
+        "operation_payload": request_payload.get("operationPayload") or {},
+    }
+
+
+def _to_public_llm_connection_payload(payload: dict[str, Any]) -> dict[str, Any]:
+    return {
+        "provider": payload["provider"],
+        "adapter": normalize_llm_adapter(payload["adapter"]),
+        "secretKey": payload.get("secretKey") or "",
+        "baseURL": payload.get("baseUrl") or None,
+        "customModels": payload.get("customModels") or [],
+        "withDefaultModels": bool(payload.get("withDefaultModels", True)),
+    }
+
+
+def _native_connection_to_public_payload(
+    connection: dict[str, Any],
+    secret_key: str,
+) -> dict[str, Any]:
+    return {
+        "provider": connection["provider"],
+        "adapter": normalize_llm_adapter(connection["adapter"]),
+        "secretKey": secret_key,
+        "baseURL": connection.get("baseURL"),
+        "customModels": connection.get("customModels") or [],
+        "withDefaultModels": bool(connection.get("withDefaultModels", True)),
+    }
+
+
+def _to_public_model_payload(payload: dict[str, Any]) -> dict[str, Any]:
+    public_payload: dict[str, Any] = {
+        "modelName": payload["modelName"],
+        "matchPattern": payload.get("matchPattern")
+        or f"(?i)^{payload['modelName']}$",
+        "unit": payload.get("unit") or "TOKENS",
+    }
+    for source, target in (
+        ("inputPrice", "inputPrice"),
+        ("outputPrice", "outputPrice"),
+    ):
+        value = payload.get(source)
+        if value not in {None, ""}:
+            public_payload[target] = float(value)
+    if "inputPrice" not in public_payload and "outputPrice" not in public_payload:
+        public_payload["inputPrice"] = 0.0
+        public_payload["outputPrice"] = 0.0
+    if payload.get("tokenizerId"):
+        public_payload["tokenizerId"] = payload["tokenizerId"]
+    return public_payload
+
+
+def _native_model_matches_public_payload(
+    native: dict[str, Any],
+    payload: dict[str, Any],
+) -> bool:
+    expected = _to_public_model_payload(payload)
+
+    def price(value: Any) -> float:
+        return float(value) if value not in {None, ""} else 0.0
+
+    return (
+        not bool(native.get("isLangfuseManaged"))
+        and str(native.get("modelName") or "") == str(expected["modelName"])
+        and str(native.get("matchPattern") or "")
+        == str(expected["matchPattern"])
+        and str(native.get("unit") or "TOKENS") == str(expected["unit"])
+        and price(native.get("inputPrice")) == price(expected.get("inputPrice"))
+        and price(native.get("outputPrice")) == price(expected.get("outputPrice"))
+        and str(native.get("tokenizerId") or "")
+        == str(expected.get("tokenizerId") or "")
+    )
+
+
+def _native_model_to_public_payload(model: dict[str, Any]) -> dict[str, Any]:
+    payload: dict[str, Any] = {
+        "modelName": model["modelName"],
+        "matchPattern": model["matchPattern"],
+        "unit": model.get("unit") or "TOKENS",
+    }
+    for field in ("inputPrice", "outputPrice", "totalPrice"):
+        if model.get(field) is not None:
+            payload[field] = float(model[field])
+    if model.get("tokenizerId"):
+        payload["tokenizerId"] = model["tokenizerId"]
+    if model.get("tokenizerConfig") is not None:
+        payload["tokenizerConfig"] = model["tokenizerConfig"]
+    if model.get("pricingTiers"):
+        payload["pricingTiers"] = model["pricingTiers"]
+        for field in ("inputPrice", "outputPrice", "totalPrice"):
+            payload.pop(field, None)
+    return payload
+
+
+def _to_public_evaluator_payload(payload: dict[str, Any]) -> dict[str, Any]:
+    if payload["type"] == "CODE":
+        return {
+            "type": "code",
+            "name": payload["name"],
+            "sourceCode": payload.get("source_code") or "",
+            "sourceCodeLanguage": payload.get("source_code_language") or "PYTHON",
+        }
+    return {
+        "type": "llm_as_judge",
+        "name": payload["name"],
+        "prompt": payload.get("prompt") or "",
+        "outputDefinition": payload.get("output_definition") or {},
+        "modelConfig": payload.get("model_config") or None,
+    }
 
 
 def _to_float_or_none(value: Any) -> float | None:

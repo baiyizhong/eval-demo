@@ -9,7 +9,6 @@ import { useQuery, useQueryClient } from '@tanstack/react-query'
 import type { ColumnDef } from '@tanstack/react-table'
 import { listProjectScoreConfigs } from '@/modules/app-evaluation/api/annotation-api'
 import { EvaluationPageNav } from '@/modules/app-evaluation/components/evaluation-page-nav'
-import type { ScoreConfigRecord } from '@/modules/app-evaluation/types'
 import { Eye, MoreHorizontal, Pencil, Plus, RefreshCw, Trash2 } from 'lucide-react'
 import { useParams } from 'react-router'
 import { toast } from 'sonner'
@@ -246,13 +245,10 @@ export function TaskEvaluators({ navigation = 'tasks' }: TaskEvaluatorsProps) {
     enabled: canEditEvaluators && (createOpen || editOpen) && Boolean(projectId),
     queryFn: () => listProjectScoreConfigs($api, projectId),
   })
-  const scoreConfigs =
+  const scoreConfigNames =
     scoreConfigsQuery.data
       ?.filter((item) => !item.archived)
-      .map((item) => ({
-        id: item.id,
-        name: item.name,
-      })) ?? []
+      .map((item) => item.name) ?? []
 
   const handleViewDetail = useCallback(
     async (evaluator: TaskEvaluatorRecord) => {
@@ -486,7 +482,7 @@ export function TaskEvaluators({ navigation = 'tasks' }: TaskEvaluatorsProps) {
           {(form) => (
             <EvaluatorFormFields
               form={form}
-              scoreConfigs={scoreConfigs}
+              scoreConfigNames={scoreConfigNames}
               scoreConfigsLoading={scoreConfigsQuery.isLoading}
             />
           )}
@@ -523,11 +519,11 @@ export function TaskEvaluators({ navigation = 'tasks' }: TaskEvaluatorsProps) {
             className='min-h-full gap-4 overflow-visible p-6'
           >
             {(form) => (
-              <EvaluatorFormFields
-                form={form}
-                scoreConfigs={scoreConfigs}
-                scoreConfigsLoading={scoreConfigsQuery.isLoading}
-              />
+            <EvaluatorFormFields
+              form={form}
+              scoreConfigNames={scoreConfigNames}
+              scoreConfigsLoading={scoreConfigsQuery.isLoading}
+            />
             )}
           </BaseForm>
         ) : null}
@@ -821,11 +817,11 @@ function DetailTextBlock({ title, value }: { title: string; value: string }) {
 
 function EvaluatorFormFields({
   form,
-  scoreConfigs,
+  scoreConfigNames,
   scoreConfigsLoading,
 }: {
   form: UseFormReturn<CreateTaskEvaluatorFormValues>
-  scoreConfigs: Pick<ScoreConfigRecord, 'id' | 'name'>[]
+  scoreConfigNames: string[]
   scoreConfigsLoading: boolean
 }) {
   return (
@@ -1094,11 +1090,11 @@ function EvaluatorFormFields({
           </FormItem>
         )}
       />
-      <OutputVariableMappingsField
-        form={form}
-        scoreConfigs={scoreConfigs}
-        loading={scoreConfigsLoading}
-      />
+        <OutputVariableMappingsField
+          form={form}
+          scoreConfigNames={scoreConfigNames}
+          loading={scoreConfigsLoading}
+        />
     </>
   )
 }
@@ -1210,11 +1206,11 @@ function MappingFields({
 
 function OutputVariableMappingsField({
   form,
-  scoreConfigs,
+  scoreConfigNames,
   loading,
 }: {
   form: UseFormReturn<CreateTaskEvaluatorFormValues>
-  scoreConfigs: Pick<ScoreConfigRecord, 'id' | 'name'>[]
+  scoreConfigNames: string[]
   loading: boolean
 }) {
   const { fields, append, remove } = useFieldArray({
@@ -1301,33 +1297,23 @@ function OutputVariableMappingsField({
             />
             <FormField
               control={form.control}
-              name={`outputVariableMappings.${index}.scoreConfigId`}
-              render={({ field: scoreConfigField }) => (
+              name={`outputVariableMappings.${index}.scoreConfigName`}
+              render={({ field: scoreConfigNameField }) => (
                 <FormItem className='gap-1'>
                   <FormLabel className='text-xs md:sr-only'>
                     评分指标
                   </FormLabel>
                   <Select
-                    value={
-                      scoreConfigField.value ||
-                      scoreConfigs.find(
-                        (item) =>
-                          item.name === mappings[index]?.scoreConfigName
-                      )?.id ||
-                      undefined
-                    }
-                    onValueChange={(scoreConfigId) => {
-                      const scoreConfig = scoreConfigs.find(
-                        (item) => item.id === scoreConfigId
-                      )
-                      scoreConfigField.onChange(scoreConfigId)
+                    value={scoreConfigNameField.value || undefined}
+                    onValueChange={(scoreConfigName) => {
+                      scoreConfigNameField.onChange(scoreConfigName)
                       form.setValue(
-                        `outputVariableMappings.${index}.scoreConfigName`,
-                        scoreConfig?.name ?? '',
+                        `outputVariableMappings.${index}.scoreConfigId`,
+                        '',
                         { shouldDirty: true, shouldValidate: true }
                       )
                     }}
-                    disabled={loading || scoreConfigs.length === 0}
+                    disabled={loading || scoreConfigNames.length === 0}
                   >
                     <FormControl>
                       <SelectTrigger className='h-8 w-full'>
@@ -1340,12 +1326,12 @@ function OutputVariableMappingsField({
                     </FormControl>
                     <SelectContent>
                       <SelectGroup>
-                        {scoreConfigs.map((scoreConfig) => (
+                        {scoreConfigNames.map((scoreConfigName) => (
                           <SelectItem
-                            key={scoreConfig.id}
-                            value={scoreConfig.id}
+                            key={scoreConfigName}
+                            value={scoreConfigName}
                           >
-                            {scoreConfig.name}
+                            {scoreConfigName}
                           </SelectItem>
                         ))}
                       </SelectGroup>
@@ -1375,7 +1361,7 @@ function OutputVariableMappingsField({
           </div>
         ))}
       </div>
-      {scoreConfigs.length === 0 && !loading ? (
+      {scoreConfigNames.length === 0 && !loading ? (
         <p className='text-muted-foreground mt-2 text-sm'>
           暂无可用评分指标，请先在项目设置中配置 score config。
         </p>

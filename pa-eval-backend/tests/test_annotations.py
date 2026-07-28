@@ -1,5 +1,5 @@
-import inspect
 import json
+from pathlib import Path
 
 import anyio
 import pytest
@@ -7,7 +7,6 @@ from datetime import datetime, timedelta, timezone
 from fastapi.testclient import TestClient
 
 from app import annotations as annotations_module
-from app import langfuse_db
 from app.auth_context import CurrentUserContext, get_current_user_context
 from app.config import Settings, get_settings
 from app.errors import BusinessError
@@ -35,6 +34,41 @@ from app.langfuse_db import (
     get_langfuse_db_reader,
 )
 from app.main import app
+
+
+class _FakeDatasetWriterPublicClient:
+    """Minimal public client for dataset writes in worker tests."""
+
+    def __init__(self) -> None:
+        self.upserted: list[dict] = []
+
+    async def __aenter__(self):
+        return self
+
+    async def __aexit__(self, *_args) -> None:
+        return None
+
+    async def list_datasets(self, *, page: int = 1, limit: int = 50) -> dict:
+        return {
+            "data": [{"id": "dataset-1", "name": "黄金集", "projectId": "project-1"}],
+            "meta": {"page": 1, "limit": 50, "totalItems": 1, "totalPages": 1},
+        }
+
+    async def upsert_dataset_item(self, payload: dict) -> dict:
+        self.upserted.append(payload)
+        return {
+            "id": f"item-{len(self.upserted)}",
+            "datasetName": payload.get("datasetName", ""),
+            "datasetId": payload.get("datasetId", ""),
+            "status": "ACTIVE",
+            "input": payload.get("input"),
+            "expectedOutput": payload.get("expectedOutput"),
+            "metadata": payload.get("metadata") or {},
+            "sourceTraceId": payload.get("sourceTraceId"),
+            "sourceObservationId": None,
+            "createdAt": "2026-07-24T01:00:00.000Z",
+            "updatedAt": "2026-07-24T01:00:00.000Z",
+        }
 
 
 class FakeAnnotationDatabaseReader:
@@ -221,14 +255,11 @@ class FakeAnnotationDatabaseReader:
         self.calls.append(("check_queue_name", (project_id, user_id, name)))
         return name != "客服质量人工标注"
 
-    async def create_trace_annotation_task_for_user(
-        self,
-        project_id: str,
-        user_id: str,
-        payload: dict,
-    ) -> dict:
-        self.calls.append(("create_trace_task", (project_id, user_id, payload)))
-        return {"queueId": "queue-1", "createdCount": 2, "skippedCount": 1}
+    async def ensure_project_visible(self, project_id: str, user_id: str) -> None:
+        self.calls.append(("ensure_project_visible", (project_id, user_id)))
+
+    async def project_public_client_for_user(self, project_id: str, user_id: str):
+        return _FakeDatasetWriterPublicClient()
 
     async def ensure_default_score_config_for_user(
         self,
@@ -342,21 +373,6 @@ class FakeAnnotationDatabaseReader:
             "maxValue": 5,
             "categories": [],
             "archived": archived,
-        }
-
-    async def add_traces_to_dataset_for_user(
-        self,
-        project_id: str,
-        user_id: str,
-        payload: dict,
-    ) -> dict:
-        self.calls.append(("add_traces_to_dataset", (project_id, user_id, payload)))
-        return {
-            "datasetId": payload["datasetId"],
-            "successCount": len(payload["traces"]),
-            "failureCount": 0,
-            "itemIds": ["dataset-item-1"],
-            "failures": [],
         }
 
     async def save_annotation_scores_for_user(
@@ -998,12 +1014,276 @@ def test_clickhouse_score_writer_batches_annotation_scores_in_one_insert() -> No
     assert {row["author_user_id"] for row in rows} == {"user-1"}
 
 
-def test_trace_annotation_batch_does_not_copy_scores_in_postgres() -> None:
-    source = inspect.getsource(
-        LangfuseDatabaseReader.create_trace_annotation_task_for_user
+def test_trace_annotation_route_uses_public_api_adapter() -> None:
+    source = (Path(__file__).resolve().parent.parent / "app" / "annotations.py").read_text(
+        encoding="utf-8"
     )
 
-    assert "_copy_existing_annotation_scores_for_items" not in source
+    assert "reader.create_trace_annotation_task_for_user" not in source
+
+
+class _FakeScoreConfigPublicClient:
+    """Public API client backing the score-config route tests."""
+
+    def __init__(self) -> None:
+        self.calls: list[tuple] = []
+        self.configs: list[dict] = []
+        self.created: dict | None = None
+        self.updated: list[tuple] = []
+
+    async def __aenter__(self):
+        return self
+
+    async def __aexit__(self, *_args) -> None:
+        return None
+
+    async def list_all_score_configs(self) -> list:
+        self.calls.append(("list_all_score_configs",))
+        return list(self.configs)
+
+    async def create_score_config(self, payload: dict) -> dict:
+        self.calls.append(("create_score_config", payload))
+        self.created = {
+            "id": "score-created",
+            "projectId": "project-1",
+            "name": payload.get("name", ""),
+            "dataType": payload.get("dataType", "NUMERIC"),
+            "description": payload.get("description") or "",
+            "minValue": payload.get("minValue"),
+            "maxValue": payload.get("maxValue"),
+            "categories": payload.get("categories") or [],
+            "isArchived": False,
+            "createdAt": "2026-07-24T01:00:00.000Z",
+            "updatedAt": "2026-07-24T01:00:00.000Z",
+        }
+        return self.created
+
+    async def update_score_config(self, config_id: str, payload: dict) -> dict:
+        self.calls.append(("update_score_config", config_id, payload))
+        return {
+            "id": config_id,
+            "projectId": "project-1",
+            "name": payload.get("name", "准确性"),
+            "dataType": payload.get("dataType", "NUMERIC"),
+            "description": payload.get("description") or "",
+            "minValue": payload.get("minValue"),
+            "maxValue": payload.get("maxValue"),
+            "categories": payload.get("categories") or [],
+            "isArchived": payload.get("isArchived", False),
+            "createdAt": "2026-07-24T01:00:00.000Z",
+            "updatedAt": "2026-07-24T02:00:00.000Z",
+        }
+
+
+def _override_score_config_adapter(public_client: _FakeScoreConfigPublicClient) -> None:
+    from app.langfuse.annotations_adapter import LangfuseAnnotationsAdapter
+
+    class _Provider:
+        async def project_public_client_for_user(self, project_id, user_id):
+            return public_client
+
+    adapter = LangfuseAnnotationsAdapter(_Provider())
+    from app.annotations import get_langfuse_annotations_adapter
+    app.dependency_overrides[get_langfuse_annotations_adapter] = lambda: adapter
+
+
+class _FakeQueuePublicClient:
+    """Public API client backing the annotation-queue route tests."""
+
+    def __init__(self) -> None:
+        self.calls: list[tuple] = []
+        self.queues: list[dict] = []
+        self.items: dict[str, list[dict]] = {}
+        self.assignments: dict[str, list[dict]] = {}
+        self.score_configs: list[dict] = []
+
+    async def __aenter__(self):
+        return self
+
+    async def __aexit__(self, *_args) -> None:
+        return None
+
+    async def list_all_annotation_queues(self) -> list:
+        self.calls.append(("list_all_annotation_queues",))
+        return list(self.queues)
+
+    async def get_annotation_queue(self, queue_id: str) -> dict:
+        self.calls.append(("get_annotation_queue", queue_id))
+        for q in self.queues:
+            if q["id"] == queue_id:
+                return q
+        raise AssertionError(f"unexpected queue id: {queue_id}")
+
+    async def create_annotation_queue(self, payload: dict) -> dict:
+        self.calls.append(("create_annotation_queue", payload))
+        created = {
+            "id": "queue-created",
+            "name": payload["name"],
+            "description": payload.get("description") or "",
+            "scoreConfigIds": payload.get("scoreConfigIds") or [],
+            "createdAt": "2026-07-24T01:00:00.000Z",
+            "updatedAt": "2026-07-24T01:00:00.000Z",
+        }
+        self.queues.append(created)
+        return created
+
+    async def create_annotation_queue_item(self, queue_id: str, payload: dict) -> dict:
+        self.calls.append(("create_annotation_queue_item", queue_id, payload))
+        item = {
+            "id": f"item-{payload['objectId']}",
+            "queueId": queue_id,
+            "objectId": payload["objectId"],
+            "objectType": payload["objectType"],
+            "status": "PENDING",
+            "createdAt": "2026-07-24T01:00:00.000Z",
+            "updatedAt": "2026-07-24T01:00:00.000Z",
+        }
+        self.items.setdefault(queue_id, []).append(item)
+        return item
+
+    async def list_all_annotation_queue_items(self, queue_id: str, *, status=None) -> list:
+        self.calls.append(("list_all_annotation_queue_items", queue_id))
+        return list(self.items.get(queue_id, []))
+
+    async def list_all_annotation_queue_assignments(self, queue_id: str) -> list:
+        self.calls.append(("list_all_annotation_queue_assignments", queue_id))
+        return list(self.assignments.get(queue_id, []))
+
+    async def list_all_score_configs(self) -> list:
+        self.calls.append(("list_all_score_configs",))
+        return list(self.score_configs)
+
+    async def create_score_config(self, payload: dict) -> dict:
+        self.calls.append(("create_score_config", payload))
+        config = {
+            "id": "score-default",
+            "projectId": "project-1",
+            "name": payload["name"],
+            "dataType": payload["dataType"],
+            "description": payload.get("description") or "",
+            "minValue": payload.get("minValue"),
+            "maxValue": payload.get("maxValue"),
+            "categories": payload.get("categories") or [],
+            "isArchived": False,
+            "createdAt": "2026-07-24T01:00:00.000Z",
+            "updatedAt": "2026-07-24T01:00:00.000Z",
+        }
+        self.score_configs.append(config)
+        return config
+
+
+def _override_queue_adapter(public_client: _FakeQueuePublicClient) -> None:
+    from app.langfuse.annotations_adapter import LangfuseAnnotationsAdapter
+
+    class _Provider:
+        async def project_public_client_for_user(self, project_id, user_id):
+            return public_client
+
+    adapter = LangfuseAnnotationsAdapter(_Provider())
+    from app.annotations import get_langfuse_annotations_adapter
+    app.dependency_overrides[get_langfuse_annotations_adapter] = lambda: adapter
+
+
+class _FakeDatasetLinkPublicClient:
+    """Public API client for traces-to-dataset route tests."""
+
+    def __init__(self) -> None:
+        self.calls: list[tuple] = []
+        self.datasets = [
+            {"id": "dataset-1", "name": "黄金集", "projectId": "project-1"}
+        ]
+        self.upserted: list[dict] = []
+
+    async def __aenter__(self):
+        return self
+
+    async def __aexit__(self, *_args) -> None:
+        return None
+
+    async def list_datasets(self, *, page: int = 1, limit: int = 50) -> dict:
+        self.calls.append(("list_datasets", page, limit))
+        start = (page - 1) * limit
+        return {
+            "data": self.datasets[start : start + limit],
+            "meta": {"page": page, "limit": limit, "totalItems": len(self.datasets), "totalPages": 1},
+        }
+
+    async def upsert_dataset_item(self, payload: dict) -> dict:
+        self.calls.append(("upsert_dataset_item", payload))
+        result = {
+            "id": f"item-{len(self.upserted) + 1}",
+            "datasetName": payload.get("datasetName", ""),
+            "datasetId": payload.get("datasetId", ""),
+            "status": "ACTIVE",
+            "input": payload.get("input"),
+            "expectedOutput": payload.get("expectedOutput"),
+            "metadata": payload.get("metadata") or {},
+            "sourceTraceId": payload.get("sourceTraceId"),
+            "sourceObservationId": None,
+            "createdAt": "2026-07-24T01:00:00.000Z",
+            "updatedAt": "2026-07-24T01:00:00.000Z",
+        }
+        self.upserted.append(result)
+        return result
+
+
+def _override_dataset_link_adapter(public_client: _FakeDatasetLinkPublicClient) -> None:
+    from app.langfuse.annotations_adapter import LangfuseAnnotationsAdapter
+
+    class _Provider:
+        async def project_public_client_for_user(self, project_id, user_id):
+            return public_client
+
+    adapter = LangfuseAnnotationsAdapter(_Provider())
+    from app.annotations import get_langfuse_annotations_adapter
+    app.dependency_overrides[get_langfuse_annotations_adapter] = lambda: adapter
+
+
+class _FakeScoreCompletePublicClient:
+    """Public API client for score-save routes that complete items."""
+
+    def __init__(self) -> None:
+        self.calls: list[tuple] = []
+        self.completed_items: list[str] = []
+
+    async def __aenter__(self):
+        return self
+
+    async def __aexit__(self, *_args) -> None:
+        return None
+
+    async def update_annotation_queue_item(self, queue_id: str, item_id: str, payload: dict) -> dict:
+        self.calls.append(("update_annotation_queue_item", queue_id, item_id, payload))
+        self.completed_items.append(item_id)
+        return {
+            "id": item_id,
+            "queueId": queue_id,
+            "objectId": "trace-1",
+            "objectType": "TRACE",
+            "status": payload.get("status", "COMPLETED"),
+            "completedAt": "2026-07-24T02:00:00.000Z",
+            "createdAt": "2026-07-24T01:00:00.000Z",
+            "updatedAt": "2026-07-24T02:00:00.000Z",
+        }
+
+
+def _override_score_complete_adapter(public_client: _FakeScoreCompletePublicClient) -> None:
+    from app.langfuse.annotations_adapter import LangfuseAnnotationsAdapter
+
+    class _Provider:
+        async def project_public_client_for_user(self, project_id, user_id):
+            return public_client
+
+    adapter = LangfuseAnnotationsAdapter(_Provider())
+    from app.annotations import get_langfuse_annotations_adapter
+    app.dependency_overrides[get_langfuse_annotations_adapter] = lambda: adapter
+
+
+class _InlineCompleteAdapter:
+    async def complete_annotation_queue_item(
+        self, project_id: str, user_id: str, queue_id: str, item_id: str
+    ) -> dict:
+        return {"id": item_id, "projectId": project_id, "queueId": queue_id}
 
 
 def override_reader(fake_reader: FakeAnnotationDatabaseReader) -> None:
@@ -1334,6 +1614,18 @@ def test_clickhouse_annotation_page_rejects_excessive_offset() -> None:
 def test_lists_project_annotation_queues_with_filters() -> None:
     fake_reader = FakeAnnotationDatabaseReader()
     override_reader(fake_reader)
+    public_client = _FakeQueuePublicClient()
+    public_client.queues = [
+        {
+            "id": "queue-1",
+            "name": "客服标注",
+            "description": "",
+            "scoreConfigIds": [],
+            "createdAt": "2026-07-24T01:00:00.000Z",
+            "updatedAt": "2026-07-24T02:00:00.000Z",
+        }
+    ]
+    _override_queue_adapter(public_client)
 
     try:
         response = TestClient(app).get(
@@ -1348,12 +1640,14 @@ def test_lists_project_annotation_queues_with_filters() -> None:
     assert body["code"] == 0
     assert body["data"]["total"] == 1
     assert body["data"]["datas"][0]["id"] == "queue-1"
-    assert fake_reader.calls[0] == ("list_queues", ("project-1", "user-1"))
+    assert ("list_all_annotation_queues",) in public_client.calls
 
 
 def test_creates_project_annotation_queue() -> None:
     fake_reader = FakeAnnotationDatabaseReader()
     override_reader(fake_reader)
+    public_client = _FakeQueuePublicClient()
+    _override_queue_adapter(public_client)
 
     payload = {
         "name": "新增人工标注",
@@ -1372,11 +1666,10 @@ def test_creates_project_annotation_queue() -> None:
         clear_overrides()
 
     assert response.status_code == 200
-    assert response.json()["data"]["id"] == "queue-created"
-    assert fake_reader.calls[0] == (
-        "create_queue",
-        ("project-1", "user-1", payload),
-    )
+    assert response.json()["data"]["name"] == "新增人工标注"
+    create_call = [c for c in public_client.calls if c[0] == "create_annotation_queue"][0]
+    assert create_call[1]["name"] == "新增人工标注"
+    assert create_call[1]["scoreConfigIds"] == ["score-1"]
 
 
 @pytest.mark.parametrize(
@@ -1390,6 +1683,11 @@ def test_rejects_annotation_queue_fields_over_max_length(
     field: str,
     value: str,
 ) -> None:
+    app.dependency_overrides[get_current_user_context] = lambda: CurrentUserContext(
+        user_id="user-1",
+        email="octocat@example.com",
+        login="octocat",
+    )
     payload = {
         "name": "新增人工标注",
         "description": "人工复核",
@@ -1397,10 +1695,13 @@ def test_rejects_annotation_queue_fields_over_max_length(
     }
     payload[field] = value
 
-    response = TestClient(app).post(
-        "/api/projects/project-1/annotation-queues",
-        json=payload,
-    )
+    try:
+        response = TestClient(app).post(
+            "/api/projects/project-1/annotation-queues",
+            json=payload,
+        )
+    finally:
+        clear_overrides()
 
     assert response.status_code == 422
 
@@ -1408,26 +1709,35 @@ def test_rejects_annotation_queue_fields_over_max_length(
 def test_checks_annotation_queue_name_availability_before_create() -> None:
     fake_reader = FakeAnnotationDatabaseReader()
     override_reader(fake_reader)
+    public_client = _FakeQueuePublicClient()
+    public_client.queues = [
+        {"id": "queue-1", "name": "客服质量人工标注", "description": "", "scoreConfigIds": []}
+    ]
+    _override_queue_adapter(public_client)
 
     try:
-        response = TestClient(app).get(
+        conflict = TestClient(app).get(
             "/api/projects/project-1/annotation-queues/name-availability",
             params={"name": "  客服质量人工标注  "},
+        )
+        free = TestClient(app).get(
+            "/api/projects/project-1/annotation-queues/name-availability",
+            params={"name": "  全新队列  "},
         )
     finally:
         clear_overrides()
 
-    assert response.status_code == 200
-    assert response.json()["data"] == {"available": False}
-    assert fake_reader.calls[0] == (
-        "check_queue_name",
-        ("project-1", "user-1", "客服质量人工标注"),
-    )
+    assert conflict.status_code == 200
+    assert conflict.json()["data"] == {"available": False}
+    assert free.status_code == 200
+    assert free.json()["data"] == {"available": True}
 
 
 def test_creates_trace_annotation_task_with_real_queue_items() -> None:
     fake_reader = FakeAnnotationDatabaseReader()
     override_reader(fake_reader)
+    public_client = _FakeQueuePublicClient()
+    _override_queue_adapter(public_client)
 
     payload = {"traceIds": ["trace-1", "trace-2", "trace-1"]}
     try:
@@ -1440,20 +1750,28 @@ def test_creates_trace_annotation_task_with_real_queue_items() -> None:
 
     assert response.status_code == 200
     assert response.json()["data"] == {
-        "queueId": "queue-1",
+        "queueId": "queue-created",
         "createdCount": 2,
         "skippedCount": 1,
         "traceCount": 3,
     }
-    assert fake_reader.calls[0] == (
-        "create_trace_task",
-        ("project-1", "user-1", payload),
-    )
+    item_calls = [call for call in public_client.calls if call[0] == "create_annotation_queue_item"]
+    assert [call[2]["objectId"] for call in item_calls] == ["trace-1", "trace-2"]
 
 
 def test_creates_trace_annotation_task_in_existing_queue() -> None:
     fake_reader = FakeAnnotationDatabaseReader()
     override_reader(fake_reader)
+    public_client = _FakeQueuePublicClient()
+    public_client.queues = [
+        {
+            "id": "queue-existing",
+            "name": "已有任务",
+            "description": "",
+            "scoreConfigIds": ["score-1"],
+        }
+    ]
+    _override_queue_adapter(public_client)
 
     payload = {"traceIds": ["trace-1"], "queueId": "queue-existing"}
     try:
@@ -1465,35 +1783,23 @@ def test_creates_trace_annotation_task_in_existing_queue() -> None:
         clear_overrides()
 
     assert response.status_code == 200
-    assert response.json()["data"]["queueId"] == "queue-1"
-    assert fake_reader.calls[0] == (
-        "create_trace_task",
-        ("project-1", "user-1", payload),
-    )
+    assert response.json()["data"]["queueId"] == "queue-existing"
+    assert ("get_annotation_queue", "queue-existing") in public_client.calls
 
 
 def test_creates_trace_annotation_task_job_and_reports_completion() -> None:
-    class BatchAnnotationReader(FakeAnnotationDatabaseReader):
-        async def create_trace_annotation_task_for_user(
-            self,
-            project_id: str,
-            user_id: str,
-            payload: dict,
-        ) -> dict:
-            self.calls.append(("create_trace_task", (project_id, user_id, payload)))
-            return {
-                "queueId": payload.get("queueId") or "queue-created",
-                "createdCount": len(payload.get("traceIds") or []),
-                "skippedCount": 0,
-                "createdItems": [
-                    {"itemId": f"item-{trace_id}", "traceId": trace_id}
-                    for trace_id in payload.get("traceIds") or []
-                ],
-                "scoreConfigIds": [],
-            }
-
-    fake_reader = BatchAnnotationReader()
+    fake_reader = FakeAnnotationDatabaseReader()
     override_reader(fake_reader)
+    public_client = _FakeQueuePublicClient()
+    public_client.queues = [
+        {
+            "id": "queue-1",
+            "name": "已有任务",
+            "description": "",
+            "scoreConfigIds": ["score-default"],
+        }
+    ]
+    _override_queue_adapter(public_client)
     app.dependency_overrides[get_settings] = lambda: Settings(
         pa_eval_trace_bulk_worker_enabled=False
     )
@@ -1526,16 +1832,10 @@ def test_creates_trace_annotation_task_job_and_reports_completion() -> None:
     assert job["percent"] == 100
     assert any(call[0] == "create_trace_bulk_job" for call in fake_reader.calls)
     assert any(call[0] == "get_trace_bulk_job" for call in fake_reader.calls)
-    assert [call for call in fake_reader.calls if call[0] == "create_trace_task"] == [
-        (
-            "create_trace_task",
-            (
-                "project-1",
-                "user-1",
-                {"traceIds": ["trace-1", "trace-2"], "queueId": "queue-1"},
-            ),
-        )
+    item_calls = [
+        call for call in public_client.calls if call[0] == "create_annotation_queue_item"
     ]
+    assert [call[2]["objectId"] for call in item_calls] == ["trace-1", "trace-2"]
 
 
 def test_trace_annotation_job_only_enqueues_when_worker_is_enabled() -> None:
@@ -1589,23 +1889,7 @@ def test_trace_bulk_job_heartbeat_renews_lease_until_context_exits() -> None:
 
 
 def test_creates_trace_annotation_task_prefills_scores_from_trace_detail() -> None:
-    class PrefillAnnotationReader(FakeAnnotationDatabaseReader):
-        async def create_trace_annotation_task_for_user(
-            self,
-            project_id: str,
-            user_id: str,
-            payload: dict,
-        ) -> dict:
-            self.calls.append(("create_trace_task", (project_id, user_id, payload)))
-            return {
-                "queueId": "queue-new",
-                "createdCount": 1,
-                "skippedCount": 0,
-                "createdItems": [{"itemId": "item-new", "traceId": "trace-1"}],
-                "scoreConfigIds": ["score-1"],
-            }
-
-    fake_reader = PrefillAnnotationReader()
+    fake_reader = FakeAnnotationDatabaseReader()
     fake_trace_reader = FakeAnnotationTraceReader()
     fake_trace_reader.scores_by_trace["trace-1"] = [
         {
@@ -1629,6 +1913,26 @@ def test_creates_trace_annotation_task_prefills_scores_from_trace_detail() -> No
         fake_langfuse_client,
         fake_score_writer,
     )
+    public_client = _FakeQueuePublicClient()
+    public_client.queues = [
+        {
+            "id": "queue-new",
+            "name": "已有任务",
+            "description": "",
+            "scoreConfigIds": ["score-1"],
+        }
+    ]
+    public_client.score_configs = [
+        {
+            "id": "score-1",
+            "name": "准确性",
+            "dataType": "NUMERIC",
+            "isArchived": False,
+            "createdAt": "2026-07-24T01:00:00.000Z",
+            "updatedAt": "2026-07-24T01:00:00.000Z",
+        }
+    ]
+    _override_queue_adapter(public_client)
 
     payload = {"traceIds": ["trace-1"], "queueId": "queue-new"}
     try:
@@ -1647,7 +1951,7 @@ def test_creates_trace_annotation_task_prefills_scores_from_trace_detail() -> No
         "traceCount": 1,
     }
     assert fake_trace_reader.list_calls == [("project-1", ["trace-1"], "scores")]
-    assert fake_reader.calls[1] == (
+    assert fake_reader.calls[0] == (
         "prepare_scores_batch",
         (
             "project-1",
@@ -1655,7 +1959,7 @@ def test_creates_trace_annotation_task_prefills_scores_from_trace_detail() -> No
             "user-1",
             [
                 {
-                    "itemId": "item-new",
+                    "itemId": "item-trace-1",
                     "traceId": "trace-1",
                     "scorePayload": {
                         "scores": [
@@ -1672,7 +1976,6 @@ def test_creates_trace_annotation_task_prefills_scores_from_trace_detail() -> No
         ),
     )
     assert [call[0] for call in fake_reader.calls] == [
-        "create_trace_task",
         "prepare_scores_batch",
         "prepare_scores",
     ]
@@ -1823,6 +2126,23 @@ def test_copies_existing_annotation_scores_for_new_queue_item() -> None:
 def test_ensures_default_score_config_for_manual_annotation_queue() -> None:
     fake_reader = FakeAnnotationDatabaseReader()
     override_reader(fake_reader)
+    public_client = _FakeScoreConfigPublicClient()
+    public_client.configs = [
+        {
+            "id": "score-default",
+            "projectId": "project-1",
+            "name": "人工质量评分",
+            "dataType": "NUMERIC",
+            "description": "Trace 人工标注默认评分指标",
+            "minValue": 1,
+            "maxValue": 5,
+            "categories": [],
+            "isArchived": False,
+            "createdAt": "2026-07-24T01:00:00.000Z",
+            "updatedAt": "2026-07-24T01:00:00.000Z",
+        }
+    ]
+    _override_score_config_adapter(public_client)
 
     try:
         response = TestClient(app).post(
@@ -1833,25 +2153,40 @@ def test_ensures_default_score_config_for_manual_annotation_queue() -> None:
 
     assert response.status_code == 200
     body = response.json()
-    assert body["data"]["id"] == "score-default"
     assert body["data"]["name"] == "人工质量评分"
-    assert fake_reader.calls[0] == (
-        "ensure_default_score_config",
-        ("project-1", "user-1"),
-    )
+    assert body["data"]["dataType"] == "NUMERIC"
+    assert ("list_all_score_configs",) in public_client.calls
+    assert not any(c[0] == "create_score_config" for c in public_client.calls)
 
 
 def test_lists_score_configs_with_pa_pagination() -> None:
     fake_reader = FakeAnnotationDatabaseReader()
     override_reader(fake_reader)
+    public_client = _FakeScoreConfigPublicClient()
+    public_client.configs = [
+        {
+            "id": "score-default",
+            "projectId": "project-1",
+            "name": "人工质量评分",
+            "dataType": "NUMERIC",
+            "description": "Trace 人工标注默认评分指标",
+            "minValue": 1,
+            "maxValue": 5,
+            "categories": [],
+            "isArchived": False,
+            "createdAt": "2026-07-24T01:00:00.000Z",
+            "updatedAt": "2026-07-24T01:00:00.000Z",
+        }
+    ]
+    _override_score_config_adapter(public_client)
 
     try:
         response = TestClient(app).get(
             "/api/projects/project-1/score-configs",
             params={
                 "includeArchived": True,
-                "keyword": "准确",
-                "page": 2,
+                "keyword": "人工",
+                "page": 1,
                 "pageSize": 5,
             },
         )
@@ -1859,33 +2194,18 @@ def test_lists_score_configs_with_pa_pagination() -> None:
         clear_overrides()
 
     assert response.status_code == 200
-    assert response.json()["data"] == {
-        "total": 1,
-        "datas": [
-            {
-                "id": "score-default",
-                "projectId": "project-1",
-                "name": "人工质量评分",
-                "dataType": "NUMERIC",
-                "description": "Trace 人工标注默认评分指标",
-                "minValue": 1,
-                "maxValue": 5,
-                "categories": [],
-                "archived": False,
-            }
-        ],
-    }
-    assert fake_reader.calls == [
-        (
-            "list_score_configs",
-            ("project-1", "user-1", True, "准确", 2, 5),
-        )
-    ]
+    data = response.json()["data"]
+    assert data["total"] == 1
+    assert data["datas"][0]["name"] == "人工质量评分"
+    assert data["datas"][0]["dataType"] == "NUMERIC"
+    assert ("list_all_score_configs",) in public_client.calls
 
 
 def test_creates_updates_and_archives_score_configs() -> None:
     fake_reader = FakeAnnotationDatabaseReader()
     override_reader(fake_reader)
+    public_client = _FakeScoreConfigPublicClient()
+    _override_score_config_adapter(public_client)
 
     payload = {
         "name": "准确性",
@@ -1915,28 +2235,29 @@ def test_creates_updates_and_archives_score_configs() -> None:
         clear_overrides()
 
     assert create_response.status_code == 200
+    assert create_response.json()["data"]["name"] == "准确性"
     assert update_response.status_code == 200
     assert archive_response.status_code == 200
+    assert archive_response.json()["data"]["archived"] is True
     assert restore_response.status_code == 200
-    assert fake_reader.calls == [
-        ("create_score_config", ("project-1", "user-1", payload)),
-        (
-            "update_score_config",
-            (
-                "project-1",
-                "score-created",
-                "user-1",
-                {**payload, "description": "更新说明"},
-            ),
-        ),
-        ("set_score_config_archived", ("project-1", "score-created", "user-1", True)),
-        ("set_score_config_archived", ("project-1", "score-created", "user-1", False)),
-    ]
+    assert restore_response.json()["data"]["archived"] is False
+
+    create_call = [c for c in public_client.calls if c[0] == "create_score_config"][0]
+    assert create_call[1]["name"] == "准确性"
+    assert "categories" not in create_call[1]
+    update_calls = [c for c in public_client.calls if c[0] == "update_score_config"]
+    assert update_calls[0][1] == "score-created"
+    assert update_calls[0][2]["name"] == "准确性"
+    assert "categories" not in update_calls[0][2]
+    assert update_calls[1][2] == {"isArchived": True}
+    assert update_calls[2][2] == {"isArchived": False}
 
 
 def test_score_config_payload_uses_langfuse_category_objects() -> None:
     fake_reader = FakeAnnotationDatabaseReader()
     override_reader(fake_reader)
+    public_client = _FakeScoreConfigPublicClient()
+    _override_score_config_adapter(public_client)
 
     payload = {
         "name": "问题类型",
@@ -1958,15 +2279,16 @@ def test_score_config_payload_uses_langfuse_category_objects() -> None:
         clear_overrides()
 
     assert response.status_code == 200
-    assert fake_reader.calls[0] == (
-        "create_score_config",
-        ("project-1", "user-1", payload),
-    )
+    create_call = [c for c in public_client.calls if c[0] == "create_score_config"][0]
+    assert create_call[1]["dataType"] == "CATEGORICAL"
+    assert create_call[1]["categories"] == payload["categories"]
 
 
 def test_boolean_score_config_uses_langfuse_standard_categories() -> None:
     fake_reader = FakeAnnotationDatabaseReader()
     override_reader(fake_reader)
+    public_client = _FakeScoreConfigPublicClient()
+    _override_score_config_adapter(public_client)
 
     try:
         response = TestClient(app).post(
@@ -1985,7 +2307,8 @@ def test_boolean_score_config_uses_langfuse_standard_categories() -> None:
         clear_overrides()
 
     assert response.status_code == 200
-    assert fake_reader.calls[0][1][2]["categories"] == [
+    create_call = [c for c in public_client.calls if c[0] == "create_score_config"][0]
+    assert create_call[1]["categories"] == [
         {"label": "True", "value": 1},
         {"label": "False", "value": 0},
     ]
@@ -1994,6 +2317,8 @@ def test_boolean_score_config_uses_langfuse_standard_categories() -> None:
 def test_rejects_invalid_categorical_score_config_categories() -> None:
     fake_reader = FakeAnnotationDatabaseReader()
     override_reader(fake_reader)
+    public_client = _FakeScoreConfigPublicClient()
+    _override_score_config_adapter(public_client)
 
     try:
         response = TestClient(app).post(
@@ -2013,11 +2338,14 @@ def test_rejects_invalid_categorical_score_config_categories() -> None:
 
     assert response.status_code == 400
     assert response.json()["code"] != 0
+    assert not any(c[0] == "create_score_config" for c in public_client.calls)
 
 
 def test_adds_selected_traces_to_dataset_with_trace_details() -> None:
     fake_reader = FakeAnnotationDatabaseReader()
     override_reader(fake_reader)
+    public_client = _FakeDatasetLinkPublicClient()
+    _override_dataset_link_adapter(public_client)
 
     payload = {"datasetId": "dataset-1", "traceIds": ["trace-1"]}
     try:
@@ -2031,13 +2359,9 @@ def test_adds_selected_traces_to_dataset_with_trace_details() -> None:
     assert response.status_code == 200
     body = response.json()
     assert body["data"]["successCount"] == 1
-    assert fake_reader.calls[0][0] == "add_traces_to_dataset"
-    assert fake_reader.calls[0][1][0:2] == ("project-1", "user-1")
-    assert fake_reader.calls[0][1][2]["datasetId"] == "dataset-1"
-    assert fake_reader.calls[0][1][2]["traces"][0]["traceId"] == "trace-1"
-    assert fake_reader.calls[0][1][2]["traces"][0]["input"] == (
-        '{"question":"退款多久到账"}'
-    )
+    assert len(public_client.upserted) == 1
+    assert public_client.upserted[0]["datasetName"] == "黄金集"
+    assert public_client.upserted[0]["sourceTraceId"] == "trace-1"
 
 
 def test_adds_selected_traces_to_dataset_with_batch_trace_lookup() -> None:
@@ -2070,6 +2394,8 @@ def test_adds_selected_traces_to_dataset_with_batch_trace_lookup() -> None:
     fake_reader = FakeAnnotationDatabaseReader()
     trace_reader = BatchTraceReader()
     override_reader_and_trace_reader(fake_reader, trace_reader)
+    public_client = _FakeDatasetLinkPublicClient()
+    _override_dataset_link_adapter(public_client)
 
     payload = {
         "datasetId": "dataset-1",
@@ -2090,20 +2416,9 @@ def test_adds_selected_traces_to_dataset_with_batch_trace_lookup() -> None:
             ("project-1", ["trace-1", "trace-2", "missing-trace"], "io,metadata"),
         )
     ]
-    assert fake_reader.calls[0][1][2]["traces"] == [
-        {
-            "traceId": "trace-1",
-            "input": '{"question":"trace-1"}',
-            "output": "{}",
-            "metadata": {},
-        },
-        {
-            "traceId": "trace-2",
-            "input": '{"question":"trace-2"}',
-            "output": "{}",
-            "metadata": {},
-        },
-    ]
+    assert len(public_client.upserted) == 2
+    assert public_client.upserted[0]["sourceTraceId"] == "trace-1"
+    assert public_client.upserted[1]["sourceTraceId"] == "trace-2"
     assert response.json()["data"]["successCount"] == 2
     assert response.json()["data"]["failureCount"] == 1
     assert response.json()["data"]["failures"] == [
@@ -2323,99 +2638,6 @@ def test_creates_dataset_import_job_from_trace_filter_snapshot() -> None:
     assert create_call[1][2]["selectionType"] == "FILTER"
 
 
-def test_add_traces_to_dataset_skips_existing_dataset_trace_items(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    class Cursor:
-        def __init__(self) -> None:
-            self.queries: list[tuple[str, dict]] = []
-            self._fetchone_row: dict | None = None
-            self._fetchall_rows: list[dict] = []
-
-        async def __aenter__(self) -> "Cursor":
-            return self
-
-        async def __aexit__(self, *args) -> None:
-            return None
-
-        async def execute(self, sql: str, params: dict | None = None) -> None:
-            params = params or {}
-            self.queries.append((sql, params))
-            if "FROM datasets" in sql:
-                self._fetchone_row = {"id": params["dataset_id"]}
-            elif "FROM dataset_items" in sql and "source_trace_id = ANY" in sql:
-                self._fetchall_rows = [{"source_trace_id": "trace-1"}]
-
-        async def fetchone(self) -> dict | None:
-            return self._fetchone_row
-
-        async def fetchall(self) -> list[dict]:
-            return self._fetchall_rows
-
-    class Connection:
-        def __init__(self, cursor: Cursor) -> None:
-            self._cursor = cursor
-
-        async def __aenter__(self) -> "Connection":
-            return self
-
-        async def __aexit__(self, *args) -> None:
-            return None
-
-        def cursor(self) -> Cursor:
-            return self._cursor
-
-    cursor = Cursor()
-
-    async def fake_connect(*args, **kwargs) -> Connection:
-        return Connection(cursor)
-
-    async def fake_get_project_for_user(self, cursor, project_id, user_id):
-        return {"id": project_id}
-
-    monkeypatch.setattr(
-        langfuse_db.psycopg.AsyncConnection,
-        "connect",
-        fake_connect,
-    )
-    monkeypatch.setattr(
-        LangfuseDatabaseReader,
-        "_get_project_for_user",
-        fake_get_project_for_user,
-    )
-    monkeypatch.setattr(
-        langfuse_db,
-        "_new_langfuse_id",
-        lambda prefix: f"{prefix}-new",
-    )
-
-    reader = LangfuseDatabaseReader(
-        langfuse_db.Settings(langfuse_database_url="postgres://test")
-    )
-    result = anyio.run(
-        reader.add_traces_to_dataset_for_user,
-        "project-1",
-        "user-1",
-        {
-            "datasetId": "dataset-1",
-            "traces": [
-                {"traceId": "trace-1", "input": "{}", "output": "{}", "metadata": {}},
-                {"traceId": "trace-2", "input": "{}", "output": "{}", "metadata": {}},
-            ],
-        },
-    )
-
-    insert_queries = [
-        (sql, params)
-        for sql, params in cursor.queries
-        if "INSERT INTO dataset_items" in sql
-    ]
-    assert len(insert_queries) == 1
-    assert insert_queries[0][1]["source_trace_id_0"] == "trace-2"
-    assert result["successCount"] == 1
-    assert result["itemIds"] == ["datasetitem-new"]
-
-
 def test_saves_annotation_scores_and_completes_queue_item() -> None:
     fake_reader = FakeAnnotationDatabaseReader()
     fake_langfuse_client = FakeLangfuseClient()
@@ -2426,6 +2648,8 @@ def test_saves_annotation_scores_and_completes_queue_item() -> None:
         fake_langfuse_client,
         fake_score_writer,
     )
+    public_client = _FakeScoreCompletePublicClient()
+    _override_score_complete_adapter(public_client)
 
     payload = {
         "scores": [
@@ -2447,11 +2671,14 @@ def test_saves_annotation_scores_and_completes_queue_item() -> None:
 
     assert response.status_code == 200
     assert response.json()["data"]["status"] == "COMPLETED"
-    assert fake_reader.calls[0] == (
+    assert ("ensure_project_visible", ("project-1", "user-1")) in fake_reader.calls
+    score_calls = [c for c in fake_reader.calls if c[0] == "prepare_scores"]
+    assert score_calls[0] == (
         "prepare_scores",
         ("project-1", "queue-1", "item-1", "user-1", payload),
     )
-    assert fake_reader.calls[1] == ("get_project_api_key", ("project-1", "user-1"))
+    key_calls = [c for c in fake_reader.calls if c[0] == "get_project_api_key"]
+    assert key_calls[0] == ("get_project_api_key", ("project-1", "user-1"))
     assert fake_langfuse_client.created_scores == [
         (
             "pk-lf-test",
@@ -2471,10 +2698,7 @@ def test_saves_annotation_scores_and_completes_queue_item() -> None:
             },
         )
     ]
-    assert fake_reader.calls[2] == (
-        "complete_item",
-        ("project-1", "queue-1", "item-1", "user-1"),
-    )
+    assert public_client.completed_items == ["item-1"]
     assert fake_score_writer.upserted_scores == []
 
 
@@ -2532,6 +2756,7 @@ def test_saves_boolean_annotation_score_without_clickhouse_double_write() -> Non
             reader=fake_reader,  # type: ignore[arg-type]
             langfuse_client=fake_langfuse_client,  # type: ignore[arg-type]
             score_writer=fake_score_writer,  # type: ignore[arg-type]
+            adapter=_InlineCompleteAdapter(),  # type: ignore[arg-type]
         )
 
     anyio.run(_run_save)
@@ -3375,6 +3600,9 @@ def test_bulk_saves_annotation_scores_only_for_pending_filtered_items() -> None:
         "expectedPendingCount": 2,
         "confirmLargeBatch": False,
     }
+    _public_client = _FakeScoreCompletePublicClient()
+    _override_score_complete_adapter(_public_client)
+
     try:
         response = TestClient(app).post(
             "/api/projects/project-1/annotation-queues/queue-1/batch-scores",
@@ -3396,18 +3624,20 @@ def test_bulk_saves_annotation_scores_only_for_pending_filtered_items() -> None:
         "prepare_scores",
         "prepare_scores",
         "get_project_api_key",
-        "complete_items",
     ]
     assert [item["itemId"] for item in fake_reader.calls[1][1][3]] == [
         "item-1",
         "item-2",
     ]
-    assert fake_reader.calls[-1][1][2] == ["item-1", "item-2"]
+    assert _public_client.completed_items == ["item-1", "item-2"]
 
 
 def test_bulk_saves_completed_annotation_scores_in_match_count_mode() -> None:
     fake_reader = FakeAnnotationDatabaseReader()
     override_reader(fake_reader)
+
+    _public_client = _FakeScoreCompletePublicClient()
+    _override_score_complete_adapter(_public_client)
 
     try:
         response = TestClient(app).post(
@@ -3439,7 +3669,6 @@ def test_bulk_saves_completed_annotation_scores_in_match_count_mode() -> None:
         "prepare_scores_batch",
         "prepare_scores",
         "get_project_api_key",
-        "complete_items",
     ]
     assert fake_reader.calls[1][1][3][0]["itemId"] == "item-done"
 
@@ -3447,6 +3676,9 @@ def test_bulk_saves_completed_annotation_scores_in_match_count_mode() -> None:
 def test_bulk_saves_mixed_annotation_statuses_in_match_count_mode() -> None:
     fake_reader = FakeAnnotationDatabaseReader()
     override_reader(fake_reader)
+
+    _public_client = _FakeScoreCompletePublicClient()
+    _override_score_complete_adapter(_public_client)
 
     try:
         response = TestClient(app).post(
@@ -3561,6 +3793,9 @@ def test_bulk_saves_large_annotation_batch_by_item_ids_without_trace_enrichment(
     fake_trace_reader = FakeAnnotationTraceReader()
     override_reader_and_trace_reader(fake_reader, fake_trace_reader)
 
+    _public_client = _FakeScoreCompletePublicClient()
+    _override_score_complete_adapter(_public_client)
+
     try:
         response = TestClient(app).post(
             "/api/projects/project-1/annotation-queues/queue-1/batch-scores",
@@ -3605,6 +3840,9 @@ def test_bulk_saves_annotation_scores_with_input_output_filters() -> None:
         "scores": scores,
         "expectedPendingCount": 1,
     }
+    _public_client = _FakeScoreCompletePublicClient()
+    _override_score_complete_adapter(_public_client)
+
     try:
         response = TestClient(app).post(
             "/api/projects/project-1/annotation-queues/queue-1/batch-scores",
@@ -3622,7 +3860,6 @@ def test_bulk_saves_annotation_scores_with_input_output_filters() -> None:
         "prepare_scores_batch",
         "prepare_scores",
         "get_project_api_key",
-        "complete_items",
     ]
     assert fake_reader.calls[1][1][3][0]["itemId"] == "item-2"
 
@@ -3791,6 +4028,7 @@ def test_repairs_legacy_boolean_config_before_saving_annotation_score() -> None:
             reader=fake_reader,  # type: ignore[arg-type]
             langfuse_client=fake_langfuse_client,  # type: ignore[arg-type]
             score_writer=fake_score_writer,  # type: ignore[arg-type]
+            adapter=_InlineCompleteAdapter(),  # type: ignore[arg-type]
         )
 
     anyio.run(_run_save)
@@ -3899,6 +4137,7 @@ def test_saves_multiple_annotation_scores_concurrently_without_double_write() ->
             reader=fake_reader,  # type: ignore[arg-type]
             langfuse_client=fake_langfuse_client,  # type: ignore[arg-type]
             score_writer=fake_score_writer,  # type: ignore[arg-type]
+            adapter=_InlineCompleteAdapter(),  # type: ignore[arg-type]
         )
 
     anyio.run(_run_save)

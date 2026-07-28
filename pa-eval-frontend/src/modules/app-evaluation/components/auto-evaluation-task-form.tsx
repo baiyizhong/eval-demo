@@ -506,7 +506,7 @@ export function AutoEvaluationTaskForm({
               value={evaluatorKeyword}
               onChange={(event) => setEvaluatorKeyword(event.target.value)}
             />
-            <div className='flex min-w-0 flex-col gap-2'>
+            <div className='flex min-h-0 max-h-[min(560px,calc(100vh-320px))] flex-1 flex-col gap-2'>
               {evaluators.map((evaluator) => (
                 <button
                   key={evaluator.id}
@@ -1015,7 +1015,7 @@ export function AutoEvaluationTaskForm({
         </section>
       ) : null}
 
-      <div className='bg-background/95 supports-[backdrop-filter]:bg-background/80 sticky bottom-0 -mx-4 mt-auto -mb-4 flex flex-wrap justify-between gap-2 border-t px-4 py-4 backdrop-blur'>
+      <div className='bg-background/95 supports-[backdrop-filter]:bg-background/80 sticky bottom-0 -mx-4 -mb-4 mt-auto flex flex-wrap justify-between gap-2 border-t px-4 py-4 backdrop-blur'>
         <div className='ml-auto flex gap-2'>
           <Button
             type='button'

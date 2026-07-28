@@ -3,6 +3,9 @@ from fastapi.testclient import TestClient
 from app.auth_context import CurrentUserContext, get_current_user_context
 from app.langfuse_db import LangfuseDatabaseReader, get_langfuse_db_reader
 from app.main import app
+from app.projects import ModelDefinitionPayload
+
+import pytest
 
 
 class FakeDatabaseReader:
@@ -189,6 +192,19 @@ def override_reader(fake_reader: FakeDatabaseReader):
 
 def clear_overrides() -> None:
     app.dependency_overrides.clear()
+
+
+@pytest.mark.parametrize("field", ["inputPrice", "outputPrice"])
+def test_model_definition_rejects_non_numeric_prices(field: str) -> None:
+    payload = {
+        "modelName": "gpt-4.1",
+        "inputPrice": "0.001",
+        "outputPrice": "0.002",
+    }
+    payload[field] = "not-a-number"
+
+    with pytest.raises(ValueError, match="价格必须是非负数字"):
+        ModelDefinitionPayload.model_validate(payload)
 
 
 def test_gets_project_model_settings() -> None:

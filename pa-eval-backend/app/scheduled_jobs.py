@@ -26,6 +26,8 @@ from app.auto_evaluations import (
     _validate_workflow_evaluator_ready,
 )
 from app.config import Settings, get_settings
+from app.consolidation.models import JobExecutionStatus, JobExecutionType
+from app.consolidation.repository import ConsolidationRepository
 from app.errors import BusinessError
 from app.response import success
 
@@ -187,6 +189,8 @@ async def _claim_due_scheduled_jobs(
                 {
                     "now": now,
                     "lease_until": lease_until,
+                    "stale_before": now
+                    - timedelta(seconds=settings.pa_eval_scheduler_lease_seconds),
                     "lock_owner": settings.scheduler_instance_id,
                     "limit": settings.pa_eval_scheduler_batch_size,
                 },
@@ -198,31 +202,35 @@ def _build_due_job_claim_sql() -> str:
     return """
         WITH due_jobs AS (
             SELECT id
-            FROM pa_scheduled_jobs
+            FROM pa_evaluation_jobs job
             WHERE scheduler_enabled IS TRUE
-              AND status != 'PAUSED'
+              AND trigger_type = 'SCHEDULED'
+              AND legacy_source_type = 'SCHEDULED_JOB'
+              AND status <> 'DELETED'
+              AND (status <> 'RUNNING' OR update_date <= %(stale_before)s)
               AND next_run_at IS NOT NULL
               AND next_run_at <= %(now)s
-              AND (lock_until IS NULL OR lock_until <= %(now)s)
               AND NOT EXISTS (
                 SELECT 1
-                FROM pa_scheduled_job_execution_logs logs
-                WHERE logs.scheduled_job_id = pa_scheduled_jobs.id
-                  AND logs.status = 'RUNNING'
+                FROM pa_job_executions execution
+                WHERE execution.definition_id = job.id
+                  AND execution.status = 'RUNNING'
+                  AND (
+                      execution.lock_until IS NULL
+                      OR execution.lock_until > %(now)s
+                  )
               )
             ORDER BY next_run_at ASC, id ASC
             LIMIT %(limit)s
             FOR UPDATE SKIP LOCKED
         )
-        UPDATE pa_scheduled_jobs sj
-        SET lock_owner = %(lock_owner)s,
-            lock_until = %(lease_until)s,
-            status = 'RUNNING',
+        UPDATE pa_evaluation_jobs job
+        SET status = 'RUNNING',
             update_by = %(lock_owner)s,
             update_date = %(now)s
         FROM due_jobs
-        WHERE sj.id = due_jobs.id
-        RETURNING sj.*
+        WHERE job.id = due_jobs.id
+        RETURNING job.*
         """
 
 
@@ -231,6 +239,7 @@ async def _execute_claimed_scheduled_job(
     job: dict[str, Any],
     now: datetime,
 ) -> None:
+    job = _scheduled_job_from_consolidated_row(job)
     await _trigger_scheduled_job(
         settings=settings,
         project_id=job["project_id"],
@@ -240,6 +249,21 @@ async def _execute_claimed_scheduled_job(
         scheduled_fire_at=job["next_run_at"] or now,
         manual_fire_key=None,
     )
+
+
+def _scheduled_job_from_consolidated_row(row: dict[str, Any]) -> dict[str, Any]:
+    schedule_config = row.get("schedule_config") or {}
+    evaluator_ids = row.get("evaluator_ids") or []
+    return {
+        **row,
+        "id": row.get("legacy_source_id") or row.get("id"),
+        "task_type": "AUTO_EVALUATION",
+        "run_mode": schedule_config.get("runMode") or "ONCE",
+        "frequency": schedule_config.get("frequency") or {},
+        "created_user_id": schedule_config.get("createdUserId") or "",
+        "evaluator_id": evaluator_ids[0] if evaluator_ids else "",
+        "latest_auto_evaluation_task_id": None,
+    }
 
 
 @router.get("/scheduled-jobs")
@@ -257,43 +281,225 @@ async def list_scheduled_jobs(
     async with await _connect(settings) as connection:
         async with connection.cursor() as cursor:
             await _ensure_project_access(cursor, project_id, current_user.user_id)
-            await cursor.execute(
-                """
-                SELECT COUNT(*)::int AS total
-                FROM pa_scheduled_jobs
-                WHERE project_id = %(project_id)s
-                  AND (%(keyword)s = '' OR name ILIKE %(like)s OR description ILIKE %(like)s)
+            base_sql = _consolidated_scheduled_job_select_sql()
+            params = {
+                "project_id": project_id,
+                "keyword": keyword or "",
+                "like": like,
+                "status": status,
+                "limit": page_size,
+                "offset": offset,
+            }
+            filters = """
+                WHERE (%(keyword)s = '' OR name ILIKE %(like)s OR description ILIKE %(like)s)
                   AND (cardinality(%(status)s::text[]) = 0 OR status = ANY(%(status)s::text[]))
-                """,
-                {
-                    "project_id": project_id,
-                    "keyword": keyword or "",
-                    "like": like,
-                    "status": status,
-                },
+            """
+            await cursor.execute(
+                f"SELECT COUNT(*)::int AS total FROM ({base_sql}) consolidated {filters}",
+                params,
             )
             total = (await cursor.fetchone() or {}).get("total", 0)
             await cursor.execute(
-                """
-                SELECT *
-                FROM pa_scheduled_jobs
-                WHERE project_id = %(project_id)s
-                  AND (%(keyword)s = '' OR name ILIKE %(like)s OR description ILIKE %(like)s)
-                  AND (cardinality(%(status)s::text[]) = 0 OR status = ANY(%(status)s::text[]))
+                f"""
+                SELECT * FROM ({base_sql}) consolidated
+                {filters}
                 ORDER BY update_date DESC, id DESC
                 LIMIT %(limit)s OFFSET %(offset)s
                 """,
-                {
-                    "project_id": project_id,
-                    "keyword": keyword or "",
-                    "like": like,
-                    "status": status,
-                    "limit": page_size,
-                    "offset": offset,
-                },
+                params,
             )
             rows = await cursor.fetchall()
     return success({"total": total, "datas": [_to_scheduled_job(row) for row in rows]})
+
+
+async def _sync_consolidated_scheduled_job(
+    cursor: Any,
+    *,
+    row: dict[str, Any],
+    actor: str,
+) -> None:
+    await ConsolidationRepository(cursor).upsert_evaluation_job(
+        job_id=f"paejob_scheduled_{row['id']}",
+        project_id=row["project_id"],
+        name=row["name"],
+        description=row.get("description") or "",
+        trigger_type="SCHEDULED",
+        status=row["status"],
+        configuration={
+            "scoreName": row.get("score_name") or "",
+            "evaluatorIds": [row["evaluator_id"]],
+            "evaluatorSnapshot": row.get("evaluator_snapshot") or {},
+            "dataSource": row.get("data_source") or {},
+            "variableMapping": row.get("variable_mapping") or {},
+            "scoreMapping": row.get("score_mapping") or {},
+            "sampleRate": row.get("sample_rate") or 100,
+            "reportTemplateId": row.get("report_template_id"),
+            "reportTemplateSnapshot": row.get("report_template_snapshot") or {},
+            "badcaseConfig": row.get("badcase_config") or {},
+            "scheduleConfig": {
+                "runMode": row.get("run_mode"),
+                "frequency": row.get("frequency") or {},
+                "createdUserId": row.get("created_user_id") or "",
+            },
+            "timezone": row.get("timezone") or "Asia/Shanghai",
+            "schedulerEnabled": bool(row.get("scheduler_enabled")),
+            "nextRunAt": row.get("next_run_at"),
+            "lastRunAt": row.get("last_run_at"),
+            "latestExecutionId": row.get("latest_execution_id"),
+            "latestReportId": row.get("latest_report_id"),
+        },
+        legacy_source_type="SCHEDULED_JOB",
+        legacy_source_id=row["id"],
+        actor=actor,
+    )
+
+
+def _scheduled_job_write_row(
+    *,
+    job_id: str,
+    project_id: str,
+    payload: CreateScheduledJobPayload,
+    evaluator: dict[str, Any],
+    report_template_snapshot: dict[str, Any],
+    next_run_at: datetime | None,
+    status: ScheduledJobStatus,
+    user: CurrentUserContext,
+    existing: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    current = existing or {}
+    return {
+        "id": job_id,
+        "project_id": project_id,
+        "name": payload.name,
+        "description": payload.description,
+        "score_name": payload.score_name,
+        "score_mapping": payload.score_mapping,
+        "run_mode": payload.run_mode,
+        "frequency": payload.frequency.model_dump(by_alias=True),
+        "timezone": payload.timezone_name,
+        "status": status,
+        "scheduler_enabled": payload.scheduler_enabled,
+        "next_run_at": next_run_at,
+        "evaluator_id": evaluator["id"],
+        "evaluator_snapshot": {
+            "id": evaluator["id"],
+            "name": evaluator["name"],
+            "type": evaluator["type"],
+            "provider": evaluator["provider"],
+            "version": evaluator["version"],
+            "variables": evaluator.get("variables") or [],
+            "outputVariables": evaluator.get("output_variables")
+            or evaluator.get("outputVariables")
+            or [],
+        },
+        "variable_mapping": _normalize_variable_mapping(payload.variable_mapping),
+        "data_source": payload.data_source,
+        "sample_rate": payload.sample_rate,
+        "report_template_id": report_template_snapshot["id"],
+        "report_template_snapshot": report_template_snapshot,
+        "badcase_config": payload.badcase,
+        "created_user_id": current.get("created_user_id") or user.user_id,
+        "last_run_at": current.get("last_run_at"),
+        "latest_execution_id": current.get("latest_execution_id"),
+        "latest_report_id": current.get("latest_report_id"),
+    }
+
+
+async def _fetch_scheduled_job_with_cursor(
+    cursor: Any,
+    project_id: str,
+    job_id: str,
+) -> dict[str, Any]:
+    await cursor.execute(
+        _consolidated_scheduled_job_select_sql()
+        + " AND job.legacy_source_id = %(job_id)s LIMIT 1",
+        {"project_id": project_id, "job_id": job_id},
+    )
+    row = await cursor.fetchone()
+    if row is None:
+        raise BusinessError(4100, "定时任务不存在或无访问权限", 404)
+    return row
+
+
+def _consolidated_scheduled_job_select_sql() -> str:
+    return """
+        SELECT
+            job.legacy_source_id AS id,
+            job.project_id,
+            'AUTO_EVALUATION'::text AS task_type,
+            job.name,
+            job.description,
+            job.score_name,
+            job.score_mapping,
+            COALESCE(job.schedule_config ->> 'runMode', 'ONCE') AS run_mode,
+            COALESCE(job.schedule_config -> 'frequency', '{}'::jsonb) AS frequency,
+            job.timezone,
+            job.status,
+            job.scheduler_enabled,
+            job.next_run_at,
+            job.evaluator_ids ->> 0 AS evaluator_id,
+            job.evaluator_snapshot,
+            job.variable_mapping,
+            job.data_source,
+            job.sample_rate,
+            job.report_template_id,
+            job.report_template_snapshot,
+            job.badcase_config,
+            job.schedule_config ->> 'createdUserId' AS created_user_id,
+            COALESCE(
+                NULLIF(latest.result_payload ->> 'autoEvaluationTaskId', ''),
+                NULLIF(latest.request_payload ->> 'autoEvaluationTaskId', '')
+            )
+                AS latest_auto_evaluation_task_id,
+            job.last_run_at,
+            job.latest_execution_id,
+            job.latest_report_id,
+            job.create_by,
+            job.create_date,
+            job.update_by,
+            job.update_date
+        FROM pa_evaluation_jobs job
+        LEFT JOIN pa_job_executions latest
+          ON latest.id = job.latest_execution_id
+         AND latest.project_id = job.project_id
+        WHERE job.project_id = %(project_id)s
+          AND job.trigger_type = 'SCHEDULED'
+          AND job.legacy_source_type = 'SCHEDULED_JOB'
+          AND job.status <> 'DELETED'
+    """
+
+
+def _consolidated_execution_log_select_sql() -> str:
+    return """
+        SELECT
+            execution.legacy_source_id AS id,
+            execution.project_id,
+            execution.request_payload ->> 'scheduledJobId' AS scheduled_job_id,
+            execution.request_payload ->> 'scheduledJobName' AS scheduled_job_name,
+            'AUTO_EVALUATION'::text AS task_type,
+            execution.request_payload ->> 'triggerType' AS trigger_type,
+            COALESCE(
+                NULLIF(execution.result_payload ->> 'autoEvaluationTaskId', ''),
+                NULLIF(execution.request_payload ->> 'autoEvaluationTaskId', '')
+            ) AS auto_evaluation_task_id,
+            execution.request_payload ->> 'autoEvaluationTaskName'
+                AS auto_evaluation_task_name,
+            execution.request_payload ->> 'autoEvaluationTaskName'
+                AS resolved_auto_evaluation_task_name,
+            execution.result_payload ->> 'reportId' AS evaluation_report_id,
+            execution.status,
+            execution.total_count AS sample_count,
+            execution.started_at,
+            execution.completed_at AS ended_at,
+            ''::text AS duration_text,
+            NULLIF(execution.error_message, '') AS error_message,
+            execution.create_date,
+            execution.update_date
+        FROM pa_job_executions execution
+        WHERE execution.project_id = %(project_id)s
+          AND execution.job_type = 'SCHEDULED_EVALUATION'
+          AND execution.legacy_source_type = 'SCHEDULED_JOB_EXECUTION_LOG'
+    """
 
 
 @router.post("/scheduled-jobs")
@@ -320,39 +526,21 @@ async def create_scheduled_job(
                 project_id=project_id,
                 template_id=payload.report_template_id,
             )
-            await cursor.execute(
-                """
-                INSERT INTO pa_scheduled_jobs (
-                    id, project_id, task_type, name, description, score_name, score_mapping,
-                    run_mode, frequency, timezone, status, scheduler_enabled,
-                    next_run_at, evaluator_id, evaluator_snapshot,
-                    variable_mapping, data_source, sample_rate, report_template_id,
-                    report_template_snapshot, badcase_config, created_user_id,
-                    create_by, create_date, update_by, update_date
-                )
-                VALUES (
-                    %(id)s, %(project_id)s, 'AUTO_EVALUATION', %(name)s, %(description)s,
-                    %(score_name)s, %(score_mapping)s, %(run_mode)s, %(frequency)s, %(timezone)s,
-                    'NOT_STARTED', %(scheduler_enabled)s, %(next_run_at)s,
-                    %(evaluator_id)s, %(evaluator_snapshot)s, %(variable_mapping)s,
-                    %(data_source)s, %(sample_rate)s, %(report_template_id)s,
-                    %(report_template_snapshot)s, %(badcase_config)s, %(created_user_id)s,
-                    %(create_by)s, %(create_date)s, %(update_by)s, %(update_date)s
-                )
-                RETURNING *
-                """,
-                _scheduled_job_insert_params(
+            await _sync_consolidated_scheduled_job(
+                cursor,
+                row=_scheduled_job_write_row(
                     job_id=job_id,
                     project_id=project_id,
                     payload=payload,
                     evaluator=evaluator,
                     report_template_snapshot=report_template_snapshot,
                     next_run_at=next_run_at,
+                    status="NOT_STARTED",
                     user=current_user,
-                    now=now,
                 ),
+                actor=current_user.email,
             )
-            row = await cursor.fetchone()
+            row = await _fetch_scheduled_job_with_cursor(cursor, project_id, job_id)
 
     return success(_to_scheduled_job(row or {}))
 
@@ -385,52 +573,23 @@ async def update_scheduled_job(
                 project_id=project_id,
                 template_id=payload.report_template_id,
             )
-            await cursor.execute(
-                """
-                UPDATE pa_scheduled_jobs
-                SET name = %(name)s,
-                    description = %(description)s,
-                    score_name = %(score_name)s,
-                    score_mapping = %(score_mapping)s,
-                    run_mode = %(run_mode)s,
-                    frequency = %(frequency)s,
-                    timezone = %(timezone)s,
-                    scheduler_enabled = %(scheduler_enabled)s,
-                    next_run_at = %(next_run_at)s,
-                    evaluator_id = %(evaluator_id)s,
-                    evaluator_snapshot = %(evaluator_snapshot)s,
-                    variable_mapping = %(variable_mapping)s,
-                    data_source = %(data_source)s,
-                    sample_rate = %(sample_rate)s,
-                    report_template_id = %(report_template_id)s,
-                    report_template_snapshot = %(report_template_snapshot)s,
-                    badcase_config = %(badcase_config)s,
-                    status = COALESCE(%(status)s, status),
-                    update_by = %(update_by)s,
-                    update_date = %(update_date)s
-                WHERE project_id = %(project_id)s
-                  AND id = %(id)s
-                RETURNING *
-                """,
-                {
-                    **_scheduled_job_insert_params(
-                        job_id=job_id,
-                        project_id=project_id,
-                        payload=payload,
-                        evaluator=evaluator,
-                        report_template_snapshot=report_template_snapshot,
-                        next_run_at=next_run_at,
-                        user=current_user,
-                        now=now,
-                    ),
-                    "status": payload.status,
-                    "update_by": current_user.email,
-                    "update_date": now,
-                },
+            existing = await _fetch_scheduled_job_with_cursor(cursor, project_id, job_id)
+            await _sync_consolidated_scheduled_job(
+                cursor,
+                row=_scheduled_job_write_row(
+                    job_id=job_id,
+                    project_id=project_id,
+                    payload=payload,
+                    evaluator=evaluator,
+                    report_template_snapshot=report_template_snapshot,
+                    next_run_at=next_run_at,
+                    status=payload.status or existing["status"],
+                    user=current_user,
+                    existing=existing,
+                ),
+                actor=current_user.email,
             )
-            row = await cursor.fetchone()
-            if row is None:
-                raise BusinessError(4100, "定时任务不存在或无访问权限", 404)
+            row = await _fetch_scheduled_job_with_cursor(cursor, project_id, job_id)
 
     return success(_to_scheduled_job(row))
 
@@ -489,10 +648,19 @@ async def delete_scheduled_job(
             await _ensure_project_access(cursor, project_id, current_user.user_id)
             await cursor.execute(
                 """
-                DELETE FROM pa_scheduled_jobs
+                DELETE FROM pa_job_executions
                 WHERE project_id = %(project_id)s
-                  AND id = %(job_id)s
-                RETURNING id
+                  AND definition_id = 'paejob_scheduled_' || %(job_id)s
+                """,
+                {"project_id": project_id, "job_id": job_id},
+            )
+            await cursor.execute(
+                """
+                DELETE FROM pa_evaluation_jobs
+                WHERE project_id = %(project_id)s
+                  AND legacy_source_type = 'SCHEDULED_JOB'
+                  AND legacy_source_id = %(job_id)s
+                RETURNING legacy_source_id AS id
                 """,
                 {"project_id": project_id, "job_id": job_id},
             )
@@ -567,65 +735,40 @@ async def list_scheduled_job_logs(
     async with await _connect(settings) as connection:
         async with connection.cursor() as cursor:
             await _ensure_project_access(cursor, project_id, current_user.user_id)
-            await cursor.execute(
-                """
-                SELECT COUNT(*)::int AS total
-                FROM pa_scheduled_job_execution_logs logs
-                LEFT JOIN pa_auto_evaluation_tasks auto_tasks
-                  ON auto_tasks.project_id = logs.project_id
-                 AND auto_tasks.id = logs.auto_evaluation_task_id
-                WHERE logs.project_id = %(project_id)s
-                  AND (%(job_id)s = '' OR logs.scheduled_job_id = %(job_id)s)
+            base_sql = _consolidated_execution_log_select_sql()
+            params = {
+                "project_id": project_id,
+                "job_id": job_id or "",
+                "keyword": keyword or "",
+                "like": like,
+                "status": status,
+                "trigger_type": trigger_type,
+                "limit": page_size,
+                "offset": offset,
+            }
+            filters = """
+                WHERE (%(job_id)s = '' OR scheduled_job_id = %(job_id)s)
                   AND (
                     %(keyword)s = ''
-                    OR logs.scheduled_job_name ILIKE %(like)s
-                    OR COALESCE(auto_tasks.name, logs.auto_evaluation_task_name) ILIKE %(like)s
+                    OR scheduled_job_name ILIKE %(like)s
+                    OR auto_evaluation_task_name ILIKE %(like)s
                   )
-                  AND (cardinality(%(status)s::text[]) = 0 OR logs.status = ANY(%(status)s::text[]))
-                  AND (cardinality(%(trigger_type)s::text[]) = 0 OR logs.trigger_type = ANY(%(trigger_type)s::text[]))
-                """,
-                {
-                    "project_id": project_id,
-                    "job_id": job_id or "",
-                    "keyword": keyword or "",
-                    "like": like,
-                    "status": status,
-                    "trigger_type": trigger_type,
-                },
+                  AND (cardinality(%(status)s::text[]) = 0 OR status = ANY(%(status)s::text[]))
+                  AND (cardinality(%(trigger_type)s::text[]) = 0 OR trigger_type = ANY(%(trigger_type)s::text[]))
+            """
+            await cursor.execute(
+                f"SELECT COUNT(*)::int AS total FROM ({base_sql}) consolidated {filters}",
+                params,
             )
             total = (await cursor.fetchone() or {}).get("total", 0)
             await cursor.execute(
-                """
-                SELECT
-                    logs.*,
-                    COALESCE(auto_tasks.name, logs.auto_evaluation_task_name)
-                        AS resolved_auto_evaluation_task_name
-                FROM pa_scheduled_job_execution_logs logs
-                LEFT JOIN pa_auto_evaluation_tasks auto_tasks
-                  ON auto_tasks.project_id = logs.project_id
-                 AND auto_tasks.id = logs.auto_evaluation_task_id
-                WHERE logs.project_id = %(project_id)s
-                  AND (%(job_id)s = '' OR logs.scheduled_job_id = %(job_id)s)
-                  AND (
-                    %(keyword)s = ''
-                    OR logs.scheduled_job_name ILIKE %(like)s
-                    OR COALESCE(auto_tasks.name, logs.auto_evaluation_task_name) ILIKE %(like)s
-                  )
-                  AND (cardinality(%(status)s::text[]) = 0 OR logs.status = ANY(%(status)s::text[]))
-                  AND (cardinality(%(trigger_type)s::text[]) = 0 OR logs.trigger_type = ANY(%(trigger_type)s::text[]))
-                ORDER BY logs.started_at DESC, logs.id DESC
+                f"""
+                SELECT * FROM ({base_sql}) consolidated
+                {filters}
+                ORDER BY started_at DESC, id DESC
                 LIMIT %(limit)s OFFSET %(offset)s
                 """,
-                {
-                    "project_id": project_id,
-                    "job_id": job_id or "",
-                    "keyword": keyword or "",
-                    "like": like,
-                    "status": status,
-                    "trigger_type": trigger_type,
-                    "limit": page_size,
-                    "offset": offset,
-                },
+                params,
             )
             rows = await cursor.fetchall()
     return success({"total": total, "datas": [_to_execution_log(row) for row in rows]})
@@ -659,49 +802,60 @@ async def _trigger_scheduled_job(
 
     async with await _connect(settings) as connection:
         async with connection.cursor() as cursor:
-            await cursor.execute(
-                """
-                INSERT INTO pa_scheduled_job_execution_logs (
-                    id, project_id, scheduled_job_id, scheduled_job_name,
-                    task_type, trigger_type, fire_key, scheduled_fire_at,
-                    auto_evaluation_task_id, auto_evaluation_task_name,
-                    auto_evaluation_run_id, status, sample_count, started_at,
-                    duration_text, lock_owner, lock_until, trigger_payload,
-                    create_by, create_date, update_by, update_date
-                )
-                VALUES (
-                    %(id)s, %(project_id)s, %(scheduled_job_id)s, %(scheduled_job_name)s,
-                    'AUTO_EVALUATION', %(trigger_type)s, %(fire_key)s, %(scheduled_fire_at)s,
-                    NULL, %(auto_evaluation_task_name)s, NULL, 'RUNNING', 0,
-                    %(started_at)s, '运行中', %(lock_owner)s, %(lock_until)s,
-                    %(trigger_payload)s, %(create_by)s, %(create_date)s,
-                    %(update_by)s, %(update_date)s
-                )
-                ON CONFLICT (scheduled_job_id, fire_key) DO NOTHING
-                RETURNING id
-                """,
-                {
-                    "id": log_id,
-                    "project_id": project_id,
-                    "scheduled_job_id": job["id"],
-                    "scheduled_job_name": job["name"],
-                    "trigger_type": trigger_type,
-                    "fire_key": fire_key,
-                    "scheduled_fire_at": fire_at,
-                    "auto_evaluation_task_name": auto_task_name,
-                    "started_at": now,
-                    "lock_owner": settings.scheduler_instance_id,
-                    "lock_until": lease_until,
-                    "trigger_payload": Jsonb({"job": _to_scheduled_job(job)}),
-                    "create_by": triggered_by,
-                    "create_date": now,
-                    "update_by": triggered_by,
-                    "update_date": now,
+            execution = await ConsolidationRepository(cursor).create_execution(
+                execution_id=f"paexec_scheduled_{log_id}",
+                project_id=project_id,
+                job_type=JobExecutionType.SCHEDULED_EVALUATION,
+                definition_id=f"paejob_scheduled_{job['id']}",
+                idempotency_key=fire_key,
+                request_payload={
+                    "scheduledJobId": job["id"],
+                    "fireKey": fire_key,
+                    "autoEvaluationTaskId": "",
+                    "scheduledJobName": job["name"],
+                    "triggerType": trigger_type,
+                    "autoEvaluationTaskName": auto_task_name,
+                    "scheduledFireAt": fire_at.isoformat(),
                 },
+                legacy_source_type="SCHEDULED_JOB_EXECUTION_LOG",
+                legacy_source_id=log_id,
+                actor=triggered_by,
             )
-            inserted_log = await cursor.fetchone()
-            if inserted_log is None:
+            if execution.get("legacy_source_id") != log_id:
+                stale_log_id = str(execution.get("legacy_source_id") or "")
+                existing_lock_until = execution.get("lock_until")
+                if (
+                    stale_log_id
+                    and execution.get("status") == "RUNNING"
+                    and isinstance(existing_lock_until, datetime)
+                    and _ensure_aware_datetime(existing_lock_until) <= now
+                ):
+                    await _mark_scheduled_job_trigger_failed(
+                        cursor,
+                        project_id=project_id,
+                        job=job,
+                        log_id=stale_log_id,
+                        fire_at=fire_at,
+                        fire_key=fire_key,
+                        started_at=now,
+                        error_message="定时执行租约过期，已终止旧执行并推进调度",
+                        updated_by=triggered_by,
+                        expired_before=now,
+                    )
                 return
+            await ConsolidationRepository(cursor).sync_execution_from_legacy(
+                execution_id=f"paexec_scheduled_{log_id}",
+                project_id=project_id,
+                status=JobExecutionStatus.RUNNING,
+                total_count=0,
+                completed_count=0,
+                success_count=0,
+                failure_count=0,
+                result_payload={},
+                actor=triggered_by,
+                lock_owner=settings.scheduler_instance_id,
+                lock_until=lease_until,
+            )
 
             try:
                 evaluator = await _get_pa_evaluator(
@@ -751,56 +905,40 @@ async def _trigger_scheduled_job(
                     create_by=triggered_by,
                     now=now,
                 )
-                await cursor.execute(
-                    """
-                    UPDATE pa_scheduled_job_execution_logs
-                    SET auto_evaluation_task_id = %(auto_task_id)s,
-                        auto_evaluation_run_id = %(run_id)s,
-                        sample_count = %(sample_count)s,
-                        trigger_payload = %(trigger_payload)s,
-                        update_by = %(update_by)s,
-                        update_date = %(update_date)s
-                    WHERE id = %(log_id)s
-                    """,
-                    {
-                        "log_id": log_id,
-                        "auto_task_id": auto_task_id,
-                        "run_id": run_id,
-                        "sample_count": len(samples),
-                        "trigger_payload": Jsonb(
-                            {
-                                "job": _to_scheduled_job(job),
-                                "autoEvaluationPayload": payload.model_dump(
-                                    by_alias=True
-                                ),
-                                "dataSource": data_source,
-                            }
-                        ),
-                        "update_by": triggered_by,
-                        "update_date": now,
+                await ConsolidationRepository(cursor).sync_execution_from_legacy(
+                    execution_id=f"paexec_scheduled_{log_id}",
+                    project_id=project_id,
+                    status=JobExecutionStatus.RUNNING,
+                    total_count=len(samples),
+                    completed_count=0,
+                    success_count=0,
+                    failure_count=0,
+                    result_payload={
+                        "autoEvaluationTaskId": auto_task_id,
+                        "autoEvaluationRunId": run_id,
                     },
+                    actor=triggered_by,
+                    lock_owner=settings.scheduler_instance_id,
+                    lock_until=lease_until,
                 )
                 next_run_at = _next_run_after_trigger(job, fire_at)
                 await cursor.execute(
                     """
-                    UPDATE pa_scheduled_jobs
-                    SET latest_auto_evaluation_task_id = %(auto_task_id)s,
+                    UPDATE pa_evaluation_jobs
+                    SET latest_execution_id = %(execution_id)s,
                         last_run_at = %(last_run_at)s,
-                        last_fire_key = %(fire_key)s,
                         next_run_at = %(next_run_at)s,
-                        lock_owner = NULL,
-                        lock_until = NULL,
                         update_by = %(update_by)s,
                         update_date = %(update_date)s
                     WHERE project_id = %(project_id)s
-                      AND id = %(job_id)s
+                      AND legacy_source_type = 'SCHEDULED_JOB'
+                      AND legacy_source_id = %(job_id)s
                     """,
                     {
                         "project_id": project_id,
                         "job_id": job["id"],
-                        "auto_task_id": auto_task_id,
+                        "execution_id": f"paexec_scheduled_{log_id}",
                         "last_run_at": now,
-                        "fire_key": fire_key,
                         "next_run_at": next_run_at,
                         "update_by": triggered_by,
                         "update_date": now,
@@ -873,60 +1011,88 @@ async def _mark_scheduled_job_trigger_failed(
     started_at: datetime,
     error_message: str,
     updated_by: str,
-) -> None:
+    expired_before: datetime | None = None,
+) -> bool:
     ended_at = datetime.now(timezone.utc)
     next_run_at = _next_run_after_trigger(job, fire_at)
+    execution_id = f"paexec_scheduled_{log_id}"
+    if expired_before is None:
+        repository = ConsolidationRepository(cursor)
+        await repository.sync_execution_from_legacy(
+            execution_id=execution_id,
+            project_id=project_id,
+            status=JobExecutionStatus.FAILED,
+            total_count=0,
+            completed_count=0,
+            success_count=0,
+            failure_count=1,
+            result_payload={"fireKey": fire_key},
+            error_message=error_message,
+            actor=updated_by,
+        )
+    else:
+        await cursor.execute(
+            """
+            UPDATE pa_job_executions
+            SET status = 'FAILED',
+                completed_count = GREATEST(completed_count, total_count),
+                failure_count = GREATEST(failure_count, 1),
+                progress_percent = 100,
+                result_payload = result_payload || jsonb_build_object(
+                    'fireKey', %(fire_key)s
+                ),
+                error_message = %(error_message)s,
+                completed_at = %(completed_at)s,
+                lock_owner = '',
+                lock_until = NULL,
+                update_by = %(update_by)s,
+                update_date = %(update_date)s
+            WHERE id = %(id)s
+              AND project_id = %(project_id)s
+              AND legacy_source_type = 'SCHEDULED_JOB_EXECUTION_LOG'
+              AND status = 'RUNNING'
+              AND lock_until <= %(expired_before)s
+            RETURNING id
+            """,
+            {
+                "id": execution_id,
+                "project_id": project_id,
+                "fire_key": fire_key,
+                "error_message": error_message,
+                "completed_at": ended_at,
+                "update_by": updated_by,
+                "update_date": ended_at,
+                "expired_before": expired_before,
+            },
+        )
+        if await cursor.fetchone() is None:
+            return False
     await cursor.execute(
         """
-        UPDATE pa_scheduled_job_execution_logs
+        UPDATE pa_evaluation_jobs
         SET status = %(status)s,
-            ended_at = %(ended_at)s,
-            duration_text = %(duration_text)s,
-            error_message = %(error_message)s,
-            lock_owner = NULL,
-            lock_until = NULL,
-            update_by = %(update_by)s,
-            update_date = %(update_date)s
-        WHERE project_id = %(project_id)s
-          AND id = %(log_id)s
-        """,
-        {
-            "project_id": project_id,
-            "log_id": log_id,
-            "status": "FAILED",
-            "ended_at": ended_at,
-            "duration_text": _duration_text(started_at, ended_at),
-            "error_message": error_message,
-            "update_by": updated_by,
-            "update_date": ended_at,
-        },
-    )
-    await cursor.execute(
-        """
-        UPDATE pa_scheduled_jobs
-        SET status = %(status)s,
+            latest_execution_id = %(latest_execution_id)s,
             last_run_at = %(last_run_at)s,
-            last_fire_key = %(fire_key)s,
             next_run_at = %(next_run_at)s,
-            lock_owner = NULL,
-            lock_until = NULL,
             update_by = %(update_by)s,
             update_date = %(update_date)s
         WHERE project_id = %(project_id)s
-          AND id = %(job_id)s
+          AND legacy_source_type = 'SCHEDULED_JOB'
+          AND legacy_source_id = %(job_id)s
           AND status != 'PAUSED'
         """,
         {
             "project_id": project_id,
             "job_id": job["id"],
             "status": "FAILED",
+            "latest_execution_id": f"paexec_scheduled_{log_id}",
             "last_run_at": ended_at,
-            "fire_key": fire_key,
             "next_run_at": next_run_at,
             "update_by": updated_by,
             "update_date": ended_at,
         },
     )
+    return True
 
 
 def _safe_error_message(exc: Exception) -> str:
@@ -949,10 +1115,15 @@ async def _sync_execution_log_from_auto_evaluation(
         async with connection.cursor() as cursor:
             await cursor.execute(
                 """
-                SELECT status, latest_report_id
-                FROM pa_auto_evaluation_tasks
-                WHERE project_id = %(project_id)s
-                  AND id = %(auto_task_id)s
+                SELECT job.status, job.latest_report_id,
+                       COALESCE(execution.total_count, 0) AS sample_count
+                FROM pa_evaluation_jobs job
+                LEFT JOIN pa_job_executions execution
+                  ON execution.project_id = job.project_id
+                 AND execution.id = job.latest_execution_id
+                WHERE job.project_id = %(project_id)s
+                  AND job.legacy_source_type = 'AUTO_EVALUATION_TASK'
+                  AND job.legacy_source_id = %(auto_task_id)s
                 LIMIT 1
                 """,
                 {"project_id": project_id, "auto_task_id": auto_task_id},
@@ -960,49 +1131,48 @@ async def _sync_execution_log_from_auto_evaluation(
             task = await cursor.fetchone() or {}
             report_id = task.get("latest_report_id")
             status = "SUCCEEDED" if task.get("status") == "COMPLETED" else "FAILED"
-            await cursor.execute(
-                """
-                UPDATE pa_scheduled_job_execution_logs
-                SET status = %(status)s,
-                    evaluation_report_id = %(report_id)s,
-                    ended_at = %(ended_at)s,
-                    duration_text = %(duration_text)s,
-                    lock_owner = NULL,
-                    lock_until = NULL,
-                    update_by = %(update_by)s,
-                    update_date = %(update_date)s
-                WHERE project_id = %(project_id)s
-                  AND id = %(log_id)s
-                """,
-                {
-                    "project_id": project_id,
-                    "log_id": log_id,
-                    "status": status,
-                    "report_id": report_id,
-                    "ended_at": ended_at,
-                    "duration_text": _duration_text(started_at, ended_at),
-                    "update_by": updated_by,
-                    "update_date": ended_at,
+            sample_count = int(task.get("sample_count") or 0)
+            repository = ConsolidationRepository(cursor)
+            await repository.sync_execution_from_legacy(
+                execution_id=f"paexec_scheduled_{log_id}",
+                project_id=project_id,
+                status=(
+                    JobExecutionStatus.SUCCEEDED
+                    if status == "SUCCEEDED"
+                    else JobExecutionStatus.FAILED
+                ),
+                total_count=sample_count,
+                completed_count=sample_count,
+                success_count=sample_count if status == "SUCCEEDED" else 0,
+                failure_count=0 if status == "SUCCEEDED" else max(sample_count, 1),
+                result_payload={
+                    "autoEvaluationTaskId": auto_task_id,
+                    "reportId": report_id or "",
                 },
+                error_message="" if status == "SUCCEEDED" else "自动评测执行失败",
+                actor=updated_by,
             )
             await cursor.execute(
                 """
-                UPDATE pa_scheduled_jobs
+                UPDATE pa_evaluation_jobs
                 SET status = %(status)s,
+                    latest_execution_id = %(latest_execution_id)s,
                     latest_report_id = %(report_id)s,
-                    lock_owner = NULL,
-                    lock_until = NULL,
+                    last_run_at = %(last_run_at)s,
                     update_by = %(update_by)s,
                     update_date = %(update_date)s
                 WHERE project_id = %(project_id)s
-                  AND id = %(job_id)s
+                  AND legacy_source_type = 'SCHEDULED_JOB'
+                  AND legacy_source_id = %(job_id)s
                   AND status != 'PAUSED'
                 """,
                 {
                     "project_id": project_id,
                     "job_id": job_id,
                     "status": status,
+                    "latest_execution_id": f"paexec_scheduled_{log_id}",
                     "report_id": report_id,
+                    "last_run_at": ended_at,
                     "update_by": updated_by,
                     "update_date": ended_at,
                 },
@@ -1362,20 +1532,7 @@ async def _fetch_scheduled_job(
     async with await _connect(settings) as connection:
         async with connection.cursor() as cursor:
             await _ensure_project_access(cursor, project_id, user_id)
-            await cursor.execute(
-                """
-                SELECT *
-                FROM pa_scheduled_jobs
-                WHERE project_id = %(project_id)s
-                  AND id = %(job_id)s
-                LIMIT 1
-                """,
-                {"project_id": project_id, "job_id": job_id},
-            )
-            row = await cursor.fetchone()
-            if row is None:
-                raise BusinessError(4100, "定时任务不存在或无访问权限", 404)
-            return row
+            return await _fetch_scheduled_job_with_cursor(cursor, project_id, job_id)
 
 
 async def _set_scheduled_job_status(
@@ -1393,15 +1550,14 @@ async def _set_scheduled_job_status(
             await _ensure_project_access(cursor, project_id, user.user_id)
             await cursor.execute(
                 """
-                UPDATE pa_scheduled_jobs
+                UPDATE pa_evaluation_jobs
                 SET status = %(status)s,
                     next_run_at = %(next_run_at)s,
-                    lock_owner = NULL,
-                    lock_until = NULL,
                     update_by = %(update_by)s,
                     update_date = %(update_date)s
                 WHERE project_id = %(project_id)s
-                  AND id = %(job_id)s
+                  AND legacy_source_type = 'SCHEDULED_JOB'
+                  AND legacy_source_id = %(job_id)s
                 RETURNING *
                 """,
                 {
@@ -1416,7 +1572,7 @@ async def _set_scheduled_job_status(
             row = await cursor.fetchone()
             if row is None:
                 raise BusinessError(4100, "定时任务不存在或无访问权限", 404)
-            return row
+            return await _fetch_scheduled_job_with_cursor(cursor, project_id, job_id)
 
 
 def _to_scheduled_job(row: dict[str, Any]) -> dict[str, Any]:
@@ -1470,6 +1626,9 @@ def _to_execution_log(row: dict[str, Any]) -> dict[str, Any]:
     auto_task_id = row.get("auto_evaluation_task_id")
     report_id = row.get("evaluation_report_id")
     project_id = row.get("project_id")
+    duration_text = row.get("duration_text") or ""
+    if not duration_text and row.get("started_at") and row.get("ended_at"):
+        duration_text = _duration_text(row["started_at"], row["ended_at"])
     return {
         "id": row.get("id"),
         "projectId": project_id,
@@ -1496,6 +1655,6 @@ def _to_execution_log(row: dict[str, Any]) -> dict[str, Any]:
         if row.get("started_at")
         else "",
         "endedAt": _format_datetime(row["ended_at"]) if row.get("ended_at") else None,
-        "durationText": row.get("duration_text") or "",
+        "durationText": duration_text,
         "errorMessage": row.get("error_message"),
     }

@@ -17,6 +17,7 @@ from app.auto_evaluations import (
     _get_pa_evaluator,
     _insert_running_auto_evaluation,
     _list_trace_generation_samples,
+    _list_report_flowback_sources,
     _normalize_dataset_item_sample,
     _to_trace_generation_sample,
     _parse_workflow_result,
@@ -40,6 +41,7 @@ from app.auto_evaluations import (
     CreateAutoEvaluationPayload,
     EvaluationReportFlowbackPayload,
     TraceCountPayload,
+    get_langfuse_datasets_adapter,
 )
 from app.auth_context import get_current_user_context
 from app.langfuse_clickhouse import LangfuseClickHouseReader
@@ -91,6 +93,15 @@ class FakeCursor:
         return None
 
     async def fetchone(self):
+        if "RETURNING" in self.sql and (
+            "pa_evaluation_jobs" in self.sql or "pa_job_executions" in self.sql
+        ):
+            return {
+                "id": self.params.get("id")
+                or self.params.get("execution_id")
+                or self.params.get("job_id"),
+                "legacy_source_id": self.params.get("legacy_source_id"),
+            }
         return self.row
 
     async def fetchall(self):
@@ -102,9 +113,13 @@ class SequentialCursor:
         self.rows_by_fetchall = list(rows_by_fetchall or [])
         self.rows_by_fetchone = list(rows_by_fetchone or [])
         self.executions = []
+        self.sql = ""
+        self.params = {}
 
     async def execute(self, sql, params):
         self.executions.append((sql, params))
+        self.sql = sql
+        self.params = params
 
     async def __aenter__(self):
         return self
@@ -113,6 +128,15 @@ class SequentialCursor:
         return None
 
     async def fetchone(self):
+        if "RETURNING" in self.sql and (
+            "pa_evaluation_jobs" in self.sql or "pa_job_executions" in self.sql
+        ):
+            return {
+                "id": self.params.get("id")
+                or self.params.get("execution_id")
+                or self.params.get("job_id"),
+                "legacy_source_id": self.params.get("legacy_source_id"),
+            }
         if self.rows_by_fetchone:
             return self.rows_by_fetchone.pop(0)
         return None
@@ -184,6 +208,34 @@ class FakeClickHouseScoreWriter:
         source: str = "API",
     ):
         self.upserted_scores.append((project_id, user_id, score_request, source))
+
+
+class FakeDatasetsAdapter:
+    def __init__(self) -> None:
+        self.created_datasets = []
+        self.created_items = []
+
+    async def create_dataset(
+        self,
+        project_id: str,
+        user_id: str,
+        payload: dict,
+    ) -> dict:
+        self.created_datasets.append((project_id, user_id, payload))
+        return {
+            "id": "dataset-created-by-langfuse",
+            "name": payload["name"],
+        }
+
+    async def create_dataset_item(
+        self,
+        project_id: str,
+        user_id: str,
+        dataset_id: str,
+        payload: dict,
+    ) -> dict:
+        self.created_items.append((project_id, user_id, dataset_id, payload))
+        return {"id": "dataset-item-created-by-langfuse", **payload}
 
 
 @pytest.mark.anyio
@@ -361,6 +413,51 @@ async def test_list_evaluation_report_items_reads_scores_for_report_run(
 
 
 @pytest.mark.anyio
+async def test_list_evaluation_report_items_stays_hidden_when_only_badcases_enabled(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    cursor = SequentialCursor(
+        rows_by_fetchone=[
+            {"id": "project-1"},
+            {"exists": 1},
+            {
+                "source_task_id": "task-1",
+                "run_id": "run-2",
+                "report_template_snapshot": {
+                    "sections": {"items": False, "badcases": True}
+                },
+            },
+        ],
+        rows_by_fetchall=[[]],
+    )
+
+    async def fake_connect(settings):
+        return FakeConnection(cursor)
+
+    class FailingScoreReader:
+        def __init__(self, settings):
+            pass
+
+        async def list_scores_by_queue(self, *args, **kwargs):
+            raise AssertionError("hidden items must not be loaded")
+
+    monkeypatch.setattr(auto_evaluations, "_connect", fake_connect)
+    monkeypatch.setattr(auto_evaluations, "LangfuseClickHouseReader", FailingScoreReader)
+
+    response = await auto_evaluations.list_evaluation_report_items(
+        project_id="project-1",
+        report_id="report-1",
+        page=1,
+        page_size=10,
+        keyword=None,
+        current_user=_override_current_user(),
+        settings=auto_evaluations.Settings(),
+    )
+
+    assert response["data"] == {"total": 0, "datas": []}
+
+
+@pytest.mark.anyio
 async def test_list_evaluation_report_badcases_attaches_current_run_scores(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -512,6 +609,30 @@ def test_list_auto_evaluations_accepts_status_filter(
     assert cursor.executions[-1][1]["status"] == ["RUNNING", "FAILED"]
 
 
+def test_auto_evaluation_task_dto_normalizes_numeric_evaluator_version() -> None:
+    row = {
+        "id": "task-1",
+        "project_id": "project-1",
+        "name": "task",
+        "description": "",
+        "score_name": "quality",
+        "status": "COMPLETED",
+        "evaluator_id": "evaluator-1",
+        "evaluator_name": "evaluator",
+        "evaluator_type": "WORKFLOW",
+        "evaluator_version": 3,
+        "sample_rate": 100,
+        "badcase_count": 0,
+        "create_by": "owner",
+        "create_date": None,
+        "update_date": None,
+    }
+
+    task = auto_evaluations._to_task(row)
+
+    assert task["evaluator"]["version"] == "v3"
+
+
 @pytest.mark.anyio
 async def test_rerun_auto_evaluation_creates_new_task_id(
     monkeypatch: pytest.MonkeyPatch,
@@ -613,18 +734,17 @@ async def test_rerun_auto_evaluation_creates_new_task_id(
     task_insert_sql, task_insert_params = next(
         (sql, params)
         for sql, params in cursor.executions
-        if "INSERT INTO pa_auto_evaluation_tasks" in sql
+        if "INSERT INTO pa_evaluation_jobs" in sql
     )
-    assert "UPDATE pa_auto_evaluation_tasks" not in task_insert_sql
-    assert task_insert_params["id"] == new_task_id
-    assert task_insert_params["create_by"] == "owner@example.com"
+    assert task_insert_params["legacy_source_id"] == new_task_id
+    assert task_insert_params["actor"] == "owner@example.com"
     assert _jsonb_value(task_insert_params["score_mapping"]) == {"score": "quality"}
     run_insert_params = next(
         params
         for sql, params in cursor.executions
-        if "INSERT INTO pa_auto_evaluation_runs" in sql
+        if "INSERT INTO pa_job_executions" in sql
     )
-    assert run_insert_params["task_id"] == new_task_id
+    assert run_insert_params["definition_id"] == f"paejob_auto_{new_task_id}"
     background_task = background_tasks.tasks[0]
     assert background_task[1][2] == new_task_id
     assert background_task[1][3] == new_run_id
@@ -647,14 +767,48 @@ async def test_delete_auto_evaluation_task_physically_deletes_task_and_reports()
         task_id="task-1",
     )
 
-    task_sql, task_params = cursor.executions[0]
-    report_sql, report_params = cursor.executions[1]
-    assert "DELETE FROM pa_auto_evaluation_tasks" in task_sql
-    assert "RETURNING id" in task_sql
+    flowback_sql, flowback_params = cursor.executions[0]
+    execution_sql, execution_params = cursor.executions[1]
+    task_sql, task_params = cursor.executions[2]
+    report_sql, report_params = cursor.executions[3]
+    assert "job_type = 'REPORT_FLOWBACK'" in flowback_sql
+    assert flowback_params == {"project_id": "project-1", "task_id": "task-1"}
+    assert "DELETE FROM pa_job_executions" in execution_sql
+    assert execution_params == {"project_id": "project-1", "task_id": "task-1"}
+    assert "DELETE FROM pa_evaluation_jobs" in task_sql
+    assert "RETURNING legacy_source_id AS id" in task_sql
     assert task_params == {"project_id": "project-1", "task_id": "task-1"}
     assert "DELETE FROM pa_evaluation_reports" in report_sql
     assert "source_task_id = %(task_id)s" in report_sql
     assert report_params == {"project_id": "project-1", "task_id": "task-1"}
+
+
+@pytest.mark.anyio
+async def test_delete_evaluation_report_deletes_flowback_executions_first(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    cursor = SequentialCursor(
+        rows_by_fetchone=[{"id": "project-1"}, {"id": "report-1"}]
+    )
+
+    async def fake_connect(settings):
+        return FakeConnection(cursor)
+
+    monkeypatch.setattr(auto_evaluations, "_connect", fake_connect)
+
+    response = await auto_evaluations.delete_evaluation_report(
+        project_id="project-1",
+        report_id="report-1",
+        current_user=_override_current_user(),
+        settings=auto_evaluations.Settings(),
+    )
+
+    flowback_sql = cursor.executions[1][0]
+    report_sql = cursor.executions[2][0]
+    assert "DELETE FROM pa_job_executions" in flowback_sql
+    assert "job_type = 'REPORT_FLOWBACK'" in flowback_sql
+    assert "DELETE FROM pa_evaluation_reports" in report_sql
+    assert response["data"] == {"id": "report-1"}
 
 
 @pytest.mark.anyio
@@ -2294,11 +2448,11 @@ async def test_complete_auto_evaluation_success_persists_report_template_snapsho
     )
 
     report_sql, report_params = cursor.executions[1]
-    badcase_sql, badcase_params = next(
+    item_sql, item_params = next(
         (
             execution
             for execution in cursor.executions
-            if "pa_evaluation_report_badcases" in execution[0]
+            if "INSERT INTO pa_evaluation_report_items" in execution[0]
         )
     )
     assert "report_template_id" in report_sql
@@ -2307,8 +2461,9 @@ async def test_complete_auto_evaluation_success_persists_report_template_snapsho
     assert _jsonb_value(report_params["report_template_snapshot"])["name"] == "严格报告"
     assert report_params["title"].endswith("自定义报告")
     assert _jsonb_value(report_params["recommendations"]) == []
-    assert "INSERT INTO pa_evaluation_report_badcases" in badcase_sql
-    assert badcase_params["score_value"] == 0.5
+    assert "is_badcase" in item_sql
+    assert item_params["is_badcase"] is True
+    assert item_params["primary_score_value"] == 0.5
 
 
 @pytest.mark.anyio
@@ -2883,22 +3038,23 @@ async def test_complete_auto_evaluation_success_marks_partial_failed_runs() -> N
         error_message="部分样本执行失败",
     )
 
-    task_sql, task_params = cursor.executions[-2]
-    run_sql, run_params = cursor.executions[-1]
-    assert "UPDATE pa_auto_evaluation_tasks" in task_sql
-    assert task_params["status"] == "PARTIAL_FAILED"
-    assert _jsonb_value(task_params["execution_stats"]) == {
-        "pending": 0,
-        "running": 0,
-        "completed": 1,
-        "failed": 2,
-        "cancelled": 0,
-    }
-    assert "UPDATE pa_auto_evaluation_runs" in run_sql
-    assert run_params["status"] == "PARTIAL_FAILED"
-    assert run_params["completed_count"] == 1
-    assert run_params["failed_count"] == 2
-    assert run_params["error_message"] == "部分样本执行失败"
+    execution_sql, execution_params = next(
+        (sql, params)
+        for sql, params in cursor.executions
+        if "UPDATE pa_job_executions" in sql
+    )
+    job_sql, job_params = next(
+        (sql, params)
+        for sql, params in cursor.executions
+        if "UPDATE pa_evaluation_jobs" in sql
+    )
+    assert execution_params["status"] == "PARTIAL_FAILED"
+    assert execution_params["total_count"] == 3
+    assert execution_params["completed_count"] == 3
+    assert execution_params["success_count"] == 1
+    assert execution_params["failure_count"] == 2
+    assert execution_params["error_message"] == "部分样本执行失败"
+    assert job_params["status"] == "PARTIAL_FAILED"
 
 
 @pytest.mark.anyio
@@ -3057,9 +3213,44 @@ async def test_preview_report_flowback_counts_duplicates_for_existing_dataset() 
 
 
 @pytest.mark.anyio
+async def test_consolidated_badcase_flowback_reads_report_items_and_filters_selection() -> (
+    None
+):
+    cursor = SequentialCursor(
+        rows_by_fetchall=[
+            [
+                {"source_item_id": "item-1", "result_type": "badcase"},
+                {"source_item_id": "item-2", "result_type": "badcase"},
+            ]
+        ]
+    )
+    payload = EvaluationReportFlowbackPayload.model_validate(
+        {
+            "flowbackType": "BADCASE",
+            "range": "SELECTED",
+            "selectedItemIds": ["item-2"],
+            "targetDataset": {"mode": "CREATE", "name": "Badcase 集"},
+            "dedupeStrategy": "SKIP_DUPLICATE",
+        }
+    )
+
+    rows = await _list_report_flowback_sources(
+        cursor,  # type: ignore[arg-type]
+        "project-1",
+        "report-1",
+        payload,
+    )
+
+    assert rows == [{"source_item_id": "item-2", "result_type": "badcase"}]
+    assert "FROM pa_evaluation_report_items ri" in cursor.executions[0][0]
+    assert "ri.is_badcase IS TRUE" in cursor.executions[0][0]
+
+
+@pytest.mark.anyio
 async def test_create_report_flowback_creates_dataset_items_and_updates_statuses() -> (
     None
 ):
+    datasets_adapter = FakeDatasetsAdapter()
     cursor = SequentialCursor(
         rows_by_fetchall=[
             [
@@ -3103,26 +3294,53 @@ async def test_create_report_flowback_creates_dataset_items_and_updates_statuses
         project_id="project-1",
         report_id="report-1",
         payload=payload,
+        user_id="user-1",
+        datasets_adapter=datasets_adapter,  # type: ignore[arg-type]
         created_by="admin@example.com",
     )
 
     sql_text = "\n".join(sql for sql, _ in cursor.executions)
-    assert "INSERT INTO datasets" in sql_text
-    assert "INSERT INTO dataset_items" in sql_text
-    assert "INSERT INTO pa_evaluation_report_flowbacks" in sql_text
-    assert "UPDATE pa_evaluation_report_badcases" in sql_text
+    assert "INSERT INTO datasets" not in sql_text
+    assert "INSERT INTO dataset_items" not in sql_text
+    assert "INSERT INTO pa_job_executions" in sql_text
+    assert "UPDATE pa_evaluation_report_items" in sql_text
+    assert "paLegacyBadcases" in sql_text
     assert "UPDATE pa_evaluation_reports" in sql_text
     assert record["successCount"] == 1
     assert record["requestedCount"] == 1
     assert record["targetDatasetName"] == "回流 Badcase 集"
-    dataset_item_params = next(
-        params
-        for sql, params in cursor.executions
-        if "INSERT INTO dataset_items" in sql
+    assert record["targetDatasetId"] == "dataset-created-by-langfuse"
+    assert datasets_adapter.created_datasets == [
+        (
+            "project-1",
+            "user-1",
+            {
+                "name": "回流 Badcase 集",
+                "description": "来自报告",
+                "metadata": {
+                    "type": "evaluation-flowback",
+                    "paEvaluationReport": {
+                        "reportId": "report-1",
+                        "flowbackType": "BADCASE",
+                    },
+                },
+                "inputSchema": {},
+                "expectedOutputSchema": {},
+            },
+        )
+    ]
+    assert len(datasets_adapter.created_items) == 1
+    item_project_id, item_user_id, item_dataset_id, item_payload = (
+        datasets_adapter.created_items[0]
     )
-    metadata = _jsonb_value(dataset_item_params["metadata"])
-    input_payload = _jsonb_value(dataset_item_params["input"])
-    expected_output_payload = _jsonb_value(dataset_item_params["expected_output"])
+    assert (item_project_id, item_user_id, item_dataset_id) == (
+        "project-1",
+        "user-1",
+        "dataset-created-by-langfuse",
+    )
+    metadata = item_payload["metadata"]
+    input_payload = item_payload["input"]
+    expected_output_payload = item_payload["expectedOutput"]
     assert input_payload == {
         "input": {"question": "如何退款"},
         "output": {"answer": "请在订单详情提交退款"},
@@ -3131,7 +3349,69 @@ async def test_create_report_flowback_creates_dataset_items_and_updates_statuses
     assert metadata["origin"] == "trace"
     assert metadata["paEvaluationReport"]["reportId"] == "report-1"
     assert metadata["paEvaluationReport"]["sourceItemId"] == "badcase-1"
-    assert dataset_item_params["source_trace_id"] == "trace-1"
+    assert item_payload["sourceTraceId"] == "trace-1"
+
+
+def test_create_report_flowback_route_uses_dataset_adapter(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    datasets_adapter = FakeDatasetsAdapter()
+    cursor = SequentialCursor(
+        rows_by_fetchone=[{"id": "project-1"}, {"exists": 1}],
+        rows_by_fetchall=[
+            [
+                {
+                    "source_item_id": "badcase-1",
+                    "source_dataset_item_id": "dataset-item-1",
+                    "source_trace_id": "trace-1",
+                    "source_observation_id": "obs-1",
+                    "input": {"question": "如何退款"},
+                    "output": {"answer": "请在订单详情提交退款"},
+                    "expected_output": None,
+                    "metadata": {"origin": "trace"},
+                    "score_value": 0.42,
+                    "reason": "答案不完整",
+                    "comment": "缺少入口说明",
+                    "score_summary": "quality: 0.42",
+                    "prefer_trace_payload": True,
+                    "result_type": "badcase",
+                }
+            ],
+            [],
+        ],
+    )
+
+    async def fake_connect(settings):
+        return FakeConnection(cursor)
+
+    monkeypatch.setattr(auto_evaluations, "_connect", fake_connect)
+    app.dependency_overrides[get_current_user_context] = _override_current_user
+    app.dependency_overrides[get_langfuse_datasets_adapter] = lambda: datasets_adapter
+    try:
+        response = TestClient(app, raise_server_exceptions=False).post(
+            "/api/projects/project-1/evaluation-reports/report-1/flowbacks",
+            json={
+                "flowbackType": "BADCASE",
+                "range": "SELECTED",
+                "selectedItemIds": ["badcase-1"],
+                "targetDataset": {
+                    "mode": "CREATE",
+                    "name": "回流 Badcase 集",
+                    "description": "来自报告",
+                },
+                "dedupeStrategy": "SKIP_DUPLICATE",
+            },
+        )
+    finally:
+        app.dependency_overrides.clear()
+
+    assert response.status_code == 200
+    assert response.json()["code"] == 0
+    assert datasets_adapter.created_datasets[0][0:2] == ("project-1", "user-1")
+    assert datasets_adapter.created_items[0][2] == "dataset-created-by-langfuse"
+    sql_text = "\n".join(sql for sql, _ in cursor.executions)
+    assert "INSERT INTO datasets" not in sql_text
+    assert "INSERT INTO dataset_items" not in sql_text
 
 
 @pytest.mark.anyio
@@ -3165,35 +3445,17 @@ async def test_insert_running_auto_evaluation_returns_before_report_generation()
 
     task_sql, task_params = cursor.executions[0]
     run_sql, run_params = cursor.executions[1]
-    assert "INSERT INTO pa_auto_evaluation_tasks" in task_sql
-    assert "create_by" in task_sql
-    assert "create_date" in task_sql
-    assert "update_by" in task_sql
-    assert "update_date" in task_sql
+    assert "INSERT INTO pa_evaluation_jobs" in task_sql
     assert task_params["status"] == "RUNNING"
     assert task_params["latest_report_id"] is None
     assert task_params["report_template_id"] == "default"
     assert _jsonb_value(task_params["report_template_snapshot"])["id"] == "default"
-    assert task_params["create_by"] == "admin@163.com"
-    assert task_params["update_by"] == "admin@163.com"
-    assert task_params["create_date"] == task_params["update_date"]
-    assert _jsonb_value(task_params["execution_stats"]) == {
-        "pending": 10,
-        "running": 0,
-        "completed": 0,
-        "failed": 0,
-        "cancelled": 0,
-    }
-    assert "INSERT INTO pa_auto_evaluation_runs" in run_sql
-    assert "create_by" in run_sql
-    assert "create_date" in run_sql
-    assert "update_by" in run_sql
-    assert "update_date" in run_sql
-    assert run_params["status"] == "RUNNING"
-    assert run_params["sample_count"] == 10
-    assert run_params["ended_at"] is None
-    assert run_params["create_by"] == "admin@163.com"
-    assert run_params["update_by"] == "admin@163.com"
+    assert task_params["actor"] == "admin@163.com"
+    assert "INSERT INTO pa_job_executions" in run_sql
+    assert run_params["legacy_source_id"] == "run-1"
+    progress_params = cursor.executions[2][1]
+    assert progress_params["status"] == "RUNNING"
+    assert progress_params["total_count"] == 10
 
 
 @pytest.mark.anyio
@@ -3210,22 +3472,15 @@ async def test_mark_auto_evaluation_failed_updates_task_and_run() -> None:
         updated_by="admin@163.com",
     )
 
-    task_sql, task_params = cursor.executions[0]
-    run_sql, run_params = cursor.executions[1]
-    assert "UPDATE pa_auto_evaluation_tasks" in task_sql
-    assert "update_by = %(update_by)s" in task_sql
-    assert "update_date = %(update_date)s" in task_sql
-    assert task_params["status"] == "FAILED"
-    assert task_params["update_by"] == "admin@163.com"
-    assert _jsonb_value(task_params["execution_stats"])["failed"] == 10
-    assert "UPDATE pa_auto_evaluation_runs" in run_sql
-    assert "update_by = %(update_by)s" in run_sql
-    assert "update_date = %(update_date)s" in run_sql
-    assert "completed_count = %(completed_count)s" in run_sql
+    run_sql, run_params = cursor.executions[0]
+    task_sql, task_params = cursor.executions[1]
+    assert "UPDATE pa_job_executions" in run_sql
     assert run_params["status"] == "FAILED"
-    assert run_params["completed_count"] == 0
+    assert run_params["success_count"] == 0
+    assert run_params["failure_count"] == 10
     assert run_params["error_message"] == "Dify 工作流调用失败"
-    assert run_params["update_by"] == "admin@163.com"
+    assert "UPDATE pa_evaluation_jobs" in task_sql
+    assert task_params["status"] == "FAILED"
 
 
 @pytest.mark.anyio
@@ -3244,18 +3499,9 @@ async def test_update_auto_evaluation_progress_persists_intermediate_counts() ->
         updated_by="admin@163.com",
     )
 
-    task_sql, task_params = cursor.executions[0]
-    run_sql, run_params = cursor.executions[1]
-    assert "UPDATE pa_auto_evaluation_tasks" in task_sql
-    assert task_params["status"] == "RUNNING"
-    assert _jsonb_value(task_params["execution_stats"]) == {
-        "pending": 5,
-        "running": 1,
-        "completed": 3,
-        "failed": 1,
-        "cancelled": 0,
-    }
-    assert "UPDATE pa_auto_evaluation_runs" in run_sql
+    run_sql, run_params = cursor.executions[0]
+    assert "UPDATE pa_job_executions" in run_sql
     assert run_params["status"] == "RUNNING"
-    assert run_params["completed_count"] == 3
-    assert run_params["failed_count"] == 1
+    assert run_params["completed_count"] == 4
+    assert run_params["success_count"] == 3
+    assert run_params["failure_count"] == 1

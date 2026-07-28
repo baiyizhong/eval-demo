@@ -28,7 +28,11 @@ import {
   PopoverContent,
   PopoverTrigger,
 } from '@/components/ui/popover'
-import { DatePicker } from '@/components/common/date-picker'
+import { DateTimePicker } from '@/components/common/date-time/date-time-picker'
+import {
+  formatDate,
+  parseDate,
+} from '@/components/common/date-time/date-time-utils'
 
 const languages = [
   { label: '英语', value: 'en' },
@@ -97,7 +101,13 @@ export function AccountForm() {
           render={({ field }) => (
             <FormItem className='flex flex-col'>
               <FormLabel>出生日期</FormLabel>
-              <DatePicker selected={field.value} onSelect={field.onChange} />
+              <DateTimePicker
+                showTime={false}
+                value={field.value ? formatDate(field.value) : ''}
+                onChange={(nextValue) =>
+                  field.onChange(parseDate(nextValue) ?? undefined)
+                }
+              />
               <FormDescription>出生日期将用于计算你的年龄。</FormDescription>
               <FormMessage />
             </FormItem>

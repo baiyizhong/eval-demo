@@ -43,6 +43,15 @@ def _drop_column_if_exists(table_name: str, column_name: str) -> None:
         op.drop_column(table_name, column_name)
 
 
+def _execute_if_columns_exist(
+    table_name: str,
+    column_names: list[str],
+    statement: str,
+) -> None:
+    if all(_column_exists(table_name, column_name) for column_name in column_names):
+        op.execute(sa.text(statement))
+
+
 def _audit_columns() -> list[sa.Column]:
     return [
         sa.Column("create_by", sa.Text(), nullable=False, server_default="system"),
@@ -235,7 +244,11 @@ def _align_auto_evaluation_tasks() -> None:
     _add_column_once("pa_auto_evaluation_tasks", sa.Column("report_template_id", sa.Text(), nullable=True))
     _add_column_once("pa_auto_evaluation_tasks", sa.Column("report_template_snapshot", postgresql.JSONB(astext_type=sa.Text()), nullable=False, server_default=sa.text("'{}'::jsonb")))
     _add_column_once("pa_auto_evaluation_tasks", sa.Column("last_run_at", sa.DateTime(timezone=True), nullable=True))
-    op.execute(sa.text("UPDATE pa_auto_evaluation_tasks SET create_by = COALESCE(NULLIF(created_by, ''), create_by), update_by = COALESCE(NULLIF(created_by, ''), update_by), create_date = COALESCE(created_at, create_date), update_date = COALESCE(updated_at, update_date)"))
+    _execute_if_columns_exist(
+        "pa_auto_evaluation_tasks",
+        ["created_by", "created_at", "updated_at"],
+        "UPDATE pa_auto_evaluation_tasks SET create_by = COALESCE(NULLIF(created_by, ''), create_by), update_by = COALESCE(NULLIF(created_by, ''), update_by), create_date = COALESCE(created_at, create_date), update_date = COALESCE(updated_at, update_date)",
+    )
 
 
 def _align_auto_evaluation_runs() -> None:
@@ -249,7 +262,19 @@ def _align_auto_evaluation_runs() -> None:
     _add_column_once("pa_auto_evaluation_runs", sa.Column("badcase_count", sa.Integer(), nullable=False, server_default="0"))
     _add_column_once("pa_auto_evaluation_runs", sa.Column("ended_at", sa.DateTime(timezone=True), nullable=True))
     _add_column_once("pa_auto_evaluation_runs", sa.Column("duration_text", sa.Text(), nullable=False, server_default=""))
-    op.execute(sa.text("UPDATE pa_auto_evaluation_runs SET sample_count = COALESCE(progress_total, sample_count), completed_count = COALESCE(progress_completed, completed_count), failed_count = COALESCE(progress_failed, failed_count), badcase_count = COALESCE(bad_case_count, badcase_count), create_date = COALESCE(created_at, create_date), update_date = COALESCE(updated_at, update_date), ended_at = COALESCE(finished_at, ended_at)"))
+    _execute_if_columns_exist(
+        "pa_auto_evaluation_runs",
+        [
+            "progress_total",
+            "progress_completed",
+            "progress_failed",
+            "bad_case_count",
+            "created_at",
+            "updated_at",
+            "finished_at",
+        ],
+        "UPDATE pa_auto_evaluation_runs SET sample_count = COALESCE(progress_total, sample_count), completed_count = COALESCE(progress_completed, completed_count), failed_count = COALESCE(progress_failed, failed_count), badcase_count = COALESCE(bad_case_count, badcase_count), create_date = COALESCE(created_at, create_date), update_date = COALESCE(updated_at, update_date), ended_at = COALESCE(finished_at, ended_at)",
+    )
     op.execute(sa.text("UPDATE pa_auto_evaluation_runs r SET project_id = t.project_id FROM pa_auto_evaluation_tasks t WHERE r.task_id = t.id AND r.project_id = ''"))
 
 
@@ -273,7 +298,11 @@ def _align_evaluation_reports() -> None:
     _add_column_once("pa_evaluation_reports", sa.Column("error_message", sa.Text(), nullable=True))
     _add_column_once("pa_evaluation_reports", sa.Column("report_template_id", sa.Text(), nullable=True))
     _add_column_once("pa_evaluation_reports", sa.Column("report_template_snapshot", postgresql.JSONB(astext_type=sa.Text()), nullable=False, server_default=sa.text("'{}'::jsonb")))
-    op.execute(sa.text("UPDATE pa_evaluation_reports SET title = COALESCE(NULLIF(name, ''), title, '评测报告'), source_task_id = COALESCE(task_id, source_task_id), source_task_name = COALESCE(NULLIF(name, ''), source_task_name), create_by = COALESCE(NULLIF(generated_by, ''), create_by), update_by = COALESCE(NULLIF(generated_by, ''), update_by), create_date = COALESCE(created_at, create_date), update_date = COALESCE(updated_at, update_date), generated_at = COALESCE(created_at, generated_at)"))
+    _execute_if_columns_exist(
+        "pa_evaluation_reports",
+        ["name", "task_id", "generated_by", "created_at", "updated_at"],
+        "UPDATE pa_evaluation_reports SET title = COALESCE(NULLIF(name, ''), title, '评测报告'), source_task_id = COALESCE(task_id, source_task_id), source_task_name = COALESCE(NULLIF(name, ''), source_task_name), create_by = COALESCE(NULLIF(generated_by, ''), create_by), update_by = COALESCE(NULLIF(generated_by, ''), update_by), create_date = COALESCE(created_at, create_date), update_date = COALESCE(updated_at, update_date), generated_at = COALESCE(created_at, generated_at)",
+    )
 
 
 def _align_evaluation_report_items() -> None:
@@ -287,7 +316,19 @@ def _align_evaluation_report_items() -> None:
     _add_column_once("pa_evaluation_report_items", sa.Column("execution_status", sa.Text(), nullable=False, server_default="COMPLETED"))
     _add_column_once("pa_evaluation_report_items", sa.Column("dataset_flowback_status", sa.Text(), nullable=False, server_default="NONE"))
     op.execute(sa.text("UPDATE pa_evaluation_report_items i SET project_id = r.project_id FROM pa_evaluation_reports r WHERE i.report_id = r.id AND i.project_id = ''"))
-    op.execute(sa.text("UPDATE pa_evaluation_report_items SET source_id = COALESCE(NULLIF(source_item_id, ''), trace_id, observation_id, source_id), score_summary = COALESCE(reason, score_summary), result_type = CASE WHEN status = 'BADCASE' THEN 'BADCASE' ELSE result_type END, create_date = COALESCE(created_at, create_date), update_date = COALESCE(updated_at, update_date)"))
+    _execute_if_columns_exist(
+        "pa_evaluation_report_items",
+        [
+            "source_item_id",
+            "trace_id",
+            "observation_id",
+            "reason",
+            "status",
+            "created_at",
+            "updated_at",
+        ],
+        "UPDATE pa_evaluation_report_items SET source_id = COALESCE(NULLIF(source_item_id, ''), trace_id, observation_id, source_id), score_summary = COALESCE(reason, score_summary), result_type = CASE WHEN status = 'BADCASE' THEN 'BADCASE' ELSE result_type END, create_date = COALESCE(created_at, create_date), update_date = COALESCE(updated_at, update_date)",
+    )
 
 
 def _align_evaluation_report_badcases() -> None:

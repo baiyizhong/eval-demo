@@ -11,6 +11,8 @@ dist/
 *.iml
 .agents
 langfuse/
+!pa-eval-backend/app/langfuse/
+!pa-eval-backend/app/langfuse/**
 .claude
 langfuse/docker-compose.yml
 

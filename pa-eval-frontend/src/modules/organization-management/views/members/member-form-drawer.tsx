@@ -1,4 +1,4 @@
-import { useEffect, useId, useMemo, useState } from 'react'
+import { useId, useMemo, useState } from 'react'
 import { z } from 'zod'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { canAssignRole } from '@/modules/organization-management/data/permissions'
@@ -66,6 +66,11 @@ type MemberFormDrawerProps = {
   existingMembers?: OrganizationMember[]
 }
 
+type FormErrorState = {
+  formKey: string
+  message: string
+}
+
 export function MemberFormDrawer({
   open,
   onOpenChange,
@@ -79,7 +84,9 @@ export function MemberFormDrawer({
   const $api = useAPI()
   const queryClient = useQueryClient()
   const isEditMode = Boolean(member)
-  const [formError, setFormError] = useState<string | null>(null)
+  const formKey = member?.id ?? 'create-member'
+  const [formError, setFormError] = useState<FormErrorState | null>(null)
+  const currentFormError = formError?.formKey === formKey ? formError.message : null
   const emailSettingsQuery = useQuery({
     queryKey: ['organization-member-email-settings', $api],
     enabled: open && !isEditMode,
@@ -137,7 +144,7 @@ export function MemberFormDrawer({
           : error instanceof Error
             ? error.message
             : '成员保存失败'
-      setFormError(message)
+      setFormError({ formKey, message })
     },
     onSuccess: async (memberResult) => {
       await Promise.all([
@@ -177,18 +184,15 @@ export function MemberFormDrawer({
       !isEditMode &&
       findExistingOrganizationMemberByEmail(existingMembers, values.email)
     ) {
-      setFormError(ORGANIZATION_MEMBER_EXISTS_MESSAGE)
+      setFormError({
+        formKey,
+        message: ORGANIZATION_MEMBER_EXISTS_MESSAGE,
+      })
       return
     }
 
     await mutation.mutateAsync(values)
   }
-
-  useEffect(() => {
-    if (open) {
-      setFormError(null)
-    }
-  }, [member?.id, open])
 
   return (
     <Drawer
@@ -204,7 +208,7 @@ export function MemberFormDrawer({
       cancelProps={{ disabled: mutation.isPending }}
     >
       <BaseForm
-        key={member?.id ?? 'create-member'}
+        key={formKey}
         id={formId}
         schema={memberFormSchema}
         defaultValues={defaultValues}
@@ -311,9 +315,9 @@ export function MemberFormDrawer({
           )
         }}
       </BaseForm>
-      {formError ? (
+      {currentFormError ? (
         <div className='border-destructive/30 bg-destructive/5 text-destructive mx-4 mb-4 rounded-md border px-3 py-2 text-sm'>
-          {formError}
+          {currentFormError}
         </div>
       ) : null}
     </Drawer>

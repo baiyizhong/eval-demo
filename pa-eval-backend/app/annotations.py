@@ -19,7 +19,7 @@ from app.annotation_exports import (
 )
 from app.auth_context import CurrentUserContext, get_current_user_context
 from app.config import Settings, get_settings
-from app.errors import BusinessError
+from app.errors import BusinessError, LangfuseResourceConflictError
 from app.langfuse_clickhouse import (
     LangfuseClickHouseReader,
     LangfuseClickHouseScoreWriter,
@@ -32,6 +32,7 @@ from app.langfuse_client import (
     repair_legacy_boolean_score_configs,
 )
 from app.langfuse_db import LangfuseDatabaseReader, get_langfuse_db_reader
+from app.langfuse.annotations_adapter import LangfuseAnnotationsAdapter
 from app.response import success
 from app.score_configs import (
     clickhouse_score_payload,
@@ -271,6 +272,12 @@ class AddAnnotationItemToDatasetPayload(BaseModel):
     input: Any
     expected_output: Any = Field(alias="expectedOutput")
     metadata: dict[str, Any] = Field(default_factory=dict)
+
+
+def get_langfuse_annotations_adapter(
+    db_reader: LangfuseDatabaseReader = Depends(get_langfuse_db_reader),
+) -> LangfuseAnnotationsAdapter:
+    return LangfuseAnnotationsAdapter(db_reader)
 
 
 def _to_public_annotation_export_job(job: dict[str, Any]) -> dict[str, Any]:
@@ -786,6 +793,7 @@ async def _save_annotation_scores_with_langfuse_api(
     reader: LangfuseDatabaseReader,
     langfuse_client: LangfuseAdminClient,
     score_writer: LangfuseClickHouseScoreWriter | None = None,
+    adapter: LangfuseAnnotationsAdapter,
 ) -> dict[str, Any]:
     score_requests = await reader.prepare_annotation_score_payloads_for_user(
         project_id,
@@ -811,12 +819,7 @@ async def _save_annotation_scores_with_langfuse_api(
         )
         if failures:
             raise BusinessError(1035, "评分保存失败，请稍后重试", 502)
-    return await reader.complete_annotation_queue_item_for_user(
-        project_id,
-        queue_id,
-        item_id,
-        user_id,
-    )
+    return await adapter.complete_annotation_queue_item(project_id, user_id, queue_id, item_id)
 
 
 async def _prefill_annotation_scores_from_trace_scores(
@@ -1711,8 +1714,10 @@ async def list_score_configs(
     page_size: int = Query(default=10, ge=1, le=200, alias="pageSize"),
     current_user: CurrentUserContext = Depends(get_current_user_context),
     reader: LangfuseDatabaseReader = Depends(get_langfuse_db_reader),
+    adapter: LangfuseAnnotationsAdapter = Depends(get_langfuse_annotations_adapter),
 ) -> dict[str, Any]:
-    configs = await reader.list_score_configs_for_user(
+    await reader.ensure_project_visible(project_id, current_user.user_id)
+    configs = await adapter.list_score_configs(
         project_id,
         current_user.user_id,
         include_archived=include_archived,
@@ -1728,10 +1733,11 @@ async def ensure_default_score_config(
     project_id: str,
     current_user: CurrentUserContext = Depends(get_current_user_context),
     reader: LangfuseDatabaseReader = Depends(get_langfuse_db_reader),
+    adapter: LangfuseAnnotationsAdapter = Depends(get_langfuse_annotations_adapter),
 ) -> dict[str, Any]:
-    config = await reader.ensure_default_score_config_for_user(
-        project_id,
-        current_user.user_id,
+    await reader.ensure_project_visible(project_id, current_user.user_id)
+    config = await adapter.ensure_default_score_config(
+        project_id, current_user.user_id
     )
     return success(config)
 
@@ -1742,8 +1748,10 @@ async def create_score_config(
     payload: ScoreConfigPayload,
     current_user: CurrentUserContext = Depends(get_current_user_context),
     reader: LangfuseDatabaseReader = Depends(get_langfuse_db_reader),
+    adapter: LangfuseAnnotationsAdapter = Depends(get_langfuse_annotations_adapter),
 ) -> dict[str, Any]:
-    config = await reader.create_score_config_for_user(
+    await reader.ensure_project_visible(project_id, current_user.user_id)
+    config = await adapter.create_score_config(
         project_id,
         current_user.user_id,
         _score_config_payload(payload),
@@ -1758,11 +1766,13 @@ async def update_score_config(
     payload: ScoreConfigPayload,
     current_user: CurrentUserContext = Depends(get_current_user_context),
     reader: LangfuseDatabaseReader = Depends(get_langfuse_db_reader),
+    adapter: LangfuseAnnotationsAdapter = Depends(get_langfuse_annotations_adapter),
 ) -> dict[str, Any]:
-    config = await reader.update_score_config_for_user(
+    await reader.ensure_project_visible(project_id, current_user.user_id)
+    config = await adapter.update_score_config(
         project_id,
-        config_id,
         current_user.user_id,
+        config_id,
         _score_config_payload(payload),
     )
     return success(config)
@@ -1774,12 +1784,11 @@ async def archive_score_config(
     config_id: str,
     current_user: CurrentUserContext = Depends(get_current_user_context),
     reader: LangfuseDatabaseReader = Depends(get_langfuse_db_reader),
+    adapter: LangfuseAnnotationsAdapter = Depends(get_langfuse_annotations_adapter),
 ) -> dict[str, Any]:
-    config = await reader.set_score_config_archived_for_user(
-        project_id,
-        config_id,
-        current_user.user_id,
-        True,
+    await reader.ensure_project_visible(project_id, current_user.user_id)
+    config = await adapter.set_score_config_archived(
+        project_id, current_user.user_id, config_id, True
     )
     return success(config)
 
@@ -1790,12 +1799,11 @@ async def restore_score_config(
     config_id: str,
     current_user: CurrentUserContext = Depends(get_current_user_context),
     reader: LangfuseDatabaseReader = Depends(get_langfuse_db_reader),
+    adapter: LangfuseAnnotationsAdapter = Depends(get_langfuse_annotations_adapter),
 ) -> dict[str, Any]:
-    config = await reader.set_score_config_archived_for_user(
-        project_id,
-        config_id,
-        current_user.user_id,
-        False,
+    await reader.ensure_project_visible(project_id, current_user.user_id)
+    config = await adapter.set_score_config_archived(
+        project_id, current_user.user_id, config_id, False
     )
     return success(config)
 
@@ -1828,34 +1836,22 @@ async def list_annotation_queues(
     ),
     current_user: CurrentUserContext = Depends(get_current_user_context),
     reader: LangfuseDatabaseReader = Depends(get_langfuse_db_reader),
+    adapter: LangfuseAnnotationsAdapter = Depends(get_langfuse_annotations_adapter),
 ) -> dict[str, Any]:
-    queues = await reader.list_annotation_queues_for_user(
-        project_id,
-        current_user.user_id,
+    await reader.ensure_project_visible(project_id, current_user.user_id)
+    effective_assignee_ids = _first_non_empty_list(assignee_ids, assignee_ids_bracket)
+    effective_pending_state = _first_non_empty_list(pending_state, pending_state_bracket)
+    return success(
+        await adapter.list_annotation_queues(
+            project_id,
+            current_user.user_id,
+            keyword=keyword,
+            assignee_ids=effective_assignee_ids,
+            pending_state=effective_pending_state,
+            page=page,
+            page_size=page_size,
+        )
     )
-    filtered = [queue for queue in queues if _matches_queue_keyword(queue, keyword)]
-    effective_assignee_ids = _first_non_empty_list(
-        assignee_ids,
-        assignee_ids_bracket,
-    )
-    effective_pending_state = _first_non_empty_list(
-        pending_state,
-        pending_state_bracket,
-    )
-    if effective_assignee_ids:
-        assignees = set(effective_assignee_ids)
-        filtered = [
-            queue
-            for queue in filtered
-            if assignees.intersection(set(queue.get("assigneeIds") or []))
-        ]
-    if effective_pending_state:
-        states = set(effective_pending_state)
-        if "hasPending" in states:
-            filtered = [queue for queue in filtered if queue["pendingCount"] > 0]
-        elif "completed" in states:
-            filtered = [queue for queue in filtered if queue["pendingCount"] == 0]
-    return success(_paginate(filtered, page, page_size))
 
 
 @router.post("/annotation-queues")
@@ -1864,8 +1860,10 @@ async def create_annotation_queue(
     payload: AnnotationQueuePayload,
     current_user: CurrentUserContext = Depends(get_current_user_context),
     reader: LangfuseDatabaseReader = Depends(get_langfuse_db_reader),
+    adapter: LangfuseAnnotationsAdapter = Depends(get_langfuse_annotations_adapter),
 ) -> dict[str, Any]:
-    queue = await reader.create_annotation_queue_for_user(
+    await reader.ensure_project_visible(project_id, current_user.user_id)
+    queue = await adapter.create_annotation_queue(
         project_id,
         current_user.user_id,
         _queue_payload(payload),
@@ -1879,11 +1877,11 @@ async def get_annotation_queue_name_availability(
     name: str = Query(min_length=1),
     current_user: CurrentUserContext = Depends(get_current_user_context),
     reader: LangfuseDatabaseReader = Depends(get_langfuse_db_reader),
+    adapter: LangfuseAnnotationsAdapter = Depends(get_langfuse_annotations_adapter),
 ) -> dict[str, Any]:
-    available = await reader.is_annotation_queue_name_available_for_user(
-        project_id,
-        current_user.user_id,
-        name.strip(),
+    await reader.ensure_project_visible(project_id, current_user.user_id)
+    available = await adapter.is_annotation_queue_name_available(
+        project_id, current_user.user_id, name.strip()
     )
     return success({"available": available})
 
@@ -1894,11 +1892,11 @@ async def get_annotation_queue(
     queue_id: str,
     current_user: CurrentUserContext = Depends(get_current_user_context),
     reader: LangfuseDatabaseReader = Depends(get_langfuse_db_reader),
+    adapter: LangfuseAnnotationsAdapter = Depends(get_langfuse_annotations_adapter),
 ) -> dict[str, Any]:
-    queue = await reader.get_annotation_queue_for_user(
-        project_id,
-        queue_id,
-        current_user.user_id,
+    await reader.ensure_project_visible(project_id, current_user.user_id)
+    queue = await adapter.get_annotation_queue(
+        project_id, current_user.user_id, queue_id
     )
     return success(queue)
 
@@ -1910,12 +1908,11 @@ async def update_annotation_queue(
     payload: AnnotationQueuePayload,
     current_user: CurrentUserContext = Depends(get_current_user_context),
     reader: LangfuseDatabaseReader = Depends(get_langfuse_db_reader),
+    adapter: LangfuseAnnotationsAdapter = Depends(get_langfuse_annotations_adapter),
 ) -> dict[str, Any]:
-    queue = await reader.update_annotation_queue_for_user(
-        project_id,
-        queue_id,
-        current_user.user_id,
-        _queue_payload(payload),
+    await reader.ensure_project_visible(project_id, current_user.user_id)
+    queue = await adapter.update_annotation_queue(
+        project_id, queue_id, current_user.user_id, _queue_payload(payload)
     )
     return success(queue)
 
@@ -1926,12 +1923,10 @@ async def delete_annotation_queue(
     queue_id: str,
     current_user: CurrentUserContext = Depends(get_current_user_context),
     reader: LangfuseDatabaseReader = Depends(get_langfuse_db_reader),
+    adapter: LangfuseAnnotationsAdapter = Depends(get_langfuse_annotations_adapter),
 ) -> dict[str, Any]:
-    await reader.delete_annotation_queue_for_user(
-        project_id,
-        queue_id,
-        current_user.user_id,
-    )
+    await reader.ensure_project_visible(project_id, current_user.user_id)
+    await adapter.delete_annotation_queue(project_id, queue_id, current_user.user_id)
     return success({"id": queue_id})
 
 
@@ -1941,11 +1936,11 @@ async def get_annotation_queue_metrics(
     queue_id: str,
     current_user: CurrentUserContext = Depends(get_current_user_context),
     reader: LangfuseDatabaseReader = Depends(get_langfuse_db_reader),
+    adapter: LangfuseAnnotationsAdapter = Depends(get_langfuse_annotations_adapter),
 ) -> dict[str, Any]:
-    metrics = await reader.get_annotation_queue_metrics_for_user(
-        project_id,
-        queue_id,
-        current_user.user_id,
+    await reader.ensure_project_visible(project_id, current_user.user_id)
+    metrics = await adapter.get_annotation_queue_metrics(
+        project_id, current_user.user_id, queue_id
     )
     return success(metrics)
 
@@ -2274,11 +2269,13 @@ async def create_annotation_queue_item(
     payload: AnnotationQueueItemPayload,
     current_user: CurrentUserContext = Depends(get_current_user_context),
     reader: LangfuseDatabaseReader = Depends(get_langfuse_db_reader),
+    adapter: LangfuseAnnotationsAdapter = Depends(get_langfuse_annotations_adapter),
 ) -> dict[str, Any]:
-    item = await reader.create_annotation_queue_item_for_user(
+    await reader.ensure_project_visible(project_id, current_user.user_id)
+    item = await adapter.create_annotation_queue_item(
         project_id,
-        queue_id,
         current_user.user_id,
+        queue_id,
         {"objectId": payload.object_id, "objectType": payload.object_type},
     )
     return success(item)
@@ -2321,11 +2318,13 @@ async def delete_annotation_queue_items(
     payload: DeleteItemsPayload = Body(...),
     current_user: CurrentUserContext = Depends(get_current_user_context),
     reader: LangfuseDatabaseReader = Depends(get_langfuse_db_reader),
+    adapter: LangfuseAnnotationsAdapter = Depends(get_langfuse_annotations_adapter),
 ) -> dict[str, Any]:
-    deleted = await reader.delete_annotation_queue_items_for_user(
+    await reader.ensure_project_visible(project_id, current_user.user_id)
+    deleted = await adapter.delete_annotation_queue_items(
         project_id,
-        queue_id,
         current_user.user_id,
+        queue_id,
         payload.item_ids,
     )
     return success({"ids": deleted})
@@ -2382,6 +2381,7 @@ async def save_annotation_batch_scores(
     score_writer: LangfuseClickHouseScoreWriter = Depends(
         get_langfuse_clickhouse_score_writer
     ),
+    adapter: LangfuseAnnotationsAdapter = Depends(get_langfuse_annotations_adapter),
 ) -> dict[str, Any]:
     filtered_ids: list[str] = []
     pending_ids: list[str] = []
@@ -2485,19 +2485,13 @@ async def save_annotation_batch_scores(
     success_item_ids = [
         item_id for item_id in target_ids if item_id not in failed_reasons
     ]
-    complete_many = getattr(reader, "complete_annotation_queue_items_for_user", None)
-    if complete_many is not None:
-        await complete_many(
+    if success_item_ids:
+        await adapter.complete_annotation_queue_items(
             project_id,
+            current_user.user_id,
             queue_id,
             success_item_ids,
-            current_user.user_id,
         )
-    else:
-        for item_id in success_item_ids:
-            await reader.complete_annotation_queue_item_for_user(
-                project_id, queue_id, item_id, current_user.user_id
-            )
     failures = [
         {"itemId": item_id, "reason": failed_reasons[item_id]}
         for item_id in target_ids
@@ -2535,7 +2529,9 @@ async def save_annotation_scores(
     score_writer: LangfuseClickHouseScoreWriter = Depends(
         get_langfuse_clickhouse_score_writer
     ),
+    adapter: LangfuseAnnotationsAdapter = Depends(get_langfuse_annotations_adapter),
 ) -> dict[str, Any]:
+    await reader.ensure_project_visible(project_id, current_user.user_id)
     item = await _save_annotation_scores_with_langfuse_api(
         project_id=project_id,
         queue_id=queue_id,
@@ -2545,6 +2541,7 @@ async def save_annotation_scores(
         reader=reader,
         langfuse_client=langfuse_client,
         score_writer=score_writer,
+        adapter=adapter,
     )
     return success(item)
 
@@ -2557,12 +2554,14 @@ async def add_annotation_item_to_dataset(
     payload: AddAnnotationItemToDatasetPayload,
     current_user: CurrentUserContext = Depends(get_current_user_context),
     reader: LangfuseDatabaseReader = Depends(get_langfuse_db_reader),
+    adapter: LangfuseAnnotationsAdapter = Depends(get_langfuse_annotations_adapter),
 ) -> dict[str, Any]:
-    dataset_item = await reader.add_annotation_item_to_dataset_for_user(
+    await reader.ensure_project_visible(project_id, current_user.user_id)
+    dataset_item = await adapter.add_annotation_item_to_dataset(
         project_id,
+        current_user.user_id,
         queue_id,
         item_id,
-        current_user.user_id,
         {
             "datasetId": payload.dataset_id,
             "input": payload.input,
@@ -2571,6 +2570,75 @@ async def add_annotation_item_to_dataset(
         },
     )
     return success(dataset_item)
+
+
+async def _create_trace_annotation_task_via_public_api(
+    *,
+    project_id: str,
+    user_id: str,
+    payload: dict[str, Any],
+    reader: LangfuseDatabaseReader,
+    adapter: LangfuseAnnotationsAdapter,
+) -> dict[str, Any]:
+    requested_trace_ids = payload.get("traceIds") or []
+    trace_ids = list(dict.fromkeys(requested_trace_ids))
+    skipped_count = len(requested_trace_ids) - len(trace_ids)
+    score_config = await adapter.ensure_default_score_config(project_id, user_id)
+    score_config_ids = [str(score_config.get("id") or "")]
+
+    queue_id = str(payload.get("queueId") or "")
+    if queue_id:
+        queue = await adapter.get_annotation_queue(project_id, user_id, queue_id)
+    else:
+        queue = await adapter.create_annotation_queue(
+            project_id,
+            user_id,
+            {
+                "name": payload.get("queueName") or "Trace 人工标注",
+                "description": payload.get("description") or "",
+                "scoreConfigIds": score_config_ids,
+            },
+        )
+        queue_id = str(queue.get("id") or "")
+    queue_score_config_ids = [str(item) for item in queue.get("scoreConfigIds") or []]
+    if queue_score_config_ids:
+        score_config_ids = queue_score_config_ids
+
+    created_items: list[dict[str, str]] = []
+    for trace_id in trace_ids:
+        try:
+            item = await adapter.create_annotation_queue_item(
+                project_id,
+                user_id,
+                queue_id,
+                {"objectId": trace_id, "objectType": "TRACE"},
+            )
+        except LangfuseResourceConflictError:
+            skipped_count += 1
+            continue
+        item_id = str(item.get("id") or "")
+        if item_id:
+            created_items.append({"itemId": item_id, "traceId": trace_id})
+        else:
+            skipped_count += 1
+
+    assignee_ids = payload.get("assigneeIds") or []
+    if assignee_ids and created_items:
+        await reader.update_annotation_queue_item_assignees_for_user(
+            project_id,
+            queue_id,
+            user_id,
+            [item["itemId"] for item in created_items],
+            str(assignee_ids[0]),
+        )
+
+    return {
+        "queueId": queue_id,
+        "createdCount": len(created_items),
+        "skippedCount": skipped_count,
+        "createdItems": created_items,
+        "scoreConfigIds": score_config_ids,
+    }
 
 
 @router.post("/traces/annotation-task")
@@ -2584,13 +2652,16 @@ async def create_trace_annotation_task(
     score_writer: LangfuseClickHouseScoreWriter = Depends(
         get_langfuse_clickhouse_score_writer
     ),
+    adapter: LangfuseAnnotationsAdapter = Depends(get_langfuse_annotations_adapter),
 ) -> dict[str, Any]:
     task_payload = _trace_annotation_task_payload(payload)
 
-    result = await reader.create_trace_annotation_task_for_user(
-        project_id,
-        current_user.user_id,
-        task_payload,
+    result = await _create_trace_annotation_task_via_public_api(
+        project_id=project_id,
+        user_id=current_user.user_id,
+        payload=task_payload,
+        reader=reader,
+        adapter=adapter,
     )
     await _prefill_annotation_scores_from_trace_scores(
         project_id=project_id,
@@ -2623,6 +2694,7 @@ async def create_trace_annotation_task_job(
     score_writer: LangfuseClickHouseScoreWriter = Depends(
         get_langfuse_clickhouse_score_writer
     ),
+    adapter: LangfuseAnnotationsAdapter = Depends(get_langfuse_annotations_adapter),
     settings: Settings = Depends(get_settings),
 ) -> dict[str, Any]:
     task_payload = _trace_annotation_task_payload(payload)
@@ -2657,6 +2729,7 @@ async def create_trace_annotation_task_job(
             trace_reader=trace_reader,
             langfuse_client=langfuse_client,
             score_writer=score_writer,
+            adapter=adapter,
         )
     return success(_to_trace_annotation_task_job_response(job))
 
@@ -2738,7 +2811,9 @@ async def add_traces_to_dataset(
     current_user: CurrentUserContext = Depends(get_current_user_context),
     reader: LangfuseDatabaseReader = Depends(get_langfuse_db_reader),
     trace_reader: LangfuseClickHouseReader = Depends(get_langfuse_clickhouse_reader),
+    adapter: LangfuseAnnotationsAdapter = Depends(get_langfuse_annotations_adapter),
 ) -> dict[str, Any]:
+    await reader.ensure_project_visible(project_id, current_user.user_id)
     failures: list[dict[str, Any]] = []
     unique_trace_ids = list(dict.fromkeys(payload.trace_ids))
     traces = await trace_reader.list_traces_by_ids(
@@ -2756,7 +2831,7 @@ async def add_traces_to_dataset(
                 }
             )
 
-    result = await reader.add_traces_to_dataset_for_user(
+    result = await adapter.add_traces_to_dataset(
         project_id,
         current_user.user_id,
         {
@@ -2858,6 +2933,7 @@ async def run_trace_annotation_task_job(
     reader: LangfuseDatabaseReader,
     trace_reader: LangfuseClickHouseReader,
     langfuse_client: LangfuseAdminClient,
+    adapter: LangfuseAnnotationsAdapter,
     score_writer: LangfuseClickHouseScoreWriter | None = None,
     claimed_job: dict[str, Any] | None = None,
     lock_owner: str | None = None,
@@ -2906,10 +2982,12 @@ async def run_trace_annotation_task_job(
             if queue_id:
                 batch_payload.pop("queueName", None)
                 batch_payload["queueId"] = queue_id
-            result = await reader.create_trace_annotation_task_for_user(
-                job["projectId"],
-                job["userId"],
-                batch_payload,
+            result = await _create_trace_annotation_task_via_public_api(
+                project_id=job["projectId"],
+                user_id=job["userId"],
+                payload=batch_payload,
+                reader=reader,
+                adapter=adapter,
             )
             if not queue_id:
                 queue_id = str(result.get("queueId") or "")
@@ -3160,7 +3238,8 @@ async def run_trace_dataset_import_job(
                 for trace_id in batch_trace_ids
                 if trace_id not in found_trace_ids
             ]
-            result = await reader.add_traces_to_dataset_for_user(
+            dataset_adapter = LangfuseAnnotationsAdapter(reader)
+            result = await dataset_adapter.add_traces_to_dataset(
                 job["projectId"],
                 job["userId"],
                 {
@@ -3296,6 +3375,7 @@ async def execute_claimed_trace_bulk_job(
             trace_reader=trace_reader,
             langfuse_client=langfuse_client,
             score_writer=score_writer,
+            adapter=LangfuseAnnotationsAdapter(reader),
             claimed_job=job,
             lock_owner=lock_owner,
         )

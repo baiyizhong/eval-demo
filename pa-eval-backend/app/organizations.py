@@ -7,6 +7,7 @@ from app.auth_context import CurrentUserContext, get_current_user_context
 from app.config import Settings, get_settings
 from app.errors import BusinessError
 from app.langfuse_db import LangfuseDatabaseReader, get_langfuse_db_reader
+from app.langfuse.administration_adapter import LangfuseAdministrationAdapter
 from app.response import success
 from app.schemas import (
     CreateOrganizationPayload,
@@ -15,6 +16,12 @@ from app.schemas import (
 )
 
 router = APIRouter(prefix="/api/organizations", tags=["organizations"])
+
+
+def get_langfuse_administration_adapter(
+    db_reader: LangfuseDatabaseReader = Depends(get_langfuse_db_reader),
+) -> LangfuseAdministrationAdapter:
+    return LangfuseAdministrationAdapter(db_reader)
 
 
 class OrganizationMemberPayload(BaseModel):
@@ -55,7 +62,9 @@ def _to_pa_organization(raw: dict[str, Any]) -> dict[str, Any]:
         "createdBy": pa_eval.get("createdBy"),
         "createdAt": created_at,
         "updatedAt": organization.updated_at or created_at,
-        "projectCount": project_count if project_count is not None else len(organization.projects),
+        "projectCount": project_count
+        if project_count is not None
+        else len(organization.projects),
     }
 
 
@@ -227,9 +236,11 @@ async def create_organization_member(
     organization_id: str,
     payload: OrganizationMemberPayload,
     current_user: CurrentUserContext = Depends(get_current_user_context),
-    reader: LangfuseDatabaseReader = Depends(get_langfuse_db_reader),
+    adapter: LangfuseAdministrationAdapter = Depends(
+        get_langfuse_administration_adapter
+    ),
 ) -> dict[str, Any]:
-    member = await reader.create_organization_member(
+    member = await adapter.create_organization_member(
         organization_id,
         current_user.user_id,
         payload.model_dump(),
@@ -242,7 +253,9 @@ async def import_organization_members(
     organization_id: str,
     payload: ImportOrganizationMembersPayload,
     current_user: CurrentUserContext = Depends(get_current_user_context),
-    reader: LangfuseDatabaseReader = Depends(get_langfuse_db_reader),
+    adapter: LangfuseAdministrationAdapter = Depends(
+        get_langfuse_administration_adapter
+    ),
 ) -> dict[str, Any]:
     members: list[dict[str, Any]] = []
     failures: list[dict[str, Any]] = []
@@ -250,7 +263,7 @@ async def import_organization_members(
         member_data = member_payload.model_dump()
         try:
             members.append(
-                await reader.create_organization_member(
+                await adapter.create_organization_member(
                     organization_id,
                     current_user.user_id,
                     member_data,
@@ -273,9 +286,11 @@ async def update_organization_member(
     member_id: str,
     payload: UpdateOrganizationMemberPayload,
     current_user: CurrentUserContext = Depends(get_current_user_context),
-    reader: LangfuseDatabaseReader = Depends(get_langfuse_db_reader),
+    adapter: LangfuseAdministrationAdapter = Depends(
+        get_langfuse_administration_adapter
+    ),
 ) -> dict[str, Any]:
-    member = await reader.update_organization_member(
+    member = await adapter.update_organization_member(
         organization_id,
         member_id,
         current_user.user_id,
@@ -289,11 +304,11 @@ async def delete_organization_member(
     organization_id: str,
     member_id: str,
     current_user: CurrentUserContext = Depends(get_current_user_context),
-    reader: LangfuseDatabaseReader = Depends(get_langfuse_db_reader),
+    adapter: LangfuseAdministrationAdapter = Depends(
+        get_langfuse_administration_adapter
+    ),
 ) -> dict[str, Any]:
-    deleted = await reader.delete_organization_member(
-        organization_id,
-        member_id,
-        current_user.user_id,
+    deleted = await adapter.delete_organization_member(
+        organization_id, member_id, current_user.user_id
     )
     return success(deleted)
