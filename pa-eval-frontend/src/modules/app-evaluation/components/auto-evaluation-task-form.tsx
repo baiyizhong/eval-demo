@@ -11,6 +11,7 @@ import { useNavigate } from 'react-router'
 import { toast } from 'sonner'
 import { cn, getPageNumbers } from '@/lib/utils'
 import { useAPI } from '@/hooks/use-api'
+import { Alert, AlertDescription, AlertTitle } from '@/components/ui/alert'
 import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
 import {
@@ -30,6 +31,7 @@ import {
   SelectTrigger,
   SelectValue,
 } from '@/components/ui/select'
+import { Switch } from '@/components/ui/switch'
 import {
   Table,
   TableBody,
@@ -167,6 +169,8 @@ export function AutoEvaluationTaskForm({
   const navigate = useNavigate()
   const [step, setStep] = useState(0)
   const [form, setForm] = useState<AutoEvaluationTaskFormInput>(initialForm)
+  const [supportsScheduledExecution, setSupportsScheduledExecution] =
+    useState(false)
   const [error, setError] = useState('')
   const [evaluatorKeyword, setEvaluatorKeyword] = useState('')
   const [datasetKeyword, setDatasetKeyword] = useState('')
@@ -490,6 +494,40 @@ export function AutoEvaluationTaskForm({
                 }
               />
             </Field>
+            <div className='bg-background flex items-center justify-between gap-4 rounded-lg border p-3 md:col-span-2'>
+              <div className='flex min-w-0 flex-col gap-1'>
+                <Label htmlFor='supports-scheduled-execution'>
+                  支持定时执行
+                </Label>
+                <span className='text-muted-foreground text-xs leading-5'>
+                  开启后，该任务可由定时任务模块调度执行。
+                </span>
+              </div>
+              <Switch
+                id='supports-scheduled-execution'
+                checked={supportsScheduledExecution}
+                onCheckedChange={(checked) => {
+                  setSupportsScheduledExecution(checked)
+                  updateForm({
+                    ...form,
+                    dataSource:
+                      checked && form.dataSource.type === 'DATASET'
+                        ? createDefaultTraceFilter()
+                        : form.dataSource,
+                  })
+                }}
+                aria-label='支持定时执行'
+              />
+            </div>
+            {supportsScheduledExecution ? (
+              <Alert className='md:col-span-2'>
+                <Info />
+                <AlertTitle>已支持定时执行</AlertTitle>
+                <AlertDescription>
+                  可在定时任务模块中配置调度。
+                </AlertDescription>
+              </Alert>
+            ) : null}
           </div>
         </section>
       ) : null}
@@ -685,7 +723,9 @@ export function AutoEvaluationTaskForm({
             <div className='mb-4 flex flex-col gap-1'>
               <h3 className='text-sm font-semibold'>评测数据来源</h3>
               <p className='text-muted-foreground text-sm'>
-                选择固定数据集，或通过 Trace 过滤条件动态抽样。
+                {supportsScheduledExecution
+                  ? '定时执行任务仅支持通过 Trace 过滤条件动态抽样。'
+                  : '选择固定数据集，或通过 Trace 过滤条件动态抽样。'}
               </p>
             </div>
             <Tabs
@@ -702,7 +742,9 @@ export function AutoEvaluationTaskForm({
             >
               <TabsList className='mb-4'>
                 <TabsTrigger value='TRACE_FILTER'>Trace 过滤</TabsTrigger>
-                <TabsTrigger value='DATASET'>数据集</TabsTrigger>
+                {!supportsScheduledExecution ? (
+                  <TabsTrigger value='DATASET'>数据集</TabsTrigger>
+                ) : null}
               </TabsList>
               <TabsContent
                 value='TRACE_FILTER'
@@ -882,68 +924,70 @@ export function AutoEvaluationTaskForm({
                   </div>
                 </div>
               </TabsContent>
-              <TabsContent
-                value='DATASET'
-                className='grid gap-4 md:grid-cols-[minmax(0,1fr)_minmax(260px,320px)]'
-              >
-                <div className='grid gap-4 md:grid-cols-2'>
-                  <Field label='搜索数据集'>
-                    <Input
-                      placeholder='搜索数据集名称'
-                      value={datasetKeyword}
-                      onChange={(event) =>
-                        setDatasetKeyword(event.target.value)
-                      }
-                    />
-                  </Field>
-                  <Field label='选择数据集'>
-                    <Select
-                      value={
-                        form.dataSource.type === 'DATASET'
-                          ? form.dataSource.datasetId
-                          : ''
-                      }
-                      onValueChange={(value) => {
-                        const dataset = datasets.find(
-                          (item) => item.id === value
-                        )
-                        updateForm({
-                          ...form,
-                          dataSource: {
-                            type: 'DATASET',
-                            datasetId: value,
-                            projectId: dataset?.projectId,
-                          },
-                        })
-                      }}
-                    >
-                      <SelectTrigger className='w-full'>
-                        <SelectValue placeholder='选择数据集' />
-                      </SelectTrigger>
-                      <SelectContent>
-                        <SelectGroup>
-                          {datasets.map((dataset) => (
-                            <SelectItem key={dataset.id} value={dataset.id}>
-                              {dataset.name} · {dataset.itemCount} 条
-                              {dataset.projectName
-                                ? ` · ${dataset.projectName}`
-                                : ''}
-                            </SelectItem>
-                          ))}
-                        </SelectGroup>
-                      </SelectContent>
-                    </Select>
-                  </Field>
-                </div>
-                <SummaryPanel
-                  title='数据集摘要'
-                  items={[
-                    ['样本数', `${selectedDataset?.itemCount ?? 0} 条`],
-                    ['所属项目', selectedDataset?.projectName ?? '当前项目'],
-                    ['预计运行', `${estimatedRunCount} 条`],
-                  ]}
-                />
-              </TabsContent>
+              {!supportsScheduledExecution ? (
+                <TabsContent
+                  value='DATASET'
+                  className='grid gap-4 md:grid-cols-[minmax(0,1fr)_minmax(260px,320px)]'
+                >
+                  <div className='grid gap-4 md:grid-cols-2'>
+                    <Field label='搜索数据集'>
+                      <Input
+                        placeholder='搜索数据集名称'
+                        value={datasetKeyword}
+                        onChange={(event) =>
+                          setDatasetKeyword(event.target.value)
+                        }
+                      />
+                    </Field>
+                    <Field label='选择数据集'>
+                      <Select
+                        value={
+                          form.dataSource.type === 'DATASET'
+                            ? form.dataSource.datasetId
+                            : ''
+                        }
+                        onValueChange={(value) => {
+                          const dataset = datasets.find(
+                            (item) => item.id === value
+                          )
+                          updateForm({
+                            ...form,
+                            dataSource: {
+                              type: 'DATASET',
+                              datasetId: value,
+                              projectId: dataset?.projectId,
+                            },
+                          })
+                        }}
+                      >
+                        <SelectTrigger className='w-full'>
+                          <SelectValue placeholder='选择数据集' />
+                        </SelectTrigger>
+                        <SelectContent>
+                          <SelectGroup>
+                            {datasets.map((dataset) => (
+                              <SelectItem key={dataset.id} value={dataset.id}>
+                                {dataset.name} · {dataset.itemCount} 条
+                                {dataset.projectName
+                                  ? ` · ${dataset.projectName}`
+                                  : ''}
+                              </SelectItem>
+                            ))}
+                          </SelectGroup>
+                        </SelectContent>
+                      </Select>
+                    </Field>
+                  </div>
+                  <SummaryPanel
+                    title='数据集摘要'
+                    items={[
+                      ['样本数', `${selectedDataset?.itemCount ?? 0} 条`],
+                      ['所属项目', selectedDataset?.projectName ?? '当前项目'],
+                      ['预计运行', `${estimatedRunCount} 条`],
+                    ]}
+                  />
+                </TabsContent>
+              ) : null}
             </Tabs>
           </div>
 

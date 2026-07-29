@@ -21,6 +21,7 @@ const paramSegmentMap: Record<string, string> = {
   reportId: 'evaluation-reports',
   templateId: 'report-templates',
   taskId: 'auto-evaluations',
+  sceneId: 'scenes',
 }
 
 export function success(data: any) {

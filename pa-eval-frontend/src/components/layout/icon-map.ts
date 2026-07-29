@@ -21,6 +21,7 @@ import {
   UserX,
   Users,
   Wrench,
+  Workflow,
   AudioWaveform,
   Command,
 } from 'lucide-react'
@@ -53,6 +54,7 @@ const iconMap: Record<string, LucideIcon> = {
   UserX,
   Users,
   Wrench,
+  Workflow,
 }
 
 export function resolveIcon(iconName: string): LucideIcon {

@@ -84,6 +84,14 @@ function taskFromInput(req: any, current?: ScheduledJobTask): ScheduledJobTask {
     id: current?.id ?? id('pajob'),
     projectId: project,
     type: input.taskType ?? current?.type ?? 'AUTO_EVALUATION',
+    binding:
+      input.binding ??
+      current?.binding ?? {
+        type: input.taskType ?? 'AUTO_EVALUATION',
+        targetId: '',
+        targetName: '',
+        targetDescription: '',
+      },
     name: input.name ?? current?.name ?? '未命名定时任务',
     description: input.description ?? current?.description ?? '',
     scoreName: input.scoreName ?? current?.scoreName ?? 'accuracy',
@@ -123,7 +131,11 @@ function runTask(req: any, triggerType: 'MANUAL' | 'JOB') {
   const timestamp = new Date()
   task.lastRunAt = timestamp.toISOString()
   task.updatedAt = timestamp.toISOString()
-  getLogs(task.projectId).unshift(createExecutionLog(task, triggerType, { now: timestamp }))
+  if (task.type === 'AUTO_EVALUATION') {
+    getLogs(task.projectId).unshift(
+      createExecutionLog(task, triggerType, { now: timestamp })
+    )
+  }
   return success({ id: task.id, status: 'RUNNING' })
 }
 

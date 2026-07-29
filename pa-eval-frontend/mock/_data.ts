@@ -1,4 +1,10 @@
 import { clone } from './_utils.ts'
+import {
+  experimentGroupSeeds,
+  experimentReportBaselineSeeds,
+  experimentReportSeeds,
+  sceneSeeds,
+} from './scene-experiment-seed.ts'
 
 const now = '2026-07-08T08:00:00.000Z'
 
@@ -114,6 +120,10 @@ export const seed = {
       ],
     },
   ],
+  scenes: sceneSeeds,
+  experimentGroups: experimentGroupSeeds,
+  experimentReports: experimentReportSeeds,
+  experimentReportBaselines: experimentReportBaselineSeeds,
   evaluators: [
     {
       id: 'eval_dify_customer_service_quality',
@@ -159,6 +169,7 @@ export const seed = {
       provider: 'DIFY',
       projectId: 'proj_a',
       projectName: '项目 A',
+      enabled: true,
       usageCount: 6,
       config: {
         endpointUrl: 'https://mock.invalid/dify/workflows/customer-quality',
@@ -193,6 +204,7 @@ export const seed = {
       provider: 'N8N',
       projectId: 'proj_a',
       projectName: '项目 A',
+      enabled: true,
       usageCount: 3,
       config: {
         endpointUrl: 'https://mock.invalid/n8n/webhook/safety-review',
@@ -213,8 +225,28 @@ export const seed = {
       provider: 'LANGFUSE',
       projectId: 'proj_a',
       projectName: '项目 A',
+      enabled: true,
       usageCount: 1,
       config: { prompt: '请判断答案是否准确' },
+      createdAt: now,
+      updatedAt: now,
+    },
+    {
+      id: 'eval_retired_support_policy',
+      name: '旧版客服政策评估器',
+      type: 'LLM_AS_JUDGE',
+      version: '0.9.0',
+      variables: ['input', 'output'],
+      inputVariables: ['input', 'output'],
+      outputVariables: ['policy_score'],
+      outputVariableMappings: [],
+      description: '已停用的历史评估器，用于验证场景配置中的有效状态过滤。',
+      provider: 'LANGFUSE',
+      projectId: 'proj_a',
+      projectName: '项目 A',
+      enabled: false,
+      usageCount: 0,
+      config: { prompt: '历史客服政策评估提示词' },
       createdAt: now,
       updatedAt: now,
     },
@@ -225,7 +257,7 @@ export const seed = {
       projectId: 'proj_a',
       name: '客服问答数据集客服问答数据集客服问答数据集',
       description: '常见客服问答样本常见客服问答样本常见客服问答样本',
-      type: 'EVALUATION',
+      type: 'evaluation',
       metadata: { domain: 'support' },
       inputSchema: { type: 'object' },
       expectedOutputSchema: { type: 'object' },

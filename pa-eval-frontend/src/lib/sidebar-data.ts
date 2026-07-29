@@ -128,6 +128,14 @@ function buildProjectNavItems(projectId: string): NavItem[] {
       scope: { type: 'project', projectId },
     },
     {
+      title: '场景试验',
+      url: `/projects/${encodedProjectId}/scenes`,
+      icon: 'Workflow',
+      activeMatch: 'prefix',
+      access: 'project:dataset:view',
+      scope: { type: 'project', projectId },
+    },
+    {
       title: '定时任务',
       url: `/projects/${encodedProjectId}/scheduled-jobs`,
       icon: 'CalendarClock',

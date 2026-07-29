@@ -15,9 +15,13 @@ const appEvaluationSources = [
   source: readFileSync(path, 'utf8'),
 }))
 
-test('auto evaluation module does not expose scheduled evaluation capability', () => {
+test('auto evaluation module does not expose scheduling backend capability', () => {
   for (const { path, source } of appEvaluationSources) {
-    assert.doesNotMatch(source, /runMode|SCHEDULED|schedule\/start|schedule\/pause/, path)
-    assert.doesNotMatch(source, /定时执行|启动调度|停止调度|调度配置/, path)
+    assert.doesNotMatch(
+      source,
+      /runMode|SCHEDULED|schedule\/start|schedule\/pause/,
+      path
+    )
+    assert.doesNotMatch(source, /启动调度|停止调度|调度配置/, path)
   }
 })

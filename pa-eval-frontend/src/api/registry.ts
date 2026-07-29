@@ -436,6 +436,54 @@ export const apiRegistry = {
     method: 'GET',
     url: '/projects/:projectId/scheduled-job-logs',
   },
+  getProjectScenes: {
+    method: 'GET',
+    url: '/projects/:projectId/scenes',
+  },
+  createProjectScene: {
+    method: 'POST',
+    url: '/projects/:projectId/scenes',
+  },
+  getProjectScene: {
+    method: 'GET',
+    url: '/projects/:projectId/scenes/:sceneId',
+  },
+  updateProjectScene: {
+    method: 'PATCH',
+    url: '/projects/:projectId/scenes/:sceneId',
+  },
+  deleteProjectScene: {
+    method: 'DELETE',
+    url: '/projects/:projectId/scenes/:sceneId',
+  },
+  createDatasetExperiment: {
+    method: 'POST',
+    url: '/projects/:projectId/datasets/:datasetId/experiments',
+  },
+  getDatasetExperimentReports: {
+    method: 'GET',
+    url: '/projects/:projectId/datasets/:datasetId/experiment-reports',
+  },
+  getExperimentReport: {
+    method: 'GET',
+    url: '/projects/:projectId/experiment-reports/:reportId',
+  },
+  aggregateExperimentReports: {
+    method: 'POST',
+    url: '/projects/:projectId/experiment-reports/aggregate',
+  },
+  compareExperimentReports: {
+    method: 'POST',
+    url: '/projects/:projectId/experiment-reports/compare',
+  },
+  getExperimentReportBaselines: {
+    method: 'GET',
+    url: '/projects/:projectId/datasets/:datasetId/experiment-report-baselines',
+  },
+  setExperimentReportBaseline: {
+    method: 'PUT',
+    url: '/projects/:projectId/experiment-report-baselines',
+  },
 } as const
 
 export type AppApiRegistry = typeof apiRegistry

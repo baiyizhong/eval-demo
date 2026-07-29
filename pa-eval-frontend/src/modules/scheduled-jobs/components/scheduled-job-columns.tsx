@@ -72,8 +72,8 @@ export function ScheduledJobTable({
             <span className='max-w-56 truncate font-medium'>
               {row.original.name}
             </span>
-            <span className='text-muted-foreground text-xs'>
-              Score Name：{row.original.scoreName}
+            <span className='text-muted-foreground max-w-56 truncate text-xs'>
+              绑定对象：{row.original.binding.targetName || '-'}
             </span>
           </div>
         ),

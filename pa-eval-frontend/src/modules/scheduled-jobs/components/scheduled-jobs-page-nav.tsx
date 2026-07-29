@@ -1,7 +1,8 @@
-import { FileClock, ListChecks, Plus, RefreshCw } from 'lucide-react'
+import { Bot, FlaskConical, ListChecks, Plus, RefreshCw } from 'lucide-react'
 import { PageNav } from '@/components/common/page-nav'
 
-export type ScheduledJobsTab = 'tasks' | 'logs'
+export type ScheduledJobsTab =
+  'tasks' | 'auto-evaluation-logs' | 'experiment-logs'
 
 type ScheduledJobsPageNavProps = {
   activeTab: ScheduledJobsTab
@@ -30,10 +31,16 @@ export function ScheduledJobsPageNav({
             isActive: activeTab === 'tasks',
           },
           {
-            title: '执行日志',
-            href: `${basePath}?tab=logs`,
-            icon: FileClock,
-            isActive: activeTab === 'logs',
+            title: '自动评测执行日志',
+            href: `${basePath}?tab=auto-evaluation-logs`,
+            icon: Bot,
+            isActive: activeTab === 'auto-evaluation-logs',
+          },
+          {
+            title: '运行试验执行日志',
+            href: `${basePath}?tab=experiment-logs`,
+            icon: FlaskConical,
+            isActive: activeTab === 'experiment-logs',
           },
         ],
       }}

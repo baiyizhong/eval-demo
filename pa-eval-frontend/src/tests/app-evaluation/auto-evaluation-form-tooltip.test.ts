@@ -19,7 +19,7 @@ test('新建自动评测只展示 Badcase 阈值输入', () => {
     /badcase:\s*\{\s*...form\.badcase,\s*enabled:\s*true\s*\}/
   )
   assert.doesNotMatch(formSource, /label='Badcase'\s+tooltip=/)
-  assert.doesNotMatch(formSource, /<Switch/)
+  assert.doesNotMatch(formSource, /checked=\{form\.badcase\.enabled\}/)
   assert.doesNotMatch(formSource, /disabled=\{!form\.badcase\.enabled\}/)
 })
 
@@ -32,7 +32,7 @@ test('新建自动评测表单不重复展示抽屉标题和说明', () => {
   assert.doesNotMatch(formSource, /按步骤配置基础信息、评估器和评测数据来源。/)
 })
 
-test('新建自动评测评估器列表不展示说明且列表区域可滚动', () => {
+test('新建自动评测评估器列表不展示说明且布局可收缩', () => {
   assert.match(
     formSource,
     /<h3 className='text-sm font-semibold'>评估器列表<\/h3>/
@@ -42,7 +42,14 @@ test('新建自动评测评估器列表不展示说明且列表区域可滚动',
   assert.match(formSource, /placeholder='输入评估器名称或描述'/)
   assert.match(
     formSource,
-    /className='flex min-h-0 flex-1 flex-col gap-2 overflow-y-auto pr-1'/
+    /className='grid w-full max-w-full min-w-0 gap-4 lg:grid-cols-\[minmax\(0,320px\)_minmax\(0,1fr\)\]'/
   )
-  assert.match(formSource, /max-h-\[min\(560px,calc\(100vh-320px\)\)\]/)
+  assert.match(
+    formSource,
+    /className='bg-card text-card-foreground flex min-h-\[420px\] max-w-full min-w-0 flex-col gap-3 rounded-lg border p-4'/
+  )
+  assert.match(
+    formSource,
+    /className='flex min-h-0 max-h-\[min\(560px,calc\(100vh-320px\)\)\] flex-1 flex-col gap-2'/
+  )
 })

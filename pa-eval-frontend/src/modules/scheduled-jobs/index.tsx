@@ -1,5 +1,6 @@
 import { useCallback, useMemo, useState } from 'react'
 import { useQuery, useQueryClient } from '@tanstack/react-query'
+import { listAvailableScenes } from '@/modules/scene-experiments/api/scene-experiment-api'
 import { useParams, useSearchParams } from 'react-router'
 import { toast } from 'sonner'
 import { confirm } from '@/lib/confirm'
@@ -19,6 +20,7 @@ import {
   updateProjectScheduledJob,
   type ScheduledJobInput,
 } from './api/scheduled-jobs-api'
+import { ScheduledExperimentLogTable } from './components/scheduled-experiment-log-columns'
 import { ScheduledJobTable } from './components/scheduled-job-columns'
 import { ScheduledJobDrawer } from './components/scheduled-job-drawer'
 import { ScheduledJobLogTable } from './components/scheduled-job-log-columns'
@@ -26,18 +28,19 @@ import {
   ScheduledJobsPageNav,
   type ScheduledJobsTab,
 } from './components/scheduled-jobs-page-nav'
-import type {
-  ScheduledJobDatasetOption,
-  ScheduledJobEvaluator,
-  ScheduledJobReportTemplateOption,
-  ScheduledJobTask,
-} from './types'
+import { scheduledJobMockAutoEvaluationTasks } from './mock-data'
+import type { ScheduledJobTask } from './types'
 
 export function ScheduledJobs() {
   const { projectId = 'project_customer_agent' } = useParams()
   const [searchParams, setSearchParams] = useSearchParams()
+  const tabParam = searchParams.get('tab')
   const activeTab: ScheduledJobsTab =
-    searchParams.get('tab') === 'logs' ? 'logs' : 'tasks'
+    tabParam === 'experiment-logs'
+      ? 'experiment-logs'
+      : tabParam === 'auto-evaluation-logs' || tabParam === 'logs'
+        ? 'auto-evaluation-logs'
+        : 'tasks'
   const basePath = useMemo(
     () => `/projects/${projectId}/scheduled-jobs`,
     [projectId]
@@ -81,43 +84,18 @@ function ScheduledJobsProject({
   const [editingTask, setEditingTask] = useState<ScheduledJobTask | null>(null)
   const [drawerFormKey, setDrawerFormKey] = useState(0)
 
-  const evaluatorsQuery = useQuery({
-    queryKey: ['scheduled-jobs', $api, projectId, 'evaluators'],
-    queryFn: async () => {
-      const response = await $api.getEvaluators<{
-        datas: Array<Record<string, unknown>>
-      }>({
-        query: { page: 1, pageSize: 100, type: 'WORKFLOW' },
-      })
-      return response.datas.map(toScheduledJobEvaluator)
-    },
+  const scenesQuery = useQuery({
+    queryKey: ['scheduled-jobs', $api, projectId, 'available-scenes'],
+    queryFn: () => listAvailableScenes($api, projectId),
   })
-  const datasetsQuery = useQuery({
-    queryKey: ['scheduled-jobs', $api, projectId, 'datasets'],
-    queryFn: async () => {
-      const response = await $api.getProjectDatasets<{
-        datas: Array<Record<string, unknown>>
-      }>({
-        path: { projectId },
-        query: { page: 1, pageSize: 100 },
-      })
-      return response.datas.map((dataset) =>
-        toScheduledJobDataset(dataset, projectId)
-      )
-    },
-  })
-  const reportTemplatesQuery = useQuery({
-    queryKey: ['scheduled-jobs', $api, projectId, 'report-templates'],
-    queryFn: async () => {
-      const response = await $api.getEvaluationReportTemplates<{
-        datas: Array<Record<string, unknown>>
-      }>({
-        path: { projectId },
-        query: { page: 1, pageSize: 100 },
-      })
-      return response.datas.map(toScheduledJobReportTemplate)
-    },
-  })
+  const autoEvaluationTaskOptions = useMemo(
+    () =>
+      scheduledJobMockAutoEvaluationTasks.map((task) => ({
+        ...task,
+        projectId,
+      })),
+    [projectId]
+  )
 
   const taskTableRequest = useMemo(
     () => ({
@@ -231,7 +209,11 @@ function ScheduledJobsProject({
 
     void runProjectScheduledJob($api, projectId, task.id).then(async () => {
       await invalidateScheduledJobs()
-      setActiveTab('logs')
+      setActiveTab(
+        task.type === 'RUN_EXPERIMENT'
+          ? 'experiment-logs'
+          : 'auto-evaluation-logs'
+      )
       toast.success('已手动执行定时任务')
     })
   }
@@ -241,7 +223,11 @@ function ScheduledJobsProject({
 
     void triggerProjectScheduledJob($api, projectId, task.id).then(async () => {
       await invalidateScheduledJobs()
-      setActiveTab('logs')
+      setActiveTab(
+        task.type === 'RUN_EXPERIMENT'
+          ? 'experiment-logs'
+          : 'auto-evaluation-logs'
+      )
       toast.success('已触发 JOB 执行')
     })
   }
@@ -265,13 +251,13 @@ function ScheduledJobsProject({
   return (
     <Page fluid className='flex min-h-[calc(100svh-3.5rem)] flex-col'>
       <div className='flex min-h-0 flex-1 flex-col gap-4'>
-          <ScheduledJobsPageNav
-            activeTab={activeTab}
-            basePath={basePath}
-            canCreate={canEditScheduledJobs}
-            onCreate={handleCreateTask}
-            onRefresh={refresh}
-          />
+        <ScheduledJobsPageNav
+          activeTab={activeTab}
+          basePath={basePath}
+          canCreate={canEditScheduledJobs}
+          onCreate={handleCreateTask}
+          onRefresh={refresh}
+        />
         <section className='bg-card text-card-foreground flex min-h-0 min-w-0 flex-1 flex-col rounded-lg border p-4'>
           {activeTab === 'tasks' ? (
             <ScheduledJobTable
@@ -284,8 +270,10 @@ function ScheduledJobsProject({
               onTriggerJob={handleTriggerJob}
               onDelete={handleDeleteTask}
             />
-          ) : (
+          ) : activeTab === 'auto-evaluation-logs' ? (
             <ScheduledJobLogTable request={logTableRequest} />
+          ) : (
+            <ScheduledExperimentLogTable projectId={projectId} />
           )}
         </section>
         <ScheduledJobDrawer
@@ -293,9 +281,9 @@ function ScheduledJobsProject({
           projectId={projectId}
           open={canEditScheduledJobs && drawerOpen}
           task={editingTask}
-          evaluators={evaluatorsQuery.data}
-          datasets={datasetsQuery.data}
-          reportTemplates={reportTemplatesQuery.data}
+          autoEvaluationTasks={autoEvaluationTaskOptions}
+          scenes={scenesQuery.data?.datas}
+          scenesLoading={scenesQuery.isPending}
           onOpenChange={handleDrawerOpenChange}
           onSave={handleSaveTask}
         />
@@ -304,71 +292,10 @@ function ScheduledJobsProject({
   )
 }
 
-function toScheduledJobEvaluator(
-  item: Record<string, unknown>
-): ScheduledJobEvaluator {
-  return {
-    id: String(item.id ?? ''),
-    name: String(item.name ?? ''),
-    provider: item.provider === 'N8N' ? 'N8N' : 'DIFY',
-    description: String(item.description ?? ''),
-    variables: Array.isArray(item.variables)
-      ? item.variables.map((variable) => String(variable))
-      : [],
-    outputVariables: Array.isArray(item.outputVariables)
-      ? item.outputVariables.map((variable) => String(variable))
-      : [],
-    outputVariableMappings: Array.isArray(item.outputVariableMappings)
-      ? item.outputVariableMappings
-          .map((mapping) => toScheduledJobOutputVariableMapping(mapping))
-          .filter((mapping) => mapping.variableName && mapping.scoreConfigName)
-      : [],
-    updatedAt: String(item.updatedAt ?? ''),
-  }
-}
-
-function toScheduledJobOutputVariableMapping(item: unknown) {
-  const mapping =
-    item && typeof item === 'object' ? (item as Record<string, unknown>) : {}
-
-  return {
-    variableName: String(mapping.variableName ?? ''),
-    scoreConfigId:
-      mapping.scoreConfigId === undefined
-        ? undefined
-        : String(mapping.scoreConfigId),
-    scoreConfigName: String(mapping.scoreConfigName ?? ''),
-  }
-}
-
-function toScheduledJobDataset(
-  item: Record<string, unknown>,
-  projectId: string
-): ScheduledJobDatasetOption {
-  return {
-    id: String(item.id ?? ''),
-    projectId: String(item.projectId ?? projectId),
-    name: String(item.name ?? ''),
-    description: String(item.description ?? ''),
-    estimatedCount: Number(item.itemCount ?? item.estimatedCount ?? 0),
-    updatedAt: String(item.updatedAt ?? ''),
-  }
-}
-
-function toScheduledJobReportTemplate(
-  item: Record<string, unknown>
-): ScheduledJobReportTemplateOption {
-  return {
-    id: String(item.id ?? ''),
-    name: String(item.name ?? ''),
-    description: String(item.description ?? ''),
-    isDefault: Boolean(item.isDefault),
-  }
-}
-
 function toScheduledJobInput(task: ScheduledJobTask): ScheduledJobInput {
   return {
     taskType: task.type,
+    binding: task.binding,
     name: task.name,
     description: task.description,
     scoreName: task.scoreName,

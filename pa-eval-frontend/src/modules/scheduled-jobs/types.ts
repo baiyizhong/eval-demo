@@ -1,4 +1,4 @@
-export type ScheduledJobTaskType = 'AUTO_EVALUATION'
+export type ScheduledJobTaskType = 'AUTO_EVALUATION' | 'RUN_EXPERIMENT'
 
 export type ScheduledJobRunMode = 'ONCE' | 'RECURRING'
 
@@ -124,10 +124,42 @@ export type ScheduledJobBadcaseConfig = {
   threshold: number | null
 }
 
+export type ScheduledJobAutoEvaluationOption = {
+  id: string
+  projectId: string
+  name: string
+  description: string
+  supportsScheduledExecution: boolean
+  status: 'READY' | 'RUNNING' | 'COMPLETED' | 'FAILED'
+  scoreName: string
+  evaluator: ScheduledJobEvaluator
+  dataSource: ScheduledJobDataSource
+  sampleRate: number
+  reportTemplateId: string
+  badcase: ScheduledJobBadcaseConfig
+  lastRunAt: string | null
+  updatedAt: string
+}
+
+export type ScheduledJobBinding =
+  | {
+      type: 'AUTO_EVALUATION'
+      targetId: string
+      targetName: string
+      targetDescription: string
+    }
+  | {
+      type: 'RUN_EXPERIMENT'
+      targetId: string
+      targetName: string
+      targetDescription: string
+    }
+
 export type ScheduledJobTask = {
   id: string
   projectId: string
   type: ScheduledJobTaskType
+  binding: ScheduledJobBinding
   name: string
   description: string
   scoreName: string
@@ -173,9 +205,29 @@ export type ScheduledJobExecutionLog = {
   errorMessage?: string
 }
 
+export type ScheduledExperimentExecutionLog = {
+  id: string
+  projectId: string
+  taskId: string
+  taskName: string
+  taskDeleted?: boolean
+  triggerType: ScheduledJobTriggerType
+  status: ScheduledJobLogStatus
+  scheduledAt: string
+  startedAt: string
+  endedAt: string | null
+  durationText: string
+  sceneName: string
+  experimentName: string
+  experimentReportName: string
+  experimentReportPath?: string
+  errorMessage?: string
+}
+
 export const scheduledJobTaskTypeLabels: Record<ScheduledJobTaskType, string> =
   {
     AUTO_EVALUATION: '自动评测',
+    RUN_EXPERIMENT: '运行试验',
   }
 
 export const scheduledJobStatusLabels: Record<ScheduledJobStatus, string> = {

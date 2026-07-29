@@ -95,6 +95,7 @@ test('buildEvaluatorFormValuesFromDetail maps workflow detail into editable defa
         provider: 'DIFY',
         projectId: 'project-1',
         projectName: '默认项目',
+        enabled: true,
         usageCount: 0,
         updatedAt: '2026-07-03T09:00:00.000Z',
         config: {

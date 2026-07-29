@@ -27,6 +27,7 @@ export type TaskEvaluatorRecord = {
   provider: TaskEvaluatorProvider
   projectId: string | null
   projectName: string
+  enabled: boolean
   usageCount: number
   updatedAt: string
 }

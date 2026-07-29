@@ -1,4 +1,4 @@
-import { db } from './_data.ts'
+import { db as rawDb } from './_data.ts'
 import {
   body,
   id,
@@ -11,6 +11,10 @@ import {
 
 const projectId = (req: any) => pathParam(req, 'projectId')
 const datasetId = (req: any) => pathParam(req, 'datasetId')
+const db = rawDb as {
+  datasets: any[]
+  datasetItems: any[]
+}
 
 const withItemCount = (dataset: any) => ({
   ...dataset,
@@ -193,17 +197,24 @@ export default [
   {
     url: '/api/projects/:projectId/datasets',
     method: 'get',
-    response: (req: any) =>
-      success(
+    response: (req: any) => {
+      const requestedType = Array.isArray(req.query?.type)
+        ? req.query.type[0]
+        : req.query?.type
+      return success(
         paginate(
           db.datasets
             .filter((dataset) => dataset.projectId === projectId(req))
+            .filter(
+              (dataset) => !requestedType || dataset.type === requestedType
+            )
             .filter((dataset) => keywordIncludes(dataset, req.query?.keyword))
             .map(withItemCount),
           req.query,
           10
         )
-      ),
+      )
+    },
   },
   {
     url: '/api/projects/:projectId/datasets',
@@ -215,7 +226,7 @@ export default [
         projectId: projectId(req),
         name: input.name,
         description: input.description ?? '',
-        type: input.type ?? 'EVALUATION',
+        type: input.type ?? 'evaluation',
         metadata: input.metadata ?? {},
         inputSchema: input.inputSchema ?? {},
         expectedOutputSchema: input.expectedOutputSchema ?? {},

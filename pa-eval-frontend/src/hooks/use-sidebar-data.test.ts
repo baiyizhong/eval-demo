@@ -139,8 +139,13 @@ test('buildSidebarDataFromProjects only shows project scoped entries inside proj
 
   assert.deepEqual(
     items.map((item) => item.title),
-    ['应用观测', '应用评测', '定时任务', '项目设置']
+    ['应用观测', '应用评测', '场景试验', '定时任务', '项目设置']
   )
+
+  const sceneExperiments = items.find((item) => item.title === '场景试验')
+  assert.ok(sceneExperiments && 'url' in sceneExperiments)
+  assert.equal(sceneExperiments.url, '/projects/project-real-1/scenes')
+  assert.equal(sceneExperiments.activeMatch, 'prefix')
   assert.equal(
     items.some((item) =>
       ['数字面板', '项目管理', '组织管理', '评测管理'].includes(item.title)

@@ -15,6 +15,9 @@ import { ProjectRouteGuard } from '@/components/common/route-guard'
 import { SidebarLayout } from '@/components/layout/sidebar-layout'
 import {
   Dashboard,
+  ExperimentAggregate,
+  ExperimentCompare,
+  ExperimentReportDetail,
   ProjectAnnotationBatch,
   ProjectAnnotationItemAnnotate,
   ProjectAnnotationQueueDetail,
@@ -31,6 +34,8 @@ import {
   ProjectMembersSettings,
   ProjectModelsSettings,
   ProjectScoreConfigsSettings,
+  ProjectSceneDetail,
+  ProjectScenes,
   ScheduledJobs,
   TaskEvaluators,
   TraceDashboard,
@@ -85,6 +90,30 @@ export const sidebarRoutes: RouteObject[] = [
             element: (
               <ProjectRouteGuard access='project:dataset:view'>
                 <ProjectDatasetDetail />
+              </ProjectRouteGuard>
+            ),
+          },
+          {
+            path: 'datasets/:datasetId/experiment-reports/:reportId',
+            element: (
+              <ProjectRouteGuard access='project:dataset:view'>
+                <ExperimentReportDetail />
+              </ProjectRouteGuard>
+            ),
+          },
+          {
+            path: 'datasets/:datasetId/experiments/aggregate',
+            element: (
+              <ProjectRouteGuard access='project:dataset:view'>
+                <ExperimentAggregate />
+              </ProjectRouteGuard>
+            ),
+          },
+          {
+            path: 'datasets/:datasetId/experiments/compare',
+            element: (
+              <ProjectRouteGuard access='project:dataset:view'>
+                <ExperimentCompare />
               </ProjectRouteGuard>
             ),
           },
@@ -177,6 +206,22 @@ export const sidebarRoutes: RouteObject[] = [
             ),
           },
         ],
+      },
+      {
+        path: 'projects/:projectId/scenes',
+        element: (
+          <ProjectRouteGuard access='project:dataset:view'>
+            <ProjectScenes />
+          </ProjectRouteGuard>
+        ),
+      },
+      {
+        path: 'projects/:projectId/scenes/:sceneId',
+        element: (
+          <ProjectRouteGuard access='project:dataset:view'>
+            <ProjectSceneDetail />
+          </ProjectRouteGuard>
+        ),
       },
       {
         path: 'projects/:projectId/scheduled-jobs',

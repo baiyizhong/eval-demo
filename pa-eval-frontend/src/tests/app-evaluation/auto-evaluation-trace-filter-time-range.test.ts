@@ -31,12 +31,13 @@ test('auto evaluation trace filter uses custom date-time controls before quick r
   assert.doesNotMatch(source, /traceName/)
 })
 
-test('auto evaluation trace filter is the default data source tab before dataset', () => {
+test('auto evaluation trace filter is the default data source and dataset remains optional', () => {
   assert.match(source, /dataSource:\s*createDefaultTraceFilter\(\)/)
   assert.match(
     source,
-    /<TabsTrigger value='TRACE_FILTER'>Trace 过滤<\/TabsTrigger>\s*<TabsTrigger value='DATASET'>数据集<\/TabsTrigger>/
+    /<TabsTrigger value='TRACE_FILTER'>Trace 过滤<\/TabsTrigger>/
   )
+  assert.match(source, /<TabsTrigger value='DATASET'>数据集<\/TabsTrigger>/)
 })
 
 test('auto evaluation trace filter estimates automatically and exposes preview table', () => {

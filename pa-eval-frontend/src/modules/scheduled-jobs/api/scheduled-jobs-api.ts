@@ -30,6 +30,7 @@ export type ScheduledJobInput = Pick<
   | 'sampleRate'
   | 'reportTemplateId'
   | 'badcase'
+  | 'binding'
 > & {
   taskType: ScheduledJobTask['type']
   evaluatorId: string
@@ -91,7 +92,9 @@ export function resumeProjectScheduledJob(
   projectId: string,
   jobId: string
 ) {
-  return api.resumeScheduledJob<ScheduledJobTask>({ path: { projectId, jobId } })
+  return api.resumeScheduledJob<ScheduledJobTask>({
+    path: { projectId, jobId },
+  })
 }
 
 export function deleteProjectScheduledJob(
@@ -131,7 +134,9 @@ export function listProjectScheduledJobLogs(
   const status = getStringArrayFilter(query.filters.status)
   const triggerType = getStringArrayFilter(query.filters.triggerType)
 
-  return api.getScheduledJobLogs<DataTableListResponse<ScheduledJobExecutionLog>>({
+  return api.getScheduledJobLogs<
+    DataTableListResponse<ScheduledJobExecutionLog>
+  >({
     path: { projectId },
     query: {
       page: query.page,

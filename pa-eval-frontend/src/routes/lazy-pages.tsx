@@ -142,6 +142,36 @@ export const ScheduledJobs = lazy(() =>
   }))
 )
 
+export const ProjectScenes = lazy(() =>
+  import('@/modules/scene-experiments/views/scenes').then((module) => ({
+    default: module.ProjectScenes,
+  }))
+)
+
+export const ProjectSceneDetail = lazy(() =>
+  import('@/modules/scene-experiments/views/scene-detail').then((module) => ({
+    default: module.ProjectSceneDetail,
+  }))
+)
+
+export const ExperimentReportDetail = lazy(() =>
+  import('@/modules/scene-experiments/views/experiment-report-detail').then(
+    (module) => ({ default: module.ExperimentReportDetail })
+  )
+)
+
+export const ExperimentAggregate = lazy(() =>
+  import('@/modules/scene-experiments/views/experiment-aggregate').then(
+    (module) => ({ default: module.ExperimentAggregate })
+  )
+)
+
+export const ExperimentCompare = lazy(() =>
+  import('@/modules/scene-experiments/views/experiment-compare').then(
+    (module) => ({ default: module.ExperimentCompare })
+  )
+)
+
 export const BackendManagement = lazy(() =>
   import('@/modules/system-pages').then((module) => ({
     default: module.BackendManagement,

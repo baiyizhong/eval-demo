@@ -1,11 +1,22 @@
 import { useCallback, useMemo, useState } from 'react'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
-import { Download, Plus } from 'lucide-react'
+import {
+  DatasetExperimentReports,
+  ExperimentRunDrawer,
+} from '@/modules/scene-experiments'
+import {
+  buildProjectDatasetsHref,
+  buildProjectTraceLogsHref,
+  getDatasetExperimentReportsQueryKey,
+} from '@/modules/scene-experiments/lib/experiment-run'
+import { Download, FlaskConical, Plus } from 'lucide-react'
 import { useNavigate, useParams, useSearchParams } from 'react-router'
 import { toast } from 'sonner'
 import { confirm } from '@/lib/confirm'
 import { useAPI } from '@/hooks/use-api'
 import { usePermission } from '@/hooks/use-permission'
+import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs'
+import type { ButtonGroupsProps } from '@/components/common/button-groups'
 import {
   DataTable,
   type DataTableFilterBinding,
@@ -49,7 +60,7 @@ const itemUrlFilters: DataTableFilterBinding[] = [
 
 export function ProjectDatasetDetail() {
   const navigate = useNavigate()
-  const [searchParams] = useSearchParams()
+  const [searchParams, setSearchParams] = useSearchParams()
   const $api = useAPI()
   const queryClient = useQueryClient()
   const { projectId = 'project_customer_agent', datasetId = '' } = useParams()
@@ -61,7 +72,17 @@ export function ProjectDatasetDetail() {
     null
   )
   const [isExportingSelection, setIsExportingSelection] = useState(false)
+  const activeTab = searchParams.get('tab') === 'reports' ? 'reports' : 'items'
+  const [experimentDrawerOpen, setExperimentDrawerOpen] = useState(false)
   const itemKeyword = searchParams.get('keyword') ?? ''
+  const handleTabChange = useCallback(
+    (value: string) => {
+      const nextParams = new URLSearchParams(searchParams)
+      nextParams.set('tab', value)
+      setSearchParams(nextParams)
+    },
+    [searchParams, setSearchParams]
+  )
 
   const datasetQuery = useQuery({
     queryKey: ['project-dataset', $api, projectId, datasetId],
@@ -225,9 +246,7 @@ export function ProjectDatasetDetail() {
         await $api.getProjectTrace({
           path: { projectId, traceId: normalizedTraceId },
         })
-        navigate(
-          `/projects/${projectId}/observability/traces/logs?traceId=${encodeURIComponent(normalizedTraceId)}`
-        )
+        navigate(buildProjectTraceLogsHref(projectId, normalizedTraceId))
       } catch {
         toast.error('Trace 不存在或已删除')
       }
@@ -246,8 +265,7 @@ export function ProjectDatasetDetail() {
       }
 
       const statuses = query.filters.status as
-        | DatasetItemRecord['status'][]
-        | undefined
+        DatasetItemRecord['status'][] | undefined
       setIsExportingSelection(true)
       try {
         const job = await createProjectDatasetExportJob(
@@ -351,56 +369,87 @@ export function ProjectDatasetDetail() {
     ],
     [statusCountsQuery.data]
   )
+  const pageActionButtons = useMemo<NonNullable<ButtonGroupsProps['buttons']>>(
+    () => [
+      ...(canEditDataset
+        ? [
+            {
+              id: 'run-scene-experiment',
+              label: '运行试验',
+              icon: FlaskConical,
+              iconPosition: 'start' as const,
+              variant: 'outline' as const,
+              size: 'sm' as const,
+              disabled: !dataset || !metrics,
+              title:
+                datasetQuery.isError || metricQuery.isError
+                  ? '数据集信息加载失败，暂时无法发起试验'
+                  : !dataset || !metrics
+                    ? '数据集信息加载中'
+                    : '使用当前数据集运行试验',
+              onClick: () => setExperimentDrawerOpen(true),
+            },
+            {
+              id: 'create-dataset-item',
+              label: '新增数据项',
+              icon: Plus,
+              iconPosition: 'start' as const,
+              size: 'sm' as const,
+              onClick: handleCreateItem,
+            },
+            {
+              id: 'export-dataset-xlsx',
+              label: '导出数据集 Excel',
+              icon: Download,
+              iconPosition: 'start' as const,
+              variant: 'outline' as const,
+              size: 'sm' as const,
+              disabled: isExportingSelection || !dataset,
+              onClick: () => void handleExportDataset('xlsx'),
+            },
+            {
+              id: 'export-dataset-csv',
+              label: '导出数据集 CSV',
+              icon: Download,
+              iconPosition: 'start' as const,
+              variant: 'outline' as const,
+              size: 'sm' as const,
+              disabled: isExportingSelection || !dataset,
+              onClick: () => void handleExportDataset('csv'),
+            },
+            {
+              id: 'export-dataset-txt',
+              label: '导出数据集 TXT',
+              icon: Download,
+              iconPosition: 'start' as const,
+              variant: 'outline' as const,
+              size: 'sm' as const,
+              disabled: isExportingSelection || !dataset,
+              onClick: () => void handleExportDataset('txt'),
+            },
+          ]
+        : []),
+    ],
+    [
+      canEditDataset,
+      dataset,
+      datasetQuery.isError,
+      handleCreateItem,
+      handleExportDataset,
+      isExportingSelection,
+      metricQuery.isError,
+      metrics,
+    ]
+  )
 
   return (
     <Page fixed fluid className='flex min-h-[calc(100svh-3.5rem)] flex-col'>
       <div className='flex min-h-0 flex-1 flex-col gap-4'>
         <PageAction
           showBackButton
-          onBack={() => navigate(`/projects/${projectId}/evaluation/datasets`)}
+          onBack={() => navigate(buildProjectDatasetsHref(projectId))}
           buttonGroups={{
-            buttons: canEditDataset
-              ? [
-                  {
-                    id: 'create-dataset-item',
-                    label: '新增数据项',
-                    icon: Plus,
-                    iconPosition: 'start',
-                    size: 'sm',
-                    onClick: handleCreateItem,
-                  },
-                  {
-                    id: 'export-dataset-xlsx',
-                    label: '导出数据集 Excel',
-                    icon: Download,
-                    iconPosition: 'start',
-                    variant: 'outline',
-                    size: 'sm',
-                    disabled: isExportingSelection || !dataset,
-                    onClick: () => void handleExportDataset('xlsx'),
-                  },
-                  {
-                    id: 'export-dataset-csv',
-                    label: '导出数据集 CSV',
-                    icon: Download,
-                    iconPosition: 'start',
-                    variant: 'outline',
-                    size: 'sm',
-                    disabled: isExportingSelection || !dataset,
-                    onClick: () => void handleExportDataset('csv'),
-                  },
-                  {
-                    id: 'export-dataset-txt',
-                    label: '导出数据集 TXT',
-                    icon: Download,
-                    iconPosition: 'start',
-                    variant: 'outline',
-                    size: 'sm',
-                    disabled: isExportingSelection || !dataset,
-                    onClick: () => void handleExportDataset('txt'),
-                  },
-                ]
-              : [],
+            buttons: pageActionButtons,
           }}
         >
           {dataset ? (
@@ -421,18 +470,15 @@ export function ProjectDatasetDetail() {
           <section className='bg-card text-card-foreground rounded-lg border p-4'>
             <div className='grid gap-x-8 gap-y-3 text-sm sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4'>
               <InfoItem label='名称' value={dataset.name} />
+              <InfoItem label='描述' value={dataset.description || '-'} />
               <InfoItem
-                label='描述'
-                value={dataset.description || '-'}
+                label='类型'
+                value={<DatasetTypeBadge type={dataset.type} />}
               />
-              <InfoItem label='类型' value={<DatasetTypeBadge type={dataset.type} />} />
               <InfoItem label='总数据量' value={String(metrics.total)} />
               <InfoItem label='运行数' value={String(dataset.runCount)} />
               <InfoItem label='有效数量' value={String(metrics.active)} />
-              <InfoItem
-                label='归档数量'
-                value={String(metrics.archived)}
-              />
+              <InfoItem label='归档数量' value={String(metrics.archived)} />
               <InfoItem
                 label='最近更新时间'
                 value={formatDateTime(metrics.updatedAt)}
@@ -441,63 +487,83 @@ export function ProjectDatasetDetail() {
           </section>
         ) : null}
 
-        <section className='bg-card text-card-foreground flex min-h-0 min-w-0 flex-1 flex-col rounded-lg border p-4'>
-          <DataTable<DatasetItemRecord>
-            className='min-h-0 flex-1'
-            columns={columns}
-            request={{
-              queryKey: (state) => [
-                'project-dataset-items',
-                $api,
-                projectId,
-                datasetId,
-                state,
-              ],
-              queryFn: (state) =>
-                listProjectDatasetItems($api, projectId, datasetId, state),
-              enabled: Boolean(datasetId),
-            }}
-            urlState={{
-              defaultPageSize: 10,
-              globalFilterKey: 'keyword',
-              filters: itemUrlFilters,
-            }}
-            toolbar={{
-              searchPlaceholder: '搜索 item id / JSON 内容',
-              filters: itemToolbarFilters,
-              columnLabels: {
-                id: 'Item ID',
-                status: '状态',
-                input: 'Input',
-                expectedOutput: 'Expected Output',
-                metadata: 'Metadata',
-                sourceTraceId: 'Source',
-                createdAt: '创建时间',
-              },
-            }}
-            bulkActions={
-              canEditDataset && dataset
-                ? (table, selection) => (
-                    <DatasetItemBulkActions
-                      table={table}
-                      selection={selection}
-                      dataset={dataset}
-                      onExportAllMatching={(query) =>
-                        handleExportAllMatching(dataset, query, 'xlsx')
-                      }
-                    />
-                  )
-                : undefined
-            }
-            loadingText={
-              <Loading
-                text='加载数据项中...'
-                className='min-h-24 border-0 bg-transparent'
+        <Tabs
+          value={activeTab}
+          onValueChange={handleTabChange}
+          className='min-h-0 flex-1'
+        >
+          <TabsList className='shrink-0'>
+            <TabsTrigger value='items'>数据项</TabsTrigger>
+            <TabsTrigger value='reports'>试验报告</TabsTrigger>
+          </TabsList>
+          <TabsContent value='items' className='min-h-0'>
+            <section className='bg-card text-card-foreground flex min-h-0 min-w-0 flex-1 flex-col rounded-lg border p-4'>
+              <DataTable<DatasetItemRecord>
+                className='min-h-0 flex-1'
+                columns={columns}
+                request={{
+                  queryKey: (state) => [
+                    'project-dataset-items',
+                    $api,
+                    projectId,
+                    datasetId,
+                    state,
+                  ],
+                  queryFn: (state) =>
+                    listProjectDatasetItems($api, projectId, datasetId, state),
+                  enabled: Boolean(datasetId),
+                }}
+                urlState={{
+                  defaultPageSize: 10,
+                  globalFilterKey: 'keyword',
+                  filters: itemUrlFilters,
+                }}
+                toolbar={{
+                  searchPlaceholder: '搜索 item id / JSON 内容',
+                  filters: itemToolbarFilters,
+                  columnLabels: {
+                    id: 'Item ID',
+                    status: '状态',
+                    input: 'Input',
+                    expectedOutput: 'Expected Output',
+                    metadata: 'Metadata',
+                    sourceTraceId: 'Source',
+                    createdAt: '创建时间',
+                  },
+                }}
+                bulkActions={
+                  canEditDataset && dataset
+                    ? (table, selection) => (
+                        <DatasetItemBulkActions
+                          table={table}
+                          selection={selection}
+                          dataset={dataset}
+                          onExportAllMatching={(query) =>
+                            handleExportAllMatching(dataset, query)
+                          }
+                        />
+                      )
+                    : undefined
+                }
+                loadingText={
+                  <Loading
+                    text='加载数据项中...'
+                    className='min-h-24 border-0 bg-transparent'
+                  />
+                }
+                emptyText='当前筛选条件下暂无数据项'
               />
-            }
-            emptyText='当前筛选条件下暂无数据项'
-          />
-        </section>
+            </section>
+          </TabsContent>
+          <TabsContent value='reports' className='min-h-0'>
+            <section className='bg-card text-card-foreground flex min-h-0 min-w-0 flex-1 flex-col rounded-lg border p-4'>
+              <DatasetExperimentReports
+                projectId={projectId}
+                datasetId={datasetId}
+              />
+            </section>
+          </TabsContent>
+        </Tabs>
       </div>
       <DatasetItemFormDrawer
         open={Boolean(itemDrawerIntent)}
@@ -512,6 +578,26 @@ export function ProjectDatasetDetail() {
         onSubmit={async (input) => {
           if (!canEditDataset || itemDrawerIntent === 'view') return
           await saveItemMutation.mutateAsync(input)
+        }}
+      />
+      <ExperimentRunDrawer
+        open={canEditDataset && experimentDrawerOpen}
+        projectId={projectId}
+        lockedDataset={
+          dataset && metrics
+            ? { dataset, activeItemCount: metrics.active }
+            : undefined
+        }
+        onOpenChange={setExperimentDrawerOpen}
+        onCreated={async () => {
+          await queryClient.invalidateQueries({
+            queryKey: getDatasetExperimentReportsQueryKey(
+              $api,
+              projectId,
+              datasetId
+            ),
+          })
+          handleTabChange('reports')
         }}
       />
     </Page>

@@ -117,6 +117,7 @@ export default [
         provider: input.provider ?? 'LANGFUSE',
         projectId: input.projectId ?? null,
         projectName: input.projectId ? '项目 A' : '全局',
+        enabled: input.enabled ?? true,
         usageCount: 0,
         config: input.config ?? {},
         prompt: input.prompt ?? null,
