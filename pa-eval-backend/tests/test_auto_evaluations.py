@@ -1031,6 +1031,37 @@ async def test_count_trace_generation_samples_uses_clickhouse_count_without_samp
 
 
 @pytest.mark.anyio
+async def test_count_trace_generation_samples_clickhouse_counts_traces_without_observations(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    captured: dict[str, str] = {}
+
+    async def fake_query_clickhouse(settings, query):
+        captured["query"] = query
+        return [{"count": 100}]
+
+    monkeypatch.setattr(
+        auto_evaluations,
+        "_query_clickhouse_json_each_row",
+        fake_query_clickhouse,
+    )
+
+    count = await _count_trace_generation_samples(
+        FakeCursor(),  # type: ignore[arg-type]
+        project_id="project-1",
+        data_source_payload={"timeRange": "1d"},
+        settings=auto_evaluations.Settings(
+            langfuse_clickhouse_url="http://clickhouse.local:8123",
+        ),
+    )
+
+    assert count == 100
+    assert "FROM traces t" in captured["query"]
+    assert "JOIN observations" not in captured["query"]
+    assert "countDistinct(t.id) AS count" in captured["query"]
+
+
+@pytest.mark.anyio
 async def test_clickhouse_trace_count_uses_half_open_fixed_range_and_all_tags(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -1144,6 +1175,44 @@ async def test_list_trace_generation_samples_clickhouse_is_not_capped_at_500(
 
     assert len(samples) == 750
     assert "LIMIT 500" not in captured["query"]
+
+
+@pytest.mark.anyio
+async def test_list_trace_generation_samples_clickhouse_includes_trace_without_observation(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    captured: dict[str, str] = {}
+
+    async def fake_query_clickhouse_json_each_row(settings, query):
+        captured["query"] = query
+        return [
+            {
+                "trace_id": "trace-1",
+                "trace_name": "trace only",
+                "trace_input": "问题",
+                "trace_output": "回答",
+                "trace_timestamp": "2026-07-29 06:02:40.000",
+            }
+        ]
+
+    monkeypatch.setattr(
+        auto_evaluations,
+        "_query_clickhouse_json_each_row",
+        fake_query_clickhouse_json_each_row,
+    )
+
+    samples = await _list_trace_generation_samples(
+        FakeCursor(),  # type: ignore[arg-type]
+        project_id="project-1",
+        data_source_payload={"timeRange": "1d"},
+        settings=auto_evaluations.Settings(
+            langfuse_clickhouse_url="http://clickhouse.local:8123"
+        ),
+    )
+
+    assert len(samples) == 1
+    assert samples[0]["source_trace_id"] == "trace-1"
+    assert "LEFT JOIN observations" in captured["query"]
 
 
 @pytest.mark.anyio
@@ -1964,6 +2033,24 @@ def test_auto_evaluation_score_payload_uses_bound_boolean_and_text_configs() -> 
     assert text_payload["dataType"] == "TEXT"
     assert text_payload["value"] == "回答引用来源不足"
     assert text_payload["stringValue"] == "回答引用来源不足"
+
+
+def test_auto_evaluation_score_payload_treats_unbound_string_value_as_text() -> None:
+    payload = _auto_evaluation_score_api_payload(
+        project_id="project-1",
+        task_id="task-1",
+        run_id="run-1",
+        score_name="评审说明",
+        evaluator_id="evaluator-1",
+        result={"sample": {"id": "sample-1", "source_trace_id": "trace-1"}},
+        score_value="回答完整，事实准确",
+        score_passed=True,
+    )
+
+    assert payload is not None
+    assert payload["dataType"] == "TEXT"
+    assert payload["value"] == "回答完整，事实准确"
+    assert "configId" not in payload
 
 
 @pytest.mark.anyio

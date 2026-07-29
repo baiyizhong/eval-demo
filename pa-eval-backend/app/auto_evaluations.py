@@ -389,9 +389,11 @@ async def _list_trace_generation_samples(
             o.start_time AS observation_start_time,
             o.created_at AS observation_created_at
         FROM traces t
-        INNER JOIN observations o
+        LEFT JOIN observations o
             ON o.trace_id = t.id
            AND o.project_id = t.project_id
+           AND o.is_deleted = 0
+           AND o.type = 'GENERATION'
         WHERE {where_clause}
           {time_condition}
         ORDER BY o.start_time DESC, t.timestamp DESC, t.id DESC
@@ -537,9 +539,6 @@ async def _count_trace_generation_samples_clickhouse(
         f"""
         SELECT countDistinct(t.id) AS count
         FROM traces t
-        INNER JOIN observations o
-            ON o.trace_id = t.id
-           AND o.project_id = t.project_id
         WHERE {where_clause}
           {time_condition}
         FORMAT JSONEachRow
@@ -785,8 +784,6 @@ def _trace_generation_clickhouse_conditions(
     conditions = [
         f"t.project_id = {_clickhouse_quote(project_id)}",
         "t.is_deleted = 0",
-        "o.is_deleted = 0",
-        "o.type = 'GENERATION'",
     ]
     if trace_name:
         conditions.append(
@@ -3015,7 +3012,9 @@ def _auto_evaluation_score_api_payload(
             clickhouse_value,
         ) = _normalize_auto_evaluation_score_value(score_config, payload_value)
     else:
-        clickhouse_value = payload_value
+        data_type, payload_value, string_value, clickhouse_value = (
+            _normalize_unbound_auto_evaluation_score_value(payload_value)
+        )
 
     payload = {
         "id": _auto_evaluation_score_id(
@@ -3056,6 +3055,21 @@ def _auto_evaluation_score_api_payload(
     ):
         payload[PA_BOOLEAN_SCORE_CONFIG_REPAIR_MARKER] = True
     return payload
+
+
+def _normalize_unbound_auto_evaluation_score_value(
+    raw_value: Any,
+) -> tuple[str, float | int | str | None, str | None, float | None]:
+    if isinstance(raw_value, bool):
+        score_value = 1 if raw_value else 0
+        return "BOOLEAN", score_value, langfuse_boolean_label(score_value), float(score_value)
+    if isinstance(raw_value, int | float):
+        return "NUMERIC", raw_value, None, float(raw_value)
+    if raw_value is None:
+        return "NUMERIC", 0, None, 0.0
+
+    text_value = str(raw_value)
+    return "TEXT", text_value, text_value, 0.0
 
 
 def _normalize_auto_evaluation_score_value(

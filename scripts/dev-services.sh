@@ -3,6 +3,9 @@ set -euo pipefail
 
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 
+TOOL_PATH_PREFIX="$HOME/.local/bin:/opt/homebrew/bin"
+export PATH="$TOOL_PATH_PREFIX:$PATH"
+
 BACKEND_SESSION="pae-backend"
 FRONTEND_SESSION="pae-frontend"
 
@@ -15,8 +18,8 @@ FRONTEND_LOG="$FRONTEND_DIR/.pae-frontend.log"
 BACKEND_PORT="8000"
 FRONTEND_PORT="5173"
 
-BACKEND_CMD="uv run uvicorn app.main:app --reload --host 127.0.0.1 --port 8000"
-FRONTEND_CMD="npm run dev -- --host 127.0.0.1"
+BACKEND_CMD="PATH=\"$TOOL_PATH_PREFIX:\$PATH\" uv run uvicorn app.main:app --reload --host 127.0.0.1 --port 8000"
+FRONTEND_CMD="PATH=\"$TOOL_PATH_PREFIX:\$PATH\" npm run dev -- --host 127.0.0.1"
 
 usage() {
   cat <<'EOF'

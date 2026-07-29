@@ -1,3 +1,4 @@
+import importlib.util
 from pathlib import Path
 
 
@@ -246,16 +247,57 @@ def test_final_migration_does_not_use_incremental_column_patches() -> None:
     assert "op.add_column" not in content
 
 
-def test_legacy_alignment_guards_optional_legacy_columns_for_fresh_databases() -> None:
-    migration = MIGRATIONS_DIR / "20260707_0003_align_legacy_pa_tables.py"
-    content = migration.read_text(encoding="utf-8")
+def test_legacy_alignment_skips_backfills_when_legacy_columns_are_absent(
+    monkeypatch,
+) -> None:
+    migration = _load_migration("20260707_0003_align_legacy_pa_tables.py")
+    executed: list[str] = []
 
-    assert "def _execute_if_columns_exist" in content
-    assert "_execute_if_columns_exist(\n        \"pa_auto_evaluation_tasks\"" in content
-    assert "_execute_if_columns_exist(\n        \"pa_auto_evaluation_runs\"" in content
-    assert "_execute_if_columns_exist(\n        \"pa_evaluation_reports\"" in content
-    assert "_execute_if_columns_exist(\n        \"pa_evaluation_report_items\"" in content
-    assert "NULLIF(created_by" in content
+    class FakeOp:
+        def execute(self, statement) -> None:
+            executed.append(str(statement))
+
+    monkeypatch.setattr(migration, "op", FakeOp())
+    monkeypatch.setattr(migration, "_table_exists", lambda table_name: True)
+    monkeypatch.setattr(migration, "_column_exists", lambda table_name, column_name: False)
+    monkeypatch.setattr(migration, "_add_column_once", lambda table_name, column: None)
+
+    migration._align_auto_evaluation_tasks()
+    migration._align_auto_evaluation_runs()
+    migration._align_evaluation_reports()
+    migration._align_evaluation_report_items()
+
+    legacy_columns = (
+        "created_by",
+        "created_at",
+        "updated_at",
+        "progress_total",
+        "progress_completed",
+        "progress_failed",
+        "bad_case_count",
+        "finished_at",
+        "generated_by",
+        "source_item_id",
+        "trace_id",
+        "observation_id",
+        "reason",
+    )
+
+    assert not any(
+        legacy_column in statement
+        for statement in executed
+        for legacy_column in legacy_columns
+    )
+
+
+def _load_migration(filename: str):
+    migration = MIGRATIONS_DIR / filename
+    spec = importlib.util.spec_from_file_location(filename.removesuffix(".py"), migration)
+    assert spec is not None
+    assert spec.loader is not None
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
 
 
 def _find_table_block(contents: list[str], table_name: str) -> str:
