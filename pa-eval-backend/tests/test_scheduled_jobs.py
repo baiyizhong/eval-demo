@@ -206,6 +206,18 @@ def test_job_triggered_auto_evaluation_name_uses_required_format() -> None:
     assert name == "【JOB触发】每日客服质量评测-202607090900"
 
 
+def test_job_triggered_auto_evaluation_name_truncates_long_job_name() -> None:
+    name = _build_job_triggered_auto_evaluation_name(
+        "批量定时任务-7132048-12-超长任务名称",
+        datetime(2026, 7, 29, 7, 35, tzinfo=timezone.utc),
+        "Asia/Shanghai",
+    )
+
+    assert len(name) <= 40
+    assert name.startswith("【JOB触发】")
+    assert name.endswith("-202607291535")
+
+
 def test_scheduled_job_insert_params_persists_score_mapping() -> None:
     payload = scheduled_jobs.CreateScheduledJobPayload.model_validate(
         {

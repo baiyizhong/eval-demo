@@ -1469,7 +1469,10 @@ def _build_job_triggered_auto_evaluation_name(
     local_time = _ensure_aware_datetime(triggered_at).astimezone(
         ZoneInfo(timezone_name)
     )
-    return f"【JOB触发】{job_name}-{local_time.strftime('%Y%m%d%H%M')}"
+    prefix = "【JOB触发】"
+    suffix = f"-{local_time.strftime('%Y%m%d%H%M')}"
+    max_job_name_length = 40 - len(prefix) - len(suffix)
+    return f"{prefix}{job_name[:max_job_name_length]}{suffix}"
 
 
 def _duration_text(started_at: datetime, ended_at: datetime) -> str:
