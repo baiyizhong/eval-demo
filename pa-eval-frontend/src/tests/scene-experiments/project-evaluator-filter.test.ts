@@ -48,20 +48,21 @@ const evaluator = (
   updatedAt: '2026-07-28T00:00:00.000Z',
 })
 
-test('filterActiveProjectEvaluators only keeps enabled evaluators in current project', () => {
+test('filterActiveProjectEvaluators keeps enabled project evaluators and Langfuse global templates', () => {
   const result = filterActiveProjectEvaluators(
     [
       evaluator('active', 'proj_a'),
+      evaluator('global', null),
+      { ...evaluator('legacy-global', null), enabled: undefined as unknown as boolean },
       evaluator('disabled', 'proj_a', false),
       evaluator('other', 'proj_b'),
-      evaluator('global', null),
     ],
     'proj_a'
   )
 
   assert.deepEqual(
     result.map((item) => item.id),
-    ['active']
+    ['active', 'global', 'legacy-global']
   )
 })
 
@@ -79,7 +80,7 @@ test('filterEvaluatorsByName trims keyword and matches names case-insensitively'
   assert.equal(filterEvaluatorsByName(evaluators, '  '), evaluators)
 })
 
-test('filterProjectEvaluators only keeps evaluators owned by current project', () => {
+test('filterProjectEvaluators keeps project evaluators and Langfuse global templates', () => {
   const result = filterProjectEvaluators(
     [
       evaluator('current', 'proj_a'),
@@ -91,7 +92,7 @@ test('filterProjectEvaluators only keeps evaluators owned by current project', (
 
   assert.deepEqual(
     result.map((item) => item.id),
-    ['current']
+    ['current', 'global']
   )
 })
 
@@ -115,10 +116,7 @@ test('listProjectEvaluators loads every page before filtering current project', 
   const result = await listProjectEvaluators(api, 'proj_a', 2)
 
   assert.deepEqual(calls, [1, 2])
-  assert.deepEqual(
-    result.map((item) => item.id),
-    ['current']
-  )
+  assert.deepEqual(result.map((item) => item.id), ['global', 'current'])
 })
 
 test('listActiveProjectEvaluators loads every page before filtering disabled evaluators', async () => {

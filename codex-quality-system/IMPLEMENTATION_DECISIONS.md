@@ -48,3 +48,11 @@
 - 新增接口/表清单 `docs/api/2026-07-28-api-table-inventory.md`，按模块列出接口、数据路径和主要表/资源。
 - 当前运行时代码直接使用 10 张 PA 现役表，最终迁移契约保留 12 张 PA 表；旧 PA 表已归类为 legacy/contracted。
 - 清单明确标出当前未完全对齐点：项目和组织本体写、trace patch、ClickHouse score 写 fallback。
+
+## 2026-07-30：场景实验模块使用 PA 扩展配置 + Langfuse Experiment 语义
+
+- 场景定义是 PA 产品层编排配置，不是 Langfuse 原生资源；不为场景新增表，统一复用 `pa_resource_extensions`。
+- 新增扩展类型：`SCENE_CONFIG`、`EXPERIMENT_GROUP_SNAPSHOT`、`EXPERIMENT_REPORT_SNAPSHOT`、`EXPERIMENT_REPORT_BASELINE`，均落现有 PA 扩展表。
+- 页面手动运行实验已从 mock 切到后端真实接口，接口契约覆盖场景 CRUD、实验创建、报告列表/详情、聚合、对比、基线设置。
+- Langfuse Public API 侧补齐 experiments / experiment-items 读取能力；真实实验写入不直接写 Langfuse 原生表，后续应接 Langfuse Experiment runner SDK 或 OTEL traces experiment attributes。
+- Webhook 密钥不持久化到扩展 payload；当前后端只保存展示用的 masked credential 和非敏感请求配置。

@@ -232,6 +232,49 @@ class LangfusePublicClient:
             params={"query": self._json_query_value(query)},
         )
 
+    async def list_experiments(
+        self,
+        *,
+        page: int = 1,
+        limit: int = 50,
+        dataset_name: str | None = None,
+    ) -> dict[str, Any]:
+        params: dict[str, Any] = {
+            "page": max(1, page),
+            "limit": min(100, max(1, limit)),
+        }
+        if dataset_name:
+            params["datasetName"] = dataset_name
+        return await self._project_request(
+            "GET",
+            "/api/public/experiments",
+            params=params,
+        )
+
+    async def list_experiment_items(
+        self,
+        *,
+        experiment_id: str,
+        page: int = 1,
+        limit: int = 50,
+    ) -> dict[str, Any]:
+        return await self._project_request(
+            "GET",
+            "/api/public/experiment-items",
+            params={
+                "experimentId": experiment_id,
+                "page": max(1, page),
+                "limit": min(100, max(1, limit)),
+            },
+        )
+
+    async def create_dataset_run_item(self, payload: dict[str, Any]) -> dict[str, Any]:
+        return await self._project_request(
+            "POST",
+            "/api/public/dataset-run-items",
+            json=payload,
+        )
+
     async def list_annotation_queues(
         self,
         *,

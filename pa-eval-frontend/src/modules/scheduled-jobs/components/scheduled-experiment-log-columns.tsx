@@ -4,21 +4,22 @@ import { Link } from 'react-router'
 import {
   DataTable,
   DataTableColumnHeader,
-  type DataTableQueryState,
+  type DataTableProps,
 } from '@/components/common/data-table'
-import { scheduledExperimentMockLogs } from '../mock-data'
 import {
   scheduledJobTriggerLabels,
-  type ScheduledExperimentExecutionLog,
+  type ScheduledJobExecutionLog,
 } from '../types'
 import { ScheduledJobLogStatusBadge } from './scheduled-job-status-badge'
 
+type ScheduledExperimentLogTableProps = {
+  request: DataTableProps<ScheduledJobExecutionLog>['request']
+}
+
 export function ScheduledExperimentLogTable({
-  projectId,
-}: {
-  projectId: string
-}) {
-  const columns = useMemo<ColumnDef<ScheduledExperimentExecutionLog>[]>(
+  request,
+}: ScheduledExperimentLogTableProps) {
+  const columns = useMemo<ColumnDef<ScheduledJobExecutionLog>[]>(
     () => [
       {
         accessorKey: 'taskName',
@@ -143,17 +144,10 @@ export function ScheduledExperimentLogTable({
   )
 
   return (
-    <DataTable<ScheduledExperimentExecutionLog>
+    <DataTable<ScheduledJobExecutionLog>
       className='min-h-0 flex-1'
       columns={columns}
-      request={{
-        queryKey: (state) => [
-          'scheduled-experiment-prototype-logs',
-          projectId,
-          state,
-        ],
-        queryFn: async (state) => queryExperimentLogs(projectId, state),
-      }}
+      request={request}
       urlState={{
         defaultPageSize: 10,
         globalFilterKey: 'experimentLogKeyword',
@@ -206,49 +200,7 @@ export function ScheduledExperimentLogTable({
   )
 }
 
-function queryExperimentLogs(projectId: string, state: DataTableQueryState) {
-  const keyword = state.keyword.trim().toLowerCase()
-  const statuses = getStringArray(state.filters.status)
-  const triggerTypes = getStringArray(state.filters.triggerType)
-  const rows = scheduledExperimentMockLogs
-    .map((log) => ({
-      ...log,
-      projectId,
-      experimentReportPath: log.experimentReportPath?.replace(
-        /\/projects\/[^/]+/,
-        `/projects/${projectId}`
-      ),
-    }))
-    .filter(
-      (log) =>
-        !keyword ||
-        [
-          log.taskName,
-          log.sceneName,
-          log.experimentName,
-          log.experimentReportName,
-        ].some((value) => value.toLowerCase().includes(keyword))
-    )
-    .filter((log) => statuses.length === 0 || statuses.includes(log.status))
-    .filter(
-      (log) =>
-        triggerTypes.length === 0 || triggerTypes.includes(log.triggerType)
-    )
-  const start = (state.page - 1) * state.pageSize
-
-  return {
-    total: rows.length,
-    datas: rows.slice(start, start + state.pageSize),
-  }
-}
-
-function getStringArray(value: unknown) {
-  return Array.isArray(value)
-    ? value.filter((item): item is string => typeof item === 'string')
-    : []
-}
-
-function formatDateTime(value: string | null) {
+function formatDateTime(value: string | null | undefined) {
   if (!value) return '-'
   return new Intl.DateTimeFormat('zh-CN', {
     month: '2-digit',

@@ -17,6 +17,7 @@ export type SceneWebhookService = {
   method: 'POST'
   authType: WebhookAuthType
   credential?: string
+  credentialRef?: string
   maskedCredential?: string
   apiKeyHeader?: string
   headers: Record<string, string>

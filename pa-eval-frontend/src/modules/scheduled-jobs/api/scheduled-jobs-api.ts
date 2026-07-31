@@ -1,11 +1,18 @@
 import type { ApiMethod } from '@/api/types'
+import type { AutoEvaluationTaskRecord } from '@/modules/app-evaluation/types'
 import type {
   DataTableListResponse,
   DataTableQueryState,
 } from '@/components/common/data-table'
-import type { ScheduledJobExecutionLog, ScheduledJobTask } from '../types'
+import type {
+  ScheduledJobAutoEvaluationOption,
+  ScheduledJobDataSource,
+  ScheduledJobExecutionLog,
+  ScheduledJobTask,
+} from '../types'
 
 type ScheduledJobsApiClient = {
+  getAutoEvaluationTasks: ApiMethod
   getScheduledJobs: ApiMethod
   createScheduledJob: ApiMethod
   updateScheduledJob: ApiMethod
@@ -15,6 +22,18 @@ type ScheduledJobsApiClient = {
   runScheduledJob: ApiMethod
   triggerScheduledJob: ApiMethod
   getScheduledJobLogs: ApiMethod
+}
+
+export function listScheduledJobAutoEvaluationOptions(
+  api: ScheduledJobsApiClient,
+  projectId: string
+) {
+  return api
+    .getAutoEvaluationTasks<DataTableListResponse<AutoEvaluationTaskRecord>>({
+      path: { projectId },
+      query: { page: 1, pageSize: 100 },
+    })
+    .then((response) => response.datas.map(toScheduledJobAutoEvaluationOption))
 }
 
 export type ScheduledJobInput = Pick<
@@ -128,7 +147,8 @@ export function triggerProjectScheduledJob(
 export function listProjectScheduledJobLogs(
   api: ScheduledJobsApiClient,
   projectId: string,
-  query: DataTableQueryState
+  query: DataTableQueryState,
+  taskType?: ScheduledJobTask['type']
 ) {
   const keyword = query.keyword.trim()
   const status = getStringArrayFilter(query.filters.status)
@@ -144,6 +164,7 @@ export function listProjectScheduledJobLogs(
       ...(keyword ? { keyword } : {}),
       ...(status.length > 0 ? { status } : {}),
       ...(triggerType.length > 0 ? { triggerType } : {}),
+      ...(taskType ? { taskType: [taskType] } : {}),
     },
   })
 }
@@ -154,4 +175,64 @@ function getStringArrayFilter(value: unknown): string[] {
   }
 
   return value.filter((item): item is string => typeof item === 'string')
+}
+
+function toScheduledJobAutoEvaluationOption(
+  task: AutoEvaluationTaskRecord
+): ScheduledJobAutoEvaluationOption {
+  return {
+    id: task.id,
+    projectId: task.projectId,
+    name: task.name,
+    description: task.description,
+    supportsScheduledExecution: task.status !== 'DRAFT',
+    status:
+      task.status === 'COMPLETED' ||
+      task.status === 'FAILED' ||
+      task.status === 'RUNNING'
+        ? task.status
+        : 'READY',
+    scoreName: task.scoreName,
+    evaluator: {
+      id: task.evaluator.id,
+      name: task.evaluator.name,
+      provider: 'DIFY',
+      description: task.evaluator.type,
+      variables: [],
+      outputVariables: [],
+      updatedAt: task.updatedAt,
+    },
+    dataSource: toScheduledJobDataSource(task),
+    sampleRate: task.sampleRate,
+    reportTemplateId: task.latestReport?.id ?? 'default',
+    badcase: { enabled: task.badcaseCount > 0, threshold: null },
+    lastRunAt: task.lastRunAt || null,
+    updatedAt: task.updatedAt,
+  }
+}
+
+function toScheduledJobDataSource(
+  task: AutoEvaluationTaskRecord
+): ScheduledJobDataSource {
+  if (task.dataSource.type === 'DATASET') {
+    return {
+      type: 'DATASET',
+      datasetId: task.dataSource.name,
+      datasetName: task.dataSource.name,
+      estimatedCount: task.dataSource.sampleCount,
+    }
+  }
+
+  return {
+    type: 'TRACE_FILTER',
+    traceWindow: { mode: 'PREVIOUS_DAY' },
+    traceFilter: {
+      name: task.dataSource.name,
+      userId: '',
+      sessionId: '',
+      tags: [],
+      estimatedCount: task.dataSource.sampleCount,
+    },
+    estimatedCount: task.dataSource.sampleCount,
+  }
 }

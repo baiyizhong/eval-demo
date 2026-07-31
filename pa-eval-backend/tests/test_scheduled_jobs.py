@@ -11,6 +11,7 @@ from app.scheduled_jobs import (
     _build_due_job_claim_sql,
     _build_fire_key,
     _build_auto_evaluation_payload_from_job,
+    _build_experiment_execution_name,
     _build_job_triggered_auto_evaluation_name,
     _compute_next_run_at,
     _compute_trace_window,
@@ -268,6 +269,136 @@ def test_scheduled_job_insert_params_persists_score_mapping() -> None:
     assert params["evaluator_snapshot"].obj["outputVariables"] == ["quality_score"]
 
 
+def test_run_experiment_payload_persists_binding_without_evaluator_lookup() -> None:
+    payload = scheduled_jobs.CreateScheduledJobPayload.model_validate(
+        {
+            "taskType": "RUN_EXPERIMENT",
+            "binding": {
+                "type": "RUN_EXPERIMENT",
+                "targetId": "scene-1",
+                "targetName": "客服召回场景",
+                "targetDescription": "按场景运行试验",
+            },
+            "name": "每周场景回归",
+            "description": "",
+            "runMode": "RECURRING",
+            "frequency": {"kind": "DAILY", "timeOfDay": "09:00"},
+        }
+    )
+
+    params = _scheduled_job_insert_params(
+        job_id="pajob-1",
+        project_id="project-1",
+        payload=payload,
+        evaluator={},
+        report_template_snapshot={},
+        next_run_at=None,
+        user=scheduled_jobs.CurrentUserContext(
+            user_id="user-1",
+            email="owner@example.com",
+        ),
+        now=datetime(2026, 7, 9, tzinfo=timezone.utc),
+    )
+
+    assert params["score_name"] == ""
+    assert params["evaluator_id"] == ""
+    assert params["report_template_id"] is None
+    assert params["frequency"].obj == {"kind": "DAILY", "timeOfDay": "09:00"}
+    assert params["badcase_config"].obj == {"enabled": False, "threshold": None}
+
+
+def test_scheduled_job_write_row_carries_run_experiment_binding() -> None:
+    payload = scheduled_jobs.CreateScheduledJobPayload.model_validate(
+        {
+            "taskType": "RUN_EXPERIMENT",
+            "binding": {
+                "type": "RUN_EXPERIMENT",
+                "targetId": "scene-1",
+                "targetName": "客服召回场景",
+                "targetDescription": "按场景运行试验",
+            },
+            "name": "每周场景回归",
+            "runMode": "ONCE",
+            "frequency": {"kind": "ONCE", "runAt": "2026-07-10T10:00:00+08:00"},
+        }
+    )
+
+    row = _scheduled_job_write_row(
+        job_id="pajob-1",
+        project_id="project-1",
+        payload=payload,
+        evaluator={},
+        report_template_snapshot={},
+        next_run_at=None,
+        status="NOT_STARTED",
+        user=scheduled_jobs.CurrentUserContext(
+            user_id="user-1",
+            email="owner@example.com",
+        ),
+    )
+
+    assert row["task_type"] == "RUN_EXPERIMENT"
+    assert row["binding"] == {
+        "type": "RUN_EXPERIMENT",
+        "targetId": "scene-1",
+        "targetName": "客服召回场景",
+        "targetDescription": "按场景运行试验",
+    }
+    assert row["evaluator_id"] == ""
+    assert row["report_template_id"] is None
+
+
+def test_consolidated_scheduled_job_select_reads_task_type_and_binding() -> None:
+    sql = scheduled_jobs._consolidated_scheduled_job_select_sql()
+
+    assert "job.schedule_config ->> 'taskType'" in sql
+    assert "AS task_type" in sql
+    assert "job.schedule_config -> 'binding'" in sql
+    assert "AS binding" in sql
+    assert "'AUTO_EVALUATION'::text AS task_type" not in sql
+
+
+def test_consolidated_execution_log_select_reads_task_type_and_experiment_fields() -> None:
+    sql = scheduled_jobs._consolidated_execution_log_select_sql()
+
+    assert "execution.request_payload ->> 'taskType'" in sql
+    assert "AS task_type" in sql
+    assert "execution.request_payload ->> 'sceneName' AS scene_name" in sql
+    assert "execution.result_payload ->> 'experimentReportId' AS experiment_report_id" in sql
+    assert "'AUTO_EVALUATION'::text AS task_type" not in sql
+
+
+def test_to_scheduled_job_includes_binding_snapshot() -> None:
+    job = scheduled_jobs._to_scheduled_job(
+        {
+            "id": "pajob-1",
+            "project_id": "project-1",
+            "task_type": "RUN_EXPERIMENT",
+            "binding": {
+                "type": "RUN_EXPERIMENT",
+                "targetId": "scene-1",
+                "targetName": "客服召回场景",
+                "targetDescription": "按场景运行试验",
+            },
+            "run_mode": "ONCE",
+            "frequency": {"kind": "ONCE", "runAt": "2026-07-10T10:00:00+08:00"},
+            "status": "NOT_STARTED",
+        }
+    )
+
+    assert job["type"] == "RUN_EXPERIMENT"
+    assert job["binding"]["targetId"] == "scene-1"
+
+
+def test_build_experiment_execution_name_uses_job_and_scene_name() -> None:
+    assert _build_experiment_execution_name(
+        "每周场景回归",
+        "客服召回场景",
+        datetime(2026, 7, 9, 1, 0, tzinfo=timezone.utc),
+        "Asia/Shanghai",
+    ) == "【定时试验】客服召回场景-202607090900"
+
+
 def test_build_auto_evaluation_payload_from_job_carries_score_mapping() -> None:
     payload = _build_auto_evaluation_payload_from_job(
         {
@@ -491,6 +622,124 @@ async def test_trigger_marks_execution_log_failed_when_auto_evaluation_setup_fai
     assert failure_updates
     assert job_updates
     assert "evaluator provider unavailable" in failure_updates[-1][1]["error_message"]
+    assert job_updates[-1][1]["next_run_at"] is not None
+
+
+@pytest.mark.anyio
+async def test_trigger_run_experiment_executes_scene_and_marks_log_succeeded(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    cursor = FakeCursor()
+
+    async def fake_connect(settings: Settings) -> FakeConnection:
+        return FakeConnection(cursor)
+
+    class FakeSceneExperimentReader:
+        def __init__(self, settings: Settings) -> None:
+            self.settings = settings
+
+        async def get_resource_extension(self, **kwargs: Any) -> dict[str, Any] | None:
+            return {
+                "payload": {
+                    "id": "scene-1",
+                    "enabled": True,
+                    "supportsScheduledExecution": True,
+                    "datasetId": "dataset-1",
+                    "defaultScheduledWebhookIds": ["webhook-1"],
+                    "webhooks": [{"id": "webhook-1", "name": "Webhook 1"}],
+                    "evaluatorIds": ["eval-1"],
+                    "runParameters": {
+                        "concurrency": 5,
+                        "timeoutSeconds": 30,
+                        "retryCount": 2,
+                        "rounds": 1,
+                    },
+                }
+            }
+
+    async def fake_run_scene_experiment(**kwargs: Any) -> dict[str, Any]:
+        payload = kwargs["payload"]
+        assert payload.scene_id == "scene-1"
+        assert payload.webhook_ids == ["webhook-1"]
+        assert payload.evaluator_ids == ["eval-1"]
+        return {
+            "group": {"id": "experiment_group_1"},
+            "reports": [
+                {
+                    "id": "experiment_report_1",
+                    "itemCount": 2,
+                    "successfulItemCount": 2,
+                    "failedItemCount": 0,
+                }
+            ],
+        }
+
+    monkeypatch.setattr(scheduled_jobs, "_connect", fake_connect)
+    monkeypatch.setattr(
+        scheduled_jobs,
+        "LangfuseDatabaseReader",
+        FakeSceneExperimentReader,
+    )
+    monkeypatch.setattr(scheduled_jobs, "run_scene_experiment", fake_run_scene_experiment)
+
+    await scheduled_jobs._trigger_scheduled_job(
+        settings=Settings(pa_eval_scheduler_instance_id="test-scheduler"),
+        project_id="project-1",
+        job={
+            "id": "pajob_1",
+            "project_id": "project-1",
+            "name": "每日场景试验",
+            "description": "",
+            "task_type": "RUN_EXPERIMENT",
+            "binding": {
+                "type": "RUN_EXPERIMENT",
+                "targetId": "scene-1",
+                "targetName": "客服场景",
+                "targetDescription": "",
+                "sceneSnapshot": {
+                    "id": "scene-1",
+                    "datasetId": "dataset-1",
+                    "defaultScheduledWebhookIds": ["webhook-1"],
+                    "webhooks": [{"id": "webhook-1", "name": "Webhook 1"}],
+                    "evaluatorIds": ["eval-1"],
+                    "runParameters": {
+                        "concurrency": 5,
+                        "timeoutSeconds": 30,
+                        "retryCount": 2,
+                        "rounds": 1,
+                    },
+                },
+            },
+            "run_mode": "RECURRING",
+            "frequency": {"kind": "EVERY_MINUTES", "intervalMinutes": 10},
+            "timezone": "Asia/Shanghai",
+            "created_user_id": "user-1",
+            "create_by": "owner@example.com",
+        },
+        trigger_type="JOB",
+        triggered_by="owner@example.com",
+        scheduled_fire_at=datetime(2026, 7, 9, 1, 0, tzinfo=timezone.utc),
+        manual_fire_key=None,
+    )
+
+    succeeded_execution_updates = [
+        (sql, params)
+        for sql, params in cursor.executions
+        if "UPDATE pa_job_executions" in sql
+        and params.get("status") == "SUCCEEDED"
+    ]
+    job_updates = [
+        (sql, params)
+        for sql, params in cursor.executions
+        if "UPDATE pa_evaluation_jobs" in sql and params.get("status") == "SUCCEEDED"
+    ]
+
+    assert succeeded_execution_updates
+    result_payload = succeeded_execution_updates[-1][1]["result_payload"].obj
+    assert result_payload["experimentGroupId"] == "experiment_group_1"
+    assert result_payload["reportIds"] == ["experiment_report_1"]
+    assert job_updates
+    assert job_updates[-1][1]["report_id"] == "experiment_report_1"
     assert job_updates[-1][1]["next_run_at"] is not None
 
 

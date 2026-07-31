@@ -478,8 +478,9 @@ function BasicStep({
       </section>
 
       <section className='grid gap-4 border-t pt-5'>
-        <Field label='任务名称'>
+        <Field label='任务名称' htmlFor='scheduled-job-name'>
           <Input
+            id='scheduled-job-name'
             value={form.name}
             maxLength={NAME_MAX_LENGTH}
             placeholder={
@@ -490,8 +491,9 @@ function BasicStep({
             onChange={(event) => updateForm({ name: event.target.value })}
           />
         </Field>
-        <Field label='任务描述'>
+        <Field label='任务描述' htmlFor='scheduled-job-description'>
           <Textarea
+            id='scheduled-job-description'
             className='min-h-28 resize-none'
             value={form.description}
             maxLength={DESCRIPTION_MAX_LENGTH}
@@ -1005,14 +1007,16 @@ function toDateTimeLocalValue(value: string) {
 
 function Field({
   label,
+  htmlFor,
   children,
 }: {
   label: string
+  htmlFor?: string
   children: React.ReactNode
 }) {
   return (
     <div className='grid gap-2'>
-      <Label>{label}</Label>
+      <Label htmlFor={htmlFor}>{label}</Label>
       {children}
     </div>
   )

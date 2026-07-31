@@ -260,6 +260,125 @@ async def test_list_traces_uses_public_trace_endpoint_and_structured_filter() ->
 
 
 @pytest.mark.anyio
+async def test_list_experiments_uses_public_experiment_endpoint() -> None:
+    requests: list[httpx.Request] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        requests.append(request)
+        return httpx.Response(
+            200,
+            json={"data": [{"id": "experiment-1"}], "meta": {"totalItems": 1}},
+        )
+
+    client = LangfusePublicClient(
+        base_url="http://langfuse.test",
+        public_key="pk-lf-project",
+        secret_key="sk-lf-secret",
+        transport=httpx.MockTransport(handler),
+    )
+    try:
+        response = await client.list_experiments(
+            page=2,
+            limit=25,
+            dataset_name="客服黄金集",
+        )
+    finally:
+        await client.aclose()
+
+    request = requests[0]
+    assert request.method == "GET"
+    assert request.url.path == "/api/public/experiments"
+    assert request.url.params["page"] == "2"
+    assert request.url.params["limit"] == "25"
+    assert request.url.params["datasetName"] == "客服黄金集"
+    assert response["data"][0]["id"] == "experiment-1"
+
+
+@pytest.mark.anyio
+async def test_list_experiment_items_uses_public_experiment_items_endpoint() -> None:
+    requests: list[httpx.Request] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        requests.append(request)
+        return httpx.Response(
+            200,
+            json={"data": [{"id": "item-1"}], "meta": {"totalItems": 1}},
+        )
+
+    client = LangfusePublicClient(
+        base_url="http://langfuse.test",
+        public_key="pk-lf-project",
+        secret_key="sk-lf-secret",
+        transport=httpx.MockTransport(handler),
+    )
+    try:
+        response = await client.list_experiment_items(
+            experiment_id="experiment-1",
+            page=1,
+            limit=50,
+        )
+    finally:
+        await client.aclose()
+
+    request = requests[0]
+    assert request.method == "GET"
+    assert request.url.path == "/api/public/experiment-items"
+    assert request.url.params["experimentId"] == "experiment-1"
+    assert response["data"][0]["id"] == "item-1"
+
+
+@pytest.mark.anyio
+async def test_create_dataset_run_item_uses_public_dataset_run_items_endpoint() -> None:
+    requests: list[httpx.Request] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        requests.append(request)
+        return httpx.Response(
+            200,
+            json={
+                "id": "run-item-1",
+                "datasetItemId": "item-1",
+                "datasetRunName": "客服实验::group-1",
+                "traceId": "trace-1",
+            },
+        )
+
+    client = LangfusePublicClient(
+        base_url="http://langfuse.test",
+        public_key="pk-lf-project",
+        secret_key="sk-lf-secret",
+        transport=httpx.MockTransport(handler),
+    )
+    try:
+        response = await client.create_dataset_run_item(
+            {
+                "runName": "客服实验::group-1",
+                "runDescription": "真实场景实验",
+                "datasetItemId": "item-1",
+                "traceId": "trace-1",
+                "observationId": "obs-1",
+                "metadata": {"paExperimentGroupId": "group-1"},
+            }
+        )
+    finally:
+        await client.aclose()
+
+    request = requests[0]
+    request_body = json.loads(request.content)
+    assert request.method == "POST"
+    assert request.url.path == "/api/public/dataset-run-items"
+    assert request_body == {
+        "runName": "客服实验::group-1",
+        "runDescription": "真实场景实验",
+        "datasetItemId": "item-1",
+        "traceId": "trace-1",
+        "observationId": "obs-1",
+        "metadata": {"paExperimentGroupId": "group-1"},
+    }
+    assert response["id"] == "run-item-1"
+
+
+@pytest.mark.anyio
 async def test_get_trace_selects_documented_field_groups() -> None:
     requests: list[httpx.Request] = []
 

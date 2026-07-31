@@ -11,6 +11,7 @@ import { Page } from '@/components/common/page'
 import {
   createProjectScheduledJob,
   deleteProjectScheduledJob,
+  listScheduledJobAutoEvaluationOptions,
   listProjectScheduledJobLogs,
   listProjectScheduledJobs,
   pauseProjectScheduledJob,
@@ -28,7 +29,6 @@ import {
   ScheduledJobsPageNav,
   type ScheduledJobsTab,
 } from './components/scheduled-jobs-page-nav'
-import { scheduledJobMockAutoEvaluationTasks } from './mock-data'
 import type { ScheduledJobTask } from './types'
 
 export function ScheduledJobs() {
@@ -88,14 +88,10 @@ function ScheduledJobsProject({
     queryKey: ['scheduled-jobs', $api, projectId, 'available-scenes'],
     queryFn: () => listAvailableScenes($api, projectId),
   })
-  const autoEvaluationTaskOptions = useMemo(
-    () =>
-      scheduledJobMockAutoEvaluationTasks.map((task) => ({
-        ...task,
-        projectId,
-      })),
-    [projectId]
-  )
+  const autoEvaluationOptionsQuery = useQuery({
+    queryKey: ['scheduled-jobs', $api, projectId, 'auto-evaluation-options'],
+    queryFn: () => listScheduledJobAutoEvaluationOptions($api, projectId),
+  })
 
   const taskTableRequest = useMemo(
     () => ({
@@ -109,9 +105,18 @@ function ScheduledJobsProject({
   const logTableRequest = useMemo(
     () => ({
       queryKey: (state: DataTableQueryState) =>
-        ['scheduled-job-logs', $api, projectId, state] as const,
+        ['scheduled-job-logs', $api, projectId, 'AUTO_EVALUATION', state] as const,
       queryFn: (state: DataTableQueryState) =>
-        listProjectScheduledJobLogs($api, projectId, state),
+        listProjectScheduledJobLogs($api, projectId, state, 'AUTO_EVALUATION'),
+    }),
+    [$api, projectId]
+  )
+  const experimentLogTableRequest = useMemo(
+    () => ({
+      queryKey: (state: DataTableQueryState) =>
+        ['scheduled-job-logs', $api, projectId, 'RUN_EXPERIMENT', state] as const,
+      queryFn: (state: DataTableQueryState) =>
+        listProjectScheduledJobLogs($api, projectId, state, 'RUN_EXPERIMENT'),
     }),
     [$api, projectId]
   )
@@ -273,7 +278,7 @@ function ScheduledJobsProject({
           ) : activeTab === 'auto-evaluation-logs' ? (
             <ScheduledJobLogTable request={logTableRequest} />
           ) : (
-            <ScheduledExperimentLogTable projectId={projectId} />
+            <ScheduledExperimentLogTable request={experimentLogTableRequest} />
           )}
         </section>
         <ScheduledJobDrawer
@@ -281,9 +286,9 @@ function ScheduledJobsProject({
           projectId={projectId}
           open={canEditScheduledJobs && drawerOpen}
           task={editingTask}
-          autoEvaluationTasks={autoEvaluationTaskOptions}
+          autoEvaluationTasks={autoEvaluationOptionsQuery.data}
           scenes={scenesQuery.data?.datas}
-          scenesLoading={scenesQuery.isPending}
+          scenesLoading={scenesQuery.isPending || autoEvaluationOptionsQuery.isPending}
           onOpenChange={handleDrawerOpenChange}
           onSave={handleSaveTask}
         />
@@ -302,7 +307,7 @@ function toScheduledJobInput(task: ScheduledJobTask): ScheduledJobInput {
     scoreMapping: task.scoreMapping ?? {},
     runMode: task.runMode,
     frequency: task.frequency,
-    evaluatorId: task.evaluator.id,
+    evaluatorId: task.type === 'RUN_EXPERIMENT' ? '' : task.evaluator.id,
     variableMapping: task.variableMapping,
     dataSource: task.dataSource,
     sampleRate: task.sampleRate,

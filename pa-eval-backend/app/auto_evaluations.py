@@ -41,6 +41,7 @@ from app.score_configs import (
     PA_CLICKHOUSE_SCORE_VALUE,
     clickhouse_score_payload,
     is_langfuse_boolean_categories,
+    langfuse_boolean_label,
     strip_pa_score_fields,
 )
 

@@ -193,15 +193,21 @@ export type ScheduledJobExecutionLog = {
   taskName: string
   taskDeleted?: boolean
   taskType?: ScheduledJobTaskType
+  binding?: ScheduledJobBinding
   triggerType: ScheduledJobTriggerType
   autoEvaluationTaskName: string
   autoEvaluationTaskPath?: string
   evaluationReportPath?: string
   status: ScheduledJobLogStatus
   sampleCount: number
+  scheduledAt?: string
   startedAt: string
   endedAt: string | null
   durationText: string
+  sceneName?: string
+  experimentName?: string
+  experimentReportName?: string
+  experimentReportPath?: string
   errorMessage?: string
 }
 

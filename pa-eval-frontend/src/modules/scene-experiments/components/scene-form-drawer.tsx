@@ -50,6 +50,7 @@ const emptyWebhook = (): SceneWebhookService => ({
   method: 'POST',
   authType: 'NONE',
   credential: '',
+  credentialRef: '',
   maskedCredential: '',
   apiKeyHeader: 'X-API-Key',
   headers: {},
@@ -279,6 +280,9 @@ function SceneFormDrawerContent({
           url: item.url.trim(),
           serviceFamily: item.serviceFamily.trim() || item.name.trim(),
           version: item.version.trim() || '1.0.0',
+          credential: item.credential?.trim() ?? '',
+          credentialRef: item.credentialRef?.trim() ?? '',
+          apiKeyHeader: item.apiKeyHeader?.trim() || 'X-API-Key',
         })),
       })
     } catch {
@@ -717,23 +721,28 @@ function WebhookEditor({
   webhook: SceneWebhookService
   onChange: (patch: Partial<SceneWebhookService>) => void
 }) {
+  const fieldId = (name: string) => `scene-webhook-${webhook.id}-${name}`
+
   return (
     <section className='grid content-start gap-4 rounded-lg border p-4 sm:grid-cols-2'>
-      <Field label='服务名称'>
+      <Field label='服务名称' htmlFor={fieldId('name')}>
         <Input
+          id={fieldId('name')}
           value={webhook.name}
           onChange={(event) => onChange({ name: event.target.value })}
         />
       </Field>
-      <Field label='版本'>
+      <Field label='版本' htmlFor={fieldId('version')}>
         <Input
+          id={fieldId('version')}
           value={webhook.version}
           onChange={(event) => onChange({ version: event.target.value })}
         />
       </Field>
       <div className='sm:col-span-2'>
-        <Field label='Webhook URL'>
+        <Field label='Webhook URL' htmlFor={fieldId('url')}>
           <Input
+            id={fieldId('url')}
             type='url'
             value={webhook.url}
             onChange={(event) => onChange({ url: event.target.value })}
@@ -759,28 +768,58 @@ function WebhookEditor({
           </SelectContent>
         </Select>
       </Field>
-      <Field label='服务系列'>
+      <Field label='服务系列' htmlFor={fieldId('service-family')}>
         <Input
+          id={fieldId('service-family')}
           value={webhook.serviceFamily}
           placeholder='support-agent'
           onChange={(event) => onChange({ serviceFamily: event.target.value })}
         />
       </Field>
       {webhook.authType !== 'NONE' ? (
-        <div className='sm:col-span-2'>
-          <Field label='Token / API Key'>
-            <Input
-              type='password'
-              value={webhook.credential ?? ''}
-              placeholder='仅用于原型展示，不填真实密钥'
-              onChange={(event) => onChange({ credential: event.target.value })}
-            />
-          </Field>
-        </div>
+        <>
+          <div className='sm:col-span-2'>
+            <Field label='密钥环境变量' htmlFor={fieldId('credential-ref')}>
+              <Input
+                id={fieldId('credential-ref')}
+                value={webhook.credentialRef ?? ''}
+                placeholder='PA_WEBHOOK_SUPPORT_AGENT_TOKEN'
+                onChange={(event) =>
+                  onChange({ credentialRef: event.target.value })
+                }
+              />
+            </Field>
+          </div>
+          {webhook.authType === 'API_KEY' ? (
+            <Field label='API Key Header' htmlFor={fieldId('api-key-header')}>
+              <Input
+                id={fieldId('api-key-header')}
+                value={webhook.apiKeyHeader ?? 'X-API-Key'}
+                placeholder='X-API-Key'
+                onChange={(event) =>
+                  onChange({ apiKeyHeader: event.target.value })
+                }
+              />
+            </Field>
+          ) : null}
+          <div className={webhook.authType === 'API_KEY' ? '' : 'sm:col-span-2'}>
+            <Field label='一次性密钥' htmlFor={fieldId('credential')}>
+              <Input
+                id={fieldId('credential')}
+                type='password'
+                value={webhook.credential ?? ''}
+                placeholder='仅用于本次保存生成掩码，不长期存储'
+                onChange={(event) => onChange({ credential: event.target.value })}
+              />
+            </Field>
+          </div>
+        </>
       ) : null}
+      {webhook.authType === 'NONE' ? null : null}
       <div className='sm:col-span-2'>
-        <Field label='描述'>
+        <Field label='描述' htmlFor={fieldId('description')}>
           <Textarea
+            id={fieldId('description')}
             value={webhook.description}
             onChange={(event) => onChange({ description: event.target.value })}
           />

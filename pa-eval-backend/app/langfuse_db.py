@@ -685,6 +685,33 @@ class LangfuseDatabaseReader:
         )
         return rows[0] if rows else None
 
+    async def list_resource_extensions(
+        self,
+        *,
+        project_id: str,
+        resource_type: str,
+        extension_type: ResourceExtensionType | str,
+        status: str = "ACTIVE",
+    ) -> list[dict[str, Any]]:
+        rows = await self._fetch_all(
+            """
+            SELECT *
+            FROM pa_resource_extensions
+            WHERE project_id = %(project_id)s
+              AND resource_type = %(resource_type)s
+              AND extension_type = %(extension_type)s
+              AND status = %(status)s
+            ORDER BY update_date DESC, create_date DESC, id DESC
+            """,
+            {
+                "project_id": project_id,
+                "resource_type": resource_type,
+                "extension_type": ResourceExtensionType(extension_type).value,
+                "status": status,
+            },
+        )
+        return rows
+
     async def upsert_resource_extension(
         self,
         *,
@@ -716,6 +743,45 @@ class LangfuseDatabaseReader:
                     actor=actor,
                 )
         return row
+
+    async def set_resource_extension_status(
+        self,
+        *,
+        project_id: str,
+        resource_type: str,
+        resource_id: str,
+        extension_type: ResourceExtensionType | str,
+        status: str,
+        actor: str,
+    ) -> None:
+        if not self._database_url:
+            raise LangfuseDatabaseConfigError()
+
+        async with await connect_postgres(
+            self._database_url,
+            row_factory=dict_row,
+        ) as connection:
+            async with connection.cursor() as cursor:
+                await cursor.execute(
+                    """
+                    UPDATE pa_resource_extensions
+                    SET update_by = %(actor)s,
+                        update_date = NOW(),
+                        status = %(status)s
+                    WHERE project_id = %(project_id)s
+                      AND resource_type = %(resource_type)s
+                      AND resource_id = %(resource_id)s
+                      AND extension_type = %(extension_type)s
+                    """,
+                    {
+                        "actor": actor,
+                        "status": status,
+                        "project_id": project_id,
+                        "resource_type": resource_type,
+                        "resource_id": resource_id,
+                        "extension_type": ResourceExtensionType(extension_type).value,
+                    },
+                )
 
     async def list_project_api_keys(
         self,

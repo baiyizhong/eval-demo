@@ -152,7 +152,15 @@ test('scheduled jobs exposes separate auto evaluation and experiment logs', () =
   assert.match(experimentLogSource, /执行试验/)
   assert.match(experimentLogSource, /关联试验报告/)
   assert.match(experimentLogSource, /experimentReportPath/)
-  assert.match(mockDataSource, /scheduledExperimentMockLogs/)
+  assert.match(pageSource, /AUTO_EVALUATION/)
+  assert.match(pageSource, /RUN_EXPERIMENT/)
+  assert.match(experimentLogSource, /request=\{request\}/)
+  assert.doesNotMatch(experimentLogSource, /scheduledExperimentMockLogs/)
+  assert.doesNotMatch(experimentLogSource, /scheduled-experiment-prototype-logs/)
+})
+
+test('experiment scheduled job updates do not require an evaluator id', () => {
+  assert.match(pageSource, /task\.type === 'RUN_EXPERIMENT'\s*\?\s*''\s*:\s*task\.evaluator\.id/)
 })
 
 test('experiment runs do not write into auto evaluation execution logs', () => {

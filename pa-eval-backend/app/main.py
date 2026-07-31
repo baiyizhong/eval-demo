@@ -37,6 +37,7 @@ from app.scheduled_jobs import (
     router as scheduled_jobs_router,
     start_scheduled_job_scheduler,
 )
+from app.scene_experiments import router as scene_experiments_router
 from app.logging_config import setup_logging
 from app.tx_context import bind_tx_id, new_tx_id, reset_tx_id
 from app.users import router as user_router
@@ -89,6 +90,7 @@ def create_app() -> FastAPI:
     app.include_router(annotations_router)
     app.include_router(observability_router)
     app.include_router(scheduled_jobs_router)
+    app.include_router(scene_experiments_router)
     app.include_router(admin_router)
     app.include_router(admin_users_router)
     app.include_router(audit_router)

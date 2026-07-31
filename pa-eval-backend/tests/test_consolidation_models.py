@@ -67,6 +67,56 @@ def test_rejects_unknown_resource_extension_fields() -> None:
         )
 
 
+def test_scene_config_allows_webhook_credential_ref_but_rejects_secret_value() -> None:
+    payload = {
+        "id": "scene-1",
+        "projectId": "project-1",
+        "name": "E2E 场景",
+        "description": "",
+        "enabled": True,
+        "supportsScheduledExecution": True,
+        "defaultScheduledWebhookIds": ["webhook-1"],
+        "datasetId": "dataset-1",
+        "evaluatorIds": ["eval-1"],
+        "webhooks": [
+            {
+                "id": "webhook-1",
+                "name": "Webhook",
+                "description": "",
+                "url": "http://127.0.0.1:8099/run",
+                "method": "POST",
+                "authType": "BEARER",
+                "maskedCredential": "Bearer ****oken",
+                "credentialRef": "PA_WEBHOOK_TOKEN",
+                "apiKeyHeader": "",
+                "headers": {},
+                "serviceFamily": "agent",
+                "version": "v1",
+            }
+        ],
+        "runParameters": {
+            "concurrency": 1,
+            "timeoutSeconds": 30,
+            "retryCount": 0,
+            "rounds": 1,
+        },
+        "createdAt": "2026-07-31T00:00:00.000Z",
+        "updatedAt": "2026-07-31T00:00:00.000Z",
+    }
+
+    validated = validate_resource_extension(ResourceExtensionType.SCENE_CONFIG, payload)
+
+    assert validated["webhooks"][0]["credentialRef"] == "PA_WEBHOOK_TOKEN"
+    with pytest.raises(ValueError, match="敏感字段"):
+        validate_resource_extension(
+            ResourceExtensionType.SCENE_CONFIG,
+            {
+                **payload,
+                "webhooks": [{**payload["webhooks"][0], "credential": "secret-token"}],
+            },
+        )
+
+
 def test_job_status_transition_allows_retry_but_not_terminal_reopen() -> None:
     ensure_status_transition(JobExecutionStatus.FAILED, JobExecutionStatus.RUNNING)
 

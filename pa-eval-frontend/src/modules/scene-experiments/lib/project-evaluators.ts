@@ -9,7 +9,9 @@ export function filterProjectEvaluators(
   evaluators: TaskEvaluatorRecord[],
   projectId: string
 ) {
-  return evaluators.filter((evaluator) => evaluator.projectId === projectId)
+  return evaluators.filter(
+    (evaluator) => evaluator.projectId === projectId || evaluator.projectId == null
+  )
 }
 
 export function filterActiveProjectEvaluators(
@@ -17,7 +19,7 @@ export function filterActiveProjectEvaluators(
   projectId: string
 ) {
   return filterProjectEvaluators(evaluators, projectId).filter(
-    (evaluator) => evaluator.enabled === true
+    (evaluator) => evaluator.enabled !== false
   )
 }
 

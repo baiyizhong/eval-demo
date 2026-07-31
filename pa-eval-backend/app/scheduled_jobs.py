@@ -30,15 +30,30 @@ from app.consolidation.models import JobExecutionStatus, JobExecutionType
 from app.consolidation.repository import ConsolidationRepository
 from app.errors import BusinessError
 from app.response import success
+from app.langfuse_db import LangfuseDatabaseReader
+from app.scene_experiments import CreateExperimentPayload, run_scene_experiment
 
 router = APIRouter(prefix="/api/projects/{project_id}", tags=["scheduled-jobs"])
 logger = logging.getLogger(__name__)
 
-ScheduledJobTaskType = Literal["AUTO_EVALUATION"]
+ScheduledJobTaskType = Literal["AUTO_EVALUATION", "RUN_EXPERIMENT"]
 ScheduledJobRunMode = Literal["ONCE", "RECURRING"]
 ScheduledJobStatus = Literal["NOT_STARTED", "RUNNING", "PAUSED", "SUCCEEDED", "FAILED"]
 ScheduledJobLogStatus = Literal["RUNNING", "SUCCEEDED", "FAILED"]
 ScheduledJobTriggerType = Literal["MANUAL", "JOB"]
+
+
+class ScheduledJobBindingPayload(BaseModel):
+    type: ScheduledJobTaskType
+    target_id: str = Field(alias="targetId", min_length=1)
+    target_name: str = Field(default="", alias="targetName", max_length=200)
+    target_description: str = Field(
+        default="",
+        alias="targetDescription",
+        max_length=1000,
+    )
+
+    model_config = ConfigDict(populate_by_name=True)
 
 
 @dataclass
@@ -109,19 +124,20 @@ class ScheduledJobTraceWindowPayload(BaseModel):
 
 class CreateScheduledJobPayload(BaseModel):
     task_type: ScheduledJobTaskType = Field(default="AUTO_EVALUATION", alias="taskType")
+    binding: ScheduledJobBindingPayload | None = None
     name: str = Field(min_length=1, max_length=120)
     description: str = Field(default="", max_length=1000)
-    score_name: str = Field(alias="scoreName", min_length=1)
+    score_name: str = Field(default="", alias="scoreName")
     score_mapping: dict[str, Any] = Field(default_factory=dict, alias="scoreMapping")
     run_mode: ScheduledJobRunMode = Field(alias="runMode")
     frequency: ScheduledJobFrequencyPayload
     timezone_name: str = Field(default="Asia/Shanghai", alias="timezone")
-    evaluator_id: str = Field(alias="evaluatorId", min_length=1)
+    evaluator_id: str = Field(default="", alias="evaluatorId")
     variable_mapping: dict[str, Any] = Field(
         default_factory=dict,
         alias="variableMapping",
     )
-    data_source: dict[str, Any] = Field(alias="dataSource")
+    data_source: dict[str, Any] = Field(default_factory=dict, alias="dataSource")
     sample_rate: int = Field(default=100, alias="sampleRate", ge=1, le=100)
     report_template_id: str | None = Field(default=None, alias="reportTemplateId")
     badcase: dict[str, Any] = Field(default_factory=dict)
@@ -131,14 +147,24 @@ class CreateScheduledJobPayload(BaseModel):
 
     @model_validator(mode="after")
     def validate_payload(self) -> "CreateScheduledJobPayload":
-        if self.task_type != "AUTO_EVALUATION":
-            raise ValueError("当前仅支持自动评测定时任务")
+        if self.binding is not None and self.binding.type != self.task_type:
+            raise ValueError("绑定对象类型必须与任务类型一致")
+        if self.task_type == "AUTO_EVALUATION":
+            if not self.score_name.strip():
+                raise ValueError("自动评测定时任务必须包含评分名称")
+            if not self.evaluator_id.strip():
+                raise ValueError("自动评测定时任务必须选择评估器")
+            if not self.data_source:
+                raise ValueError("自动评测定时任务必须配置数据来源")
+        if self.task_type == "RUN_EXPERIMENT" and self.binding is None:
+            raise ValueError("运行试验定时任务必须绑定场景")
         if self.run_mode == "ONCE" and self.frequency.kind != "ONCE":
             raise ValueError("单次任务必须使用 ONCE 频率")
         if self.run_mode == "RECURRING" and self.frequency.kind == "ONCE":
             raise ValueError("周期任务不能使用 ONCE 频率")
         if (
-            self.run_mode == "RECURRING"
+            self.task_type == "AUTO_EVALUATION"
+            and self.run_mode == "RECURRING"
             and str(self.data_source.get("type")) == "DATASET"
         ):
             raise ValueError("周期性定时任务仅支持 Trace 过滤数据来源")
@@ -254,10 +280,18 @@ async def _execute_claimed_scheduled_job(
 def _scheduled_job_from_consolidated_row(row: dict[str, Any]) -> dict[str, Any]:
     schedule_config = row.get("schedule_config") or {}
     evaluator_ids = row.get("evaluator_ids") or []
+    task_type = schedule_config.get("taskType") or "AUTO_EVALUATION"
     return {
         **row,
         "id": row.get("legacy_source_id") or row.get("id"),
-        "task_type": "AUTO_EVALUATION",
+        "task_type": task_type,
+        "binding": schedule_config.get("binding")
+        or _default_scheduled_job_binding(
+            task_type=task_type,
+            target_id=row.get("legacy_source_id") or row.get("id") or "",
+            target_name=row.get("name") or "",
+            target_description=row.get("description") or "",
+        ),
         "run_mode": schedule_config.get("runMode") or "ONCE",
         "frequency": schedule_config.get("frequency") or {},
         "created_user_id": schedule_config.get("createdUserId") or "",
@@ -326,8 +360,10 @@ async def _sync_consolidated_scheduled_job(
         trigger_type="SCHEDULED",
         status=row["status"],
         configuration={
+            "taskType": row.get("task_type") or "AUTO_EVALUATION",
+            "binding": row.get("binding") or {},
             "scoreName": row.get("score_name") or "",
-            "evaluatorIds": [row["evaluator_id"]],
+            "evaluatorIds": [row["evaluator_id"]] if row.get("evaluator_id") else [],
             "evaluatorSnapshot": row.get("evaluator_snapshot") or {},
             "dataSource": row.get("data_source") or {},
             "variableMapping": row.get("variable_mapping") or {},
@@ -337,6 +373,8 @@ async def _sync_consolidated_scheduled_job(
             "reportTemplateSnapshot": row.get("report_template_snapshot") or {},
             "badcaseConfig": row.get("badcase_config") or {},
             "scheduleConfig": {
+                "taskType": row.get("task_type") or "AUTO_EVALUATION",
+                "binding": row.get("binding") or {},
                 "runMode": row.get("run_mode"),
                 "frequency": row.get("frequency") or {},
                 "createdUserId": row.get("created_user_id") or "",
@@ -354,6 +392,93 @@ async def _sync_consolidated_scheduled_job(
     )
 
 
+async def _resolve_scheduled_job_dependencies(
+    cursor: Any,
+    *,
+    project_id: str,
+    payload: CreateScheduledJobPayload,
+    user_id: str,
+) -> tuple[dict[str, Any], dict[str, Any]]:
+    if payload.task_type == "RUN_EXPERIMENT":
+        return {}, {}
+
+    evaluator = await _get_pa_evaluator(
+        cursor,
+        payload.evaluator_id,
+        user_id,
+    )
+    report_template_snapshot = await _resolve_report_template_snapshot(
+        cursor,
+        project_id=project_id,
+        template_id=payload.report_template_id,
+    )
+    return evaluator, report_template_snapshot
+
+
+def _payload_scheduled_job_binding(
+    payload: CreateScheduledJobPayload,
+    job_id: str,
+) -> dict[str, Any]:
+    if payload.binding is not None:
+        return payload.binding.model_dump(by_alias=True)
+    return _default_scheduled_job_binding(
+        task_type=payload.task_type,
+        target_id=job_id,
+        target_name=payload.name,
+        target_description=payload.description,
+    )
+
+
+def _scheduled_job_frequency_payload(
+    frequency: ScheduledJobFrequencyPayload,
+) -> dict[str, Any]:
+    return frequency.model_dump(
+        by_alias=True,
+        exclude_defaults=True,
+        exclude_none=True,
+    )
+
+
+def _scheduled_job_badcase_payload(payload: dict[str, Any]) -> dict[str, Any]:
+    if payload:
+        return payload
+    return {"enabled": False, "threshold": None}
+
+
+def _default_scheduled_job_binding(
+    *,
+    task_type: str,
+    target_id: str,
+    target_name: str,
+    target_description: str,
+) -> dict[str, Any]:
+    normalized_task_type = (
+        task_type if task_type in {"AUTO_EVALUATION", "RUN_EXPERIMENT"} else "AUTO_EVALUATION"
+    )
+    return {
+        "type": normalized_task_type,
+        "targetId": target_id,
+        "targetName": target_name,
+        "targetDescription": target_description,
+    }
+
+
+def _evaluator_snapshot(evaluator: dict[str, Any]) -> dict[str, Any]:
+    if not evaluator:
+        return {}
+    return {
+        "id": evaluator.get("id") or "",
+        "name": evaluator.get("name") or "",
+        "type": evaluator.get("type") or "",
+        "provider": evaluator.get("provider") or "",
+        "version": evaluator.get("version"),
+        "variables": evaluator.get("variables") or [],
+        "outputVariables": evaluator.get("output_variables")
+        or evaluator.get("outputVariables")
+        or [],
+    }
+
+
 def _scheduled_job_write_row(
     *,
     job_id: str,
@@ -367,37 +492,35 @@ def _scheduled_job_write_row(
     existing: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     current = existing or {}
+    task_type = payload.task_type
+    binding = _payload_scheduled_job_binding(payload, job_id)
+    evaluator_snapshot = _evaluator_snapshot(evaluator)
+    report_template_id = (
+        report_template_snapshot.get("id") if report_template_snapshot else None
+    )
     return {
         "id": job_id,
         "project_id": project_id,
+        "task_type": task_type,
+        "binding": binding,
         "name": payload.name,
         "description": payload.description,
         "score_name": payload.score_name,
         "score_mapping": payload.score_mapping,
         "run_mode": payload.run_mode,
-        "frequency": payload.frequency.model_dump(by_alias=True),
+        "frequency": _scheduled_job_frequency_payload(payload.frequency),
         "timezone": payload.timezone_name,
         "status": status,
         "scheduler_enabled": payload.scheduler_enabled,
         "next_run_at": next_run_at,
-        "evaluator_id": evaluator["id"],
-        "evaluator_snapshot": {
-            "id": evaluator["id"],
-            "name": evaluator["name"],
-            "type": evaluator["type"],
-            "provider": evaluator["provider"],
-            "version": evaluator["version"],
-            "variables": evaluator.get("variables") or [],
-            "outputVariables": evaluator.get("output_variables")
-            or evaluator.get("outputVariables")
-            or [],
-        },
+        "evaluator_id": evaluator.get("id") or "",
+        "evaluator_snapshot": evaluator_snapshot,
         "variable_mapping": _normalize_variable_mapping(payload.variable_mapping),
         "data_source": payload.data_source,
         "sample_rate": payload.sample_rate,
-        "report_template_id": report_template_snapshot["id"],
+        "report_template_id": report_template_id,
         "report_template_snapshot": report_template_snapshot,
-        "badcase_config": payload.badcase,
+        "badcase_config": _scheduled_job_badcase_payload(payload.badcase),
         "created_user_id": current.get("created_user_id") or user.user_id,
         "last_run_at": current.get("last_run_at"),
         "latest_execution_id": current.get("latest_execution_id"),
@@ -426,7 +549,8 @@ def _consolidated_scheduled_job_select_sql() -> str:
         SELECT
             job.legacy_source_id AS id,
             job.project_id,
-            'AUTO_EVALUATION'::text AS task_type,
+            COALESCE(job.schedule_config ->> 'taskType', 'AUTO_EVALUATION') AS task_type,
+            COALESCE(job.schedule_config -> 'binding', '{}'::jsonb) AS binding,
             job.name,
             job.description,
             job.score_name,
@@ -476,8 +600,10 @@ def _consolidated_execution_log_select_sql() -> str:
             execution.project_id,
             execution.request_payload ->> 'scheduledJobId' AS scheduled_job_id,
             execution.request_payload ->> 'scheduledJobName' AS scheduled_job_name,
-            'AUTO_EVALUATION'::text AS task_type,
+            COALESCE(execution.request_payload ->> 'taskType', 'AUTO_EVALUATION')
+                AS task_type,
             execution.request_payload ->> 'triggerType' AS trigger_type,
+            COALESCE(execution.request_payload -> 'binding', '{}'::jsonb) AS binding,
             COALESCE(
                 NULLIF(execution.result_payload ->> 'autoEvaluationTaskId', ''),
                 NULLIF(execution.request_payload ->> 'autoEvaluationTaskId', '')
@@ -487,6 +613,13 @@ def _consolidated_execution_log_select_sql() -> str:
             execution.request_payload ->> 'autoEvaluationTaskName'
                 AS resolved_auto_evaluation_task_name,
             execution.result_payload ->> 'reportId' AS evaluation_report_id,
+            execution.request_payload ->> 'sceneId' AS scene_id,
+            execution.request_payload ->> 'sceneName' AS scene_name,
+            execution.request_payload ->> 'experimentName' AS experiment_name,
+            execution.request_payload ->> 'scheduledFireAt' AS scheduled_fire_at,
+            execution.result_payload ->> 'datasetId' AS dataset_id,
+            execution.result_payload ->> 'experimentReportId' AS experiment_report_id,
+            execution.result_payload ->> 'experimentReportName' AS experiment_report_name,
             execution.status,
             execution.total_count AS sample_count,
             execution.started_at,
@@ -516,15 +649,11 @@ async def create_scheduled_job(
     async with await _connect(settings) as connection:
         async with connection.cursor() as cursor:
             await _ensure_project_access(cursor, project_id, current_user.user_id)
-            evaluator = await _get_pa_evaluator(
-                cursor,
-                payload.evaluator_id,
-                current_user.user_id,
-            )
-            report_template_snapshot = await _resolve_report_template_snapshot(
+            evaluator, report_template_snapshot = await _resolve_scheduled_job_dependencies(
                 cursor,
                 project_id=project_id,
-                template_id=payload.report_template_id,
+                payload=payload,
+                user_id=current_user.user_id,
             )
             await _sync_consolidated_scheduled_job(
                 cursor,
@@ -563,15 +692,11 @@ async def update_scheduled_job(
     async with await _connect(settings) as connection:
         async with connection.cursor() as cursor:
             await _ensure_project_access(cursor, project_id, current_user.user_id)
-            evaluator = await _get_pa_evaluator(
-                cursor,
-                payload.evaluator_id,
-                current_user.user_id,
-            )
-            report_template_snapshot = await _resolve_report_template_snapshot(
+            evaluator, report_template_snapshot = await _resolve_scheduled_job_dependencies(
                 cursor,
                 project_id=project_id,
-                template_id=payload.report_template_id,
+                payload=payload,
+                user_id=current_user.user_id,
             )
             existing = await _fetch_scheduled_job_with_cursor(cursor, project_id, job_id)
             await _sync_consolidated_scheduled_job(
@@ -727,6 +852,10 @@ async def list_scheduled_job_logs(
         default_factory=list,
         alias="triggerType",
     ),
+    task_type: list[ScheduledJobTaskType] = Query(
+        default_factory=list,
+        alias="taskType",
+    ),
     current_user: CurrentUserContext = Depends(get_current_user_context),
     settings: Settings = Depends(get_settings),
 ) -> dict[str, Any]:
@@ -743,6 +872,7 @@ async def list_scheduled_job_logs(
                 "like": like,
                 "status": status,
                 "trigger_type": trigger_type,
+                "task_type": task_type,
                 "limit": page_size,
                 "offset": offset,
             }
@@ -752,9 +882,13 @@ async def list_scheduled_job_logs(
                     %(keyword)s = ''
                     OR scheduled_job_name ILIKE %(like)s
                     OR auto_evaluation_task_name ILIKE %(like)s
+                    OR scene_name ILIKE %(like)s
+                    OR experiment_name ILIKE %(like)s
+                    OR experiment_report_name ILIKE %(like)s
                   )
                   AND (cardinality(%(status)s::text[]) = 0 OR status = ANY(%(status)s::text[]))
                   AND (cardinality(%(trigger_type)s::text[]) = 0 OR trigger_type = ANY(%(trigger_type)s::text[]))
+                  AND (cardinality(%(task_type)s::text[]) = 0 OR task_type = ANY(%(task_type)s::text[]))
             """
             await cursor.execute(
                 f"SELECT COUNT(*)::int AS total FROM ({base_sql}) consolidated {filters}",
@@ -788,6 +922,22 @@ async def _trigger_scheduled_job(
     log_id = _new_id("pajoblog")
     now = datetime.now(timezone.utc)
     lease_until = now + timedelta(seconds=settings.pa_eval_scheduler_lease_seconds)
+    task_type = job.get("task_type") or "AUTO_EVALUATION"
+    if task_type == "RUN_EXPERIMENT":
+        await _trigger_run_experiment_scheduled_job(
+            settings=settings,
+            project_id=project_id,
+            job=job,
+            trigger_type=trigger_type,
+            triggered_by=triggered_by,
+            fire_at=fire_at,
+            fire_key=fire_key,
+            log_id=log_id,
+            now=now,
+            lease_until=lease_until,
+        )
+        return
+
     auto_task_id = _new_id("paautoeval")
     run_id = _new_id("parun")
     auto_task_name = (
@@ -811,6 +961,8 @@ async def _trigger_scheduled_job(
                 request_payload={
                     "scheduledJobId": job["id"],
                     "fireKey": fire_key,
+                    "taskType": "AUTO_EVALUATION",
+                    "binding": job.get("binding") or {},
                     "autoEvaluationTaskId": "",
                     "scheduledJobName": job["name"],
                     "triggerType": trigger_type,
@@ -998,6 +1150,254 @@ async def _trigger_scheduled_job(
         updated_by=triggered_by,
         started_at=now,
     )
+
+
+async def _trigger_run_experiment_scheduled_job(
+    *,
+    settings: Settings,
+    project_id: str,
+    job: dict[str, Any],
+    trigger_type: ScheduledJobTriggerType,
+    triggered_by: str,
+    fire_at: datetime,
+    fire_key: str,
+    log_id: str,
+    now: datetime,
+    lease_until: datetime,
+) -> None:
+    binding = job.get("binding") or {}
+    scene_id = str(binding.get("targetId") or "")
+    scene_name = str(binding.get("targetName") or "")
+    experiment_name = _build_experiment_execution_name(
+        job.get("name") or "",
+        scene_name,
+        fire_at,
+        job.get("timezone") or "Asia/Shanghai",
+    )
+    async with await _connect(settings) as connection:
+        async with connection.cursor() as cursor:
+            execution = await ConsolidationRepository(cursor).create_execution(
+                execution_id=f"paexec_scheduled_{log_id}",
+                project_id=project_id,
+                job_type=JobExecutionType.SCHEDULED_EVALUATION,
+                definition_id=f"paejob_scheduled_{job['id']}",
+                idempotency_key=fire_key,
+                request_payload={
+                    "scheduledJobId": job["id"],
+                    "fireKey": fire_key,
+                    "taskType": "RUN_EXPERIMENT",
+                    "binding": binding,
+                    "scheduledJobName": job.get("name") or "",
+                    "triggerType": trigger_type,
+                    "scheduledFireAt": fire_at.isoformat(),
+                    "sceneId": scene_id,
+                    "sceneName": scene_name,
+                    "experimentName": experiment_name,
+                },
+                legacy_source_type="SCHEDULED_JOB_EXECUTION_LOG",
+                legacy_source_id=log_id,
+                actor=triggered_by,
+            )
+            if execution.get("legacy_source_id") != log_id:
+                stale_log_id = str(execution.get("legacy_source_id") or "")
+                existing_lock_until = execution.get("lock_until")
+                if (
+                    stale_log_id
+                    and execution.get("status") == "RUNNING"
+                    and isinstance(existing_lock_until, datetime)
+                    and _ensure_aware_datetime(existing_lock_until) <= now
+                ):
+                    await _mark_scheduled_job_trigger_failed(
+                        cursor,
+                        project_id=project_id,
+                        job=job,
+                        log_id=stale_log_id,
+                        fire_at=fire_at,
+                        fire_key=fire_key,
+                        started_at=now,
+                        error_message="定时执行租约过期，已终止旧执行并推进调度",
+                        updated_by=triggered_by,
+                        expired_before=now,
+                    )
+                return
+
+            repository = ConsolidationRepository(cursor)
+            await repository.sync_execution_from_legacy(
+                execution_id=f"paexec_scheduled_{log_id}",
+                project_id=project_id,
+                status=JobExecutionStatus.RUNNING,
+                total_count=0,
+                completed_count=0,
+                success_count=0,
+                failure_count=0,
+                result_payload={
+                    "sceneId": scene_id,
+                    "experimentName": experiment_name,
+                },
+                actor=triggered_by,
+                lock_owner=settings.scheduler_instance_id,
+                lock_until=lease_until,
+            )
+            try:
+                experiment_payload = await _build_scheduled_experiment_payload(
+                    settings=settings,
+                    project_id=project_id,
+                    job=job,
+                    scene_id=scene_id,
+                    experiment_name=experiment_name,
+                    trigger_type=trigger_type,
+                    fire_at=fire_at,
+                    triggered_by=triggered_by,
+                )
+                result = await run_scene_experiment(
+                    project_id=project_id,
+                    dataset_id=experiment_payload["dataset_id"],
+                    payload=experiment_payload["payload"],
+                    current_user=CurrentUserContext(
+                        user_id=job.get("created_user_id") or triggered_by,
+                        email=triggered_by,
+                        name=triggered_by,
+                    ),
+                    reader=LangfuseDatabaseReader(settings),
+                )
+                reports = list(result.get("reports") or [])
+                first_report = reports[0] if reports else {}
+                item_count = sum(int(report.get("itemCount") or 0) for report in reports)
+                success_count = sum(
+                    int(report.get("successfulItemCount") or 0) for report in reports
+                )
+                failure_count = sum(
+                    int(report.get("failedItemCount") or 0) for report in reports
+                )
+                await repository.sync_execution_from_legacy(
+                    execution_id=f"paexec_scheduled_{log_id}",
+                    project_id=project_id,
+                    status=JobExecutionStatus.SUCCEEDED,
+                    total_count=item_count,
+                    completed_count=item_count,
+                    success_count=success_count,
+                    failure_count=failure_count,
+                    result_payload={
+                        "fireKey": fire_key,
+                        "datasetId": experiment_payload["dataset_id"],
+                        "experimentGroupId": (result.get("group") or {}).get("id") or "",
+                        "reportIds": [report.get("id") for report in reports if report.get("id")],
+                        "experimentReportId": first_report.get("id") or "",
+                        "experimentReportName": first_report.get("name") or "",
+                    },
+                    actor=triggered_by,
+                )
+                next_run_at = _next_run_after_trigger(job, fire_at)
+                await cursor.execute(
+                    """
+                    UPDATE pa_evaluation_jobs
+                    SET status = %(status)s,
+                        latest_execution_id = %(latest_execution_id)s,
+                        latest_report_id = %(report_id)s,
+                        last_run_at = %(last_run_at)s,
+                        next_run_at = %(next_run_at)s,
+                        update_by = %(update_by)s,
+                        update_date = %(update_date)s
+                    WHERE project_id = %(project_id)s
+                      AND legacy_source_type = 'SCHEDULED_JOB'
+                      AND legacy_source_id = %(job_id)s
+                      AND status != 'PAUSED'
+                    """,
+                    {
+                        "project_id": project_id,
+                        "job_id": job["id"],
+                        "status": "SUCCEEDED",
+                        "latest_execution_id": f"paexec_scheduled_{log_id}",
+                        "report_id": first_report.get("id") or None,
+                        "last_run_at": datetime.now(timezone.utc),
+                        "next_run_at": next_run_at,
+                        "update_by": triggered_by,
+                        "update_date": datetime.now(timezone.utc),
+                    },
+                )
+            except Exception as exc:
+                logger.exception(
+                    "Scheduled experiment job execution failed",
+                    extra={"job_id": job["id"]},
+                )
+                await _mark_scheduled_job_trigger_failed(
+                    cursor,
+                    project_id=project_id,
+                    job=job,
+                    log_id=log_id,
+                    fire_at=fire_at,
+                    fire_key=fire_key,
+                    started_at=now,
+                    error_message=_safe_error_message(exc),
+                    updated_by=triggered_by,
+                )
+
+
+async def _build_scheduled_experiment_payload(
+    *,
+    settings: Settings,
+    project_id: str,
+    job: dict[str, Any],
+    scene_id: str,
+    experiment_name: str,
+    trigger_type: ScheduledJobTriggerType,
+    fire_at: datetime,
+    triggered_by: str,
+) -> dict[str, Any]:
+    if not scene_id:
+        raise BusinessError(4101, "运行试验定时任务未绑定场景")
+    reader = LangfuseDatabaseReader(settings)
+    row = await reader.get_resource_extension(
+        project_id=project_id,
+        resource_type="SCENE",
+        resource_id=scene_id,
+        extension_type="SCENE_CONFIG",
+    )
+    if row is None:
+        raise BusinessError(2006, "场景不存在", 404)
+    scene = dict(row.get("payload") or {})
+    if not scene.get("enabled"):
+        raise BusinessError(2004, "所选场景不可用")
+    if not scene.get("supportsScheduledExecution"):
+        raise BusinessError(2015, "所选场景未开启定时执行")
+
+    webhook_ids = _scheduled_scene_webhook_ids(scene)
+    evaluator_ids = [str(value) for value in scene.get("evaluatorIds") or [] if str(value)]
+    dataset_id = str(scene.get("datasetId") or "")
+    run_parameters = scene.get("runParameters") or {}
+    if not dataset_id or not webhook_ids or not evaluator_ids or not run_parameters:
+        raise BusinessError(2009, "场景配置不完整")
+
+    description = (
+        f"由定时任务「{job.get('name') or ''}」{trigger_type} 触发，"
+        f"调度时间：{fire_at.isoformat()}，触发人：{triggered_by}。"
+    )
+    return {
+        "dataset_id": dataset_id,
+        "payload": CreateExperimentPayload.model_validate(
+            {
+                "name": experiment_name,
+                "description": description,
+                "sceneId": scene_id,
+                "webhookIds": webhook_ids,
+                "evaluatorIds": evaluator_ids,
+                "runParameters": run_parameters,
+            }
+        ),
+    }
+
+
+def _scheduled_scene_webhook_ids(scene: dict[str, Any]) -> list[str]:
+    webhooks = scene.get("webhooks") or []
+    available_ids = {str(webhook.get("id")) for webhook in webhooks if webhook.get("id")}
+    default_ids = [
+        str(value)
+        for value in scene.get("defaultScheduledWebhookIds") or []
+        if str(value) in available_ids
+    ]
+    if default_ids:
+        return default_ids
+    return [str(webhook.get("id")) for webhook in webhooks if webhook.get("id")]
 
 
 async def _mark_scheduled_job_trigger_failed(
@@ -1190,40 +1590,34 @@ def _scheduled_job_insert_params(
     user: CurrentUserContext,
     now: datetime,
 ) -> dict[str, Any]:
+    evaluator_snapshot = _evaluator_snapshot(evaluator)
+    report_template_id = (
+        report_template_snapshot.get("id") if report_template_snapshot else None
+    )
     return {
         "id": job_id,
         "project_id": project_id,
+        "task_type": payload.task_type,
+        "binding": Jsonb(_payload_scheduled_job_binding(payload, job_id)),
         "name": payload.name,
         "description": payload.description,
         "score_name": payload.score_name,
         "score_mapping": Jsonb(payload.score_mapping),
         "run_mode": payload.run_mode,
-        "frequency": Jsonb(payload.frequency.model_dump(by_alias=True)),
+        "frequency": Jsonb(_scheduled_job_frequency_payload(payload.frequency)),
         "timezone": payload.timezone_name,
         "scheduler_enabled": payload.scheduler_enabled,
         "next_run_at": next_run_at,
-        "evaluator_id": evaluator["id"],
-        "evaluator_snapshot": Jsonb(
-            {
-                "id": evaluator["id"],
-                "name": evaluator["name"],
-                "type": evaluator["type"],
-                "provider": evaluator["provider"],
-                "version": evaluator["version"],
-                "variables": evaluator.get("variables") or [],
-                "outputVariables": evaluator.get("output_variables")
-                or evaluator.get("outputVariables")
-                or [],
-            }
-        ),
+        "evaluator_id": evaluator.get("id") or "",
+        "evaluator_snapshot": Jsonb(evaluator_snapshot),
         "variable_mapping": Jsonb(
             _normalize_variable_mapping(payload.variable_mapping)
         ),
         "data_source": Jsonb(payload.data_source),
         "sample_rate": payload.sample_rate,
-        "report_template_id": report_template_snapshot["id"],
+        "report_template_id": report_template_id,
         "report_template_snapshot": Jsonb(report_template_snapshot),
-        "badcase_config": Jsonb(payload.badcase),
+        "badcase_config": Jsonb(_scheduled_job_badcase_payload(payload.badcase)),
         "created_user_id": user.user_id,
         "create_by": user.email,
         "create_date": now,
@@ -1475,6 +1869,22 @@ def _build_job_triggered_auto_evaluation_name(
     return f"{prefix}{job_name[:max_job_name_length]}{suffix}"
 
 
+def _build_experiment_execution_name(
+    job_name: str,
+    scene_name: str,
+    triggered_at: datetime,
+    timezone_name: str,
+) -> str:
+    local_time = _ensure_aware_datetime(triggered_at).astimezone(
+        ZoneInfo(timezone_name)
+    )
+    prefix = "【定时试验】"
+    suffix = f"-{local_time.strftime('%Y%m%d%H%M')}"
+    base_name = scene_name or job_name
+    max_name_length = 40 - len(prefix) - len(suffix)
+    return f"{prefix}{base_name[:max_name_length]}{suffix}"
+
+
 def _duration_text(started_at: datetime, ended_at: datetime) -> str:
     seconds = max(0, int((ended_at - started_at).total_seconds()))
     if seconds < 60:
@@ -1580,10 +1990,18 @@ async def _set_scheduled_job_status(
 
 def _to_scheduled_job(row: dict[str, Any]) -> dict[str, Any]:
     evaluator = row.get("evaluator_snapshot") or {}
+    task_type = row.get("task_type") or "AUTO_EVALUATION"
     return {
         "id": row.get("id"),
         "projectId": row.get("project_id"),
-        "type": row.get("task_type") or "AUTO_EVALUATION",
+        "type": task_type,
+        "binding": row.get("binding")
+        or _default_scheduled_job_binding(
+            task_type=task_type,
+            target_id=row.get("id") or "",
+            target_name=row.get("name") or "",
+            target_description=row.get("description") or "",
+        ),
         "name": row.get("name") or "",
         "description": row.get("description") or "",
         "scoreName": row.get("score_name") or "",
@@ -1628,16 +2046,20 @@ def _to_scheduled_job(row: dict[str, Any]) -> dict[str, Any]:
 def _to_execution_log(row: dict[str, Any]) -> dict[str, Any]:
     auto_task_id = row.get("auto_evaluation_task_id")
     report_id = row.get("evaluation_report_id")
+    experiment_report_id = row.get("experiment_report_id")
+    experiment_report_name = row.get("experiment_report_name") or ""
     project_id = row.get("project_id")
     duration_text = row.get("duration_text") or ""
     if not duration_text and row.get("started_at") and row.get("ended_at"):
         duration_text = _duration_text(row["started_at"], row["ended_at"])
+    started_at = _format_datetime(row["started_at"]) if row.get("started_at") else ""
     return {
         "id": row.get("id"),
         "projectId": project_id,
         "taskId": row.get("scheduled_job_id"),
         "taskName": row.get("scheduled_job_name"),
         "taskType": row.get("task_type") or "AUTO_EVALUATION",
+        "binding": row.get("binding") or {},
         "triggerType": row.get("trigger_type"),
         "autoEvaluationTaskName": row.get("resolved_auto_evaluation_task_name")
         or row.get("auto_evaluation_task_name")
@@ -1652,11 +2074,18 @@ def _to_execution_log(row: dict[str, Any]) -> dict[str, Any]:
             if report_id
             else None
         ),
+        "scheduledAt": row.get("scheduled_fire_at") or started_at,
+        "sceneName": row.get("scene_name") or "",
+        "experimentName": row.get("experiment_name") or "",
+        "experimentReportName": experiment_report_name,
+        "experimentReportPath": (
+            f"/projects/{project_id}/evaluation/datasets/{row.get('dataset_id')}/experiment-reports/{experiment_report_id}?source=project"
+            if row.get("dataset_id") and experiment_report_id
+            else None
+        ),
         "status": row.get("status"),
         "sampleCount": row.get("sample_count") or 0,
-        "startedAt": _format_datetime(row["started_at"])
-        if row.get("started_at")
-        else "",
+        "startedAt": started_at,
         "endedAt": _format_datetime(row["ended_at"]) if row.get("ended_at") else None,
         "durationText": duration_text,
         "errorMessage": row.get("error_message"),

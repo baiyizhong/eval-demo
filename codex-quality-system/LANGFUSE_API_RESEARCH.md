@@ -71,3 +71,11 @@ uv run pytest tests/test_project_model_settings.py -q
 - 清单区分 Public API、Adapter、PA 表、DB Read、DB Write、ClickHouse 六类数据路径。
 - 当前仍需清理的主要对齐点：项目 create/update、组织 create/update、trace patch 仍存在 Langfuse PG 原生表写路径；score 写入仍有 ClickHouse fallback。
 - 详细清单见 `docs/api/2026-07-28-api-table-inventory.md`。
+
+## 场景实验模块对齐（2026-07-30）
+
+- Langfuse 场景本身没有独立 Public API 资源；PA 场景定义属于产品层运行配置，已复用现有 `pa_resource_extensions` 存储 `SCENE_CONFIG`，不新增表、不改 Langfuse 原生 schema。
+- Langfuse experiment 官方读取入口已补齐到 `LangfusePublicClient`：`GET /api/public/experiments`、`GET /api/public/experiment-items`。
+- Langfuse 官方创建实验结果的推荐路径是 Experiment runner SDK，非 SDK 场景可通过 OTEL traces + experiment attributes 写入；本次后端页面闭环先生成 PA 实验 group/report/baseline 快照，保存在 `pa_resource_extensions` 的 `EXPERIMENT_*` 扩展类型中，不写 `dataset_runs` / `dataset_run_items` 等原生表。
+- 场景实验创建会校验项目、数据集、场景启用状态、Webhook 和评估器绑定关系；报告中保留 `langfuseExperimentName`，作为后续接入真实 Langfuse SDK/OTEL experiment run 的稳定桥接字段。
+- Webhook 表单提交的明文 `credential` 不进入扩展表 payload，仅保留 `maskedCredential` 等非敏感展示字段。
