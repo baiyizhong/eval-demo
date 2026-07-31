@@ -158,10 +158,7 @@ test('scene scheduling configuration persists evaluator and webhook selections',
     source,
     /supportsScheduledExecution: checked[\s\S]*defaultScheduledWebhookIds:/
   )
-  assert.match(
-    source,
-    /scene\.defaultScheduledWebhookIds \?\?[\s\S]*scene\.defaultScheduledWebhookId/
-  )
+  assert.doesNotMatch(source, /defaultScheduledWebhookId\b/)
   assert.match(source, /defaultScheduledWebhookIds: \[\]/)
 })
 

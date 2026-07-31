@@ -109,12 +109,7 @@ function SceneFormDrawerContent({
           description: scene.description,
           enabled: scene.enabled,
           supportsScheduledExecution: scene.supportsScheduledExecution ?? false,
-          defaultScheduledWebhookIds: [
-            ...(scene.defaultScheduledWebhookIds ??
-              (scene.defaultScheduledWebhookId
-                ? [scene.defaultScheduledWebhookId]
-                : [])),
-          ],
+          defaultScheduledWebhookIds: [...(scene.defaultScheduledWebhookIds ?? [])],
           datasetId: scene.datasetId ?? '',
           evaluatorIds: [...(scene.evaluatorIds ?? [])],
           webhooks: structuredClone(scene.webhooks),

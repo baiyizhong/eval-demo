@@ -8,7 +8,6 @@ from uuid import uuid4
 from zoneinfo import ZoneInfo
 
 from fastapi import APIRouter, BackgroundTasks, Depends, Query
-from psycopg.types.json import Jsonb
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 from app.auth_context import CurrentUserContext, get_current_user_context
@@ -1577,53 +1576,6 @@ async def _sync_execution_log_from_auto_evaluation(
                     "update_date": ended_at,
                 },
             )
-
-
-def _scheduled_job_insert_params(
-    *,
-    job_id: str,
-    project_id: str,
-    payload: CreateScheduledJobPayload,
-    evaluator: dict[str, Any],
-    report_template_snapshot: dict[str, Any],
-    next_run_at: datetime | None,
-    user: CurrentUserContext,
-    now: datetime,
-) -> dict[str, Any]:
-    evaluator_snapshot = _evaluator_snapshot(evaluator)
-    report_template_id = (
-        report_template_snapshot.get("id") if report_template_snapshot else None
-    )
-    return {
-        "id": job_id,
-        "project_id": project_id,
-        "task_type": payload.task_type,
-        "binding": Jsonb(_payload_scheduled_job_binding(payload, job_id)),
-        "name": payload.name,
-        "description": payload.description,
-        "score_name": payload.score_name,
-        "score_mapping": Jsonb(payload.score_mapping),
-        "run_mode": payload.run_mode,
-        "frequency": Jsonb(_scheduled_job_frequency_payload(payload.frequency)),
-        "timezone": payload.timezone_name,
-        "scheduler_enabled": payload.scheduler_enabled,
-        "next_run_at": next_run_at,
-        "evaluator_id": evaluator.get("id") or "",
-        "evaluator_snapshot": Jsonb(evaluator_snapshot),
-        "variable_mapping": Jsonb(
-            _normalize_variable_mapping(payload.variable_mapping)
-        ),
-        "data_source": Jsonb(payload.data_source),
-        "sample_rate": payload.sample_rate,
-        "report_template_id": report_template_id,
-        "report_template_snapshot": Jsonb(report_template_snapshot),
-        "badcase_config": Jsonb(_scheduled_job_badcase_payload(payload.badcase)),
-        "created_user_id": user.user_id,
-        "create_by": user.email,
-        "create_date": now,
-        "update_by": user.email,
-        "update_date": now,
-    }
 
 
 def _build_auto_evaluation_payload_from_job(

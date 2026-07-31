@@ -141,7 +141,7 @@ class LangfuseAnnotationsAdapter:
         async with client:
             updated = await client.update_score_config(
                 config_id,
-                _score_config_api_payload(payload, for_update=True),
+                _score_config_api_payload(payload),
             )
             return _to_score_config_payload(updated)
 
@@ -647,11 +647,7 @@ def _to_queue_item_payload(item: dict[str, Any], project_id: str) -> dict[str, A
     }
 
 
-def _score_config_api_payload(
-    payload: dict[str, Any],
-    *,
-    for_update: bool = False,
-) -> dict[str, Any]:
+def _score_config_api_payload(payload: dict[str, Any]) -> dict[str, Any]:
     data_type = payload.get("dataType") or payload.get("data_type")
     result: dict[str, Any] = {
         "name": payload.get("name"),

@@ -6,10 +6,9 @@
 
 ## 范围
 
-- 仅修改 `pa-eval-frontend`。
-- 不修改 `pa-eval-backend`、数据库、Langfuse 或真实 API 实现。
-- 前端请求模型增加 `supportsScheduledExecution` 和 `defaultScheduledWebhookIds`，用于后续与后端契约对接。
-- 前端 Mock 保存并返回这两个字段，仅用于本地开发页面演示和测试，不代表真实后端已实现。
+- 前后端请求模型使用 `supportsScheduledExecution` 和 `defaultScheduledWebhookIds`。
+- 后端通过 `pa_resource_extensions` 保存场景配置，不新增场景专用表。
+- 前端 Mock 保存并返回这两个字段，仅用于本地开发页面演示和测试。
 - 不修改“运行试验”的 Webhook 选择流程。
 
 ## 数据模型
@@ -19,7 +18,7 @@
 - `supportsScheduledExecution: boolean`：是否允许定时任务调度。
 - `defaultScheduledWebhookIds: string[]`：定时执行服务 ID 集合；关闭定时执行时仍保留。
 
-新建场景默认关闭定时执行，服务集合为空。编辑场景时优先从数组字段回显，并兼容旧单值字段 `defaultScheduledWebhookId`。
+新建场景默认关闭定时执行，服务集合为空。编辑场景时只从数组字段回显，不保留旧单值字段兼容。
 
 ## 交互规则
 
@@ -37,7 +36,7 @@
 - 开启定时执行时，离开 Webhook 步骤必须至少选择一个服务。
 - 最终提交重复执行上述校验，并清理已不存在的评估器和 Webhook ID。
 - 原有 Webhook 名称、URL、评估器和运行参数校验保持不变。
-- 真实后端若尚未识别新增字段，刷新后的持久化结果取决于后端后续契约实现。
+- 后端按同一字段契约校验并持久化场景配置。
 
 ## 测试
 

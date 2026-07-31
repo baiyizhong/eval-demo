@@ -9,6 +9,7 @@ from app.langfuse_db import get_langfuse_db_reader
 from app.main import app
 from app.scene_experiments import (
     CreateExperimentPayload,
+    _scene_from_row,
     _webhook_headers,
     run_scene_experiment,
     set_scene_webhook_runner_for_tests,
@@ -263,6 +264,26 @@ def _client(reader: FakeSceneExperimentReader) -> TestClient:
         name="Dev",
     )
     return TestClient(app)
+
+
+def test_scene_from_row_uses_only_default_scheduled_webhook_ids() -> None:
+    scene = _scene_from_row(
+        {
+            "project_id": "proj_a",
+            "resource_id": "scene-1",
+            "created_at": datetime(2026, 7, 9, tzinfo=UTC),
+            "updated_at": datetime(2026, 7, 9, tzinfo=UTC),
+            "payload": {
+                "id": "scene-1",
+                "projectId": "proj_a",
+                "name": "客服场景",
+                "defaultScheduledWebhookId": "webhook-old",
+            },
+        }
+    )
+
+    assert scene["defaultScheduledWebhookIds"] == []
+    assert "defaultScheduledWebhookId" not in scene
 
 
 def test_scene_crud_uses_existing_resource_extension_store() -> None:

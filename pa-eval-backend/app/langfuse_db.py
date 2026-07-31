@@ -1500,12 +1500,6 @@ class LangfuseDatabaseReader:
             project_id,
             dataset_id,
             job_id,
-            """
-            status = 'RUNNING',
-            started_at = COALESCE(started_at, NOW()),
-            update_date = NOW()
-            """,
-            {},
             consolidated_status=JobExecutionStatus.RUNNING,
         )
 
@@ -1524,23 +1518,6 @@ class LangfuseDatabaseReader:
             project_id,
             dataset_id,
             job_id,
-            """
-            status = 'SUCCEEDED',
-            total_count = %(total_count)s,
-            exported_count = %(total_count)s,
-            file_name = %(file_name)s,
-            file_path = %(file_path)s,
-            file_size = %(file_size)s,
-            error_message = '',
-            completed_at = NOW(),
-            update_date = NOW()
-            """,
-            {
-                "total_count": total_count,
-                "file_name": file_name,
-                "file_path": file_path,
-                "file_size": file_size,
-            },
             consolidated_status=JobExecutionStatus.SUCCEEDED,
             consolidated_total_count=total_count,
             consolidated_completed_count=total_count,
@@ -1566,13 +1543,6 @@ class LangfuseDatabaseReader:
             project_id,
             dataset_id,
             job_id,
-            """
-            status = 'FAILED',
-            error_message = %(error_message)s,
-            completed_at = NOW(),
-            update_date = NOW()
-            """,
-            {"error_message": error_message[:1000]},
             consolidated_status=JobExecutionStatus.FAILED,
             consolidated_error_message=error_message[:1000],
         )
@@ -5562,8 +5532,6 @@ class LangfuseDatabaseReader:
         project_id: str,
         dataset_id: str,
         job_id: str,
-        assignments_sql: str,
-        params: dict[str, Any],
         *,
         consolidated_status: JobExecutionStatus | None = None,
         consolidated_total_count: int = 0,

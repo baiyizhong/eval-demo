@@ -8,7 +8,7 @@ from fastapi import APIRouter, Depends, Query
 from pydantic import BaseModel, ConfigDict, Field
 
 from app.auth_context import CurrentUserContext, get_current_user_context
-from app.consolidation.models import ResourceExtensionType
+from app.consolidation.models import ResourceExtensionType, SceneConfigPayload
 from app.errors import BusinessError
 from app.langfuse_db import LangfuseDatabaseReader, get_langfuse_db_reader
 from app.response import success
@@ -21,6 +21,9 @@ EXPERIMENT_GROUP_RESOURCE_TYPE = "EXPERIMENT_GROUP"
 EXPERIMENT_REPORT_RESOURCE_TYPE = "EXPERIMENT_REPORT"
 EXPERIMENT_BASELINE_RESOURCE_TYPE = "EXPERIMENT_BASELINE"
 _SCENE_WEBHOOK_RUNNER_FOR_TESTS: Any | None = None
+_SCENE_PUBLIC_FIELDS = {
+    field.alias or name for name, field in SceneConfigPayload.model_fields.items()
+}
 
 
 class SceneRunParametersPayload(BaseModel):
@@ -173,14 +176,16 @@ def _to_iso(value: Any) -> str:
 
 
 def _scene_from_row(row: dict[str, Any]) -> dict[str, Any]:
-    scene = _payload(row)
+    scene = {
+        key: value
+        for key, value in _payload(row).items()
+        if key in _SCENE_PUBLIC_FIELDS
+    }
     scene.setdefault("createdAt", _created_at(row, _now_iso()))
     scene.setdefault("updatedAt", _updated_at(row, scene["createdAt"]))
     scene["id"] = scene.get("id") or row.get("resource_id")
     scene["projectId"] = scene.get("projectId") or row.get("project_id")
     scene["defaultScheduledWebhookIds"] = scene.get("defaultScheduledWebhookIds") or []
-    if scene.get("defaultScheduledWebhookId") and not scene["defaultScheduledWebhookIds"]:
-        scene["defaultScheduledWebhookIds"] = [scene["defaultScheduledWebhookId"]]
     return scene
 
 

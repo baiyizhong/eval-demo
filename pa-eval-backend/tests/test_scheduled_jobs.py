@@ -17,7 +17,6 @@ from app.scheduled_jobs import (
     _compute_trace_window,
     _normalize_auto_evaluation_data_source,
     _normalize_variable_mapping,
-    _scheduled_job_insert_params,
     _scheduled_job_write_row,
 )
 
@@ -219,7 +218,7 @@ def test_job_triggered_auto_evaluation_name_truncates_long_job_name() -> None:
     assert name.endswith("-202607291535")
 
 
-def test_scheduled_job_insert_params_persists_score_mapping() -> None:
+def test_scheduled_job_write_row_persists_score_mapping() -> None:
     payload = scheduled_jobs.CreateScheduledJobPayload.model_validate(
         {
             "name": "每日质量评测",
@@ -238,7 +237,7 @@ def test_scheduled_job_insert_params_persists_score_mapping() -> None:
         }
     )
 
-    params = _scheduled_job_insert_params(
+    row = _scheduled_job_write_row(
         job_id="pajob-1",
         project_id="project-1",
         payload=payload,
@@ -253,20 +252,20 @@ def test_scheduled_job_insert_params_persists_score_mapping() -> None:
         },
         report_template_snapshot={"id": "default"},
         next_run_at=None,
+        status="NOT_STARTED",
         user=scheduled_jobs.CurrentUserContext(
             user_id="user-1",
             email="owner@example.com",
         ),
-        now=datetime(2026, 7, 9, tzinfo=timezone.utc),
     )
 
-    assert params["score_mapping"].obj == {
+    assert row["score_mapping"] == {
         "quality_score": {
             "scoreConfigId": "score-config-quality",
             "scoreConfigName": "回答质量",
         }
     }
-    assert params["evaluator_snapshot"].obj["outputVariables"] == ["quality_score"]
+    assert row["evaluator_snapshot"]["outputVariables"] == ["quality_score"]
 
 
 def test_run_experiment_payload_persists_binding_without_evaluator_lookup() -> None:
@@ -286,25 +285,25 @@ def test_run_experiment_payload_persists_binding_without_evaluator_lookup() -> N
         }
     )
 
-    params = _scheduled_job_insert_params(
+    row = _scheduled_job_write_row(
         job_id="pajob-1",
         project_id="project-1",
         payload=payload,
         evaluator={},
         report_template_snapshot={},
         next_run_at=None,
+        status="NOT_STARTED",
         user=scheduled_jobs.CurrentUserContext(
             user_id="user-1",
             email="owner@example.com",
         ),
-        now=datetime(2026, 7, 9, tzinfo=timezone.utc),
     )
 
-    assert params["score_name"] == ""
-    assert params["evaluator_id"] == ""
-    assert params["report_template_id"] is None
-    assert params["frequency"].obj == {"kind": "DAILY", "timeOfDay": "09:00"}
-    assert params["badcase_config"].obj == {"enabled": False, "threshold": None}
+    assert row["score_name"] == ""
+    assert row["evaluator_id"] == ""
+    assert row["report_template_id"] is None
+    assert row["frequency"] == {"kind": "DAILY", "timeOfDay": "09:00"}
+    assert row["badcase_config"] == {"enabled": False, "threshold": None}
 
 
 def test_scheduled_job_write_row_carries_run_experiment_binding() -> None:

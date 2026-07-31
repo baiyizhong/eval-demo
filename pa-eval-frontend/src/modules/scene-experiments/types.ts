@@ -32,7 +32,6 @@ export type SceneRecord = {
   description: string
   enabled: boolean
   supportsScheduledExecution?: boolean
-  defaultScheduledWebhookId?: string
   defaultScheduledWebhookIds?: string[]
   datasetId: string
   evaluatorIds: string[]

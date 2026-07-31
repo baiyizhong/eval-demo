@@ -668,8 +668,9 @@ def test_previews_large_annotation_export_enriches_only_preview_items() -> None:
             raise AssertionError("导出预览不应加载全量标注详情")
 
         async def iter_annotation_queue_items_for_user(self, *args, **kwargs):
+            if kwargs.get("_never"):
+                yield {}
             raise AssertionError("导出预览不应扫描全量标注详情")
-            yield []
 
         async def list_annotation_queue_items_page_for_user(
             self,
