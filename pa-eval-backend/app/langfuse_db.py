@@ -817,36 +817,20 @@ class LangfuseDatabaseReader:
     ) -> dict[str, Any]:
         if not self._database_url:
             raise LangfuseDatabaseConfigError()
+        if not self._langfuse_salt:
+            raise LangfuseSaltConfigError()
 
-        await self._ensure_project_visible(project_id, user_id)
         key_id = _new_langfuse_id("papikey")
-        client = LangfusePublicClient(
-            base_url=self._settings.langfuse_base_url,
-            organization_api_key=self._settings.langfuse_organization_api_key,
-            timeout=self._settings.pa_eval_api_timeout,
-        )
-        native_key_id = ""
-        try:
-            native = await client.create_project_api_key(
-                project_id,
-                {"note": note},
-            )
-            native_key_id = str(native.get("id") or "")
-            public_key = str(native.get("publicKey") or "")
-            secret_key = str(native.get("secretKey") or "")
-            if not native_key_id or not public_key or not secret_key:
-                raise BusinessError(2013, "Langfuse 未返回完整 API Key", 502)
-        finally:
-            await client.aclose()
+        public_key = f"pk-lf-{uuid4()}"
+        secret_key = f"sk-lf-{uuid4()}"
 
-        try:
-            async with await connect_postgres(
-                self._database_url,
-                row_factory=dict_row,
-            ) as connection:
-                async with connection.cursor() as cursor:
-                    await self._get_project_for_user(cursor, project_id, user_id)
-                    await cursor.execute(
+        async with await connect_postgres(
+            self._database_url,
+            row_factory=dict_row,
+        ) as connection:
+            async with connection.cursor() as cursor:
+                await self._get_project_for_user(cursor, project_id, user_id)
+                await cursor.execute(
                     """
                     INSERT INTO pa_project_api_keys (
                         id,
@@ -890,21 +874,15 @@ class LangfuseDatabaseReader:
                         "update_by": user_email,
                     },
                 )
-                    row = await cursor.fetchone()
-                    if row is None:
-                        raise RuntimeError("项目 API Key 创建后未返回记录")
-        except Exception:
-            if native_key_id:
-                client = LangfusePublicClient(
-                    base_url=self._settings.langfuse_base_url,
-                    organization_api_key=self._settings.langfuse_organization_api_key,
-                    timeout=self._settings.pa_eval_api_timeout,
+                row = await cursor.fetchone()
+                await self._insert_langfuse_project_api_key(
+                    cursor=cursor,
+                    key_id=key_id,
+                    project_id=project_id,
+                    note=note,
+                    public_key=public_key,
+                    secret_key=secret_key,
                 )
-                try:
-                    await client.delete_project_api_key(project_id, native_key_id)
-                finally:
-                    await client.aclose()
-            raise
 
         assert row is not None
         return self._to_project_api_key_payload(row)
@@ -971,47 +949,13 @@ class LangfuseDatabaseReader:
         if not self._database_url:
             raise LangfuseDatabaseConfigError()
 
-        await self._ensure_project_visible(project_id, user_id)
-        native_key_id = ""
-        old_rows = await self._fetch_all(
-            """
-            SELECT note, public_key, secret_key
-            FROM pa_project_api_keys
-            WHERE project_id = %(project_id)s AND id = %(key_id)s
-            LIMIT 1
-            """,
-            {"project_id": project_id, "key_id": key_id},
-        )
-        if not old_rows:
-            raise BusinessError(1012, "项目 API Key 不存在或无访问权限", 404)
-        client = LangfusePublicClient(
-            base_url=self._settings.langfuse_base_url,
-            organization_api_key=self._settings.langfuse_organization_api_key,
-            timeout=self._settings.pa_eval_api_timeout,
-        )
-        try:
-            listed = await client.list_project_api_keys(project_id)
-            native_key_id = next(
-                (
-                    str(item.get("id") or "")
-                    for item in (listed.get("apiKeys") or listed.get("data") or [])
-                    if item.get("publicKey") == old_rows[0]["public_key"]
-                ),
-                "",
-            )
-            if native_key_id:
-                await client.delete_project_api_key(project_id, native_key_id)
-        finally:
-            await client.aclose()
-
-        try:
-            async with await connect_postgres(
-                self._database_url,
-                row_factory=dict_row,
-            ) as connection:
-                async with connection.cursor() as cursor:
-                    await self._get_project_for_user(cursor, project_id, user_id)
-                    await cursor.execute(
+        async with await connect_postgres(
+            self._database_url,
+            row_factory=dict_row,
+        ) as connection:
+            async with connection.cursor() as cursor:
+                await self._get_project_for_user(cursor, project_id, user_id)
+                await cursor.execute(
                     """
                     DELETE FROM pa_project_api_keys
                     WHERE id = %(id)s
@@ -1020,16 +964,79 @@ class LangfuseDatabaseReader:
                     """,
                     {"id": key_id, "project_id": project_id},
                 )
-                    row = await cursor.fetchone()
-                    if row is None:
-                        raise BusinessError(
-                            code=1012,
-                            message="项目 API Key 不存在或无访问权限",
-                            status_code=404,
-                        )
-        except Exception:
-            raise
+                row = await cursor.fetchone()
+                if row is not None:
+                    await cursor.execute(
+                        """
+                        DELETE FROM api_keys
+                        WHERE project_id = %(project_id)s
+                          AND public_key = %(public_key)s
+                          AND scope = 'PROJECT'
+                        """,
+                        {
+                            "project_id": project_id,
+                            "public_key": row["public_key"],
+                        },
+                    )
+
+        if row is None:
+            raise BusinessError(
+                code=1012,
+                message="项目 API Key 不存在或无访问权限",
+                status_code=404,
+            )
         return {"id": row["id"]}
+
+    async def _insert_langfuse_project_api_key(
+        self,
+        *,
+        cursor: Any,
+        key_id: str,
+        project_id: str,
+        note: str,
+        public_key: str,
+        secret_key: str,
+    ) -> None:
+        await cursor.execute(
+            """
+            INSERT INTO api_keys (
+                id,
+                created_at,
+                note,
+                public_key,
+                hashed_secret_key,
+                display_secret_key,
+                project_id,
+                fast_hashed_secret_key,
+                scope,
+                is_in_app_agent_key
+            )
+            VALUES (
+                %(id)s,
+                NOW(),
+                %(note)s,
+                %(public_key)s,
+                %(hashed_secret_key)s,
+                %(display_secret_key)s,
+                %(project_id)s,
+                %(fast_hashed_secret_key)s,
+                'PROJECT',
+                false
+            )
+            """,
+            {
+                "id": key_id,
+                "note": note,
+                "public_key": public_key,
+                "hashed_secret_key": f"pa-eval-placeholder-{uuid4()}",
+                "display_secret_key": _display_secret_key(secret_key),
+                "project_id": project_id,
+                "fast_hashed_secret_key": _create_sha_hash(
+                    secret_key,
+                    self._langfuse_salt,
+                ),
+            },
+        )
 
     async def list_evaluators_for_user(self, user_id: str) -> list[dict[str, Any]]:
         langfuse_evaluators = await self._list_langfuse_evaluators_for_user(user_id)
@@ -3399,14 +3406,6 @@ class LangfuseDatabaseReader:
     ) -> LangfusePublicClient:
         """Return a project-authenticated Public API client after access checks."""
         return await self._project_public_client_for_user(project_id, user_id)
-
-    def organization_public_client(self) -> LangfusePublicClient:
-        """Return an organization-authenticated Public API client."""
-        return LangfusePublicClient(
-            base_url=self._settings.langfuse_base_url,
-            organization_api_key=self._settings.langfuse_organization_api_key,
-            timeout=self._settings.pa_eval_api_timeout,
-        )
 
     async def _start_native_resource_sync(
         self,

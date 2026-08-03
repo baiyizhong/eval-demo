@@ -108,10 +108,9 @@ PA_LANGFUSE_NATIVE_RESOURCE_WRITES_ENABLED=false
 
 ```env
 PA_LANGFUSE_NATIVE_RESOURCE_WRITES_ENABLED=true
-LANGFUSE_ORGANIZATION_API_KEY=<由部署平台安全注入>
 ```
 
-项目级 LLM Connections、Models 和 Evaluators 使用项目 Public/Secret Key 的 Basic Auth；Project API Keys 使用 `LANGFUSE_ORGANIZATION_API_KEY` 的 Bearer Auth。API 地址和凭据只从部署环境读取。上游失败必须转换为稳定 PA 错误码，日志不得包含 Authorization、Token、Secret 或上游完整错误响应。Workflow/SDK 自定义评估器继续使用 `pa_evaluators`。
+项目级 LLM Connections、Models 和 Evaluators 使用项目 Public/Secret Key 的 Basic Auth。Project API Keys 不再使用 Langfuse 组织级接口，创建/删除沿用历史可用链路：同步写 `pa_project_api_keys` 与 Langfuse 原生 `api_keys`，并使用 `LANGFUSE_SALT` 生成 `fast_hashed_secret_key`。API 地址和凭据只从部署环境读取。上游失败必须转换为稳定 PA 错误码，日志不得包含 Authorization、Token、Secret 或上游完整错误响应。Workflow/SDK 自定义评估器继续使用 `pa_evaluators`。
 
 回滚：关闭该开关；不要通过 SQL 直接修改 Langfuse 原生资源。
 

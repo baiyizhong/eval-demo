@@ -6,7 +6,6 @@ import pytest
 
 from app.errors import (
     LangfuseConfigError,
-    LangfuseOrganizationConfigError,
     LangfuseUpstreamError,
 )
 from app.langfuse.public_client import LangfusePublicClient, normalize_llm_adapter
@@ -70,31 +69,6 @@ async def test_upserts_connection_with_documented_public_api_shape() -> None:
 
     assert request_body["provider"] == "openai"
     assert request_body["customModels"] == ["gpt-4.1"]
-
-
-@pytest.mark.anyio
-async def test_org_scoped_api_key_creation_uses_bearer_and_never_returns_secret_in_error() -> None:
-    def handler(request: httpx.Request) -> httpx.Response:
-        assert request.headers["Authorization"] == "Bearer org-token"
-        return httpx.Response(
-            500,
-            json={"message": "failed with sk-lf-do-not-expose"},
-        )
-
-    client = LangfusePublicClient(
-        base_url="http://langfuse.test",
-        organization_api_key="org-token",
-        transport=httpx.MockTransport(handler),
-    )
-    try:
-        with pytest.raises(LangfuseUpstreamError) as exc_info:
-            await client.create_project_api_key("project-1", {"note": "PA"})
-    finally:
-        await client.aclose()
-
-    assert exc_info.value.code == 2002
-    assert "sk-lf" not in exc_info.value.message
-    assert exc_info.value.message == "Langfuse 服务请求失败"
 
 
 @pytest.mark.anyio
@@ -170,18 +144,6 @@ async def test_missing_credentials_fail_before_request() -> None:
             await client.list_evaluators()
     finally:
         await client.aclose()
-
-
-@pytest.mark.anyio
-async def test_missing_organization_credentials_has_specific_safe_error() -> None:
-    client = LangfusePublicClient(base_url="http://langfuse.test")
-    try:
-        with pytest.raises(LangfuseOrganizationConfigError) as exc_info:
-            await client.list_project_api_keys("project-1")
-    finally:
-        await client.aclose()
-
-    assert exc_info.value.message == "Langfuse Organization API Key 未配置"
 
 
 @pytest.mark.anyio

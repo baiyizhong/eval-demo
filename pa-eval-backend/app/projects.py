@@ -6,17 +6,9 @@ from pydantic import BaseModel, Field, field_validator
 
 from app.auth_context import CurrentUserContext, get_current_user_context
 from app.langfuse_db import LangfuseDatabaseReader, get_langfuse_db_reader
-from app.langfuse.administration_adapter import LangfuseAdministrationAdapter
 from app.response import success
 
 router = APIRouter(prefix="/api/projects", tags=["projects"])
-
-
-def get_langfuse_administration_adapter(
-    db_reader: LangfuseDatabaseReader = Depends(get_langfuse_db_reader),
-) -> LangfuseAdministrationAdapter:
-    return LangfuseAdministrationAdapter(db_reader)
-
 
 
 class ProjectPayload(BaseModel):
@@ -177,10 +169,8 @@ async def archive_project(
     project_id: str,
     current_user: CurrentUserContext = Depends(get_current_user_context),
     reader: LangfuseDatabaseReader = Depends(get_langfuse_db_reader),
-    adapter: LangfuseAdministrationAdapter = Depends(get_langfuse_administration_adapter),
 ) -> dict[str, Any]:
-    await reader.ensure_project_visible(project_id, current_user.user_id)
-    project = await adapter.archive_project(
+    project = await reader.archive_project_for_user(
         project_id=project_id,
         user_id=current_user.user_id,
         user_email=current_user.email,
@@ -193,10 +183,8 @@ async def restore_project(
     project_id: str,
     current_user: CurrentUserContext = Depends(get_current_user_context),
     reader: LangfuseDatabaseReader = Depends(get_langfuse_db_reader),
-    adapter: LangfuseAdministrationAdapter = Depends(get_langfuse_administration_adapter),
 ) -> dict[str, Any]:
-    await reader.ensure_project_visible(project_id, current_user.user_id)
-    project = await adapter.restore_project(
+    project = await reader.restore_project_for_user(
         project_id=project_id,
         user_id=current_user.user_id,
         user_email=current_user.email,
@@ -236,10 +224,8 @@ async def create_project_member(
     payload: ProjectMemberPayload,
     current_user: CurrentUserContext = Depends(get_current_user_context),
     reader: LangfuseDatabaseReader = Depends(get_langfuse_db_reader),
-    adapter: LangfuseAdministrationAdapter = Depends(get_langfuse_administration_adapter),
 ) -> dict[str, Any]:
-    await reader.ensure_project_visible(project_id, current_user.user_id)
-    member = await adapter.create_project_member(
+    member = await reader.create_project_member_for_user(
         project_id,
         current_user.user_id,
         payload.model_dump(),
@@ -254,10 +240,8 @@ async def update_project_member(
     payload: UpdateProjectMemberPayload,
     current_user: CurrentUserContext = Depends(get_current_user_context),
     reader: LangfuseDatabaseReader = Depends(get_langfuse_db_reader),
-    adapter: LangfuseAdministrationAdapter = Depends(get_langfuse_administration_adapter),
 ) -> dict[str, Any]:
-    await reader.ensure_project_visible(project_id, current_user.user_id)
-    member = await adapter.update_project_member(
+    member = await reader.update_project_member_for_user(
         project_id,
         member_id,
         current_user.user_id,
@@ -272,10 +256,8 @@ async def delete_project_member(
     member_id: str,
     current_user: CurrentUserContext = Depends(get_current_user_context),
     reader: LangfuseDatabaseReader = Depends(get_langfuse_db_reader),
-    adapter: LangfuseAdministrationAdapter = Depends(get_langfuse_administration_adapter),
 ) -> dict[str, Any]:
-    await reader.ensure_project_visible(project_id, current_user.user_id)
-    deleted = await adapter.delete_project_member(
+    deleted = await reader.delete_project_member_for_user(
         project_id, member_id, current_user.user_id
     )
     return success(deleted)

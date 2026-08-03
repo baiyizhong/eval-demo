@@ -385,7 +385,7 @@ async def test_model_update_restores_old_version_when_cancelled() -> None:
 
 
 @pytest.mark.anyio
-async def test_project_api_key_create_uses_org_api_without_native_table_write(
+async def test_project_api_key_create_writes_pa_and_native_api_key_tables(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     now = datetime(2026, 7, 23, tzinfo=UTC)
@@ -408,18 +408,65 @@ async def test_project_api_key_create_uses_org_api_without_native_table_write(
     async def fake_connect(*args: object, **kwargs: object) -> FakeConnection:
         return FakeConnection(cursor)
 
-    client = FakePublicClient()
     monkeypatch.setattr(langfuse_db, "connect_postgres", fake_connect)
-    monkeypatch.setattr(langfuse_db, "LangfusePublicClient", lambda **kwargs: client)
     monkeypatch.setattr(langfuse_db, "_new_langfuse_id", lambda prefix: "key-1")
-    reader = SagaReader(client)
+    reader = SagaReader(FakePublicClient())
     reader._langfuse_salt = "test-salt"
 
     result = await reader.create_project_api_key(
         "project-1", "Dify", "owner@example.com", "user-1"
     )
 
-    assert result["publicKey"] == "pk-lf-native"
-    assert result["secretKey"] == "sk-lf-native"
+    assert result["publicKey"].startswith("pk-lf-")
+    assert result["secretKey"].startswith("sk-lf-")
     assert reader.finishes == []
-    assert all("INSERT INTO api_keys" not in sql for sql, _ in cursor.executions)
+    pa_inserts = [
+        params
+        for sql, params in cursor.executions
+        if "INSERT INTO pa_project_api_keys" in sql
+    ]
+    assert pa_inserts
+    native_inserts = [
+        params
+        for sql, params in cursor.executions
+        if "INSERT INTO api_keys" in sql
+    ]
+    assert native_inserts
+    assert native_inserts[0]["public_key"] == pa_inserts[0]["public_key"]
+    assert native_inserts[0]["display_secret_key"] == langfuse_db._display_secret_key(
+        pa_inserts[0]["secret_key"]
+    )
+    assert native_inserts[0]["display_secret_key"].startswith("sk-lf-")
+    assert native_inserts[0]["fast_hashed_secret_key"]
+
+
+@pytest.mark.anyio
+async def test_project_api_key_delete_removes_pa_and_native_api_key_rows(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    cursor = FakeCursor(
+        [
+            {"id": "project-1", "name": "Project"},
+            {"id": "key-1", "public_key": "pk-lf-native"},
+        ]
+    )
+
+    async def fake_connect(*args: object, **kwargs: object) -> FakeConnection:
+        return FakeConnection(cursor)
+
+    monkeypatch.setattr(langfuse_db, "connect_postgres", fake_connect)
+    reader = SagaReader(FakePublicClient())
+
+    result = await reader.delete_project_api_key("project-1", "key-1", "user-1")
+
+    assert result == {"id": "key-1"}
+    assert any("DELETE FROM pa_project_api_keys" in sql for sql, _ in cursor.executions)
+    native_deletes = [
+        params
+        for sql, params in cursor.executions
+        if "DELETE FROM api_keys" in sql
+    ]
+    assert native_deletes == [
+        {"project_id": "project-1", "public_key": "pk-lf-native"}
+    ]
+    assert reader.client.deleted_api_keys == []

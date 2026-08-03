@@ -195,52 +195,6 @@ class FakeDatabaseReader:
         }
 
 
-class _FakeOrgMemberPublicClient:
-    def __init__(self, *, fail_emails: frozenset[str] | None = None) -> None:
-        self.calls: list[tuple] = []
-        self.upserted: list[dict] = []
-        self.deleted: list[str] = []
-        self.fail_emails: frozenset[str] = fail_emails or frozenset()
-
-    async def __aenter__(self):
-        return self
-
-    async def __aexit__(self, *_args) -> None:
-        return None
-
-    async def upsert_organization_membership(self, payload: dict) -> dict:
-        self.calls.append(("upsert_organization_membership", payload))
-        email = payload.get("email", "")
-        if email in self.fail_emails:
-            from app.errors import BusinessError
-            raise BusinessError(2010, "用户不存在，请先让该用户登录 Langfuse")
-        result = {
-            "userId": payload.get("userId") or f"user-{len(self.upserted) + 1}",
-            "email": email,
-            "name": payload.get("name", ""),
-            "role": payload.get("role", "MEMBER"),
-        }
-        self.upserted.append(result)
-        return result
-
-    async def delete_organization_membership(self, user_id: str) -> dict:
-        self.calls.append(("delete_organization_membership", user_id))
-        self.deleted.append(user_id)
-        return {}
-
-
-def _override_org_admin_adapter(public_client: _FakeOrgMemberPublicClient) -> None:
-    from app.langfuse.administration_adapter import LangfuseAdministrationAdapter
-
-    class _Provider:
-        def organization_public_client(self):
-            return public_client
-
-    adapter = LangfuseAdministrationAdapter(_Provider())
-    from app.organizations import get_langfuse_administration_adapter
-    app.dependency_overrides[get_langfuse_administration_adapter] = lambda: adapter
-
-
 def override_reader(fake_reader: FakeDatabaseReader):
     async def _override() -> LangfuseDatabaseReader:
         return fake_reader  # type: ignore[return-value]
@@ -495,9 +449,6 @@ def test_filters_organization_members_by_role() -> None:
 def test_creates_organization_member_through_database_reader() -> None:
     fake_reader = FakeDatabaseReader()
     override_reader(fake_reader)
-    _org_client = _FakeOrgMemberPublicClient()
-    _override_org_admin_adapter(_org_client)
-
 
     try:
         response = TestClient(app).post(
@@ -512,17 +463,22 @@ def test_creates_organization_member_through_database_reader() -> None:
         clear_overrides()
 
     assert response.status_code == 200
-    assert len(_org_client.upserted) == 1
-    assert _org_client.upserted[0]["email"] == "new@example.com"
-    assert _org_client.upserted[0]["role"] == "MEMBER"
+    assert fake_reader.created_member_payload == {
+        "organization_id": "org-1",
+        "actor_user_id": "user-1",
+        "payload": {
+            "email": "new@example.com",
+            "name": "New Member",
+            "role": "MEMBER",
+        },
+    }
+    assert response.json()["data"]["email"] == "new@example.com"
+    assert response.json()["data"]["role"] == "MEMBER"
 
 
 def test_create_organization_member_returns_friendly_duplicate_message() -> None:
     fake_reader = FakeDatabaseReader()
     override_reader(fake_reader)
-    _org_client = _FakeOrgMemberPublicClient()
-    _override_org_admin_adapter(_org_client)
-
 
     try:
         response = TestClient(app).post(
@@ -536,17 +492,13 @@ def test_create_organization_member_returns_friendly_duplicate_message() -> None
     finally:
         clear_overrides()
 
-    assert response.status_code == 200
-    # Public API upsert is idempotent; duplicate is resolved silently
-    assert len(_org_client.upserted) == 1
+    assert response.status_code == 409
+    assert response.json()["message"] == "用户已在该组织中，请使用设置组织角色调整权限"
 
 
 def test_creates_organization_member_with_none_role_for_project_only_access() -> None:
     fake_reader = FakeDatabaseReader()
     override_reader(fake_reader)
-    _org_client = _FakeOrgMemberPublicClient()
-    _override_org_admin_adapter(_org_client)
-
 
     try:
         response = TestClient(app).post(
@@ -561,7 +513,7 @@ def test_creates_organization_member_with_none_role_for_project_only_access() ->
         clear_overrides()
 
     assert response.status_code == 200
-    assert _org_client.upserted[0]["role"] == "NONE"
+    assert fake_reader.created_member_payload["payload"]["role"] == "NONE"
     assert response.json()["data"]["role"] == "NONE"
 
 
@@ -610,9 +562,6 @@ async def test_create_organization_member_creates_missing_langfuse_user(
 def test_updates_organization_member_role_through_database_reader() -> None:
     fake_reader = FakeDatabaseReader()
     override_reader(fake_reader)
-    _org_client = _FakeOrgMemberPublicClient()
-    _override_org_admin_adapter(_org_client)
-
 
     try:
         response = TestClient(app).patch(
@@ -623,17 +572,18 @@ def test_updates_organization_member_role_through_database_reader() -> None:
         clear_overrides()
 
     assert response.status_code == 200
-    assert len(_org_client.upserted) == 1
-    assert _org_client.upserted[0]["role"] == "ADMIN"
+    assert fake_reader.updated_member_payload == {
+        "organization_id": "org-1",
+        "member_id": "mem-2",
+        "actor_user_id": "user-1",
+        "payload": {"role": "ADMIN"},
+    }
     assert response.json()["data"]["role"] == "ADMIN"
 
 
 def test_deletes_organization_member_through_database_reader() -> None:
     fake_reader = FakeDatabaseReader()
     override_reader(fake_reader)
-    _org_client = _FakeOrgMemberPublicClient()
-    _override_org_admin_adapter(_org_client)
-
 
     try:
         response = TestClient(app).delete("/api/organizations/org-1/members/mem-2")
@@ -641,17 +591,17 @@ def test_deletes_organization_member_through_database_reader() -> None:
         clear_overrides()
 
     assert response.status_code == 200
-    assert "mem-2" in _org_client.deleted
+    assert fake_reader.deleted_member_payload == {
+        "organization_id": "org-1",
+        "member_id": "mem-2",
+        "actor_user_id": "user-1",
+    }
     assert response.json()["data"] == {"id": "mem-2"}
 
 
 def test_imports_organization_members_with_partial_failures() -> None:
     fake_reader = FakeDatabaseReader()
     override_reader(fake_reader)
-    _org_client = _FakeOrgMemberPublicClient(
-        fail_emails=frozenset({"missing@example.com"})
-    )
-    _override_org_admin_adapter(_org_client)
 
     try:
         response = TestClient(app).post(

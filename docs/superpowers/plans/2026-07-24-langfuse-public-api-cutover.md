@@ -95,7 +95,7 @@
 - Test: `pa-eval-backend/tests/test_projects.py`
 
 **Interfaces:**
-- Produces organization/project membership and project/API-key operations under organization-scoped auth.
+- Superseded: current implementation cannot use Langfuse organization-scoped auth. Organization/project membership and project/API-key operations stay on the historical database-backed reader path.
 
 - [ ] Add failing organization-auth and route compatibility tests.
 - [ ] Implement organization-key isolation and project/member adapters.

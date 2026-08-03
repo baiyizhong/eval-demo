@@ -6,7 +6,7 @@
 
 当前后端共有 130 个 HTTP 接口（129 个业务路由加 1 个健康检查）。现状并未做到“Langfuse 是全部评测数据的唯一来源和去向”：大量 traces、datasets、annotation queues、score configs、organizations 和 projects 接口仍直接读写 Langfuse PostgreSQL/ClickHouse。
 
-目标架构应收敛为：
+当前目标架构收敛为：
 
 ```text
 Frontend
@@ -14,13 +14,13 @@ Frontend
    ▼
 PA Backend
    ├─ DTO、鉴权、分页、聚合、异步任务、审计
-   └─ Langfuse Public API / 官方 SDK
+    └─ Langfuse 项目级 Public API / 官方 SDK / 必要的历史数据库链路
           │
           ▼
        Langfuse（评测业务唯一事实源）
 ```
 
-禁止继续使用 SQL 对 Langfuse 原生表执行 insert/update/delete。Public API 暂无等价写能力的接口必须保持 blocked，或调整产品语义；不能用直写原生表“补齐”。
+当前不能使用 Langfuse 组织级接口，也不再配置组织级 API Key。项目级 LLM Connections、Models、Evaluators、traces、datasets、scores 等优先走项目级 Public API；组织、项目、成员和 Project API Key 管理沿用历史可用的数据库-backed reader 链路。Project API Key 创建/删除同步写 `pa_project_api_keys` 与 Langfuse 原生 `api_keys`，需要 `LANGFUSE_SALT` 生成 `fast_hashed_secret_key`。
 
 登录会话、PA 超级管理员、审计日志、导出文件、异步任务、报告模板、报告快照、Dify 回流和定时调度没有 Langfuse 对等资源，可以保留为 PA 控制面数据。它们引用 trace、observation、dataset、score、evaluator 等对象时，只保存 Langfuse ID，不复制业务实体。
 
@@ -36,7 +36,7 @@ PA Backend
 
 ## 3. Langfuse 官方能力基线
 
-项目级资源使用 Public/Secret Key Basic Auth；组织、项目、成员及项目 API Key 管理使用 Organization API Key。新查询优先使用 Observations v2、Scores v3 和 Metrics v2。
+项目级资源使用 Public/Secret Key Basic Auth。组织级 Public API 方案已废弃：组织、项目、成员及项目 API Key 管理不再使用 Organization API Key。新查询优先使用 Observations v2、Scores v3 和 Metrics v2。
 
 | 业务实体 | 官方接口 | 能力边界 |
 |---|---|---|
@@ -54,10 +54,10 @@ PA Backend
 | Evaluators | `/api/public/unstable/evaluators[/{id}]` | create/list/get/delete；同名 create 产生新版本，无原位 update |
 | Evaluation Rules | `/api/public/unstable/evaluation-rules[/{id}]` | 完整 CRUD，但仅实时 ingestion，不执行历史 backfill |
 | Experiments | `/api/public/experiments` | 实验及实验项读取；批量执行使用官方 SDK experiment workflow |
-| Organizations | `/api/public/organizations/memberships` | 当前 Organization API Key 所属组织的成员管理；无组织本体 CRUD/多组织列表 |
-| Projects | `/api/public/organizations/projects`、`/api/public/projects[/{id}]` | list/create/update/delete；无 archive/restore |
-| Project Members | `/api/public/projects/{projectId}/memberships` | list/upsert/delete |
-| Project API Keys | `/api/public/projects/{projectId}/apiKeys[/{id}]` | list/create/delete；无 update |
+| Organizations | 数据库-backed reader | 当前不能使用组织级接口；组织成员管理沿用历史可用数据库链路 |
+| Projects | 数据库-backed reader | 当前不能使用组织级接口；项目 create/update 与 archive/restore 沿用历史可用数据库链路 |
+| Project Members | 数据库-backed reader | 当前不能使用组织级接口；项目成员管理沿用历史可用数据库链路 |
+| Project API Keys | `pa_project_api_keys` + Langfuse 原生 `api_keys` | 不使用组织级 Project API Key Public API；创建/删除同步维护 PA 展示表和 Langfuse 原生认证表 |
 | LLM Connections | `/api/public/llm-connections[/{id}]` | list/upsert/delete |
 | Models | `/api/public/models[/{id}]` | create/list/get/delete；无 update |
 
@@ -79,26 +79,26 @@ PA Backend
 |---|---:|---|---|
 | `GET/POST /api/organizations`、`GET/PATCH /api/organizations/{id}` | 4 | Blocked | 官方仅操作 API Key 所属组织，没有组织本体 create/update、当前用户多组织 list/get |
 | `GET /api/organizations/member-email-settings` | 1 | Extension | PA 配置能力 |
-| `GET/POST /api/organizations/{id}/members`、`PATCH/DELETE .../members/{memberId}` | 4 | Direct | organization memberships list/upsert/delete |
-| `POST /api/organizations/{id}/members/import` | 1 | Adapter | 对 membership upsert 做批处理、幂等和失败明细 |
+| `GET/POST /api/organizations/{id}/members`、`PATCH/DELETE .../members/{memberId}` | 4 | Extension | 数据库-backed reader 管理 `users`、`organization_memberships` 与邀请清理 |
+| `POST /api/organizations/{id}/members/import` | 1 | Extension | 批量调用 reader，返回成功明细和失败原因 |
 
-每个组织必须配置独立 Organization API Key；不能用一把组织密钥越权管理其他组织。
+组织级 Organization API Key 方案已废弃，当前不配置也不读取组织级 API Key。
 
 ### 4.3 Projects 与模型设置（21）
 
 | PA 接口 | 数量 | 分类 | Langfuse 对齐 |
 |---|---:|---|---|
-| `GET /api/projects` | 1 | Adapter | 按用户可见组织聚合 organization projects，再执行 PA 现有筛选和分页 |
-| `POST /api/projects`、`PATCH /api/projects/{id}` | 2 | Direct | projects create/update |
-| `POST /api/projects/{id}/archive`、`.../restore` | 2 | Blocked | 官方只有异步 delete，无 archive/restore |
-| `GET /api/projects/{id}/settings/members`、成员 POST/PATCH/DELETE | 4 | Direct | project memberships list/upsert/delete |
+| `GET /api/projects` | 1 | Extension | 数据库-backed reader 按用户可见范围查询，再执行 PA 现有筛选和分页 |
+| `POST /api/projects`、`PATCH /api/projects/{id}` | 2 | Extension | 数据库-backed reader 管理 Langfuse 原生 `projects` |
+| `POST /api/projects/{id}/archive`、`.../restore` | 2 | Extension | PA overlay 存储项目归档状态 |
+| `GET /api/projects/{id}/settings/members`、成员 POST/PATCH/DELETE | 4 | Extension | 数据库-backed reader 管理 `project_memberships` |
 | `GET /api/projects/{id}/settings/models` | 1 | Adapter | 合并 Langfuse LLM Connections、Models 和 PA 默认选择引用 |
 | `PATCH /api/projects/{id}/settings/models/default` | 1 | Extension | Langfuse 无独立“项目默认评估模型”Public API；仅保存 Langfuse 原生资源 ID |
 | LLM Connections POST/PATCH/DELETE | 3 | Direct | list/upsert/delete；Secret 不复制到 PA |
 | Model Definitions POST/DELETE | 2 | Direct | models create/delete |
 | Model Definitions PATCH | 1 | Adapter | 官方无 update，采用可补偿 replacement Saga；禁止原生表 UPDATE |
-| Project API Keys GET/POST/DELETE | 3 | Direct | project API keys list/create/delete |
-| Project API Keys PATCH | 1 | Adapter | 官方无 update，采用 create-new → 验证 → delete-old 的补偿流程 |
+| Project API Keys GET/POST/DELETE | 3 | Extension | `pa_project_api_keys` + Langfuse 原生 `api_keys` 历史可用链路 |
+| Project API Keys PATCH | 1 | Extension | 仅更新 PA 展示备注，不调用组织级接口 |
 
 ### 4.4 Observability（5）
 
@@ -186,8 +186,8 @@ Evaluation Rules 只能覆盖实时 ingestion 评测，不能替代现有历史 
 ## 6. 实施顺序
 
 1. 扩展统一 `LangfusePublicClient`：认证隔离、错误翻译、限流重试、游标/页码分页、幂等键、可观测性。
-2. 先切只读：observations/traces/metrics、datasets/items、queues/items、scores/configs、organizations/projects/members。
-3. 再切官方直接写：dataset item、queue item、assignment、score/config、member/project/API key、LLM connection/model、evaluator/rule。
+2. 先切只读：observations/traces/metrics、datasets/items、queues/items、scores/configs；组织/项目/成员走数据库-backed reader。
+3. 再切官方直接写：dataset item、queue item、assignment、score/config、LLM connection/model、evaluator/rule；member/project/API key 不使用组织级接口。
 4. 切聚合与批处理：annotation、dataset import/export、reports、auto evaluation；底层只调用 Langfuse。
 5. 对 12 个 Blocked 接口冻结原生表写入，分别修改产品契约或等待官方 API。
 6. 双读校验只比较结果，不双写 Langfuse 原生表；达到一致性门槛后删除生产 SQL 业务路径。

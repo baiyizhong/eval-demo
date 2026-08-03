@@ -17,15 +17,6 @@ class LangfuseConfigError(BusinessError):
         )
 
 
-class LangfuseOrganizationConfigError(BusinessError):
-    def __init__(self) -> None:
-        super().__init__(
-            code=2006,
-            message="Langfuse Organization API Key 未配置",
-            status_code=500,
-        )
-
-
 class LangfuseUpstreamError(BusinessError):
     def __init__(self, message: str, status_code: int = 502) -> None:
         super().__init__(code=2002, message=message, status_code=status_code)

@@ -28,11 +28,11 @@
 
 | 路径 | 含义 |
 |---|---|
-| Public API | 经 `LangfusePublicClient` 调 Langfuse Public/Organization API 或 `LangfuseAdminClient` 调 Langfuse score API。 |
+| Public API | 经项目级 `LangfusePublicClient` 调 Langfuse Public API，或经 `LangfuseAdminClient` 调 Langfuse score API；当前不使用 Langfuse 组织级接口。 |
 | Adapter | 后端聚合多个 Langfuse API、补充分页/筛选/转换，或做可补偿流程。 |
 | PA 表 | 写入/读取 PA 自定义 `pa_*` 控制面表。 |
 | DB Read | 直接读取 Langfuse PostgreSQL 原生表，用于鉴权、展示聚合或补足 Public API 暂缺字段。 |
-| DB Write | 直接写 Langfuse PostgreSQL 原生表。该路径和“全部使用新链路”的目标不一致，需要继续清理。 |
+| DB Write | 直接写 Langfuse PostgreSQL 原生表。仅在 Langfuse 无可用项目级 Public API 或本项目明确采用历史可用链路时保留。 |
 | ClickHouse | 直接读/写 Langfuse ClickHouse `traces`、`observations`、`scores`。 |
 
 > 注意：运行 `from app.main import app` 时当前只枚举到 FastAPI 文档路由和 `/health`，未能拿到已 include 的业务路由；本清单以源码静态路由为准。
@@ -63,10 +63,10 @@
 | GET | `/api/organizations/{organization_id}` | `get_organization` | DB Read | `organizations`、`projects` |
 | PATCH | `/api/organizations/{organization_id}` | `update_organization` | DB Write | `organizations` |
 | GET | `/api/organizations/{organization_id}/members` | `list_organization_members` | DB Read | `organization_memberships`、`users` |
-| POST | `/api/organizations/{organization_id}/members` | `create_organization_member` | Public API | `/api/public/organizations/memberships` |
-| POST | `/api/organizations/{organization_id}/members/import` | `import_organization_members` | Adapter | 批量调用 `/api/public/organizations/memberships` |
-| PATCH | `/api/organizations/{organization_id}/members/{member_id}` | `update_organization_member` | Public API | `/api/public/organizations/memberships` |
-| DELETE | `/api/organizations/{organization_id}/members/{member_id}` | `delete_organization_member` | Public API | `/api/public/organizations/memberships` |
+| POST | `/api/organizations/{organization_id}/members` | `create_organization_member` | DB Write | `users`、`organization_memberships`、`membership_invitations` |
+| POST | `/api/organizations/{organization_id}/members/import` | `import_organization_members` | DB Write | 批量写 `users`、`organization_memberships`、`membership_invitations` |
+| PATCH | `/api/organizations/{organization_id}/members/{member_id}` | `update_organization_member` | DB Write | `organization_memberships` |
+| DELETE | `/api/organizations/{organization_id}/members/{member_id}` | `delete_organization_member` | DB Write | `organization_memberships` |
 
 ### 2.3 Projects / Members / Models / API Keys
 
@@ -78,9 +78,9 @@
 | POST | `/api/projects/{project_id}/archive` | `archive_project` | PA 表 | `pa_resource_extensions` (`PROJECT_ARCHIVE_STATE`) |
 | POST | `/api/projects/{project_id}/restore` | `restore_project` | PA 表 | `pa_resource_extensions` (`PROJECT_ARCHIVE_STATE`) |
 | GET | `/api/projects/{project_id}/settings/members` | `get_project_members` | DB Read | `project_memberships`、`organization_memberships`、`users` |
-| POST | `/api/projects/{project_id}/settings/members` | `create_project_member` | Public API | `/api/public/projects/{projectId}/memberships` |
-| PATCH | `/api/projects/{project_id}/settings/members/{member_id}` | `update_project_member` | Public API | `/api/public/projects/{projectId}/memberships` |
-| DELETE | `/api/projects/{project_id}/settings/members/{member_id}` | `delete_project_member` | Public API | `/api/public/projects/{projectId}/memberships` |
+| POST | `/api/projects/{project_id}/settings/members` | `create_project_member` | DB Write | `users`、`organization_memberships`、`project_memberships`、`membership_invitations` |
+| PATCH | `/api/projects/{project_id}/settings/members/{member_id}` | `update_project_member` | DB Write | `project_memberships` |
+| DELETE | `/api/projects/{project_id}/settings/members/{member_id}` | `delete_project_member` | DB Write | `project_memberships` |
 | GET | `/api/projects/{project_id}/settings/models` | `get_project_model_settings` | Adapter + PA 表 + DB Read | `/api/public/llm-connections`、`/api/public/models`、`pa_resource_extensions`、`llm_api_keys` |
 | PATCH | `/api/projects/{project_id}/settings/models/default` | `update_project_default_model` | PA 表 + Public API 读 | `pa_resource_extensions` (`DEFAULT_EVALUATION_MODEL`)、`/api/public/llm-connections` |
 | POST | `/api/projects/{project_id}/settings/models/llm-connections` | `create_project_llm_connection` | Public API + PA 表 | `/api/public/llm-connections`、`pa_job_executions` |
@@ -90,9 +90,9 @@
 | PATCH | `/api/projects/{project_id}/settings/models/definitions/{model_id}` | `update_project_model_definition` | Adapter + PA 表 | `/api/public/models` create/delete replacement、`pa_job_executions` |
 | DELETE | `/api/projects/{project_id}/settings/models/definitions/{model_id}` | `delete_project_model_definition` | Public API + PA 表 | `/api/public/models`、`pa_job_executions` |
 | GET | `/api/projects/{project_id}/settings/api-keys` | `list_project_api_keys` | PA 表 | `pa_project_api_keys` |
-| POST | `/api/projects/{project_id}/settings/api-keys` | `create_project_api_key` | Public API + PA 表 | `/api/public/projects/{projectId}/apiKeys`、`pa_project_api_keys` |
+| POST | `/api/projects/{project_id}/settings/api-keys` | `create_project_api_key` | PA 表 + DB Write | `pa_project_api_keys`、Langfuse 原生 `api_keys` |
 | PATCH | `/api/projects/{project_id}/settings/api-keys/{key_id}` | `update_project_api_key` | PA 表 | `pa_project_api_keys` |
-| DELETE | `/api/projects/{project_id}/settings/api-keys/{key_id}` | `delete_project_api_key` | Public API + PA 表 | `/api/public/projects/{projectId}/apiKeys`、`pa_project_api_keys` |
+| DELETE | `/api/projects/{project_id}/settings/api-keys/{key_id}` | PA 表 + DB Write | `pa_project_api_keys`、Langfuse 原生 `api_keys` |
 
 ### 2.4 Observability
 
@@ -184,7 +184,7 @@
 | `pa_evaluation_report_items` | 是 | 评测报告明细、badcase 标识、回流状态。 | Reports、Flowbacks |
 | `pa_audit_logs` | 是 | 请求审计日志。 | Audit、Admin Overview |
 | `pa_annotation_queue_item_assignments` | 是 | PA item 级标注处理人分配。 | Annotations |
-| `pa_project_api_keys` | 是 | PA 展示/保存项目 API Key；同时调用 Langfuse 项目 API Key 接口。 | Project Settings |
+| `pa_project_api_keys` | 是 | PA 展示/保存项目 API Key；创建/删除时同步写 Langfuse 原生 `api_keys`，不使用组织级 Project API Key Public API。 | Project Settings |
 | `pa_project_llm_connections` | 否 | 最终契约保留/兼容表；运行时代码已不引用。 | 历史模型设置 |
 | `pa_project_model_definitions` | 否 | 最终契约保留/兼容表；运行时代码已不引用。 | 历史模型设置 |
 
@@ -273,10 +273,7 @@
 | Scores | `GET /api/public/v3/scores` |
 | Datasets | `GET/POST /api/public/v2/datasets`、`GET /api/public/v2/datasets/{datasetName}` |
 | Dataset Items | `GET/POST /api/public/dataset-items`、`GET/DELETE /api/public/dataset-items/{id}` |
-| Organization Projects | `GET /api/public/organizations/projects`、`POST /api/public/projects`、`PUT/DELETE /api/public/projects/{id}` |
-| Organization Memberships | `GET/PUT/DELETE /api/public/organizations/memberships` |
-| Project Memberships | `GET/PUT/DELETE /api/public/projects/{projectId}/memberships` |
-| Project API Keys | `GET/POST /api/public/projects/{projectId}/apiKeys`、`DELETE /api/public/projects/{projectId}/apiKeys/{id}` |
+| Organization / Project 管理接口 | 当前不使用 Langfuse 组织级 Public API；项目、成员和 Project API Key 管理由 `LangfuseDatabaseReader` 走现有数据库链路。 |
 
 另外 `LangfuseAdminClient` 当前封装：`POST /api/public/scores`、`PATCH /api/public/score-configs/{id}`。
 
@@ -286,7 +283,7 @@
 
 | 位置 | 当前链路 | 建议目标 |
 |---|---|---|
-| `POST /api/projects`、`PATCH /api/projects/{project_id}` | `reader.create_project_for_user` / `update_project_for_user` 直接写 `projects`、`project_memberships`。 | 改到 `LangfuseAdministrationAdapter` + Organization API `projects`。 |
+| `POST /api/projects`、`PATCH /api/projects/{project_id}` | `reader.create_project_for_user` / `update_project_for_user` 直接写 `projects`、`project_memberships`。 | 当前不能使用 Langfuse 组织级接口，保留历史可用数据库链路。 |
 | `POST /api/organizations`、`PATCH /api/organizations/{organization_id}` | 直接写 `organizations`、`organization_memberships`、默认 `projects`。 | 若 Langfuse Public API 无组织本体 CRUD，需要明确 PA 产品语义；不能继续伪装成 Langfuse 原生写。 |
 | `PATCH /api/projects/{project_id}/traces/{trace_id}` | `patch_trace_for_user` 直接更新 PG `traces.metadata/input/output/session/user_id/tags`。 | 改为官方 ingestion/SDK upsert 能力；若版本不支持目标字段，改为 PA overlay 或返回稳定能力限制。 |
 | `app/langfuse_db.py` 残留原生写 helper | 仍可搜索到 `INSERT/UPDATE` Langfuse 原生表方法，部分不再被路由调用。 | 删除未被调用的旧 helper，并扩大守护测试扫描范围到 `langfuse_db.py` 可执行调用面。 |

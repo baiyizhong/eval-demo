@@ -230,104 +230,6 @@ class FakeDatabaseReader:
         return {"id": member_id}
 
 
-class _FakeProjectAdminPublicClient:
-    def __init__(self) -> None:
-        self.calls: list[tuple] = []
-        self.upserted_members: list[dict] = []
-        self.deleted_members: list[tuple] = []
-        self.projects = [
-            {
-                "id": "project-1",
-                "name": "真实评测项目",
-                "organization": {"id": "org-1", "name": "PA 平台主组织"},
-            },
-            {
-                "id": "project-2",
-                "name": "归档项目",
-                "organization": {"id": "org-2", "name": "归档组织"},
-            },
-        ]
-
-    async def __aenter__(self):
-        return self
-
-    async def __aexit__(self, *_args) -> None:
-        return None
-
-    async def list_all_organization_projects(self) -> list:
-        self.calls.append(("list_all_organization_projects",))
-        return list(self.projects)
-
-    async def upsert_project_membership(self, project_id: str, payload: dict) -> dict:
-        self.calls.append(("upsert_project_membership", project_id, payload))
-        result = {
-            "userId": payload.get("userId") or f"user-{len(self.upserted_members) + 1}",
-            "email": payload.get("email", ""),
-            "name": payload.get("name", ""),
-            "role": payload.get("role", "MEMBER"),
-        }
-        self.upserted_members.append(result)
-        return result
-
-    async def delete_project_membership(self, project_id: str, user_id: str) -> dict:
-        self.calls.append(("delete_project_membership", project_id, user_id))
-        self.deleted_members.append((project_id, user_id))
-        return {}
-
-
-def _override_project_admin_adapter(public_client: _FakeProjectAdminPublicClient) -> None:
-    from app.langfuse.administration_adapter import LangfuseAdministrationAdapter
-
-    class _Provider:
-        def __init__(self) -> None:
-            self.resource_extensions: dict[tuple[str, str, str, str], dict] = {}
-
-        def organization_public_client(self):
-            return public_client
-
-        async def get_resource_extension(
-            self,
-            *,
-            project_id: str,
-            resource_type: str,
-            resource_id: str,
-            extension_type: str,
-        ) -> dict | None:
-            return self.resource_extensions.get(
-                (project_id, resource_type, resource_id, extension_type)
-            )
-
-        async def upsert_resource_extension(
-            self,
-            *,
-            project_id: str,
-            resource_type: str,
-            resource_id: str,
-            extension_type: str,
-            payload: dict,
-            actor: str,
-            schema_version: int = 1,
-        ) -> dict:
-            row = {
-                "project_id": project_id,
-                "resource_type": resource_type,
-                "resource_id": resource_id,
-                "extension_type": extension_type,
-                "payload": payload,
-                "status": "ACTIVE",
-                "actor": actor,
-                "schema_version": schema_version,
-            }
-            self.resource_extensions[
-                (project_id, resource_type, resource_id, extension_type)
-            ] = row
-            return row
-
-    adapter = LangfuseAdministrationAdapter(_Provider())
-    from app.projects import get_langfuse_administration_adapter
-    app.dependency_overrides[get_langfuse_administration_adapter] = lambda: adapter
-
-
 def override_reader(fake_reader: FakeDatabaseReader):
     async def _override() -> LangfuseDatabaseReader:
         return fake_reader  # type: ignore[return-value]
@@ -889,8 +791,6 @@ def test_lists_project_settings_members() -> None:
 def test_creates_project_settings_member() -> None:
     fake_reader = FakeDatabaseReader()
     override_reader(fake_reader)
-    public_client = _FakeProjectAdminPublicClient()
-    _override_project_admin_adapter(public_client)
 
     try:
         response = TestClient(app).post(
@@ -902,8 +802,15 @@ def test_creates_project_settings_member() -> None:
 
     assert response.status_code == 200
     assert response.json()["data"]["role"] == "MEMBER"
-    assert len(public_client.upserted_members) == 1
-    assert public_client.upserted_members[0]["email"] == "member@example.com"
+    assert fake_reader.created_project_member_payload == {
+        "project_id": "project-1",
+        "user_id": "user-1",
+        "payload": {
+            "name": "项目成员",
+            "email": "member@example.com",
+            "role": "MEMBER",
+        },
+    }
 
 
 @pytest.mark.anyio
@@ -952,8 +859,6 @@ async def test_create_project_member_creates_missing_user_and_org_member(
 def test_updates_project_settings_member_role() -> None:
     fake_reader = FakeDatabaseReader()
     override_reader(fake_reader)
-    public_client = _FakeProjectAdminPublicClient()
-    _override_project_admin_adapter(public_client)
 
     try:
         response = TestClient(app).patch(
@@ -965,15 +870,17 @@ def test_updates_project_settings_member_role() -> None:
 
     assert response.status_code == 200
     assert response.json()["data"]["role"] == "VIEWER"
-    assert public_client.calls[-1][0] == "upsert_project_membership"
-    assert public_client.calls[-1][2]["role"] == "VIEWER"
+    assert fake_reader.updated_project_member_payload == {
+        "project_id": "project-1",
+        "member_id": "user-2",
+        "user_id": "user-1",
+        "payload": {"role": "VIEWER"},
+    }
 
 
 def test_updates_project_settings_member_to_none_for_removing_override() -> None:
     fake_reader = FakeDatabaseReader()
     override_reader(fake_reader)
-    public_client = _FakeProjectAdminPublicClient()
-    _override_project_admin_adapter(public_client)
 
     try:
         response = TestClient(app).patch(
@@ -984,8 +891,13 @@ def test_updates_project_settings_member_to_none_for_removing_override() -> None
         clear_overrides()
 
     assert response.status_code == 200
-    assert response.json()["data"]["role"] == "NONE"
-    assert public_client.calls[-1][2]["role"] == "NONE"
+    assert response.json()["data"]["role"] is None
+    assert fake_reader.updated_project_member_payload == {
+        "project_id": "project-1",
+        "member_id": "user-2",
+        "user_id": "user-1",
+        "payload": {"role": "NONE"},
+    }
 
 
 def test_project_member_create_rejects_existing_effective_member() -> None:
@@ -1021,8 +933,6 @@ def test_project_create_allows_manager_organization_role() -> None:
 def test_deletes_project_settings_member() -> None:
     fake_reader = FakeDatabaseReader()
     override_reader(fake_reader)
-    public_client = _FakeProjectAdminPublicClient()
-    _override_project_admin_adapter(public_client)
 
     try:
         response = TestClient(app).delete(
@@ -1033,7 +943,11 @@ def test_deletes_project_settings_member() -> None:
 
     assert response.status_code == 200
     assert response.json()["data"] == {"id": "user-2"}
-    assert ("project-1", "user-2") in public_client.deleted_members
+    assert fake_reader.deleted_project_member_payload == {
+        "project_id": "project-1",
+        "member_id": "user-2",
+        "user_id": "user-1",
+    }
 
 
 @pytest.mark.anyio
@@ -1189,9 +1103,7 @@ def test_updates_project_for_current_user() -> None:
 
 def test_archives_project_for_current_user() -> None:
     fake_reader = FakeDatabaseReader()
-    public_client = _FakeProjectAdminPublicClient()
     override_reader(fake_reader)
-    _override_project_admin_adapter(public_client)
 
     try:
         response = TestClient(app).post("/api/projects/project-1/archive")
@@ -1200,14 +1112,16 @@ def test_archives_project_for_current_user() -> None:
 
     assert response.status_code == 200
     assert response.json()["data"]["status"] == "archived"
-    assert ("list_all_organization_projects",) in public_client.calls
+    assert fake_reader.archived_project_payload == {
+        "project_id": "project-1",
+        "user_id": "user-1",
+        "user_email": "admin@163.com",
+    }
 
 
 def test_restores_project_for_current_user() -> None:
     fake_reader = FakeDatabaseReader()
-    public_client = _FakeProjectAdminPublicClient()
     override_reader(fake_reader)
-    _override_project_admin_adapter(public_client)
 
     try:
         response = TestClient(app).post("/api/projects/project-2/restore")
@@ -1216,4 +1130,8 @@ def test_restores_project_for_current_user() -> None:
 
     assert response.status_code == 200
     assert response.json()["data"]["status"] == "active"
-    assert ("list_all_organization_projects",) in public_client.calls
+    assert fake_reader.restored_project_payload == {
+        "project_id": "project-2",
+        "user_id": "user-1",
+        "user_email": "admin@163.com",
+    }

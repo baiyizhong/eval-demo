@@ -6,7 +6,6 @@ import httpx
 
 from app.errors import (
     LangfuseConfigError,
-    LangfuseOrganizationConfigError,
     LangfuseUpstreamError,
 )
 
@@ -38,13 +37,11 @@ class LangfusePublicClient:
         base_url: str,
         public_key: str = "",
         secret_key: str = "",
-        organization_api_key: str = "",
         timeout: float = 20,
         transport: httpx.AsyncBaseTransport | None = None,
     ) -> None:
         self._public_key = public_key
         self._secret_key = secret_key
-        self._organization_api_key = organization_api_key
         self._client = httpx.AsyncClient(
             base_url=base_url.rstrip("/"),
             timeout=timeout,
@@ -603,141 +600,6 @@ class LangfusePublicClient:
             allow_not_found=True,
         )
 
-    # -- Organization-scoped resources --
-
-    async def list_organization_projects(self) -> dict[str, Any]:
-        return await self._organization_request(
-            "GET",
-            "/api/public/organizations/projects",
-        )
-
-    async def list_all_organization_projects(self) -> list[dict[str, Any]]:
-        response = await self.list_organization_projects()
-        data = response.get("data") or []
-        return [item for item in data if isinstance(item, dict)]
-
-    async def create_project(self, payload: dict[str, Any]) -> dict[str, Any]:
-        return await self._organization_request(
-            "POST",
-            "/api/public/projects",
-            json=payload,
-        )
-
-    async def update_project(
-        self,
-        project_id: str,
-        payload: dict[str, Any],
-    ) -> dict[str, Any]:
-        return await self._organization_request(
-            "PUT",
-            f"/api/public/projects/{project_id}",
-            json=payload,
-        )
-
-    async def delete_project(self, project_id: str) -> dict[str, Any]:
-        return await self._organization_request(
-            "DELETE",
-            f"/api/public/projects/{project_id}",
-            allow_not_found=True,
-        )
-
-    async def list_organization_memberships(self) -> dict[str, Any]:
-        return await self._organization_request(
-            "GET",
-            "/api/public/organizations/memberships",
-        )
-
-    async def list_all_organization_memberships(self) -> list[dict[str, Any]]:
-        response = await self.list_organization_memberships()
-        data = response.get("data") or []
-        return [item for item in data if isinstance(item, dict)]
-
-    async def upsert_organization_membership(
-        self,
-        payload: dict[str, Any],
-    ) -> dict[str, Any]:
-        return await self._organization_request(
-            "PUT",
-            "/api/public/organizations/memberships",
-            json=payload,
-        )
-
-    async def delete_organization_membership(
-        self,
-        user_id: str,
-    ) -> dict[str, Any]:
-        return await self._organization_request(
-            "DELETE",
-            "/api/public/organizations/memberships",
-            json={"userId": user_id},
-            allow_not_found=True,
-        )
-
-    async def list_project_memberships(self, project_id: str) -> dict[str, Any]:
-        return await self._organization_request(
-            "GET",
-            f"/api/public/projects/{project_id}/memberships",
-        )
-
-    async def list_all_project_memberships(
-        self,
-        project_id: str,
-    ) -> list[dict[str, Any]]:
-        response = await self.list_project_memberships(project_id)
-        data = response.get("data") or []
-        return [item for item in data if isinstance(item, dict)]
-
-    async def upsert_project_membership(
-        self,
-        project_id: str,
-        payload: dict[str, Any],
-    ) -> dict[str, Any]:
-        return await self._organization_request(
-            "PUT",
-            f"/api/public/projects/{project_id}/memberships",
-            json=payload,
-        )
-
-    async def delete_project_membership(
-        self,
-        project_id: str,
-        user_id: str,
-    ) -> dict[str, Any]:
-        return await self._organization_request(
-            "DELETE",
-            f"/api/public/projects/{project_id}/memberships",
-            json={"userId": user_id},
-            allow_not_found=True,
-        )
-
-    async def list_project_api_keys(self, project_id: str) -> dict[str, Any]:
-        return await self._organization_request(
-            "GET",
-            f"/api/public/projects/{project_id}/apiKeys",
-        )
-
-    async def create_project_api_key(
-        self,
-        project_id: str,
-        payload: dict[str, Any],
-    ) -> dict[str, Any]:
-        return await self._organization_request(
-            "POST",
-            f"/api/public/projects/{project_id}/apiKeys",
-            json=payload,
-        )
-
-    async def delete_project_api_key(
-        self,
-        project_id: str,
-        api_key_id: str,
-    ) -> dict[str, Any]:
-        return await self._organization_request(
-            "DELETE",
-            f"/api/public/projects/{project_id}/apiKeys/{api_key_id}",
-            allow_not_found=True,
-        )
-
     async def _project_request(
         self,
         method: str,
@@ -779,24 +641,6 @@ class LangfusePublicClient:
     @staticmethod
     def _json_query_value(value: Any) -> str:
         return json.dumps(value, ensure_ascii=False, separators=(",", ":"))
-
-    async def _organization_request(
-        self,
-        method: str,
-        path: str,
-        *,
-        json: dict[str, Any] | None = None,
-        allow_not_found: bool = False,
-    ) -> dict[str, Any]:
-        if not self._organization_api_key:
-            raise LangfuseOrganizationConfigError()
-        return await self._request(
-            method,
-            path,
-            headers={"Authorization": f"Bearer {self._organization_api_key}"},
-            json=json,
-            allow_not_found=allow_not_found,
-        )
 
     async def _request(
         self,
