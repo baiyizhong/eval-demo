@@ -6,6 +6,7 @@ from collections.abc import AsyncIterator
 from typing import Any
 from uuid import uuid4
 
+import bcrypt
 import psycopg
 from fastapi import Depends
 from psycopg.rows import dict_row
@@ -1028,7 +1029,7 @@ class LangfuseDatabaseReader:
                 "id": key_id,
                 "note": note,
                 "public_key": public_key,
-                "hashed_secret_key": f"pa-eval-placeholder-{uuid4()}",
+                "hashed_secret_key": _create_bcrypt_hash(secret_key),
                 "display_secret_key": _display_secret_key(secret_key),
                 "project_id": project_id,
                 "fast_hashed_secret_key": _create_sha_hash(
@@ -7496,6 +7497,13 @@ def _organization_member_account(payload: dict[str, Any]) -> str:
 def _create_sha_hash(secret_key: str, salt: str) -> str:
     salt_hash = hashlib.sha256(salt.encode("utf-8")).hexdigest()
     return hashlib.sha256((secret_key + salt_hash).encode("utf-8")).hexdigest()
+
+
+def _create_bcrypt_hash(secret_key: str) -> str:
+    return bcrypt.hashpw(
+        secret_key.encode("utf-8"),
+        bcrypt.gensalt(rounds=11),
+    ).decode("utf-8")
 
 
 def _display_secret_key(secret_key: str) -> str:

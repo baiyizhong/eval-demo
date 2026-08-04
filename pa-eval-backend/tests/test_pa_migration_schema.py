@@ -52,7 +52,20 @@ def test_pa_schema_migrations_are_defined_in_order() -> None:
         "20260723_0015_create_consolidated_pa_tables.py",
         "20260723_0016_contract_legacy_pa_tables.py",
         "20260723_0017_drop_model_setting_shadow_tables.py",
+        "20260723_0018_backfill_project_api_key_bcrypt_hashes.py",
     ]
+
+
+def test_project_api_key_bcrypt_backfill_migration_is_defined() -> None:
+    migration = MIGRATIONS_DIR / "20260723_0018_backfill_project_api_key_bcrypt_hashes.py"
+    content = migration.read_text(encoding="utf-8")
+
+    assert 'revision = "20260723_0018"' in content
+    assert 'down_revision = "20260723_0017"' in content
+    assert "pa_project_api_keys" in content
+    assert "hashed_secret_key LIKE 'pa-eval-placeholder-%'" in content
+    assert "bcrypt.hashpw" in content
+    assert "bcrypt.gensalt(rounds=11" in content
 
 
 def test_trace_bulk_jobs_table_is_defined_with_comments_and_recovery_indexes() -> None:

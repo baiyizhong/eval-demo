@@ -2,6 +2,7 @@ import asyncio
 from datetime import UTC, datetime
 from typing import Any
 
+import bcrypt
 import pytest
 
 from app import langfuse_db
@@ -438,6 +439,12 @@ async def test_project_api_key_create_writes_pa_and_native_api_key_tables(
     )
     assert native_inserts[0]["display_secret_key"].startswith("sk-lf-")
     assert native_inserts[0]["fast_hashed_secret_key"]
+    hashed_secret_key = native_inserts[0]["hashed_secret_key"]
+    assert hashed_secret_key.startswith("$2")
+    assert bcrypt.checkpw(
+        pa_inserts[0]["secret_key"].encode("utf-8"),
+        hashed_secret_key.encode("utf-8"),
+    )
 
 
 @pytest.mark.anyio
