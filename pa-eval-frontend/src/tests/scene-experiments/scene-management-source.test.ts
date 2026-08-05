@@ -59,7 +59,7 @@ test('scene form drawer follows the six-step experiment configuration workflow',
     '基础信息',
     '选择数据集',
     '选择评估器',
-    'Webhook 服务配置',
+    '远程运行服务配置',
     '运行参数配置',
     '确认创建',
   ]) {
@@ -72,7 +72,7 @@ test('scene form drawer follows the six-step experiment configuration workflow',
   assert.ok(!source.includes('<ExperimentSelectableCard'))
   assert.ok(source.includes('evaluatorIds'))
   assert.ok(source.includes('datasetId'))
-  assert.ok(source.includes('Webhook 服务'))
+  assert.ok(source.includes('远程运行服务'))
   assert.ok(source.includes('默认执行轮次'))
   assert.ok(source.includes("mode='enhanced'"))
 })
@@ -217,7 +217,7 @@ test('scene scheduling validates evaluator and webhook selections when advancing
   )
   assert.match(
     source,
-    /targetStep > 2[\s\S]*draft\.supportsScheduledExecution[\s\S]*validScheduledWebhookIds\.length === 0[\s\S]*支持定时执行时请至少选择一个 Webhook 服务[\s\S]*setStep\(2\)/
+    /targetStep > 2[\s\S]*draft\.supportsScheduledExecution[\s\S]*validScheduledWebhookIds\.length === 0[\s\S]*支持定时执行时请至少选择一个远程运行服务[\s\S]*setStep\(2\)/
   )
   assert.doesNotMatch(
     source,
@@ -264,7 +264,7 @@ test('scene list and detail omit evaluator presentation', () => {
   assert.ok(source.includes('默认评估器'))
 
   for (const label of [
-    'Webhook 服务',
+    '远程运行服务',
     '并发数',
     '超时时间',
     '重试次数',

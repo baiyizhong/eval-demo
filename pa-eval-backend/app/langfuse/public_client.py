@@ -272,6 +272,33 @@ class LangfusePublicClient:
             json=payload,
         )
 
+    async def list_dataset_run_items(
+        self,
+        *,
+        dataset_id: str,
+        run_name: str,
+        page: int = 1,
+        limit: int = 50,
+    ) -> dict[str, Any]:
+        return await self._project_request(
+            "GET",
+            "/api/public/dataset-run-items",
+            params={
+                "datasetId": dataset_id,
+                "runName": run_name,
+                "page": max(1, page),
+                "limit": min(100, max(1, limit)),
+            },
+            allow_not_found=True,
+        )
+
+    async def create_score(self, payload: dict[str, Any]) -> dict[str, Any]:
+        return await self._project_request(
+            "POST",
+            "/api/public/scores",
+            json=payload,
+        )
+
     async def list_annotation_queues(
         self,
         *,

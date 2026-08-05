@@ -341,6 +341,83 @@ async def test_create_dataset_run_item_uses_public_dataset_run_items_endpoint() 
 
 
 @pytest.mark.anyio
+async def test_list_dataset_run_items_uses_current_public_endpoint() -> None:
+    requests: list[httpx.Request] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        requests.append(request)
+        return httpx.Response(
+            200,
+            json={"data": [{"id": "run-item-1"}], "meta": {"totalItems": 1}},
+        )
+
+    client = LangfusePublicClient(
+        base_url="http://langfuse.test",
+        public_key="pk-lf-project",
+        secret_key="sk-lf-secret",
+        transport=httpx.MockTransport(handler),
+    )
+    try:
+        response = await client.list_dataset_run_items(
+            dataset_id="dataset-1",
+            run_name="客服实验::group-1",
+            page=2,
+            limit=25,
+        )
+    finally:
+        await client.aclose()
+
+    request = requests[0]
+    assert request.method == "GET"
+    assert request.url.path == "/api/public/dataset-run-items"
+    assert request.url.params["datasetId"] == "dataset-1"
+    assert request.url.params["runName"] == "客服实验::group-1"
+    assert request.url.params["page"] == "2"
+    assert request.url.params["limit"] == "25"
+    assert response["data"][0]["id"] == "run-item-1"
+
+
+@pytest.mark.anyio
+async def test_create_score_uses_public_scores_endpoint() -> None:
+    requests: list[httpx.Request] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        requests.append(request)
+        return httpx.Response(200, json={"id": "score-1"})
+
+    client = LangfusePublicClient(
+        base_url="http://langfuse.test",
+        public_key="pk-lf-project",
+        secret_key="sk-lf-secret",
+        transport=httpx.MockTransport(handler),
+    )
+    try:
+        response = await client.create_score(
+            {
+                "id": "score-1",
+                "traceId": "trace-1",
+                "name": "accuracy",
+                "value": 0.88,
+                "comment": "PA 评估通过",
+            }
+        )
+    finally:
+        await client.aclose()
+
+    request = requests[0]
+    assert request.method == "POST"
+    assert request.url.path == "/api/public/scores"
+    assert json.loads(request.content) == {
+        "id": "score-1",
+        "traceId": "trace-1",
+        "name": "accuracy",
+        "value": 0.88,
+        "comment": "PA 评估通过",
+    }
+    assert response["id"] == "score-1"
+
+
+@pytest.mark.anyio
 async def test_get_trace_selects_documented_field_groups() -> None:
     requests: list[httpx.Request] = []
 

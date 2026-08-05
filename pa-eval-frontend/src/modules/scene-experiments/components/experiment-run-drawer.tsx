@@ -42,7 +42,6 @@ import {
   createDatasetExperiment,
   listAvailableScenes,
 } from '../api/scene-experiment-api'
-import { estimateExperimentCalls } from '../lib/experiment-rules'
 import {
   applyExperimentDatasetSelection,
   applyExperimentSceneSelection,
@@ -76,7 +75,7 @@ import { ExperimentSelectableCard } from './experiment-selectable-card'
 const experimentSteps = [
   { id: 'scene', title: '选择场景', description: '试验信息与模板' },
   { id: 'dataset', title: '选择数据集', description: '确定试验数据' },
-  { id: 'webhook', title: 'Webhook 服务配置', description: '选择执行服务' },
+  { id: 'webhook', title: '远程运行服务', description: '触发外部实验执行' },
   { id: 'evaluator', title: '选择评估器', description: '评分维度' },
   { id: 'parameters', title: '运行参数配置', description: '本次执行参数' },
   { id: 'summary', title: '确认执行', description: '汇总并提交' },
@@ -201,7 +200,7 @@ function ExperimentRunDrawerContent({
     mutationFn: (input: CreateExperimentInput) =>
       createDatasetExperiment($api, projectId, selectedDataset!.id, input),
     onSuccess: async (result) => {
-      toast.success(`试验已提交，已创建 ${result.reports.length} 份服务级报告`)
+      toast.success(`试验已提交，已创建 ${result.reports.length} 份远程运行报告`)
       await onCreated(result.reports)
       closeDrawer(true)
     },
@@ -287,7 +286,7 @@ function ExperimentRunDrawerContent({
       return false
     }
     if (targetStep > 2 && selectedWebhookIds.length === 0) {
-      toast.error('请至少选择一个 Webhook 服务')
+      toast.error('请至少选择一个远程运行服务')
       setStep(2)
       return false
     }
@@ -341,11 +340,6 @@ function ExperimentRunDrawerContent({
     ) ?? []
   const selectedEvaluators = sceneEvaluators.filter((evaluator) =>
     validSelectedEvaluatorIds.includes(evaluator.id)
-  )
-  const estimatedCalls = estimateExperimentCalls(
-    activeItemCount ?? 0,
-    selectedWebhookIds.length,
-    runParameters.rounds
   )
   const closeDrawer = (allowPending = false) => {
     if (createMutation.isPending && !allowPending) return
@@ -593,8 +587,8 @@ function ExperimentRunDrawerContent({
                   <CheckCircle2 />
                   <AlertTitle>配置已就绪</AlertTitle>
                   <AlertDescription>
-                    确认后将创建 {selectedWebhooks.length}{' '}
-                    份服务级报告，并进入排队状态。
+                    确认后将触发 {selectedWebhooks.length}{' '}
+                    个远程运行服务，并进入评估流程。
                   </AlertDescription>
                 </Alert>
               ) : (
@@ -627,13 +621,13 @@ function ExperimentRunDrawerContent({
                     value={`${runParameters.retryCount} 次 / ${runParameters.rounds} 轮`}
                   />
                   <SummaryRow
-                    label='预计调用量'
-                    value={`${estimatedCalls} 次`}
+                    label='远程触发'
+                    value={`${selectedWebhookIds.length} 次`}
                     emphasis
                   />
                 </SummarySection>
                 <SummarySection
-                  title={`Webhook 服务（${selectedWebhooks.length}）`}
+                  title={`远程运行服务（${selectedWebhooks.length}）`}
                 >
                   {selectedWebhooks.map((webhook) => (
                     <SummaryRow
@@ -695,7 +689,7 @@ function SceneSummary({ scene }: { scene?: SceneRecord }) {
       <div>
         <p className='text-sm font-semibold'>场景摘要</p>
         <p className='text-muted-foreground mt-1 text-xs'>
-          选择后带出默认数据集与运行参数，评估器和 Webhook 需手动选择
+          选择后带出默认数据集与运行参数，评估器和远程运行服务需手动选择
         </p>
       </div>
       {scene ? (
@@ -707,7 +701,7 @@ function SceneSummary({ scene }: { scene?: SceneRecord }) {
             </p>
           </div>
           <div className='grid grid-cols-2 gap-2'>
-            <Metric label='Webhook' value={`${scene.webhooks.length} 个`} />
+            <Metric label='远程运行' value={`${scene.webhooks.length} 个`} />
             <Metric
               label='评估器'
               value={`${scene.evaluatorIds?.length ?? 0} 个`}
@@ -864,7 +858,7 @@ function DetailDialog({
       <DialogContent>
         <DialogHeader>
           <DialogTitle>
-            {isWebhook ? 'Webhook 服务详情' : '评估器详情'}
+            {isWebhook ? '远程运行服务详情' : '评估器详情'}
           </DialogTitle>
           <DialogDescription>
             {isWebhook

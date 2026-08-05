@@ -3659,6 +3659,40 @@ class LangfuseDatabaseReader:
             status_code=404,
         )
 
+    async def get_workflow_evaluator_for_execution(
+        self,
+        evaluator_id: str,
+        user_id: str,
+    ) -> dict[str, Any]:
+        try:
+            rows = await self._fetch_pa_evaluator_for_user(
+                evaluator_id,
+                user_id,
+                include_output_variables=True,
+            )
+        except psycopg.errors.UndefinedColumn:
+            rows = await self._fetch_pa_evaluator_for_user(
+                evaluator_id,
+                user_id,
+                include_output_variables=False,
+            )
+        except psycopg.errors.UndefinedTable:
+            rows = []
+
+        if not rows:
+            raise BusinessError(
+                code=1006,
+                message="评估器不存在或无访问权限",
+                status_code=404,
+            )
+
+        row = rows[0]
+        payload = self._to_pa_evaluator_payload(row)
+        return {
+            **payload,
+            "config": row.get("config") or {},
+        }
+
     async def _get_pa_evaluator_for_user(
         self,
         evaluator_id: str,

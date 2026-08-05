@@ -83,7 +83,7 @@ export function ExperimentAggregate() {
                 <div>
                   <h1 className='text-xl font-semibold'>{result.title}</h1>
                   <p className='text-muted-foreground mt-2 text-sm'>
-                    聚合 {result.reports.length} 个 Webhook 服务的完整试验结果
+                    聚合 {result.reports.length} 个远程运行服务的完整试验结果
                   </p>
                 </div>
                 <Badge variant='outline'>同一试验组</Badge>

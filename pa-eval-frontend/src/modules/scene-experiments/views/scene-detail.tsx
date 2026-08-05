@@ -181,7 +181,7 @@ export function ProjectSceneDetail() {
             </section>
             <section className='bg-card rounded-lg border p-5'>
               <h2 className='text-sm font-semibold'>
-                Webhook 服务（{scene.webhooks.length}）
+                远程运行服务（{scene.webhooks.length}）
               </h2>
               <div className='mt-3 overflow-x-auto'>
                 <table className='w-full min-w-[760px] text-sm'>

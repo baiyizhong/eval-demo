@@ -6,7 +6,6 @@ import {
   buildScoreResultKey,
   canAggregateReports,
   canCompareReports,
-  estimateExperimentCalls,
   findMatchingBaseline,
   isCurrentBaselineReport,
 } from '../../modules/scene-experiments/lib/experiment-rules.ts'
@@ -23,10 +22,6 @@ test('buildScoreResultKey distinguishes duplicate evaluator variables', () => {
     buildScoreResultKey('eval_accuracy', 'accuracy'),
     'eval_accuracy:accuracy'
   )
-})
-
-test('estimateExperimentCalls includes dataset items services and rounds', () => {
-  assert.equal(estimateExperimentCalls(100, 2, 3), 600)
 })
 
 test('canAggregateReports requires completed reports from one experiment group', () => {

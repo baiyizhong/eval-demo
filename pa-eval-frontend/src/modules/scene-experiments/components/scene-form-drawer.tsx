@@ -36,7 +36,7 @@ import { ExperimentEvaluatorStep } from './experiment-evaluator-step'
 const sceneSteps = [
   { id: 'basic', title: '基础信息', description: '名称与描述' },
   { id: 'dataset', title: '选择数据集', description: '默认试验数据' },
-  { id: 'webhook', title: 'Webhook 服务配置', description: '服务与鉴权' },
+  { id: 'webhook', title: '远程运行服务配置', description: '服务与鉴权' },
   { id: 'evaluator', title: '选择评估器', description: '默认评分维度' },
   { id: 'parameters', title: '运行参数配置', description: '执行默认值' },
   { id: 'summary', title: '确认创建', description: '检查场景配置' },
@@ -189,7 +189,7 @@ function SceneFormDrawerContent({
 
   const removeWebhook = (id: string) => {
     if (draft.webhooks.length === 1) {
-      toast.error('场景至少需要一个 Webhook 服务')
+      toast.error('场景至少需要一个远程运行服务')
       return
     }
     const next = draft.webhooks.filter((item) => item.id !== id)
@@ -226,7 +226,7 @@ function SceneFormDrawerContent({
       draft.supportsScheduledExecution &&
       validScheduledWebhookIds.length === 0
     ) {
-      toast.error('支持定时执行时请至少选择一个 Webhook 服务')
+      toast.error('支持定时执行时请至少选择一个远程运行服务')
       setStep(2)
       return false
     }
@@ -235,7 +235,7 @@ function SceneFormDrawerContent({
       (draft.webhooks.length === 0 ||
         draft.webhooks.some((item) => !item.name.trim() || !item.url.trim()))
     ) {
-      toast.error('请完成所有 Webhook 服务的名称和 URL')
+      toast.error('请完成所有远程运行服务的名称和 URL')
       setStep(2)
       return false
     }
@@ -444,7 +444,7 @@ function SceneFormDrawerContent({
                   <Info />
                   <AlertTitle>已支持定时执行</AlertTitle>
                   <AlertDescription>
-                    可在定时任务模块中配置调度，评估器和 Webhook
+                    可在定时任务模块中配置调度，评估器和远程运行服务
                     服务将保留默认选择。
                   </AlertDescription>
                 </Alert>
@@ -572,7 +572,7 @@ function SceneFormDrawerContent({
                 />
               ))}
             </SummarySection>
-            <SummarySection title={`Webhook 服务（${draft.webhooks.length}）`}>
+            <SummarySection title={`远程运行服务（${draft.webhooks.length}）`}>
               {draft.webhooks.map((webhook) => (
                 <SummaryRow
                   key={webhook.id}
@@ -621,7 +621,7 @@ function WebhookList({
     <section className='flex flex-col gap-3 rounded-lg border p-4'>
       <div className='flex items-center justify-between gap-2'>
         <div>
-          <h3 className='text-sm font-semibold'>Webhook 服务</h3>
+          <h3 className='text-sm font-semibold'>远程运行服务</h3>
           <p className='text-muted-foreground text-xs'>固定使用 POST 契约。</p>
         </div>
         <Button
@@ -629,7 +629,7 @@ function WebhookList({
           size='icon'
           variant='outline'
           onClick={onAdd}
-          aria-label='添加 Webhook 服务'
+          aria-label='添加远程运行服务'
         >
           <Plus />
         </Button>
@@ -700,7 +700,7 @@ function WebhookListItem({
         type='button'
         variant='ghost'
         size='icon'
-        aria-label='删除 Webhook 服务'
+        aria-label='删除远程运行服务'
         onClick={() => onRemove(webhook.id)}
       >
         <Trash2 />
@@ -735,7 +735,7 @@ function WebhookEditor({
         />
       </Field>
       <div className='sm:col-span-2'>
-        <Field label='Webhook URL' htmlFor={fieldId('url')}>
+        <Field label='远程触发 URL' htmlFor={fieldId('url')}>
           <Input
             id={fieldId('url')}
             type='url'

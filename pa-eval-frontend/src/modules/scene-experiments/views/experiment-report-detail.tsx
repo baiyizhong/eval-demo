@@ -173,7 +173,7 @@ function OverviewMetrics({ report }: { report: ExperimentReport }) {
       icon: CheckCircle2,
     },
     {
-      label: 'Webhook',
+      label: '远程运行服务',
       value: report.webhookSnapshot.name,
       icon: ServerCog,
     },
@@ -316,7 +316,7 @@ function ItemResults({ report }: { report: ExperimentReport }) {
               editorMaxHeight={240}
             />
             <MixEditor
-              title='Webhook Output'
+              title='远程运行输出'
               value={item.output}
               readOnly
               showEditButton={false}

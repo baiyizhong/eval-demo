@@ -116,7 +116,7 @@ function createBaseExperimentReportColumns<TReport extends ExperimentReport>(
     },
     {
       id: 'service',
-      header: 'Webhook 服务',
+      header: '远程运行服务',
       cell: ({ row }) => (
         <div className='flex flex-col gap-1'>
           <span className='font-medium'>

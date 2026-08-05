@@ -82,7 +82,7 @@ test('execution configuration exposes separate webhook and run parameter steps',
   )
   assert.ok(source.includes('ExperimentWebhookStep'))
   assert.ok(source.includes('ExperimentRunParametersStep'))
-  assert.ok(source.includes('选择 Webhook 服务'))
+  assert.ok(source.includes('选择远程运行服务'))
   assert.ok(source.includes('运行参数'))
   assert.ok(!source.includes('lg:grid-cols-2'))
   assert.ok(source.includes('执行轮次'))

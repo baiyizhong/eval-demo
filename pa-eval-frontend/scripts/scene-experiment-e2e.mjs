@@ -14,6 +14,11 @@ const config = {
   backendUrl: process.env.PA_E2E_BACKEND_URL ?? 'http://127.0.0.1:8000',
   backendDir: process.env.PA_E2E_BACKEND_DIR ?? resolve(repoRoot, 'pa-eval-backend'),
   userEmail: process.env.PA_E2E_USER_EMAIL ?? '774319634@qq.com',
+  langfuseBaseUrl:
+    process.env.PA_E2E_LANGFUSE_BASE_URL ??
+    process.env.LANGFUSE_BASE_URL ??
+    process.env.LANGFUSE_HOST ??
+    'http://127.0.0.1:3000',
   webhookHost: process.env.PA_E2E_WEBHOOK_HOST ?? '127.0.0.1',
   webhookPort: Number(process.env.PA_E2E_WEBHOOK_PORT ?? 8099),
   webhookTokenRef: process.env.PA_E2E_WEBHOOK_TOKEN_REF ?? 'PA_E2E_WEBHOOK_TOKEN',
@@ -142,20 +147,171 @@ async function discoverFixture(auth) {
     `/api/projects/${encodeURIComponent(project.id)}/settings/api-keys?pageSize=100`,
     auth
   )
-  if (!keys.datas?.length) {
-    await api(
+  let apiKey = keys.datas?.find((item) => item.publicKey && item.secretKey)
+  if (!apiKey) {
+    apiKey = await api(
       'POST',
       `/api/projects/${encodeURIComponent(project.id)}/settings/api-keys`,
       auth,
       { note: 'Scene experiment page E2E key' }
     )
   }
+  if (!apiKey?.publicKey || !apiKey?.secretKey) {
+    throw new Error('Project API key is missing publicKey or secretKey')
+  }
 
-  return { project, dataset, evaluator }
+  const datasetItems = await api(
+    'GET',
+    `/api/projects/${encodeURIComponent(project.id)}/datasets/${encodeURIComponent(dataset.id)}/items?pageSize=100&status=ACTIVE`,
+    auth
+  )
+  if (!datasetItems.datas?.length) {
+    throw new Error(`No active dataset items found in ${dataset.id}`)
+  }
+
+  return { project, dataset, datasetItems: datasetItems.datas, evaluator, apiKey }
 }
 
-function startWebhook() {
+function langfuseAuthHeader(apiKey) {
+  return `Basic ${Buffer.from(`${apiKey.publicKey}:${apiKey.secretKey}`).toString('base64')}`
+}
+
+async function langfuseFetch(path, apiKey, init = {}) {
+  const response = await fetch(`${config.langfuseBaseUrl.replace(/\/$/, '')}${path}`, {
+    ...init,
+    headers: {
+      authorization: langfuseAuthHeader(apiKey),
+      ...(init.body ? { 'content-type': 'application/json' } : {}),
+      ...(init.headers ?? {}),
+    },
+  })
+  const text = await response.text()
+  const json = text ? JSON.parse(text) : {}
+  if (!response.ok) {
+    throw new Error(`${init.method ?? 'GET'} ${path} ${response.status}: ${text}`)
+  }
+  return json
+}
+
+async function ingestLangfuseTrace({ apiKey, run, item, index }) {
+  const traceId = `scene-e2e-trace-${stamp}-${index}`
+  const output = {
+    answer: `scene e2e output ${index + 1}`,
+    sourceItemId: item.id,
+  }
+  await langfuseFetch('/api/public/ingestion', apiKey, {
+    method: 'POST',
+    body: JSON.stringify({
+      batch: [
+        {
+          id: `scene-e2e-ingest-${stamp}-${index}`,
+          type: 'trace-create',
+          timestamp: new Date().toISOString(),
+          body: {
+            id: traceId,
+            name: run.langfuseRunName,
+            timestamp: new Date().toISOString(),
+            input: item.input,
+            output,
+            metadata: {
+              paE2E: true,
+              paReportId: run.paReportId,
+              datasetItemId: item.id,
+            },
+          },
+        },
+      ],
+    }),
+  })
+  return { traceId, output }
+}
+
+async function waitForLangfuseTrace(apiKey, traceId) {
+  const deadline = Date.now() + 20000
+  let lastError = null
+  while (Date.now() < deadline) {
+    try {
+      return await langfuseFetch(
+        `/api/public/traces/${encodeURIComponent(traceId)}?fields=core`,
+        apiKey
+      )
+    } catch (error) {
+      lastError = error
+      await new Promise((resolvePromise) => setTimeout(resolvePromise, 750))
+    }
+  }
+  throw lastError ?? new Error(`Trace ${traceId} was not visible in Langfuse`)
+}
+
+async function createDatasetRunItem({ apiKey, run, item, traceId }) {
+  return langfuseFetch('/api/public/dataset-run-items', apiKey, {
+    method: 'POST',
+    body: JSON.stringify({
+      runName: run.langfuseRunName,
+      runDescription: 'PA scene experiment E2E remote runner',
+      datasetItemId: item.id,
+      traceId,
+      createdAt: new Date().toISOString(),
+      metadata: {
+        paE2E: true,
+        paExperimentGroupId: run.paExperimentGroupId,
+        paReportId: run.paReportId,
+      },
+    }),
+  })
+}
+
+async function waitForDatasetRunItems({ apiKey, datasetId, runName, expectedCount }) {
+  const deadline = Date.now() + 60000
+  let latestCount = 0
+  let lastError = null
+  while (Date.now() < deadline) {
+    try {
+      const response = await langfuseFetch(
+        `/api/public/dataset-run-items?datasetId=${encodeURIComponent(datasetId)}&runName=${encodeURIComponent(runName)}&page=1&limit=100`,
+        apiKey
+      )
+      const items = Array.isArray(response.data) ? response.data : []
+      latestCount = items.length
+      if (latestCount >= expectedCount) return items
+    } catch (error) {
+      lastError = error
+    }
+    await new Promise((resolvePromise) => setTimeout(resolvePromise, 1000))
+  }
+  throw new Error(
+    `Dataset run items were not visible before callback: expected ${expectedCount}, got ${latestCount}. ${lastError?.message ?? ''}`
+  )
+}
+
+async function completeRemoteExperiment(callback, run) {
+  const callbackUrl = new URL(callback.url, config.backendUrl)
+  if (!callbackUrl.pathname.endsWith('/remote-callback')) {
+    throw new Error(`Unexpected remote callback URL: ${callbackUrl.href}`)
+  }
+  const response = await fetch(callbackUrl, {
+    method: callback.method ?? 'POST',
+    headers: {
+      'content-type': 'application/json',
+      ...(callback.headers ?? {}),
+    },
+    body: JSON.stringify({
+      status: 'COMPLETED',
+      externalRunId: run.externalRunId,
+      langfuseRunName: run.langfuseRunName,
+      message: 'Scene experiment E2E remote runner completed',
+    }),
+  })
+  const text = await response.text()
+  if (!response.ok) {
+    throw new Error(`Remote callback failed ${response.status}: ${text}`)
+  }
+  return JSON.parse(text)
+}
+
+function createRemoteExperimentRunner({ fixture }) {
   const events = []
+  const backgroundErrors = []
   const server = createServer((request, response) => {
     if (request.method !== 'POST' || request.url !== '/e2e-webhook') {
       response.statusCode = 404
@@ -170,20 +326,57 @@ function startWebhook() {
     request.on('end', () => {
       const body = JSON.parse(raw || '{}')
       const authorization = request.headers.authorization ?? ''
-      const itemId = body.datasetItemId ?? 'unknown'
-      events.push({ authorization, body })
+      const run = {
+        externalRunId: `scene-e2e-remote-run-${stamp}-${events.length + 1}`,
+        langfuseRunName: body.payload?.langfuseRunName,
+        paExperimentGroupId: body.payload?.paExperimentGroupId,
+        paReportId: body.payload?.paReportId,
+      }
+      events.push({ authorization, body, run, datasetRunItems: [] })
       response.setHeader('content-type', 'application/json')
       response.end(
         JSON.stringify({
-          output: { answer: `scene e2e output ${itemId}` },
-          traceId: `scene-e2e-trace-${itemId}-${Date.now()}`,
-          observationId: `scene-e2e-observation-${itemId}`,
-          metadata: {
-            authOk: authorization === `Bearer ${webhookToken}`,
-            datasetRunItems: true,
-          },
+          accepted: true,
+          externalRunId: run.externalRunId,
+          langfuseRunName: run.langfuseRunName,
+          status: 'QUEUED',
         })
       )
+      void (async () => {
+        await new Promise((resolvePromise) => setTimeout(resolvePromise, 500))
+        if (authorization !== `Bearer ${webhookToken}`) {
+          throw new Error(`Webhook auth header mismatch: ${authorization}`)
+        }
+        if (!run.langfuseRunName || !run.paReportId) {
+          throw new Error('Remote experiment request is missing run context')
+        }
+        for (const [index, item] of fixture.datasetItems.entries()) {
+          const trace = await ingestLangfuseTrace({
+            apiKey: fixture.apiKey,
+            run,
+            item,
+            index,
+          })
+          await waitForLangfuseTrace(fixture.apiKey, trace.traceId)
+          const datasetRunItem = await createDatasetRunItem({
+            apiKey: fixture.apiKey,
+            run,
+            item,
+            traceId: trace.traceId,
+          })
+          events.at(-1).datasetRunItems.push(datasetRunItem)
+        }
+        await waitForDatasetRunItems({
+          apiKey: fixture.apiKey,
+          datasetId: fixture.dataset.id,
+          runName: run.langfuseRunName,
+          expectedCount: fixture.datasetItems.length,
+        })
+        await completeRemoteExperiment(body.callback, run)
+      })().catch((error) => {
+        backgroundErrors.push(error)
+        console.error(error.stack || error)
+      })
     })
   })
 
@@ -191,9 +384,27 @@ function startWebhook() {
     server.once('error', reject)
     server.listen(config.webhookPort, config.webhookHost, () => {
       server.off('error', reject)
-      resolvePromise({ server, events })
+      resolvePromise({ server, events, backgroundErrors })
     })
   })
+}
+
+async function waitForExperimentReportCompleted(auth, projectId, reportId) {
+  const deadline = Date.now() + 45000
+  let latest = null
+  while (Date.now() < deadline) {
+    latest = await api(
+      'GET',
+      `/api/projects/${encodeURIComponent(projectId)}/experiment-reports/${encodeURIComponent(reportId)}`,
+      auth
+    )
+    if (latest.status === 'COMPLETED') return latest
+    if (latest.status === 'FAILED') {
+      throw new Error(`Experiment report failed: ${latest.insight ?? latest.errorMessage ?? ''}`)
+    }
+    await new Promise((resolvePromise) => setTimeout(resolvePromise, 1000))
+  }
+  throw new Error(`Experiment report did not complete in time: ${latest?.status ?? 'unknown'}`)
 }
 
 async function clickNext(page) {
@@ -256,7 +467,7 @@ async function runPageFlow(auth, fixture, webhook) {
     await clickNext(page)
     await page.getByLabel('服务名称').fill('Page E2E Webhook')
     await page.getByLabel('版本').fill('v1')
-    await page.getByLabel('Webhook URL').fill(webhookUrl)
+    await page.getByLabel('远程触发 URL').fill(webhookUrl)
     await page.getByLabel('服务系列').fill('page-e2e-agent')
     await page.getByRole('combobox').click()
     await page.getByRole('option', { name: /Bearer Token/ }).click()
@@ -299,7 +510,7 @@ async function runPageFlow(auth, fixture, webhook) {
     await page.getByRole('option', { name: sceneName }).click()
     await clickNext(page)
     await clickNext(page)
-    await page.getByText('选择 Webhook 服务').waitFor({ timeout: 15000 })
+    await page.getByText('选择远程运行服务').waitFor({ timeout: 15000 })
     await page.getByLabel('选择 Page E2E Webhook').click()
     await clickNext(page)
     if (!(await page.getByLabel(`选择 ${fixture.evaluator.name}`).isChecked())) {
@@ -342,24 +553,21 @@ async function runPageFlow(auth, fixture, webhook) {
 async function main() {
   const auth = await createAuthSession()
   const fixture = await discoverFixture(auth)
-  const webhook = await startWebhook()
+  const webhook = await createRemoteExperimentRunner({ fixture })
 
   try {
     const pageResult = await runPageFlow(auth, fixture, webhook)
     const reports = pageResult.experimentResponseBody?.data?.reports ?? []
     const report = reports[0]
     if (!report) throw new Error('Experiment response did not include a report')
-    if (report.status !== 'COMPLETED') {
-      throw new Error(`Experiment report status is ${report.status}`)
-    }
     if (!webhook.events.length) throw new Error('Webhook was not called')
     if (webhook.events[0].authorization !== `Bearer ${webhookToken}`) {
       throw new Error(`Webhook auth header mismatch: ${webhook.events[0].authorization}`)
     }
-    const reportDetail = await api(
-      'GET',
-      `/api/projects/${encodeURIComponent(fixture.project.id)}/experiment-reports/${encodeURIComponent(report.id)}`,
-      auth
+    const reportDetail = await waitForExperimentReportCompleted(
+      auth,
+      fixture.project.id,
+      report.id
     )
     const firstItem = reportDetail.itemResults?.[0]
     if (!firstItem?.traceId) throw new Error('Report item missing traceId')
@@ -375,6 +583,13 @@ async function main() {
     if (pageResult.requestFailures.length) {
       throw new Error(`Request failures:\n${pageResult.requestFailures.join('\n')}`)
     }
+    if (webhook.backgroundErrors.length) {
+      throw new Error(
+        `Remote runner errors:\n${webhook.backgroundErrors
+          .map((error) => error.stack || error.message || String(error))
+          .join('\n')}`
+      )
+    }
 
     console.log(
       JSON.stringify(
@@ -385,8 +600,12 @@ async function main() {
           sceneName: pageResult.sceneName,
           experimentName: pageResult.experimentName,
           reportId: report.id,
-          status: report.status,
+          status: reportDetail.status,
           webhookCalls: webhook.events.length,
+          datasetRunItems: webhook.events.reduce(
+            (total, event) => total + event.datasetRunItems.length,
+            0
+          ),
           authHeaderOk: true,
           traceId: firstItem.traceId,
           langfuseDatasetRunItemId: firstItem.langfuseDatasetRunItemId,

@@ -140,10 +140,10 @@ export function DatasetExperimentReports({
           defaultPageSize: 10,
         }}
         toolbar={{
-          searchPlaceholder: '搜索试验名称或 Webhook 服务',
+          searchPlaceholder: '搜索试验名称或远程运行服务',
           columnLabels: {
             name: '试验名称',
-            service: 'Webhook 服务',
+            service: '远程运行服务',
             status: '状态',
             rounds: '执行轮次',
             scores: '评分结果',

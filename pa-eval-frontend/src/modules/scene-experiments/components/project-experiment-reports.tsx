@@ -228,7 +228,7 @@ export function ProjectExperimentReports({
             columnLabels: {
               name: '试验名称',
               datasetName: '数据集',
-              service: 'Webhook 服务',
+              service: '远程运行服务',
               status: '状态',
               rounds: '执行轮次',
               scores: '评分结果',

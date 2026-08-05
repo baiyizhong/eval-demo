@@ -29,7 +29,7 @@ test('experiment run drawer contains the approved six-step workflow', () => {
     '选择场景',
     '选择数据集',
     '选择评估器',
-    'Webhook 服务配置',
+    '远程运行服务',
     '运行参数配置',
     '确认执行',
   ]) {
@@ -42,8 +42,8 @@ test('experiment run drawer contains the approved six-step workflow', () => {
   assert.ok(source.includes('ExperimentRunParametersStep'))
   assert.ok(!source.includes("title: '执行配置'"))
   assert.ok(source.includes("mode='enhanced'"))
-  assert.ok(source.includes('预计调用量'))
-  assert.ok(source.includes('estimateExperimentCalls'))
+  assert.ok(source.includes('远程触发'))
+  assert.ok(!source.includes('estimateExperimentCalls'))
   assert.ok(source.includes('selectedWebhookIds'))
   assert.ok(source.includes('selectedEvaluatorIds'))
   assert.ok(source.includes('listActiveProjectEvaluators'))

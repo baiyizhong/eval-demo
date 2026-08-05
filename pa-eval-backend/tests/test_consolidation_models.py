@@ -117,6 +117,66 @@ def test_scene_config_allows_webhook_credential_ref_but_rejects_secret_value() -
         )
 
 
+def test_experiment_snapshots_accept_runtime_actor_and_remote_run_fields() -> None:
+    group = validate_resource_extension(
+        ResourceExtensionType.EXPERIMENT_GROUP_SNAPSHOT,
+        {
+            "id": "experiment_group_1",
+            "projectId": "project-1",
+            "datasetId": "dataset-1",
+            "name": "远端闭环实验",
+            "description": "",
+            "sceneId": "scene-1",
+            "sceneSnapshot": {"id": "scene-1"},
+            "evaluatorSnapshots": [{"id": "eval-1"}],
+            "runParameters": {"concurrency": 1},
+            "langfuseExperimentName": "远端闭环实验::experiment_group_1",
+            "createdByUserId": "user-1",
+            "createdByEmail": "dev@example.com",
+            "createdAt": "2026-08-05T00:00:00.000Z",
+        },
+    )
+
+    assert group["createdByUserId"] == "user-1"
+    assert group["createdByEmail"] == "dev@example.com"
+
+    report = validate_resource_extension(
+        ResourceExtensionType.EXPERIMENT_REPORT_SNAPSHOT,
+        {
+            "id": "experiment_report_1",
+            "projectId": "project-1",
+            "datasetId": "dataset-1",
+            "experimentGroupId": "experiment_group_1",
+            "experimentName": "远端闭环实验",
+            "langfuseExperimentName": "远端闭环实验 - runner::experiment_report_1",
+            "externalRunId": "remote-run-1",
+            "createdByUserId": "user-1",
+            "createdByEmail": "dev@example.com",
+            "name": "远端闭环实验 - runner",
+            "sceneId": "scene-1",
+            "sceneSnapshot": {"id": "scene-1"},
+            "webhookSnapshot": {"id": "webhook-1", "serviceFamily": "agent"},
+            "evaluatorSnapshots": [{"id": "eval-1"}],
+            "runParameters": {"concurrency": 1},
+            "status": "RUNNING",
+            "progress": 25,
+            "itemCount": 1,
+            "successfulItemCount": 0,
+            "failedItemCount": 0,
+            "scoreResults": [],
+            "roundResults": [],
+            "itemResults": [],
+            "insight": "远程实验已触发",
+            "createdAt": "2026-08-05T00:00:00.000Z",
+            "completedAt": None,
+        },
+    )
+
+    assert report["externalRunId"] == "remote-run-1"
+    assert report["createdByUserId"] == "user-1"
+    assert report["createdByEmail"] == "dev@example.com"
+
+
 def test_job_status_transition_allows_retry_but_not_terminal_reopen() -> None:
     ensure_status_transition(JobExecutionStatus.FAILED, JobExecutionStatus.RUNNING)
 

@@ -23,8 +23,8 @@ export function ExperimentWebhookStep({
 }: ExperimentWebhookStepProps) {
   return (
     <SelectionGrid
-      title='选择 Webhook 服务'
-      description='默认不选择，每个选中服务会生成一份独立报告。'
+      title='选择远程运行服务'
+      description='默认不选择，每个选中服务会触发一次外部实验运行并生成一份独立报告。'
     >
       {scene.webhooks.length ? (
         scene.webhooks.map((webhook) => (
@@ -47,9 +47,9 @@ export function ExperimentWebhookStep({
       ) : (
         <Alert>
           <ServerCog />
-          <AlertTitle>当前场景暂无 Webhook 服务</AlertTitle>
+          <AlertTitle>当前场景暂无远程运行服务</AlertTitle>
           <AlertDescription>
-            请先在场景管理中配置至少一个 Webhook 服务。
+            请先在场景管理中配置至少一个远程运行服务。
           </AlertDescription>
         </Alert>
       )}

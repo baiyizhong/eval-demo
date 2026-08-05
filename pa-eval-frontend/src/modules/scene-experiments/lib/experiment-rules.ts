@@ -38,16 +38,6 @@ export function buildScoreResultKey(evaluatorId: string, variableName: string) {
   return `${evaluatorId.trim()}:${variableName.trim()}`
 }
 
-export function estimateExperimentCalls(
-  itemCount: number,
-  serviceCount: number,
-  rounds: number
-) {
-  return (
-    Math.max(0, itemCount) * Math.max(0, serviceCount) * Math.max(0, rounds)
-  )
-}
-
 export function canAggregateReports(reports: AggregateCandidate[]) {
   if (
     reports.length < 2 ||

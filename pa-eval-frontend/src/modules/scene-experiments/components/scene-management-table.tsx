@@ -174,7 +174,7 @@ export function SceneManagementTable({
             columnLabels: {
               name: '场景名称',
               description: '描述',
-              webhooks: 'Webhook',
+              webhooks: '远程运行',
               runParameters: '运行参数',
               updatedAt: '更新时间',
             },

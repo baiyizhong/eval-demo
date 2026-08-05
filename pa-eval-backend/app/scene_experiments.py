@@ -1,13 +1,18 @@
 from datetime import UTC, datetime
+import asyncio
+import hashlib
+import hmac
 import os
 from typing import Any, Literal
 from uuid import uuid4
 
 import httpx
-from fastapi import APIRouter, Depends, Query
+from fastapi import APIRouter, Depends, Header, Query, Request
 from pydantic import BaseModel, ConfigDict, Field
 
 from app.auth_context import CurrentUserContext, get_current_user_context
+from app.auto_evaluations import _run_workflow_evaluator
+from app.config import Settings, get_settings
 from app.consolidation.models import ResourceExtensionType, SceneConfigPayload
 from app.errors import BusinessError
 from app.langfuse_db import LangfuseDatabaseReader, get_langfuse_db_reader
@@ -21,6 +26,7 @@ EXPERIMENT_GROUP_RESOURCE_TYPE = "EXPERIMENT_GROUP"
 EXPERIMENT_REPORT_RESOURCE_TYPE = "EXPERIMENT_REPORT"
 EXPERIMENT_BASELINE_RESOURCE_TYPE = "EXPERIMENT_BASELINE"
 _SCENE_WEBHOOK_RUNNER_FOR_TESTS: Any | None = None
+_SCENE_WORKFLOW_EVALUATOR_RUNNER_FOR_TESTS: Any | None = None
 _SCENE_PUBLIC_FIELDS = {
     field.alias or name for name, field in SceneConfigPayload.model_fields.items()
 }
@@ -122,6 +128,15 @@ class SetBaselinePayload(BaseModel):
     model_config = ConfigDict(populate_by_name=True)
 
 
+class RemoteExperimentCallbackPayload(BaseModel):
+    status: Literal["RUNNING", "COMPLETED", "FAILED"]
+    external_run_id: str | None = Field(default=None, alias="externalRunId")
+    langfuse_run_name: str | None = Field(default=None, alias="langfuseRunName")
+    message: str = ""
+
+    model_config = ConfigDict(populate_by_name=True)
+
+
 def _now_iso() -> str:
     return datetime.now(UTC).isoformat(timespec="milliseconds").replace("+00:00", "Z")
 
@@ -143,9 +158,92 @@ def _mask_webhook_credential(
     return f"Bearer ****{suffix}"
 
 
+def _callback_path(*, project_id: str, report_id: str) -> str:
+    return f"/api/projects/{project_id}/experiment-reports/{report_id}/remote-callback"
+
+
+def _callback_token(
+    *,
+    settings: Settings,
+    project_id: str,
+    report_id: str,
+    langfuse_run_name: str,
+) -> str:
+    secret = settings.pa_eval_remote_callback_secret.strip()
+    if not secret:
+        return ""
+    message = "\n".join([project_id, report_id, langfuse_run_name])
+    return hmac.new(
+        secret.encode("utf-8"),
+        message.encode("utf-8"),
+        hashlib.sha256,
+    ).hexdigest()
+
+
+def _build_remote_callback(
+    *,
+    settings: Settings,
+    project_id: str,
+    report_id: str,
+    langfuse_run_name: str,
+) -> dict[str, Any]:
+    path = _callback_path(project_id=project_id, report_id=report_id)
+    base_url = settings.pa_eval_backend_url.rstrip("/")
+    headers: dict[str, str] = {}
+    token = _callback_token(
+        settings=settings,
+        project_id=project_id,
+        report_id=report_id,
+        langfuse_run_name=langfuse_run_name,
+    )
+    if token:
+        headers["X-PA-Remote-Callback-Token"] = token
+    return {
+        "url": f"{base_url}{path}" if base_url else path,
+        "method": "POST",
+        "headers": headers,
+    }
+
+
+def _verify_remote_callback_token(
+    *,
+    settings: Settings,
+    project_id: str,
+    report: dict[str, Any],
+    provided_token: str | None,
+) -> None:
+    if not settings.pa_eval_remote_callback_secret.strip():
+        return
+    expected_token = _callback_token(
+        settings=settings,
+        project_id=project_id,
+        report_id=str(report["id"]),
+        langfuse_run_name=str(report.get("langfuseExperimentName") or ""),
+    )
+    if not provided_token or not hmac.compare_digest(provided_token, expected_token):
+        raise BusinessError(2017, "远程实验回调鉴权失败", 401)
+
+
 def set_scene_webhook_runner_for_tests(runner: Any | None) -> None:
     global _SCENE_WEBHOOK_RUNNER_FOR_TESTS
     _SCENE_WEBHOOK_RUNNER_FOR_TESTS = runner
+
+
+def set_scene_workflow_evaluator_runner_for_tests(runner: Any | None) -> None:
+    global _SCENE_WORKFLOW_EVALUATOR_RUNNER_FOR_TESTS
+    _SCENE_WORKFLOW_EVALUATOR_RUNNER_FOR_TESTS = runner
+
+
+async def _optional_current_user_context(
+    request: Request,
+    settings: Settings = Depends(get_settings),
+) -> CurrentUserContext | None:
+    try:
+        return await get_current_user_context(request, settings)
+    except BusinessError as exc:
+        if exc.status_code == 401:
+            return None
+        raise
 
 
 def _pagination(rows: list[dict[str, Any]], page: int, page_size: int) -> dict[str, Any]:
@@ -283,12 +381,12 @@ def _validate_scene(scene: dict[str, Any], *, require_complete: bool = True) -> 
             raise BusinessError(2009, "场景配置不完整")
     webhook_ids = {webhook.get("id") for webhook in scene.get("webhooks") or []}
     if len(webhook_ids) != len(scene.get("webhooks") or []):
-        raise BusinessError(2012, "Webhook 服务 ID 不能重复")
+        raise BusinessError(2012, "远程运行服务 ID 不能重复")
     default_ids = scene.get("defaultScheduledWebhookIds") or []
     if scene.get("supportsScheduledExecution") and any(
         webhook_id not in webhook_ids for webhook_id in default_ids
     ):
-        raise BusinessError(2013, "默认定时 Webhook 必须属于当前场景")
+        raise BusinessError(2013, "默认定时远程运行服务必须属于当前场景")
 
 
 def _evaluator_snapshot(evaluator: dict[str, Any]) -> dict[str, Any]:
@@ -296,8 +394,18 @@ def _evaluator_snapshot(evaluator: dict[str, Any]) -> dict[str, Any]:
     mappings = evaluator.get("outputVariableMappings") or evaluator.get(
         "output_variable_mappings"
     )
+    config = evaluator.get("config") if isinstance(evaluator.get("config"), dict) else {}
+    config_mappings = config.get("outputVariableMappings")
+    if not output_variables:
+        output_variables = [
+            mapping.get("variableName")
+            for mapping in config_mappings
+            if isinstance(mapping, dict) and mapping.get("variableName")
+        ] if isinstance(config_mappings, list) else []
     if not output_variables:
         output_variables = ["score"]
+    if not mappings:
+        mappings = config_mappings if isinstance(config_mappings, list) else []
     if not mappings:
         mappings = [
             {"variableName": variable, "scoreConfigName": variable}
@@ -307,34 +415,193 @@ def _evaluator_snapshot(evaluator: dict[str, Any]) -> dict[str, Any]:
         "id": evaluator.get("id"),
         "name": evaluator.get("name") or evaluator.get("id"),
         "type": evaluator.get("type") or "LANGFUSE",
+        "provider": evaluator.get("provider") or "LANGFUSE",
         "version": evaluator.get("version") or "",
         "outputVariables": output_variables,
         "outputVariableMappings": mappings,
     }
 
 
-def _score_results(evaluators: list[dict[str, Any]], service_index: int) -> list[dict[str, Any]]:
-    rows: list[dict[str, Any]] = []
-    for evaluator_index, evaluator in enumerate(evaluators):
-        mappings = evaluator.get("outputVariableMappings") or []
-        for variable_index, mapping in enumerate(mappings):
-            variable_name = mapping.get("variableName") or "score"
-            value = max(
-                0.55,
-                min(0.98, 0.92 - service_index * 0.045 - evaluator_index * 0.012 - variable_index * 0.008),
-            )
-            rows.append(
-                {
-                    "key": f"{evaluator['id']}:{variable_name}",
-                    "evaluatorId": evaluator["id"],
-                    "evaluatorName": evaluator.get("name") or evaluator["id"],
-                    "variableName": variable_name,
-                    "scoreName": mapping.get("scoreConfigName") or variable_name,
-                    "value": round(value, 3),
-                    "standardDeviation": round(0.008 + service_index * 0.006, 3),
-                }
-            )
-    return rows
+def _workflow_score_mapping(evaluator: dict[str, Any]) -> dict[str, Any]:
+    mappings = evaluator.get("outputVariableMappings") or evaluator.get(
+        "output_variable_mappings"
+    )
+    config = evaluator.get("config") if isinstance(evaluator.get("config"), dict) else {}
+    if not mappings:
+        mappings = config.get("outputVariableMappings")
+    if not isinstance(mappings, list):
+        return {}
+    score_mapping: dict[str, Any] = {}
+    for mapping in mappings:
+        if not isinstance(mapping, dict):
+            continue
+        variable_name = str(mapping.get("variableName") or "").strip()
+        if not variable_name:
+            continue
+        score_mapping[variable_name] = {
+            key: value
+            for key, value in mapping.items()
+            if key in {"scoreConfigId", "scoreConfigName", "id", "name"}
+        }
+    return score_mapping
+
+
+def _workflow_sample(
+    *,
+    item: dict[str, Any],
+    webhook_response: dict[str, Any],
+) -> dict[str, Any]:
+    input_payload = item.get("input") or {}
+    expected_output = item.get("expectedOutput") or item.get("expected_output") or {}
+    output = webhook_response.get("output")
+    context = input_payload.get("context") if isinstance(input_payload, dict) else ""
+    return {
+        "id": item["id"],
+        "sourceType": "DATASET_ITEM",
+        "sourceId": item["id"],
+        "input": {
+            "input": _stringify_for_workflow(input_payload),
+            "output": _stringify_for_workflow(output),
+            "expected_output": _stringify_for_workflow(expected_output),
+            "context": _stringify_for_workflow(context),
+        },
+        "expectedOutput": _stringify_for_workflow(expected_output),
+        "expected_output": _stringify_for_workflow(expected_output),
+        "context": _stringify_for_workflow(context),
+        "metadata": item.get("metadata") or {},
+        "source_trace_id": webhook_response.get("traceId") or webhook_response.get("trace_id") or "",
+        "source_observation_id": webhook_response.get("observationId") or webhook_response.get("observation_id") or "",
+    }
+
+
+def _stringify_for_workflow(value: Any) -> str:
+    if value is None:
+        return ""
+    if isinstance(value, str):
+        return value
+    if isinstance(value, dict) and len(value) == 1:
+        only_value = next(iter(value.values()))
+        if isinstance(only_value, str):
+            return only_value
+    return str(value)
+
+
+async def _run_scene_workflow_evaluator(
+    *,
+    evaluator: dict[str, Any],
+    sample: dict[str, Any],
+    settings: Settings | None = None,
+) -> dict[str, Any]:
+    if _SCENE_WORKFLOW_EVALUATOR_RUNNER_FOR_TESTS is not None:
+        return await _SCENE_WORKFLOW_EVALUATOR_RUNNER_FOR_TESTS(
+            evaluator=evaluator,
+            sample=sample,
+            settings=settings,
+        )
+    return await _run_workflow_evaluator(
+        evaluator,
+        _scene_workflow_inputs(sample, evaluator),
+        settings or Settings(),
+        _workflow_score_mapping(evaluator),
+    )
+
+
+def _scene_workflow_inputs(
+    sample: dict[str, Any],
+    evaluator: dict[str, Any],
+) -> dict[str, str]:
+    config = evaluator.get("config") if isinstance(evaluator.get("config"), dict) else {}
+    mapping = config.get("inputMapping") if isinstance(config.get("inputMapping"), dict) else {}
+    defaults = {
+        "input": sample["input"]["input"],
+        "output": sample["input"]["output"],
+        "expected_output": sample["expected_output"],
+        "expectedOutput": sample["expectedOutput"],
+        "context": sample.get("context") or "",
+    }
+    variables = evaluator.get("variables") if isinstance(evaluator.get("variables"), list) else []
+    keys = [str(variable) for variable in variables if str(variable)] or list(defaults)
+    inputs = {key: defaults.get(key, "") for key in keys}
+    inputs.update(
+        {
+            str(key): _resolve_scene_mapping_template(str(value), sample)
+            for key, value in mapping.items()
+        }
+    )
+    return inputs
+
+
+def _resolve_scene_mapping_template(template: str, sample: dict[str, Any]) -> str:
+    values = {
+        "{{ sample.input }}": sample["input"]["input"],
+        "{{ sample.output }}": sample["input"]["output"],
+        "{{ sample.expectedOutput }}": sample["expectedOutput"],
+        "{{ sample.expected_output }}": sample["expected_output"],
+        "{{ sample.context }}": sample.get("context") or "",
+    }
+    result = template
+    for placeholder, value in values.items():
+        result = result.replace(placeholder, value)
+    return result
+
+
+def _score_result_from_workflow_score(
+    evaluator: dict[str, Any],
+    score: dict[str, Any],
+) -> dict[str, Any] | None:
+    value = score.get("value")
+    if not isinstance(value, int | float):
+        return None
+    variable_name = str(score.get("outputVariable") or score.get("variableName") or score.get("name") or "score")
+    return {
+        "key": f"{evaluator['id']}:{variable_name}",
+        "evaluatorId": evaluator["id"],
+        "evaluatorName": evaluator.get("name") or evaluator["id"],
+        "variableName": variable_name,
+        "scoreName": score.get("name") or variable_name,
+        "value": float(value),
+        "standardDeviation": 0,
+    }
+
+
+async def _execution_evaluator(
+    *,
+    reader: LangfuseDatabaseReader,
+    evaluator: dict[str, Any],
+    user_id: str,
+) -> dict[str, Any]:
+    if evaluator.get("type") != "WORKFLOW":
+        return evaluator
+    execution_getter = getattr(reader, "get_workflow_evaluator_for_execution", None)
+    if execution_getter is not None:
+        return await execution_getter(evaluator["id"], user_id)
+    get_evaluator = getattr(reader, "get_evaluator_for_user", None)
+    if get_evaluator is None:
+        return evaluator
+    return await get_evaluator(evaluator["id"], user_id)
+
+
+def _aggregate_workflow_score_results(
+    item_results: list[dict[str, Any]],
+    evaluators: list[dict[str, Any]],
+) -> list[dict[str, Any]]:
+    buckets: dict[str, list[float]] = {}
+    templates: dict[str, dict[str, Any]] = {}
+    for item in item_results:
+        for score in item.get("scoreDetails") or []:
+            key = score["key"]
+            buckets.setdefault(key, []).append(float(score["value"]))
+            templates.setdefault(key, score)
+    if not buckets:
+        return []
+    return [
+        {
+            **templates[key],
+            "value": round(sum(values) / len(values), 3),
+            "standardDeviation": 0,
+        }
+        for key, values in buckets.items()
+    ]
 
 
 def _webhook_public_snapshot(webhook: dict[str, Any]) -> dict[str, Any]:
@@ -400,39 +667,385 @@ async def _run_scene_webhook(
                 return body
             except (httpx.HTTPError, ValueError) as exc:
                 last_error = exc
-    raise BusinessError(2015, "Webhook 服务执行失败", 502) from last_error
+    raise BusinessError(2015, "远程运行服务执行失败", 502) from last_error
 
 
 def _build_webhook_request_payload(
     *,
     experiment_name: str,
     langfuse_experiment_name: str,
+    project_id: str,
     dataset_id: str,
-    item: dict[str, Any],
+    dataset_name: str,
+    group_id: str,
+    report_id: str,
     scene: dict[str, Any],
     webhook: dict[str, Any],
+    evaluator_ids: list[str],
     run_parameters: dict[str, Any],
+    callback: dict[str, Any],
 ) -> dict[str, Any]:
     return {
-        "experimentName": experiment_name,
-        "langfuseExperimentName": langfuse_experiment_name,
+        "projectId": project_id,
         "datasetId": dataset_id,
-        "datasetItemId": item["id"],
+        "datasetName": dataset_name,
+        "callback": callback,
+        "payload": {
+            "paExperimentGroupId": group_id,
+            "paReportId": report_id,
+            "paSceneId": scene.get("id"),
+            "paExperimentName": experiment_name,
+            "langfuseRunName": langfuse_experiment_name,
+            "runParameters": run_parameters,
+            "remoteRunner": {
+                "id": webhook.get("id"),
+                "name": webhook.get("name"),
+                "serviceFamily": webhook.get("serviceFamily"),
+                "version": webhook.get("version") or "",
+            },
+            "evaluatorIds": evaluator_ids,
+            "callback": callback,
+        },
+    }
+
+
+def _response_data(response: dict[str, Any]) -> list[dict[str, Any]]:
+    data = response.get("data") or []
+    return data if isinstance(data, list) else []
+
+
+async def _list_langfuse_dataset_run_items(
+    public_client: Any,
+    *,
+    dataset_id: str,
+    run_name: str,
+) -> list[dict[str, Any]]:
+    page = 1
+    items: list[dict[str, Any]] = []
+    while True:
+        response = await public_client.list_dataset_run_items(
+            dataset_id=dataset_id,
+            run_name=run_name,
+            page=page,
+            limit=100,
+        )
+        batch = _response_data(response)
+        items.extend(item for item in batch if isinstance(item, dict))
+        if len(batch) < 100:
+            return items
+        page += 1
+
+
+def _trace_output(trace: dict[str, Any], observation_id: str | None) -> Any:
+    if "output" in trace:
+        return trace.get("output")
+    observations = trace.get("observations")
+    if isinstance(observations, list):
+        if observation_id:
+            for observation in observations:
+                if isinstance(observation, dict) and observation.get("id") == observation_id:
+                    return observation.get("output")
+        for observation in reversed(observations):
+            if isinstance(observation, dict) and "output" in observation:
+                return observation.get("output")
+    return None
+
+
+async def _create_langfuse_score(
+    public_client: Any,
+    *,
+    report_id: str,
+    item_id: str,
+    trace_id: str,
+    observation_id: str | None,
+    evaluator: dict[str, Any],
+    detail: dict[str, Any],
+    reason: str,
+) -> None:
+    await public_client.create_score(
+        {
+            "id": f"pa-scene-score-{report_id}-{item_id}-{detail['key']}",
+            "traceId": trace_id,
+            "observationId": observation_id,
+            "name": detail["scoreName"],
+            "value": detail["value"],
+            "comment": reason,
+            "metadata": {
+                "paReportId": report_id,
+                "paEvaluatorId": evaluator.get("id"),
+                "outputVariable": detail["variableName"],
+            },
+        }
+    )
+
+
+async def _evaluate_experiment_item(
+    *,
+    public_client: Any,
+    report_id: str,
+    experiment_item: dict[str, Any],
+    item: dict[str, Any],
+    workflow_evaluators: list[dict[str, Any]],
+) -> dict[str, Any]:
+    trace_id = str(experiment_item.get("traceId") or experiment_item.get("trace_id") or "")
+    observation_id = experiment_item.get("observationId") or experiment_item.get(
+        "observation_id"
+    )
+    if not trace_id:
+        raise BusinessError(2016, "Langfuse dataset run item 缺少 traceId", 502)
+    trace = await public_client.get_trace(
+        trace_id,
+        fields="core,io,observations,scores",
+    )
+    output = _trace_output(trace, str(observation_id) if observation_id else None)
+    workflow_score_details: list[dict[str, Any]] = []
+    workflow_score_values: dict[str, float] = {}
+    workflow_evaluation_reasons: dict[str, str] = {}
+    if workflow_evaluators:
+        sample = _workflow_sample(
+            item=item,
+            webhook_response={
+                "output": output,
+                "traceId": trace_id,
+                "observationId": observation_id,
+                "metadata": trace.get("metadata") or {},
+            },
+        )
+        for evaluator in workflow_evaluators:
+            workflow_result = await _run_scene_workflow_evaluator(
+                evaluator=evaluator,
+                sample=sample,
+            )
+            workflow_scores = workflow_result.get("scores")
+            if not isinstance(workflow_scores, list) or not workflow_scores:
+                variable_name = _evaluator_snapshot(evaluator)["outputVariables"][0]
+                workflow_scores = [
+                    {
+                        "outputVariable": variable_name,
+                        "name": variable_name,
+                        "value": workflow_result.get("score", 0),
+                        "passed": workflow_result.get("passed", False),
+                    }
+                ]
+            for workflow_score in workflow_scores:
+                if not isinstance(workflow_score, dict):
+                    continue
+                detail = _score_result_from_workflow_score(
+                    evaluator,
+                    workflow_score,
+                )
+                if detail is None:
+                    continue
+                workflow_score_details.append(detail)
+                workflow_score_values[detail["key"]] = detail["value"]
+                reason = str(workflow_result.get("reason") or "")
+                if reason:
+                    workflow_evaluation_reasons[detail["key"]] = reason
+                await _create_langfuse_score(
+                    public_client,
+                    report_id=report_id,
+                    item_id=str(item["id"]),
+                    trace_id=trace_id,
+                    observation_id=str(observation_id) if observation_id else None,
+                    evaluator=evaluator,
+                    detail=detail,
+                    reason=reason,
+                )
+    return {
+        "itemId": item["id"],
         "input": item.get("input"),
         "expectedOutput": item.get("expectedOutput") or item.get("expected_output"),
-        "metadata": item.get("metadata") or {},
-        "scene": {
-            "id": scene.get("id"),
-            "name": scene.get("name"),
-        },
-        "webhook": {
-            "id": webhook.get("id"),
-            "name": webhook.get("name"),
-            "serviceFamily": webhook.get("serviceFamily"),
-            "version": webhook.get("version") or "",
-        },
-        "runParameters": run_parameters,
+        "output": output,
+        "scores": workflow_score_values,
+        "scoreDetails": workflow_score_details,
+        "evaluationReasons": workflow_evaluation_reasons,
+        "status": "PASSED",
+        "traceId": trace_id,
+        "observationId": observation_id,
+        "langfuseDatasetRunItemId": experiment_item.get("id"),
+        "metadata": trace.get("metadata") or {},
     }
+
+
+async def _complete_remote_experiment_report(
+    *,
+    public_client: Any,
+    dataset: dict[str, Any],
+    dataset_id: str,
+    items: list[dict[str, Any]],
+    report: dict[str, Any],
+    workflow_evaluators: list[dict[str, Any]],
+    actor: str,
+    reader: LangfuseDatabaseReader,
+) -> dict[str, Any]:
+    experiment_items = await _list_langfuse_dataset_run_items(
+        public_client,
+        dataset_id=dataset_id,
+        run_name=report["langfuseExperimentName"],
+    )
+    if not experiment_items:
+        return {
+            **report,
+            "status": "RUNNING",
+            "progress": 25,
+            "insight": "远程实验已触发，等待 Langfuse dataset run items 生成后执行 PA 评估。",
+        }
+    item_by_id = {str(item["id"]): item for item in items}
+    item_results: list[dict[str, Any]] = []
+    for experiment_item in experiment_items:
+        item_id = str(
+            experiment_item.get("datasetItemId")
+            or experiment_item.get("dataset_item_id")
+            or ""
+        )
+        item = item_by_id.get(item_id)
+        if item is None:
+            continue
+        try:
+            item_results.append(
+                await _evaluate_experiment_item(
+                    public_client=public_client,
+                    report_id=report["id"],
+                    experiment_item=experiment_item,
+                    item=item,
+                    workflow_evaluators=workflow_evaluators,
+                )
+            )
+        except Exception as exc:
+            item_results.append(
+                {
+                    "itemId": item["id"],
+                    "input": item.get("input"),
+                    "expectedOutput": item.get("expectedOutput")
+                    or item.get("expected_output"),
+                    "output": None,
+                    "scores": {},
+                    "status": "FAILED",
+                    "errorMessage": _error_message(exc),
+                }
+            )
+    successful_count = sum(1 for item in item_results if item["status"] == "PASSED")
+    failed_count = len(item_results) - successful_count
+    report_status = "FAILED" if item_results and successful_count == 0 else "COMPLETED"
+    scores = _aggregate_workflow_score_results(
+        item_results,
+        report.get("evaluatorSnapshots") or [],
+    )
+    completed_report = {
+        **report,
+        "status": report_status,
+        "progress": 100,
+        "itemCount": len(items),
+        "successfulItemCount": successful_count,
+        "failedItemCount": failed_count,
+        "scoreResults": scores,
+        "roundResults": _round_results(
+            scores,
+            successful_count,
+            int((report.get("runParameters") or {}).get("rounds") or 1),
+        ),
+        "itemResults": item_results,
+        "insight": "远程实验已按 Langfuse run 完成，PA 评估器结果已写回 Langfuse scores。",
+        "completedAt": _now_iso(),
+    }
+    await reader.upsert_resource_extension(
+        project_id=completed_report["projectId"],
+        resource_type=EXPERIMENT_REPORT_RESOURCE_TYPE,
+        resource_id=completed_report["id"],
+        extension_type=ResourceExtensionType.EXPERIMENT_REPORT_SNAPSHOT,
+        payload=completed_report,
+        actor=actor,
+    )
+    return completed_report
+
+
+async def _complete_remote_experiment_report_once(
+    *,
+    project_id: str,
+    report_id: str,
+    actor_user_id: str,
+    actor_email: str,
+    reader: LangfuseDatabaseReader,
+    report_updates: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    report = await _get_report(reader, project_id=project_id, report_id=report_id)
+    if report_updates:
+        report = {**report, **report_updates}
+    dataset = await reader.get_dataset_for_user(
+        project_id,
+        report["datasetId"],
+        actor_user_id,
+    )
+    item_result = await reader.list_dataset_items_for_user(
+        project_id,
+        report["datasetId"],
+        actor_user_id,
+        page=1,
+        page_size=1000,
+        status=["ACTIVE"],
+    )
+    selected_evaluators = [
+        evaluator
+        for evaluator in await reader.list_evaluators_for_user(actor_user_id)
+        if evaluator.get("id") in {snapshot["id"] for snapshot in report.get("evaluatorSnapshots") or []}
+    ]
+    workflow_evaluators = [
+        await _execution_evaluator(
+            reader=reader,
+            evaluator=evaluator,
+            user_id=actor_user_id,
+        )
+        for evaluator in selected_evaluators
+        if evaluator.get("type") == "WORKFLOW"
+    ]
+    public_client = await reader.project_public_client_for_user(
+        project_id,
+        actor_user_id,
+    )
+    return await _complete_remote_experiment_report(
+        public_client=public_client,
+        dataset=dataset,
+        dataset_id=report["datasetId"],
+        items=item_result.get("datas") or [],
+        report=report,
+        workflow_evaluators=workflow_evaluators,
+        actor=actor_email,
+        reader=reader,
+    )
+
+
+async def _retry_complete_remote_experiment_report(
+    *,
+    project_id: str,
+    report_id: str,
+    actor_user_id: str,
+    actor_email: str,
+    reader: LangfuseDatabaseReader,
+    report_updates: dict[str, Any] | None = None,
+    retry_delays: tuple[float, ...] = (1.0, 2.0, 5.0),
+    sleep: Any = asyncio.sleep,
+) -> dict[str, Any]:
+    completed_report = await _complete_remote_experiment_report_once(
+        project_id=project_id,
+        report_id=report_id,
+        actor_user_id=actor_user_id,
+        actor_email=actor_email,
+        reader=reader,
+        report_updates=report_updates,
+    )
+    for delay in retry_delays:
+        if completed_report.get("status") != "RUNNING":
+            return completed_report
+        await sleep(delay)
+        completed_report = await _complete_remote_experiment_report_once(
+            project_id=project_id,
+            report_id=report_id,
+            actor_user_id=actor_user_id,
+            actor_email=actor_email,
+            reader=reader,
+            report_updates=report_updates,
+        )
+    return completed_report
 
 
 def _error_message(exc: Exception) -> str:
@@ -639,6 +1252,7 @@ async def create_dataset_experiment(
     payload: CreateExperimentPayload,
     current_user: CurrentUserContext = Depends(get_current_user_context),
     reader: LangfuseDatabaseReader = Depends(get_langfuse_db_reader),
+    settings: Settings = Depends(get_settings),
 ) -> dict[str, Any]:
     data = await run_scene_experiment(
         project_id=project_id,
@@ -646,6 +1260,7 @@ async def create_dataset_experiment(
         payload=payload,
         current_user=current_user,
         reader=reader,
+        settings=settings,
     )
     return success(data)
 
@@ -657,9 +1272,11 @@ async def run_scene_experiment(
     payload: CreateExperimentPayload,
     current_user: CurrentUserContext,
     reader: LangfuseDatabaseReader,
+    settings: Settings | None = None,
 ) -> dict[str, Any]:
+    settings = settings or Settings()
     await reader.ensure_project_visible(project_id, current_user.user_id)
-    await reader.get_dataset_for_user(project_id, dataset_id, current_user.user_id)
+    dataset = await reader.get_dataset_for_user(project_id, dataset_id, current_user.user_id)
     scene = await _get_scene(reader, project_id=project_id, scene_id=payload.scene_id)
     if not scene.get("enabled"):
         raise BusinessError(2004, "所选场景不可用")
@@ -674,7 +1291,7 @@ async def run_scene_experiment(
     requested_evaluator_ids = set(payload.evaluator_ids)
     scene_evaluator_ids = set(scene.get("evaluatorIds") or [])
     if not webhooks or not requested_evaluator_ids:
-        raise BusinessError(2005, "请至少选择一个 Webhook 服务和一个评估器")
+        raise BusinessError(2005, "请至少选择一个远程运行服务和一个评估器")
     if not requested_evaluator_ids.issubset(scene_evaluator_ids):
         raise BusinessError(2007, "所选评估器未绑定到当前场景")
 
@@ -690,7 +1307,20 @@ async def run_scene_experiment(
         for evaluator in selected_evaluators
     ):
         raise BusinessError(2008, "所选评估器不属于当前项目")
-    evaluators = [_evaluator_snapshot(evaluator) for evaluator in selected_evaluators]
+    execution_evaluators = [
+        await _execution_evaluator(
+            reader=reader,
+            evaluator=evaluator,
+            user_id=current_user.user_id,
+        )
+        for evaluator in selected_evaluators
+    ]
+    evaluators = [_evaluator_snapshot(evaluator) for evaluator in execution_evaluators]
+    workflow_evaluators = [
+        evaluator
+        for evaluator in execution_evaluators
+        if evaluator.get("type") == "WORKFLOW"
+    ]
 
     item_result = await reader.list_dataset_items_for_user(
         project_id,
@@ -720,6 +1350,8 @@ async def run_scene_experiment(
         "evaluatorSnapshots": evaluators,
         "runParameters": run_parameters,
         "langfuseExperimentName": langfuse_experiment_name,
+        "createdByUserId": current_user.user_id,
+        "createdByEmail": current_user.email,
         "createdAt": now,
     }
     await reader.upsert_resource_extension(
@@ -732,116 +1364,79 @@ async def run_scene_experiment(
     )
 
     reports = []
-    for service_index, webhook in enumerate(webhooks):
-        scores = _score_results(evaluators, service_index)
+    for webhook in webhooks:
         report_id = _new_id("experiment_report")
-        item_results: list[dict[str, Any]] = []
-        for item in items:
-            try:
-                webhook_request = _build_webhook_request_payload(
-                    experiment_name=payload.name.strip(),
-                    langfuse_experiment_name=langfuse_experiment_name,
-                    dataset_id=dataset_id,
-                    item=item,
-                    scene=scene,
-                    webhook=webhook,
-                    run_parameters=run_parameters,
-                )
-                webhook_response = await _run_scene_webhook(
-                    webhook=webhook,
-                    request_payload=webhook_request,
-                    timeout_seconds=payload.run_parameters.timeout_seconds,
-                    retry_count=payload.run_parameters.retry_count,
-                )
-                trace_id = webhook_response.get("traceId") or webhook_response.get("trace_id")
-                observation_id = webhook_response.get("observationId") or webhook_response.get(
-                    "observation_id"
-                )
-                if not trace_id:
-                    raise BusinessError(2016, "Webhook 响应缺少 traceId", 502)
-                langfuse_run_item = await public_client.create_dataset_run_item(
-                    {
-                        "runName": langfuse_experiment_name,
-                        "runDescription": payload.description,
-                        "datasetItemId": item["id"],
-                        "traceId": trace_id,
-                        "observationId": observation_id,
-                        "metadata": {
-                            "paExperimentGroupId": group_id,
-                            "paReportId": report_id,
-                            "sceneId": scene["id"],
-                            "webhookId": webhook.get("id"),
-                            "serviceFamily": webhook.get("serviceFamily"),
-                            "webhookVersion": webhook.get("version") or "",
-                        },
-                    }
-                )
-                item_results.append(
-                    {
-                        "itemId": item["id"],
-                        "input": item.get("input"),
-                        "expectedOutput": item.get("expectedOutput")
-                        or item.get("expected_output"),
-                        "output": webhook_response.get("output"),
-                        "scores": {
-                            score["key"]: round(
-                                score["value"]
-                                + (0.018 if len(item_results) % 2 == 0 else -0.018),
-                                3,
-                            )
-                            for score in scores
-                        },
-                        "status": "PASSED",
-                        "traceId": trace_id,
-                        "observationId": observation_id,
-                        "langfuseDatasetRunItemId": langfuse_run_item.get("id"),
-                        "metadata": webhook_response.get("metadata") or {},
-                    }
-                )
-            except Exception as exc:
-                item_results.append(
-                    {
-                        "itemId": item["id"],
-                        "input": item.get("input"),
-                        "expectedOutput": item.get("expectedOutput")
-                        or item.get("expected_output"),
-                        "output": None,
-                        "scores": {},
-                        "status": "FAILED",
-                        "errorMessage": _error_message(exc),
-                    }
-                )
-        successful_count = sum(1 for item in item_results if item["status"] == "PASSED")
-        failed_count = len(item_results) - successful_count
-        report_status = "FAILED" if item_results and successful_count == 0 else "COMPLETED"
+        report_run_name = f"{payload.name.strip()} - {webhook['name']}::{report_id}"
+        remote_response: dict[str, Any] = {}
+        trigger_error = ""
+        try:
+            callback = _build_remote_callback(
+                settings=settings,
+                project_id=project_id,
+                report_id=report_id,
+                langfuse_run_name=report_run_name,
+            )
+            remote_request = _build_webhook_request_payload(
+                experiment_name=payload.name.strip(),
+                langfuse_experiment_name=report_run_name,
+                project_id=project_id,
+                dataset_id=dataset_id,
+                dataset_name=str(dataset.get("name") or dataset_id),
+                group_id=group_id,
+                report_id=report_id,
+                scene=scene,
+                webhook=webhook,
+                evaluator_ids=payload.evaluator_ids,
+                run_parameters=run_parameters,
+                callback=callback,
+            )
+            remote_response = await _run_scene_webhook(
+                webhook=webhook,
+                request_payload=remote_request,
+                timeout_seconds=payload.run_parameters.timeout_seconds,
+                retry_count=payload.run_parameters.retry_count,
+            )
+        except Exception as exc:
+            trigger_error = _error_message(exc)
+        item_results = [
+            {
+                "itemId": item["id"],
+                "input": item.get("input"),
+                "expectedOutput": item.get("expectedOutput") or item.get("expected_output"),
+                "output": None,
+                "scores": {},
+                "status": "FAILED",
+                "errorMessage": trigger_error,
+            }
+            for item in items
+        ] if trigger_error else []
         report = {
             "id": report_id,
             "projectId": project_id,
             "datasetId": dataset_id,
             "experimentGroupId": group_id,
             "experimentName": payload.name.strip(),
-            "langfuseExperimentName": langfuse_experiment_name,
+            "langfuseExperimentName": report_run_name,
+            "externalRunId": remote_response.get("externalRunId"),
+            "createdByUserId": current_user.user_id,
+            "createdByEmail": current_user.email,
             "name": f"{payload.name.strip()} - {webhook['name']}",
             "sceneId": scene["id"],
             "sceneSnapshot": scene,
             "webhookSnapshot": _webhook_public_snapshot(webhook),
             "evaluatorSnapshots": evaluators,
             "runParameters": run_parameters,
-            "status": report_status,
-            "progress": 100,
+            "status": "FAILED" if trigger_error else "RUNNING",
+            "progress": 0 if trigger_error else 25,
             "itemCount": len(items),
-            "successfulItemCount": successful_count,
-            "failedItemCount": failed_count,
-            "scoreResults": scores,
-            "roundResults": _round_results(
-                scores,
-                successful_count,
-                payload.run_parameters.rounds,
-            ),
+            "successfulItemCount": 0,
+            "failedItemCount": len(items) if trigger_error else 0,
+            "scoreResults": [],
+            "roundResults": [],
             "itemResults": item_results,
-            "insight": "试验结果已按 Langfuse experiment 语义生成，可用于聚合、对比与基线管理。",
+            "insight": trigger_error or "远程实验已触发，等待 Langfuse run 生成后执行 PA 评估。",
             "createdAt": now,
-            "completedAt": now,
+            "completedAt": now if trigger_error else None,
         }
         await reader.upsert_resource_extension(
             project_id=project_id,
@@ -851,6 +1446,17 @@ async def run_scene_experiment(
             payload=report,
             actor=current_user.email,
         )
+        if not trigger_error:
+            report = await _complete_remote_experiment_report(
+                public_client=public_client,
+                dataset=dataset,
+                dataset_id=dataset_id,
+                items=items,
+                report=report,
+                workflow_evaluators=workflow_evaluators,
+                actor=current_user.email,
+                reader=reader,
+            )
         reports.append(report)
 
     return {"group": group, "reports": reports}
@@ -896,6 +1502,89 @@ async def get_experiment_report(
 ) -> dict[str, Any]:
     await reader.ensure_project_visible(project_id, current_user.user_id)
     return success(await _get_report(reader, project_id=project_id, report_id=report_id))
+
+
+@router.post("/experiment-reports/{report_id}/remote-callback")
+async def complete_remote_experiment_report(
+    project_id: str,
+    report_id: str,
+    payload: RemoteExperimentCallbackPayload,
+    reader: LangfuseDatabaseReader = Depends(get_langfuse_db_reader),
+    settings: Settings = Depends(get_settings),
+    current_user: CurrentUserContext | None = Depends(_optional_current_user_context),
+    callback_token: str | None = Header(
+        default=None,
+        alias="X-PA-Remote-Callback-Token",
+    ),
+) -> dict[str, Any]:
+    report = await _get_report(reader, project_id=project_id, report_id=report_id)
+    if current_user is not None:
+        await reader.ensure_project_visible(project_id, current_user.user_id)
+        actor_user_id = current_user.user_id
+        actor_email = current_user.email
+    else:
+        _verify_remote_callback_token(
+            settings=settings,
+            project_id=project_id,
+            report=report,
+            provided_token=callback_token,
+        )
+        actor_user_id = str(report.get("createdByUserId") or "")
+        actor_email = str(report.get("createdByEmail") or "remote-runner")
+        if not actor_user_id:
+            raise BusinessError(2018, "远程实验回调缺少发起人上下文", 400)
+    if payload.external_run_id:
+        report["externalRunId"] = payload.external_run_id
+    if payload.langfuse_run_name:
+        report["langfuseExperimentName"] = payload.langfuse_run_name
+    if payload.status == "FAILED":
+        failed_report = {
+            **report,
+            "status": "FAILED",
+            "progress": 100,
+            "failedItemCount": int(report.get("itemCount") or 0),
+            "insight": payload.message or "远程实验执行失败",
+            "completedAt": _now_iso(),
+        }
+        await reader.upsert_resource_extension(
+            project_id=project_id,
+            resource_type=EXPERIMENT_REPORT_RESOURCE_TYPE,
+            resource_id=report_id,
+            extension_type=ResourceExtensionType.EXPERIMENT_REPORT_SNAPSHOT,
+            payload=failed_report,
+            actor=actor_email,
+        )
+        return success(failed_report)
+    if payload.status == "RUNNING":
+        running_report = {
+            **report,
+            "status": "RUNNING",
+            "progress": max(int(report.get("progress") or 0), 25),
+            "insight": payload.message or report.get("insight") or "远程实验执行中",
+        }
+        await reader.upsert_resource_extension(
+            project_id=project_id,
+            resource_type=EXPERIMENT_REPORT_RESOURCE_TYPE,
+            resource_id=report_id,
+            extension_type=ResourceExtensionType.EXPERIMENT_REPORT_SNAPSHOT,
+            payload=running_report,
+            actor=actor_email,
+        )
+        return success(running_report)
+
+    completed_report = await _retry_complete_remote_experiment_report(
+        project_id=project_id,
+        report_id=report_id,
+        actor_user_id=actor_user_id,
+        actor_email=actor_email,
+        reader=reader,
+        report_updates={
+            key: report[key]
+            for key in ("externalRunId", "langfuseExperimentName")
+            if key in report
+        },
+    )
+    return success(completed_report)
 
 
 @router.post("/experiment-reports/aggregate")

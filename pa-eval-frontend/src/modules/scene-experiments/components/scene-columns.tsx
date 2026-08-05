@@ -78,7 +78,7 @@ export function createSceneColumns({
     },
     {
       id: 'webhooks',
-      header: 'Webhook',
+      header: '远程运行',
       cell: ({ row }) => `${row.original.webhooks.length} 个服务`,
     },
     {

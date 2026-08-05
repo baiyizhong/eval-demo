@@ -138,7 +138,7 @@ class SceneConfigPayload(_StrictPayload):
     def validate_scene_bindings(self) -> "SceneConfigPayload":
         webhook_ids = {webhook.id for webhook in self.webhooks}
         if len(webhook_ids) != len(self.webhooks):
-            raise ValueError("Webhook 服务 ID 不能重复")
+            raise ValueError("远程运行服务 ID 不能重复")
         if not self.evaluator_ids:
             raise ValueError("场景至少需要绑定一个评估器")
         missing_default_ids = [
@@ -147,7 +147,7 @@ class SceneConfigPayload(_StrictPayload):
             if webhook_id not in webhook_ids
         ]
         if self.supports_scheduled_execution and missing_default_ids:
-            raise ValueError("默认定时 Webhook 必须属于当前场景")
+            raise ValueError("默认定时远程运行服务必须属于当前场景")
         return self
 
 
@@ -162,6 +162,8 @@ class ExperimentGroupSnapshotPayload(_StrictPayload):
     evaluator_snapshots: list[dict[str, Any]] = Field(alias="evaluatorSnapshots")
     run_parameters: dict[str, Any] = Field(alias="runParameters")
     langfuse_experiment_name: str = Field(alias="langfuseExperimentName", min_length=1)
+    created_by_user_id: str = Field(default="", alias="createdByUserId")
+    created_by_email: str = Field(default="", alias="createdByEmail")
     created_at: str = Field(alias="createdAt", min_length=1)
 
 
@@ -172,6 +174,9 @@ class ExperimentReportSnapshotPayload(_StrictPayload):
     experiment_group_id: str = Field(alias="experimentGroupId", min_length=1)
     experiment_name: str = Field(alias="experimentName", min_length=1)
     langfuse_experiment_name: str = Field(alias="langfuseExperimentName", min_length=1)
+    external_run_id: str | None = Field(default=None, alias="externalRunId")
+    created_by_user_id: str = Field(default="", alias="createdByUserId")
+    created_by_email: str = Field(default="", alias="createdByEmail")
     name: str = Field(min_length=1)
     scene_id: str = Field(alias="sceneId", min_length=1)
     scene_snapshot: dict[str, Any] = Field(alias="sceneSnapshot")
