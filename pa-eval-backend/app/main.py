@@ -33,6 +33,7 @@ from app.observability import router as observability_router
 from app.organizations import router as organizations_router
 from app.projects import router as projects_router
 from app.response import failure, success
+from app.remote_experiment_runner import router as remote_experiment_runner_router
 from app.scheduled_jobs import (
     router as scheduled_jobs_router,
     start_scheduled_job_scheduler,
@@ -95,6 +96,7 @@ def create_app() -> FastAPI:
     app.include_router(admin_users_router)
     app.include_router(audit_router)
     app.include_router(user_router)
+    app.include_router(remote_experiment_runner_router)
 
     @app.middleware("http")
     async def request_context(request: Request, call_next: Any) -> Any:
