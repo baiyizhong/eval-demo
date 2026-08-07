@@ -131,6 +131,7 @@ type DataTableFilterPanelConfig = {
 
 type DataTableToolbarConfig = {
   searchPlaceholder?: string
+  startContent?: ReactNode
   filters?: DataTableToolbarFilter[]
   columnLabels?: Record<string, string>
   columnVisibility?: VisibilityState
@@ -566,6 +567,7 @@ function DataTableContent<
         <DataTableToolbar
           table={table}
           searchPlaceholder={toolbar?.searchPlaceholder}
+          startContent={toolbar?.startContent}
           filterPanelCollapsed={isFilterPanelCollapsed}
           onToggleFilterPanel={
             filterPanel

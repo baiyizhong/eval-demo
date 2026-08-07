@@ -120,10 +120,10 @@ test('listProjectAutoEvaluationDatasets filters keyword locally across dataset f
 test('dataset mutations call project-scoped Langfuse dataset endpoints', async () => {
   const calls: unknown[] = []
   const input = {
-    name: '新增评测集',
-    type: 'evaluation' as const,
+    name: '新增badcase集',
+    type: 'badcase' as const,
     description: 'desc',
-    metadata: { type: 'evaluation' as const },
+    metadata: { tags: ['badcase集'] },
     inputSchema: {},
     expectedOutputSchema: {},
   }

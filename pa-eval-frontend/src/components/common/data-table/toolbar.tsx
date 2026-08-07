@@ -1,4 +1,4 @@
-import { useState } from 'react'
+import { useState, type ReactNode } from 'react'
 import { Cross2Icon } from '@radix-ui/react-icons'
 import { type Table } from '@tanstack/react-table'
 import { Search, SlidersHorizontal, X } from 'lucide-react'
@@ -12,6 +12,7 @@ type DataTableToolbarProps<TData> = {
   table: Table<TData>
   searchPlaceholder?: string
   searchKey?: string
+  startContent?: ReactNode
   filterPanelCollapsed?: boolean
   onToggleFilterPanel?: () => void
   onReset?: () => void
@@ -42,6 +43,7 @@ export function DataTableToolbar<TData>({
   table,
   searchPlaceholder = '筛选...',
   searchKey,
+  startContent,
   filterPanelCollapsed,
   onToggleFilterPanel,
   onReset,
@@ -149,6 +151,7 @@ export function DataTableToolbar<TData>({
   return (
     <div className='flex items-center justify-between'>
       <div className='flex flex-1 flex-col-reverse items-start gap-2 sm:flex-row sm:items-center'>
+        {startContent}
         {onToggleFilterPanel ? (
           <Button
             type='button'

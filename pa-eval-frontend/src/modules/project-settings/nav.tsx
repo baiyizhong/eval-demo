@@ -1,13 +1,14 @@
 import { createElement, type ReactElement } from 'react'
+import type { PermissionCode, PermissionScope } from '@/types/permission'
 import {
   ActivitySquare,
   Bot,
+  FolderTree,
   Home,
   KeyRound,
   Settings,
   Users,
 } from 'lucide-react'
-import type { PermissionCode, PermissionScope } from '@/types/permission'
 
 export type ProjectSettingsNavigationItem = {
   title: string
@@ -39,6 +40,13 @@ export function getProjectSettingsNavigationItems(
       href: `${basePath}/score-configs`,
       icon: createElement(ActivitySquare, { size: 18 }),
       access: 'project:score-config:view',
+      scope: { type: 'project', projectId },
+    },
+    {
+      title: '数据设置',
+      href: `${basePath}/datasets`,
+      icon: createElement(FolderTree, { size: 18 }),
+      access: 'project:dataset:view',
       scope: { type: 'project', projectId },
     },
     {

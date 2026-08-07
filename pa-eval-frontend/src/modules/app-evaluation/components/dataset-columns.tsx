@@ -9,7 +9,7 @@ import { DataTableColumnHeader } from '@/components/common/data-table'
 import { HoverPreviewCell } from '@/components/common/hover-preview-cell'
 import type { DatasetExportFormat, DatasetRecord } from '../types'
 import { DatasetRowActions } from './dataset-row-actions'
-import { DatasetTypeBadge } from './dataset-type-badge'
+import { DatasetTagsBadges } from './dataset-tags-badges'
 import { formatDateTime } from './format'
 
 type CreateDatasetColumnsOptions = {
@@ -97,11 +97,11 @@ export function createDatasetColumns({
       meta: { className: 'w-72 max-w-72' },
     },
     {
-      accessorKey: 'type',
+      accessorKey: 'tags',
       header: ({ column }) => (
-        <DataTableColumnHeader column={column} title='类型' />
+        <DataTableColumnHeader column={column} title='标签' />
       ),
-      cell: ({ row }) => <DatasetTypeBadge type={row.original.type} />,
+      cell: ({ row }) => <DatasetTagsBadges dataset={row.original} />,
     },
     {
       accessorKey: 'itemCount',

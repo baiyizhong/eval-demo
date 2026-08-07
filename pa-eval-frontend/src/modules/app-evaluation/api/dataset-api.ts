@@ -4,26 +4,39 @@ import type {
   DataTableQueryState,
 } from '@/components/common/data-table'
 import type {
+  DatasetDirectoryFormInput,
+  DatasetDirectoryOrderInput,
+  DatasetDirectoryRecord,
+  DatasetDirectoryUpdateInput,
   DatasetFormInput,
   DatasetExportFormat,
   DatasetExportFiltersInput,
   DatasetExportJobRecord,
   DatasetItemFormInput,
+  DatasetItemOperationInput,
+  DatasetItemOperationResult,
   DatasetItemRecord,
   DatasetItemStatus,
   DatasetMetricSummary,
+  DatasetMoveInput,
   DatasetRecord,
   DatasetTypeFilter,
   MockAutoEvaluationDataset,
 } from '../types'
 
-type DatasetApiClient = {
+export type DatasetApiClient = {
   getProjects: ApiMethod
   getProjectDatasets: ApiMethod
   getProjectDatasetNameAvailability: ApiMethod
+  getProjectDatasetDirectories: ApiMethod
+  createProjectDatasetDirectory: ApiMethod
+  updateProjectDatasetDirectory: ApiMethod
+  deleteProjectDatasetDirectory: ApiMethod
+  updateProjectDatasetDirectoryOrder: ApiMethod
   createProjectDataset: ApiMethod
   getProjectDataset: ApiMethod
   updateProjectDataset: ApiMethod
+  moveProjectDatasetDirectory: ApiMethod
   deleteProjectDataset: ApiMethod
   getProjectDatasetMetrics: ApiMethod
   getProjectDatasetItems: ApiMethod
@@ -35,6 +48,7 @@ type DatasetApiClient = {
   updateProjectDatasetItem: ApiMethod
   deleteProjectDatasetItem: ApiMethod
   archiveProjectDatasetItem: ApiMethod
+  createProjectDatasetItemOperation: ApiMethod
 }
 
 type VisibleProject = {
@@ -73,6 +87,59 @@ export function createProjectDataset(
   })
 }
 
+export function listProjectDatasetDirectories(
+  api: DatasetApiClient,
+  projectId: string
+) {
+  return api.getProjectDatasetDirectories<DatasetDirectoryRecord[]>({
+    path: { projectId },
+  })
+}
+
+export function createProjectDatasetDirectory(
+  api: DatasetApiClient,
+  projectId: string,
+  input: DatasetDirectoryFormInput
+) {
+  return api.createProjectDatasetDirectory<DatasetDirectoryRecord>({
+    path: { projectId },
+    body: input,
+  })
+}
+
+export function updateProjectDatasetDirectory(
+  api: DatasetApiClient,
+  projectId: string,
+  directoryId: string,
+  input: DatasetDirectoryUpdateInput
+) {
+  return api.updateProjectDatasetDirectory<DatasetDirectoryRecord>({
+    path: { projectId, directoryId },
+    body: input,
+  })
+}
+
+export function deleteProjectDatasetDirectory(
+  api: DatasetApiClient,
+  projectId: string,
+  directoryId: string
+) {
+  return api.deleteProjectDatasetDirectory<{ id: string }>({
+    path: { projectId, directoryId },
+  })
+}
+
+export function updateProjectDatasetDirectoryOrder(
+  api: DatasetApiClient,
+  projectId: string,
+  directories: DatasetDirectoryOrderInput[]
+) {
+  return api.updateProjectDatasetDirectoryOrder<DatasetDirectoryRecord[]>({
+    path: { projectId },
+    body: { directories },
+  })
+}
+
 export async function checkProjectDatasetNameAvailability(
   api: DatasetApiClient,
   projectId: string,
@@ -104,6 +171,18 @@ export function updateProjectDataset(
   input: DatasetFormInput
 ) {
   return api.updateProjectDataset<DatasetRecord>({
+    path: { projectId, datasetId },
+    body: input,
+  })
+}
+
+export function moveProjectDatasetToDirectory(
+  api: DatasetApiClient,
+  projectId: string,
+  datasetId: string,
+  input: DatasetMoveInput
+) {
+  return api.moveProjectDatasetDirectory<DatasetRecord>({
     path: { projectId, datasetId },
     body: input,
   })
@@ -268,6 +347,18 @@ export function archiveProjectDatasetItem(
 ) {
   return api.archiveProjectDatasetItem<DatasetItemRecord>({
     path: { projectId, datasetId, itemId },
+  })
+}
+
+export function createProjectDatasetItemOperation(
+  api: DatasetApiClient,
+  projectId: string,
+  datasetId: string,
+  input: DatasetItemOperationInput
+) {
+  return api.createProjectDatasetItemOperation<DatasetItemOperationResult>({
+    path: { projectId, datasetId },
+    body: input,
   })
 }
 

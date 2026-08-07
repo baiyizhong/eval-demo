@@ -26,6 +26,8 @@
     "@codemirror/lint": "^6.9.7",
     "@codemirror/search": "^6.7.1",
     "@codemirror/state": "^6.7.1",
+    "@headless-tree/core": "^1.7.0",
+    "@headless-tree/react": "^1.7.0",
     "@hookform/resolvers": "^5.4.0",
     "@lezer/highlight": "^1.2.3",
     "@radix-ui/react-accordion": "1.2.3",

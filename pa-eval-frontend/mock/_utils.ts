@@ -14,6 +14,7 @@ const paramSegmentMap: Record<string, string> = {
   modelId: 'definitions',
   evaluatorId: 'evaluators',
   datasetId: 'datasets',
+  directoryId: 'dataset-directories',
   jobId: 'export-jobs',
   itemId: 'items',
   configId: 'score-configs',

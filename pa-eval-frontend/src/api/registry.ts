@@ -142,6 +142,26 @@ export const apiRegistry = {
     method: 'GET',
     url: '/projects/:projectId/datasets/name-availability',
   },
+  getProjectDatasetDirectories: {
+    method: 'GET',
+    url: '/projects/:projectId/dataset-directories',
+  },
+  createProjectDatasetDirectory: {
+    method: 'POST',
+    url: '/projects/:projectId/dataset-directories',
+  },
+  updateProjectDatasetDirectory: {
+    method: 'PATCH',
+    url: '/projects/:projectId/dataset-directories/:directoryId',
+  },
+  deleteProjectDatasetDirectory: {
+    method: 'DELETE',
+    url: '/projects/:projectId/dataset-directories/:directoryId',
+  },
+  updateProjectDatasetDirectoryOrder: {
+    method: 'PATCH',
+    url: '/projects/:projectId/dataset-directories/order',
+  },
   createProjectDataset: {
     method: 'POST',
     url: '/projects/:projectId/datasets',
@@ -153,6 +173,10 @@ export const apiRegistry = {
   updateProjectDataset: {
     method: 'PATCH',
     url: '/projects/:projectId/datasets/:datasetId',
+  },
+  moveProjectDatasetDirectory: {
+    method: 'PATCH',
+    url: '/projects/:projectId/datasets/:datasetId/directory',
   },
   deleteProjectDataset: {
     method: 'DELETE',
@@ -198,6 +222,10 @@ export const apiRegistry = {
   archiveProjectDatasetItem: {
     method: 'POST',
     url: '/projects/:projectId/datasets/:datasetId/items/:itemId/archive',
+  },
+  createProjectDatasetItemOperation: {
+    method: 'POST',
+    url: '/projects/:projectId/datasets/:datasetId/item-operations',
   },
   getProjectScoreConfigs: {
     method: 'GET',

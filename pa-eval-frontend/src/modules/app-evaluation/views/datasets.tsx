@@ -384,15 +384,15 @@ export function ProjectDatasets() {
                 columnLabels: {
                   name: '名称',
                   description: '描述',
-                  type: '类型',
+                  tags: '标签',
                   itemCount: '数据量',
                   runCount: '运行数',
                   createdAt: '创建时间',
                   updatedAt: '更新时间',
                 },
                 columnVisibility: {
-                  createdAt: false
-                }
+                  createdAt: false,
+                },
               }}
               loadingText={
                 <Loading

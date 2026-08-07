@@ -26,6 +26,7 @@ import {
   ProjectAutoEvaluationDetail,
   ProjectAutoEvaluationNew,
   ProjectAutoEvaluations,
+  ProjectDatasetSettings,
   ProjectDatasetDetail,
   ProjectDatasets,
   ProjectEvaluationReportDetail,
@@ -249,6 +250,14 @@ export const sidebarRoutes: RouteObject[] = [
             element: (
               <ProjectRouteGuard access='project:score-config:view'>
                 <ProjectScoreConfigsSettings />
+              </ProjectRouteGuard>
+            ),
+          },
+          {
+            path: 'datasets',
+            element: (
+              <ProjectRouteGuard access='project:dataset:view'>
+                <ProjectDatasetSettings />
               </ProjectRouteGuard>
             ),
           },

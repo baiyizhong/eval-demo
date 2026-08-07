@@ -13,13 +13,37 @@ export type DatasetExportJobStatus =
 
 export type JsonObject = Record<string, unknown>
 
+export type DatasetDirectoryRecord = {
+  id: string
+  projectId: string
+  parentId: string | null
+  name: string
+  order: number
+  createdAt: string
+  updatedAt: string
+}
+
+export type DatasetDirectoryFormInput = {
+  name: string
+  parentId: string | null
+}
+
+export type DatasetDirectoryUpdateInput = Partial<DatasetDirectoryFormInput>
+
+export type DatasetDirectoryOrderInput = {
+  id: string
+  parentId: string | null
+  order: number
+}
+
 export type DatasetRecord = {
   id: string
   projectId: string
+  directoryId?: string | null
   name: string
   description: string
   type: DatasetType
-  metadata: JsonObject & { type: DatasetType }
+  metadata: JsonObject & { tags?: string[] }
   inputSchema: JsonObject
   expectedOutputSchema: JsonObject
   itemCount: number
@@ -70,6 +94,37 @@ export type DatasetFormInput = {
   metadata: JsonObject
   inputSchema: JsonObject
   expectedOutputSchema: JsonObject
+  directoryId?: string | null
+}
+
+export type DatasetMoveInput = {
+  directoryId: string | null
+}
+
+export type DatasetItemOperationType = 'delete' | 'copy' | 'move'
+
+export type DatasetItemOperationSelection =
+  | {
+      scope: 'selected'
+      itemIds: string[]
+    }
+  | {
+      scope: 'filtered'
+      keyword?: string
+      status?: DatasetItemStatus[]
+    }
+
+export type DatasetItemOperationInput = {
+  type: DatasetItemOperationType
+  targetDatasetId?: string
+  selection: DatasetItemOperationSelection
+}
+
+export type DatasetItemOperationResult = {
+  operationId: string
+  type: DatasetItemOperationType
+  affectedCount: number
+  status: 'SUCCEEDED' | 'FAILED' | 'RUNNING'
 }
 
 export type DatasetItemFormInput = {
@@ -131,10 +186,7 @@ export type AnnotationExportScope = 'filtered' | 'selected'
 export type AnnotationExportFormat = 'xlsx' | 'csv' | 'txt'
 
 export type AnnotationExportJobStatus =
-  | 'PENDING'
-  | 'RUNNING'
-  | 'SUCCEEDED'
-  | 'FAILED'
+  'PENDING' | 'RUNNING' | 'SUCCEEDED' | 'FAILED'
 
 export type ScoreDataType = 'NUMERIC' | 'CATEGORICAL' | 'BOOLEAN' | 'TEXT'
 

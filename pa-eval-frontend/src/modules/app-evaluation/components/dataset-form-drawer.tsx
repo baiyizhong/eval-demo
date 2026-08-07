@@ -9,28 +9,22 @@ import {
   FormMessage,
 } from '@/components/ui/form'
 import { Input } from '@/components/ui/input'
-import {
-  Select,
-  SelectContent,
-  SelectGroup,
-  SelectItem,
-  SelectTrigger,
-  SelectValue,
-} from '@/components/ui/select'
 import { Textarea } from '@/components/ui/textarea'
+import { MixEditor } from '@/components/common/MixEditor'
 import { BaseForm } from '@/components/common/base-form'
 import { Drawer } from '@/components/common/drawer'
-import { MixEditor } from '@/components/common/MixEditor'
+import { TagSelector } from '@/components/common/tag-selector'
 import {
-  datasetTypeLabels,
-  type DatasetFormInput,
-  type DatasetRecord,
-  type DatasetType,
-} from '../types'
+  datasetPresetTags,
+  getDatasetTags,
+  normalizeDatasetType,
+  resolveDatasetLegacyType,
+} from '../lib/dataset-tags'
 import {
   createAvailableResourceNameSchema,
   type ResourceNameAvailabilityChecker,
 } from '../lib/name-availability'
+import { type DatasetFormInput, type DatasetRecord } from '../types'
 
 const jsonObjectSchema = z
   .record(z.string(), z.unknown())
@@ -47,7 +41,11 @@ const datasetFormBaseSchema = z.object({
     .trim()
     .min(1, '请输入数据集名称')
     .max(DATASET_NAME_MAX_LENGTH, '数据集名称不能超过30个字'),
-  type: z.enum(['evaluation', 'badcase', 'golden', 'anomaly']),
+  tags: z
+    .array(
+      z.string().trim().min(1, '标签不能为空').max(20, '单个标签不能超过20个字')
+    )
+    .max(8, '标签不能超过8个'),
   description: z
     .string()
     .max(DATASET_DESCRIPTION_MAX_LENGTH, '数据集描述不能超过200个字'),
@@ -63,13 +61,6 @@ type DatasetFormDrawerProps = {
   onOpenChange: (open: boolean) => void
   onSubmit: (input: DatasetFormInput) => Promise<void> | void
 }
-
-const datasetTypes: DatasetType[] = [
-  'evaluation',
-  'badcase',
-  'golden',
-  'anomaly',
-]
 
 export function DatasetFormDrawer({
   open,
@@ -97,14 +88,20 @@ export function DatasetFormDrawer({
   )
 
   const handleSubmit = async (values: DatasetFormValues) => {
+    const legacyType = resolveDatasetLegacyType(
+      values.tags,
+      normalizeDatasetType(dataset?.type)
+    )
+    const metadata = omitMetadataType(values.metadata)
+
     try {
       await onSubmit({
         name: values.name,
-        type: values.type,
+        type: legacyType,
         description: values.description,
         metadata: {
-          ...values.metadata,
-          type: values.type,
+          ...metadata,
+          tags: values.tags,
         },
         inputSchema: dataset?.inputSchema ?? {},
         expectedOutputSchema: dataset?.expectedOutputSchema ?? {},
@@ -160,26 +157,23 @@ export function DatasetFormDrawer({
             />
             <FormField
               control={form.control}
-              name='type'
+              name='tags'
               render={({ field }) => (
                 <FormItem>
-                  <FormLabel>类型</FormLabel>
-                  <Select value={field.value} onValueChange={field.onChange}>
-                    <FormControl>
-                      <SelectTrigger className='w-full'>
-                        <SelectValue placeholder='选择数据集类型' />
-                      </SelectTrigger>
-                    </FormControl>
-                    <SelectContent>
-                      <SelectGroup>
-                        {datasetTypes.map((type) => (
-                          <SelectItem key={type} value={type}>
-                            {datasetTypeLabels[type]}
-                          </SelectItem>
-                        ))}
-                      </SelectGroup>
-                    </SelectContent>
-                  </Select>
+                  <FormLabel>标签</FormLabel>
+                  <FormControl>
+                    <TagSelector
+                      value={field.value}
+                      options={datasetPresetTags}
+                      allowCreate
+                      maxTags={8}
+                      maxTagLength={20}
+                      placeholder='选择或新增标签'
+                      searchPlaceholder='输入标签名称'
+                      emptyText='暂无预置标签'
+                      onChange={field.onChange}
+                    />
+                  </FormControl>
                   <FormMessage />
                 </FormItem>
               )}
@@ -244,8 +238,17 @@ function JsonTextareaField({
 function getDefaultValues(dataset?: DatasetRecord | null): DatasetFormValues {
   return {
     name: dataset?.name ?? '',
-    type: dataset?.type ?? 'evaluation',
+    tags: getDatasetTags(dataset),
     description: dataset?.description ?? '',
-    metadata: dataset?.metadata ?? { type: 'evaluation' },
+    metadata: dataset?.metadata
+      ? omitMetadataType(dataset.metadata)
+      : {
+          tags: getDatasetTags(dataset),
+        },
   }
+}
+
+function omitMetadataType(metadata: Record<string, unknown>) {
+  const { type: _type, ...rest } = metadata
+  return rest
 }

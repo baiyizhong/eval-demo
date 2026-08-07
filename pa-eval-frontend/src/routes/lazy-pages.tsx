@@ -112,6 +112,12 @@ export const ProjectApiKeysSettings = lazy(() =>
   }))
 )
 
+export const ProjectDatasetSettings = lazy(() =>
+  import('@/modules/project-settings/views/dataset-settings').then((module) => ({
+    default: module.ProjectDatasetSettings,
+  }))
+)
+
 export const ProjectGeneralSettings = lazy(() =>
   import('@/modules/project-settings/views/general').then((module) => ({
     default: module.ProjectGeneralSettings,

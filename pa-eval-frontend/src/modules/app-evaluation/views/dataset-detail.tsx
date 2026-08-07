@@ -1,4 +1,4 @@
-import { useCallback, useMemo, useState } from 'react'
+import { useCallback, useEffect, useMemo, useState } from 'react'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import {
   DatasetExperimentReports,
@@ -9,7 +9,13 @@ import {
   buildProjectTraceLogsHref,
   getDatasetExperimentReportsQueryKey,
 } from '@/modules/scene-experiments/lib/experiment-run'
-import { Download, FlaskConical, Plus } from 'lucide-react'
+import {
+  Download,
+  FlaskConical,
+  PanelLeftClose,
+  PanelLeftOpen,
+  Plus,
+} from 'lucide-react'
 import { useNavigate, useParams, useSearchParams } from 'react-router'
 import { toast } from 'sonner'
 import { confirm } from '@/lib/confirm'
@@ -17,6 +23,8 @@ import { useAPI } from '@/hooks/use-api'
 import { usePermission } from '@/hooks/use-permission'
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs'
 import type { ButtonGroupsProps } from '@/components/common/button-groups'
+import { Button } from '@/components/ui/button'
+import { ConfirmDialog } from '@/components/common/confirm-dialog'
 import {
   DataTable,
   type DataTableFilterBinding,
@@ -27,28 +35,38 @@ import { Page } from '@/components/common/page'
 import { PageAction } from '@/components/common/page-action'
 import {
   archiveProjectDatasetItem,
+  checkProjectDatasetNameAvailability,
+  createProjectDataset,
   createProjectDatasetExportJob,
   createProjectDatasetItem,
+  deleteProjectDataset,
   deleteProjectDatasetItem,
   downloadProjectDatasetExportJob,
   getProjectDataset,
   getProjectDatasetItemStatusCounts,
   getProjectDatasetMetricSummary,
+  listProjectDatasetDirectories,
   listProjectDatasetItems,
+  listProjectDatasets,
   pollDatasetExportJob,
+  updateProjectDataset,
   updateProjectDatasetItem,
 } from '../api/dataset-api'
+import { DatasetFormDrawer } from '../components/dataset-form-drawer'
 import { DatasetItemBulkActions } from '../components/dataset-item-bulk-actions'
 import { createDatasetItemColumns } from '../components/dataset-item-columns'
 import {
   DatasetItemFormDrawer,
   type DatasetItemDrawerIntent,
 } from '../components/dataset-item-form-drawer'
-import { DatasetTypeBadge } from '../components/dataset-type-badge'
+import { DatasetTagsBadges } from '../components/dataset-tags-badges'
+import { DatasetTreePanel } from '../components/dataset-tree-panel'
 import { downloadBlob, formatDateTime } from '../components/format'
 import { getDatasetExportFileName } from '../lib/dataset-item-export'
+import { getNextDatasetId } from '../lib/dataset-tree'
 import type {
   DatasetExportFormat,
+  DatasetFormInput,
   DatasetItemFormInput,
   DatasetItemRecord,
   DatasetRecord,
@@ -64,8 +82,23 @@ export function ProjectDatasetDetail() {
   const $api = useAPI()
   const queryClient = useQueryClient()
   const { projectId = 'project_customer_agent', datasetId = '' } = useParams()
+  const routeDatasetId = datasetId
   const { can } = usePermission({ type: 'project', projectId })
   const canEditDataset = can('project:dataset:edit')
+  const [selectedDatasetId, setSelectedDatasetId] = useState<string | null>(
+    null
+  )
+  const [treeVisible, setTreeVisible] = useState(true)
+  const [creatingDirectoryId, setCreatingDirectoryId] = useState<string | null>(
+    null
+  )
+  const [createDatasetOpen, setCreateDatasetOpen] = useState(false)
+  const [editingDataset, setEditingDataset] = useState<DatasetRecord | null>(
+    null
+  )
+  const [deletingDataset, setDeletingDataset] = useState<DatasetRecord | null>(
+    null
+  )
   const [itemDrawerIntent, setItemDrawerIntent] =
     useState<DatasetItemDrawerIntent | null>(null)
   const [selectedItem, setSelectedItem] = useState<DatasetItemRecord | null>(
@@ -84,57 +117,161 @@ export function ProjectDatasetDetail() {
     [searchParams, setSearchParams]
   )
 
+  const directoriesQuery = useQuery({
+    queryKey: ['project-dataset-directories', $api, projectId],
+    queryFn: () => listProjectDatasetDirectories($api, projectId),
+  })
+  const treeDatasetsQuery = useQuery({
+    queryKey: ['project-datasets-tree', $api, projectId],
+    queryFn: () =>
+      listProjectDatasets(
+        $api,
+        projectId,
+        { page: 1, pageSize: 500, keyword: '', filters: {}, sorting: [] },
+        'all'
+      ),
+  })
+  const treeDatasets = useMemo(
+    () => treeDatasetsQuery.data?.datas ?? [],
+    [treeDatasetsQuery.data]
+  )
+  const effectiveDatasetId = useMemo(
+    () =>
+      getNextDatasetId(
+        directoriesQuery.data ?? [],
+        treeDatasets,
+        selectedDatasetId ?? routeDatasetId
+      ) ?? '',
+    [directoriesQuery.data, routeDatasetId, selectedDatasetId, treeDatasets]
+  )
+
+  useEffect(() => {
+    if (!effectiveDatasetId || effectiveDatasetId === routeDatasetId) return
+
+    navigate(
+      `/projects/${projectId}/evaluation/datasets/${effectiveDatasetId}`,
+      {
+        replace: true,
+      }
+    )
+  }, [effectiveDatasetId, navigate, projectId, routeDatasetId])
+
   const datasetQuery = useQuery({
-    queryKey: ['project-dataset', $api, projectId, datasetId],
-    queryFn: () => getProjectDataset($api, projectId, datasetId),
-    enabled: Boolean(datasetId),
+    queryKey: ['project-dataset', $api, projectId, effectiveDatasetId],
+    queryFn: () => getProjectDataset($api, projectId, effectiveDatasetId),
+    enabled: Boolean(effectiveDatasetId),
   })
   const metricQuery = useQuery({
-    queryKey: ['project-dataset-metrics', $api, projectId, datasetId],
-    queryFn: () => getProjectDatasetMetricSummary($api, projectId, datasetId),
-    enabled: Boolean(datasetId),
+    queryKey: ['project-dataset-metrics', $api, projectId, effectiveDatasetId],
+    queryFn: () =>
+      getProjectDatasetMetricSummary($api, projectId, effectiveDatasetId),
+    enabled: Boolean(effectiveDatasetId),
   })
   const statusCountsQuery = useQuery({
     queryKey: [
       'project-dataset-item-status-counts',
       $api,
       projectId,
-      datasetId,
+      effectiveDatasetId,
       itemKeyword,
     ],
     queryFn: () =>
-      getProjectDatasetItemStatusCounts($api, projectId, datasetId, {
+      getProjectDatasetItemStatusCounts($api, projectId, effectiveDatasetId, {
         keyword: itemKeyword,
       }),
-    enabled: Boolean(datasetId),
+    enabled: Boolean(effectiveDatasetId),
   })
 
   const invalidateDetail = useCallback(
     () =>
       Promise.all([
         queryClient.invalidateQueries({
-          queryKey: ['project-dataset', $api, projectId, datasetId],
+          queryKey: ['project-dataset', $api, projectId, effectiveDatasetId],
         }),
         queryClient.invalidateQueries({
-          queryKey: ['project-dataset-metrics', $api, projectId, datasetId],
+          queryKey: [
+            'project-dataset-metrics',
+            $api,
+            projectId,
+            effectiveDatasetId,
+          ],
         }),
         queryClient.invalidateQueries({
-          queryKey: ['project-dataset-items', $api, projectId, datasetId],
+          queryKey: [
+            'project-dataset-items',
+            $api,
+            projectId,
+            effectiveDatasetId,
+          ],
         }),
         queryClient.invalidateQueries({
           queryKey: [
             'project-dataset-item-status-counts',
             $api,
             projectId,
-            datasetId,
+            effectiveDatasetId,
           ],
         }),
         queryClient.invalidateQueries({
           queryKey: ['project-datasets', projectId],
         }),
       ]),
-    [$api, datasetId, projectId, queryClient]
+    [$api, effectiveDatasetId, projectId, queryClient]
   )
+
+  const checkDatasetNameAvailability = useCallback(
+    (name: string) =>
+      checkProjectDatasetNameAvailability($api, projectId, name),
+    [$api, projectId]
+  )
+
+  const saveDatasetMutation = useMutation({
+    mutationFn: (input: DatasetFormInput) =>
+      editingDataset
+        ? updateProjectDataset($api, projectId, editingDataset.id, input)
+        : createProjectDataset($api, projectId, {
+            ...input,
+            directoryId: creatingDirectoryId,
+          }),
+    onSuccess: async (dataset) => {
+      await Promise.all([
+        queryClient.invalidateQueries({ queryKey: ['project-datasets'] }),
+        queryClient.invalidateQueries({ queryKey: ['project-datasets-tree'] }),
+        queryClient.invalidateQueries({ queryKey: ['project-dataset'] }),
+      ])
+      setEditingDataset(null)
+      setCreatingDirectoryId(null)
+      setCreateDatasetOpen(false)
+      setSelectedDatasetId(dataset.id)
+      navigate(`/projects/${projectId}/evaluation/datasets/${dataset.id}`)
+      toast.success(editingDataset ? '数据集已保存' : '数据集已创建')
+    },
+  })
+
+  const deleteDatasetMutation = useMutation({
+    mutationFn: (dataset: DatasetRecord) =>
+      deleteProjectDataset($api, projectId, dataset.id),
+    onSuccess: async (_, deletedDataset) => {
+      await Promise.all([
+        queryClient.invalidateQueries({ queryKey: ['project-datasets'] }),
+        queryClient.invalidateQueries({ queryKey: ['project-datasets-tree'] }),
+      ])
+      setDeletingDataset(null)
+      const remaining = treeDatasets.filter(
+        (dataset) => dataset.id !== deletedDataset.id
+      )
+      const nextDatasetId = getNextDatasetId(
+        directoriesQuery.data ?? [],
+        remaining,
+        null
+      )
+      setSelectedDatasetId(nextDatasetId)
+      if (nextDatasetId) {
+        navigate(`/projects/${projectId}/evaluation/datasets/${nextDatasetId}`)
+      }
+      toast.success('数据集已删除')
+    },
+  })
 
   const saveItemMutation = useMutation({
     mutationFn: (input: DatasetItemFormInput) =>
@@ -142,11 +279,11 @@ export function ProjectDatasetDetail() {
         ? updateProjectDatasetItem(
             $api,
             projectId,
-            datasetId,
+            effectiveDatasetId,
             selectedItem.id,
             input
           )
-        : createProjectDatasetItem($api, projectId, datasetId, input),
+        : createProjectDatasetItem($api, projectId, effectiveDatasetId, input),
     onSuccess: async () => {
       await invalidateDetail()
       const message =
@@ -159,7 +296,7 @@ export function ProjectDatasetDetail() {
 
   const archiveItemMutation = useMutation({
     mutationFn: (item: DatasetItemRecord) =>
-      archiveProjectDatasetItem($api, projectId, datasetId, item.id),
+      archiveProjectDatasetItem($api, projectId, effectiveDatasetId, item.id),
     onSuccess: async () => {
       await invalidateDetail()
       toast.success('数据项已归档')
@@ -169,7 +306,7 @@ export function ProjectDatasetDetail() {
 
   const deleteItemMutation = useMutation({
     mutationFn: (item: DatasetItemRecord) =>
-      deleteProjectDatasetItem($api, projectId, datasetId, item.id),
+      deleteProjectDatasetItem($api, projectId, effectiveDatasetId, item.id),
     onSuccess: async () => {
       await invalidateDetail()
       toast.success('数据项已删除')
@@ -178,10 +315,10 @@ export function ProjectDatasetDetail() {
   const deleteItem = deleteItemMutation.mutateAsync
 
   const handleCreateItem = useCallback(() => {
-    if (!canEditDataset) return
+    if (!canEditDataset || !effectiveDatasetId) return
     setSelectedItem(null)
     setItemDrawerIntent('create')
-  }, [canEditDataset])
+  }, [canEditDataset, effectiveDatasetId])
 
   const handleViewItem = useCallback((item: DatasetItemRecord) => {
     setSelectedItem(item)
@@ -443,128 +580,222 @@ export function ProjectDatasetDetail() {
   )
 
   return (
-    <Page fixed fluid className='flex min-h-[calc(100svh-3.5rem)] flex-col'>
-      <div className='flex min-h-0 flex-1 flex-col gap-4'>
-        <PageAction
-          showBackButton
-          onBack={() => navigate(buildProjectDatasetsHref(projectId))}
-          buttonGroups={{
-            buttons: pageActionButtons,
-          }}
-        >
-          {dataset ? (
-            <div className='flex min-w-0 flex-wrap items-center gap-2'>
-              <span className='truncate text-sm font-medium'>
-                {dataset.name}
-              </span>
-              <DatasetTypeBadge type={dataset.type} />
-            </div>
+    <Page
+      fixed
+      fluid
+      className='flex min-h-[calc(100svh-3.5rem)] flex-col gap-4'
+    >
+      <PageAction
+        showBackButton
+        onBack={() => navigate(buildProjectDatasetsHref(projectId))}
+        buttonGroups={{
+          buttons: pageActionButtons,
+        }}
+      >
+        {dataset ? (
+          <div className='flex min-w-0 flex-wrap items-center gap-2'>
+            <span className='truncate text-sm font-medium' title={dataset.name}>
+              {dataset.name}
+            </span>
+            <DatasetTagsBadges dataset={dataset} maxVisible={2} />
+          </div>
+        ) : null}
+      </PageAction>
+
+      <div className='flex min-h-0 flex-1 gap-4'>
+        {treeVisible ? (
+          <aside className='bg-card text-card-foreground flex min-h-0 w-[280px] shrink-0 flex-col rounded-lg border p-3'>
+            <DatasetTreePanel
+              api={$api}
+              projectId={projectId}
+              selectedDatasetId={effectiveDatasetId || null}
+              canEdit={canEditDataset}
+              onSelectDataset={(nextDatasetId) => {
+                setSelectedDatasetId(nextDatasetId)
+                navigate(
+                  `/projects/${projectId}/evaluation/datasets/${nextDatasetId}`
+                )
+              }}
+              onCreateDataset={(directoryId) => {
+                setCreatingDirectoryId(directoryId)
+                setCreateDatasetOpen(true)
+              }}
+              onEditDataset={setEditingDataset}
+              onDeleteDataset={setDeletingDataset}
+            />
+          </aside>
+        ) : null}
+        <div className='flex min-w-0 flex-1 flex-col gap-4'>
+          {datasetQuery.isLoading || metricQuery.isLoading ? (
+            <Loading text='加载数据集详情中...' className='flex-1' />
           ) : null}
-        </PageAction>
 
-        {datasetQuery.isLoading || metricQuery.isLoading ? (
-          <Loading text='加载数据集详情中...' className='flex-1' />
-        ) : null}
+          {dataset && metrics ? (
+            <section className='bg-card text-card-foreground rounded-lg border p-4'>
+              <div className='grid gap-x-8 gap-y-3 text-sm sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4'>
+                <InfoItem label='名称' value={dataset.name} />
+                <InfoItem label='描述' value={dataset.description || '-'} />
+                <InfoItem
+                  label='标签'
+                  value={
+                    <DatasetTagsBadges
+                      dataset={dataset}
+                      maxVisible={8}
+                      tooltip
+                    />
+                  }
+                />
+                <InfoItem label='总数据量' value={String(metrics.total)} />
+                <InfoItem label='运行数' value={String(dataset.runCount)} />
+                <InfoItem label='有效数量' value={String(metrics.active)} />
+                <InfoItem label='归档数量' value={String(metrics.archived)} />
+                <InfoItem
+                  label='最近更新时间'
+                  value={formatDateTime(metrics.updatedAt)}
+                />
+              </div>
+            </section>
+          ) : null}
 
-        {dataset && metrics ? (
-          <section className='bg-card text-card-foreground rounded-lg border p-4'>
-            <div className='grid gap-x-8 gap-y-3 text-sm sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4'>
-              <InfoItem label='名称' value={dataset.name} />
-              <InfoItem label='描述' value={dataset.description || '-'} />
-              <InfoItem
-                label='类型'
-                value={<DatasetTypeBadge type={dataset.type} />}
-              />
-              <InfoItem label='总数据量' value={String(metrics.total)} />
-              <InfoItem label='运行数' value={String(dataset.runCount)} />
-              <InfoItem label='有效数量' value={String(metrics.active)} />
-              <InfoItem label='归档数量' value={String(metrics.archived)} />
-              <InfoItem
-                label='最近更新时间'
-                value={formatDateTime(metrics.updatedAt)}
-              />
-            </div>
-          </section>
-        ) : null}
-
-        <Tabs
-          value={activeTab}
-          onValueChange={handleTabChange}
-          className='min-h-0 flex-1'
-        >
-          <TabsList className='shrink-0'>
-            <TabsTrigger value='items'>数据项</TabsTrigger>
-            <TabsTrigger value='reports'>试验报告</TabsTrigger>
-          </TabsList>
-          <TabsContent value='items' className='min-h-0'>
-            <section className='bg-card text-card-foreground flex min-h-0 min-w-0 flex-1 flex-col rounded-lg border p-4'>
-              <DataTable<DatasetItemRecord>
-                className='min-h-0 flex-1'
-                columns={columns}
-                request={{
-                  queryKey: (state) => [
-                    'project-dataset-items',
-                    $api,
-                    projectId,
-                    datasetId,
-                    state,
-                  ],
-                  queryFn: (state) =>
-                    listProjectDatasetItems($api, projectId, datasetId, state),
-                  enabled: Boolean(datasetId),
-                }}
-                urlState={{
-                  defaultPageSize: 10,
-                  globalFilterKey: 'keyword',
-                  filters: itemUrlFilters,
-                }}
-                toolbar={{
-                  searchPlaceholder: '搜索 item id / JSON 内容',
-                  filters: itemToolbarFilters,
-                  columnLabels: {
-                    id: 'Item ID',
-                    status: '状态',
-                    input: 'Input',
-                    expectedOutput: 'Expected Output',
-                    metadata: 'Metadata',
-                    sourceTraceId: 'Source',
-                    createdAt: '创建时间',
-                  },
-                }}
-                bulkActions={
-                  canEditDataset && dataset
-                    ? (table, selection) => (
-                        <DatasetItemBulkActions
-                          table={table}
-                          selection={selection}
-                          dataset={dataset}
-                          onExportAllMatching={(query) =>
-                            handleExportAllMatching(dataset, query)
-                          }
-                        />
-                      )
-                    : undefined
-                }
-                loadingText={
-                  <Loading
-                    text='加载数据项中...'
-                    className='min-h-24 border-0 bg-transparent'
+        <section className='bg-card text-card-foreground flex min-h-0 min-w-0 flex-1 flex-col rounded-lg border p-4'>
+            <Tabs
+              value={activeTab}
+              onValueChange={handleTabChange}
+              className='min-h-0 flex-1'
+            >
+              <div className='flex items-center gap-2 pb-2'>
+                <Button
+                  type='button'
+                  variant='ghost'
+                  size='icon'
+                  className='size-7 text-muted-foreground'
+                  title={treeVisible ? '隐藏目录树' : '显示目录树'}
+                  aria-label={treeVisible ? '隐藏目录树' : '显示目录树'}
+                  aria-expanded={treeVisible}
+                  onClick={() => setTreeVisible((visible) => !visible)}
+                >
+                  {treeVisible ? (
+                    <PanelLeftClose className='size-5' />
+                  ) : (
+                    <PanelLeftOpen className='size-5' />
+                  )}
+                </Button>
+                <TabsList className='shrink-0'>
+                <TabsTrigger value='items'>数据项</TabsTrigger>
+                <TabsTrigger value='reports'>试验报告</TabsTrigger>
+              </TabsList>
+              </div>
+              <TabsContent value='items' className='flex min-h-0 flex-col'>
+                <section className='bg-card text-card-foreground flex min-h-0 min-w-0 flex-1 flex-col rounded-lg border p-4'>
+                  <DataTable<DatasetItemRecord>
+                    className='min-h-0 flex-1'
+                    columns={columns}
+                    request={{
+                      queryKey: (state) => [
+                        'project-dataset-items',
+                        $api,
+                        projectId,
+                        datasetId,
+                        state,
+                      ],
+                      queryFn: (state) =>
+                        listProjectDatasetItems($api, projectId, datasetId, state),
+                      enabled: Boolean(datasetId),
+                    }}
+                    urlState={{
+                      defaultPageSize: 10,
+                      globalFilterKey: 'keyword',
+                      filters: itemUrlFilters,
+                    }}
+                    toolbar={{
+                      searchPlaceholder: '搜索 item id / JSON 内容',
+                      filters: itemToolbarFilters,
+                      columnLabels: {
+                        id: 'Item ID',
+                        status: '状态',
+                        input: 'Input',
+                        expectedOutput: 'Expected Output',
+                        metadata: 'Metadata',
+                        sourceTraceId: 'Source',
+                        createdAt: '创建时间',
+                      },
+                    }}
+                    bulkActions={
+                      canEditDataset && dataset
+                        ? (table, selection) => (
+                            <DatasetItemBulkActions
+                              table={table}
+                              selection={selection}
+                              projectId={projectId}
+                              dataset={dataset}
+                              directories={directoriesQuery.data ?? []}
+                              datasets={treeDatasets}
+                              onExportAllMatching={(query) =>
+                                handleExportAllMatching(dataset, query)
+                              }
+                            />
+                          )
+                        : undefined
+                    }
+                    loadingText={
+                      <Loading
+                        text='加载数据项中...'
+                        className='min-h-24 border-0 bg-transparent'
+                      />
+                    }
+                    emptyText='当前筛选条件下暂无数据项'
                   />
-                }
-                emptyText='当前筛选条件下暂无数据项'
-              />
-            </section>
-          </TabsContent>
-          <TabsContent value='reports' className='min-h-0'>
-            <section className='bg-card text-card-foreground flex min-h-0 min-w-0 flex-1 flex-col rounded-lg border p-4'>
-              <DatasetExperimentReports
-                projectId={projectId}
-                datasetId={datasetId}
-              />
-            </section>
-          </TabsContent>
-        </Tabs>
+                </section>
+              </TabsContent>
+              <TabsContent value='reports' className='flex min-h-0 flex-col'>
+                <section className='bg-card text-card-foreground flex min-h-0 min-w-0 flex-1 flex-col rounded-lg border p-4'>
+                  <DatasetExperimentReports
+                    projectId={projectId}
+                    datasetId={datasetId}
+                  />
+                </section>
+              </TabsContent>
+            </Tabs>
+          </section>
+        </div>
       </div>
+      <DatasetFormDrawer
+        open={createDatasetOpen || Boolean(editingDataset)}
+        dataset={editingDataset}
+        checkNameAvailability={checkDatasetNameAvailability}
+        onOpenChange={(open) => {
+          if (!open) {
+            setCreatingDirectoryId(null)
+            setCreateDatasetOpen(false)
+            setEditingDataset(null)
+          }
+        }}
+        onSubmit={async (input) => {
+          await saveDatasetMutation.mutateAsync(input)
+        }}
+      />
+      <ConfirmDialog
+        open={Boolean(deletingDataset)}
+        onOpenChange={(open) => {
+          if (!open) setDeletingDataset(null)
+        }}
+        title='删除数据集'
+        desc={
+          <>
+            删除后将移除数据集
+            {deletingDataset ? `「${deletingDataset.name}」` : ''}
+            及其关联数据项，此操作不可撤销。
+          </>
+        }
+        destructive
+        confirmText='删除'
+        isLoading={deleteDatasetMutation.isPending}
+        handleConfirm={() => {
+          if (deletingDataset) {
+            void deleteDatasetMutation.mutateAsync(deletingDataset)
+          }
+        }}
+      />
       <DatasetItemFormDrawer
         open={Boolean(itemDrawerIntent)}
         intent={itemDrawerIntent ?? 'create'}
@@ -613,6 +844,12 @@ function InfoItem({
   value: React.ReactNode
   wide?: boolean
 }) {
+  const title =
+    typeof value === 'string' || typeof value === 'number'
+      ? String(value)
+      : undefined
+  const valueClassName = 'min-w-0 truncate font-medium'
+
   return (
     <div
       className={
@@ -622,7 +859,13 @@ function InfoItem({
       }
     >
       <span className='text-muted-foreground shrink-0'>{label}</span>
-      <span className='min-w-0 truncate font-medium'>{value}</span>
+      {title ? (
+        <span className={valueClassName} title={title}>
+          {value}
+        </span>
+      ) : (
+        <div className={valueClassName}>{value}</div>
+      )}
     </div>
   )
 }
