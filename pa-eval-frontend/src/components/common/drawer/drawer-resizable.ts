@@ -16,7 +16,9 @@ const DRAWER_OUTSIDE_CLICK_IGNORE_SELECTOR = [
   '[role="option"]',
   '[role="row"]',
   '[tabindex]:not([tabindex="-1"])',
+  '[data-slot="select-content"]',
   '[data-slot="table-row"]',
+  '[data-radix-popper-content-wrapper]',
   '[data-drawer-outside-click-ignore]',
 ].join(',')
 

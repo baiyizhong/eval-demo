@@ -8,6 +8,7 @@ import {
   shouldCloseDrawerOnInteractOutside,
   shouldCloseDrawerOnOutsideClick,
   shouldEnableResizableDrawer,
+  shouldIgnoreDrawerOutsideClick,
   shouldUseModalDrawer,
 } from '../../components/common/drawer/drawer-resizable.ts'
 
@@ -48,6 +49,35 @@ test('drawer closes on outside click only when overlay is hidden', () => {
   assert.equal(shouldCloseDrawerOnOutsideClick(true, true, false), false)
   assert.equal(shouldCloseDrawerOnOutsideClick(false, false, false), false)
   assert.equal(shouldCloseDrawerOnOutsideClick(true, false, true), false)
+})
+
+test('drawer ignores radix select portal content as an external click target', () => {
+  const previousElement = globalThis.Element
+
+  class PortalElement {
+    closest(selector: string) {
+      return selector.includes('[data-slot="select-content"]') ? this : null
+    }
+  }
+
+  Object.defineProperty(globalThis, 'Element', {
+    configurable: true,
+    value: PortalElement,
+  })
+
+  try {
+    assert.equal(
+      shouldIgnoreDrawerOutsideClick(
+        new PortalElement() as unknown as EventTarget
+      ),
+      true
+    )
+  } finally {
+    Object.defineProperty(globalThis, 'Element', {
+      configurable: true,
+      value: previousElement,
+    })
+  }
 })
 
 test('resizable drawer width is clamped to the viewport', () => {

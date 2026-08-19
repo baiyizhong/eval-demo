@@ -31,3 +31,18 @@ test('routes are split into focused branch files', () => {
   assert.doesNotMatch(indexSource, /const TraceLogs = lazy\(\(\) =>/)
   assert.doesNotMatch(indexSource, /const ProjectDatasets = lazy\(\(\) =>/)
 })
+
+test('dataset routes are mounted as project level navigation', () => {
+  const sidebarSource = readFileSync('src/routes/sidebar-routes.tsx', 'utf8')
+
+  assert.match(sidebarSource, /path:\s*'projects\/:projectId\/datasets'/)
+  assert.match(
+    sidebarSource,
+    /path:\s*'projects\/:projectId\/datasets\/badcase-workbench'/
+  )
+  assert.match(
+    sidebarSource,
+    /path:\s*'projects\/:projectId\/datasets\/:datasetId'/
+  )
+  assert.match(sidebarSource, /AppEvaluationLegacyDatasetsRedirect/)
+})

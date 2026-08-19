@@ -1,6 +1,7 @@
 import {
   AppEvaluation,
   AppEvaluationIndexRedirect,
+  AppEvaluationLegacyDatasetsRedirect,
 } from '@/modules/app-evaluation'
 import {
   AppObservability,
@@ -26,6 +27,7 @@ import {
   ProjectAutoEvaluationDetail,
   ProjectAutoEvaluationNew,
   ProjectAutoEvaluations,
+  ProjectBadcaseWorkbench,
   ProjectDatasetSettings,
   ProjectDatasetDetail,
   ProjectDatasets,
@@ -80,43 +82,11 @@ export const sidebarRoutes: RouteObject[] = [
           { index: true, element: <AppEvaluationIndexRedirect /> },
           {
             path: 'datasets',
-            element: (
-              <ProjectRouteGuard access='project:dataset:view'>
-                <ProjectDatasets />
-              </ProjectRouteGuard>
-            ),
+            element: <AppEvaluationLegacyDatasetsRedirect />,
           },
           {
-            path: 'datasets/:datasetId',
-            element: (
-              <ProjectRouteGuard access='project:dataset:view'>
-                <ProjectDatasetDetail />
-              </ProjectRouteGuard>
-            ),
-          },
-          {
-            path: 'datasets/:datasetId/experiment-reports/:reportId',
-            element: (
-              <ProjectRouteGuard access='project:dataset:view'>
-                <ExperimentReportDetail />
-              </ProjectRouteGuard>
-            ),
-          },
-          {
-            path: 'datasets/:datasetId/experiments/aggregate',
-            element: (
-              <ProjectRouteGuard access='project:dataset:view'>
-                <ExperimentAggregate />
-              </ProjectRouteGuard>
-            ),
-          },
-          {
-            path: 'datasets/:datasetId/experiments/compare',
-            element: (
-              <ProjectRouteGuard access='project:dataset:view'>
-                <ExperimentCompare />
-              </ProjectRouteGuard>
-            ),
+            path: 'datasets/*',
+            element: <AppEvaluationLegacyDatasetsRedirect />,
           },
           {
             path: 'evaluators',
@@ -207,6 +177,54 @@ export const sidebarRoutes: RouteObject[] = [
             ),
           },
         ],
+      },
+      {
+        path: 'projects/:projectId/datasets',
+        element: (
+          <ProjectRouteGuard access='project:dataset:view'>
+            <ProjectDatasets />
+          </ProjectRouteGuard>
+        ),
+      },
+      {
+        path: 'projects/:projectId/datasets/badcase-workbench',
+        element: (
+          <ProjectRouteGuard access='project:dataset:view'>
+            <ProjectBadcaseWorkbench />
+          </ProjectRouteGuard>
+        ),
+      },
+      {
+        path: 'projects/:projectId/datasets/:datasetId',
+        element: (
+          <ProjectRouteGuard access='project:dataset:view'>
+            <ProjectDatasetDetail />
+          </ProjectRouteGuard>
+        ),
+      },
+      {
+        path: 'projects/:projectId/datasets/:datasetId/experiment-reports/:reportId',
+        element: (
+          <ProjectRouteGuard access='project:dataset:view'>
+            <ExperimentReportDetail />
+          </ProjectRouteGuard>
+        ),
+      },
+      {
+        path: 'projects/:projectId/datasets/:datasetId/experiments/aggregate',
+        element: (
+          <ProjectRouteGuard access='project:dataset:view'>
+            <ExperimentAggregate />
+          </ProjectRouteGuard>
+        ),
+      },
+      {
+        path: 'projects/:projectId/datasets/:datasetId/experiments/compare',
+        element: (
+          <ProjectRouteGuard access='project:dataset:view'>
+            <ExperimentCompare />
+          </ProjectRouteGuard>
+        ),
       },
       {
         path: 'projects/:projectId/scenes',

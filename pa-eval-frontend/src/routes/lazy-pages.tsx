@@ -44,6 +44,12 @@ export const ProjectAutoEvaluations = lazy(() =>
   }))
 )
 
+export const ProjectBadcaseWorkbench = lazy(() =>
+  import('@/modules/app-evaluation/views/badcase-workbench').then((module) => ({
+    default: module.ProjectBadcaseWorkbench,
+  }))
+)
+
 export const ProjectDatasetDetail = lazy(() =>
   import('@/modules/app-evaluation/views/dataset-detail').then((module) => ({
     default: module.ProjectDatasetDetail,
